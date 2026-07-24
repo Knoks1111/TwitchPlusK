@@ -2045,6 +2045,28 @@ static void s7tv_dbg_hookAttachmentBounds(void) {
             NSLayoutManager *lm2 = tc ? tc.layoutManager : nil;
             NSTextStorage *ts2 = lm2 ? lm2.textStorage : nil;
 
+            // ── DUMP BRUT (sans devinette) ──────────────────────────────
+            // Au lieu de supposer où se trouve le marqueur, on affiche
+            // TOUT le texte final tel que Twitch l'a construit, caractère
+            // par caractère, avec son code hexadécimal et sa position.
+            // Limité aux 5 premiers messages avec attachment pour ne pas
+            // noyer les logs.
+            if (ts2 && ts2.length > 0) {
+                static NSUInteger s_dumpCount = 0;
+                if (s_dumpCount < 5) {
+                    s_dumpCount++;
+                    NSString *full = ts2.string;
+                    NSUInteger len = full.length;
+                    NSMutableString *hex = [NSMutableString string];
+                    for (NSUInteger i = 0; i < len; i++) {
+                        unichar c = [full characterAtIndex:i];
+                        [hex appendFormat:@"%lu:%04X ", (unsigned long)i, c];
+                    }
+                    [[SevenTVManager sharedManager] log:@"🔬 [HEXDUMP] #%lu len=%lu attachmentCharIdx=%lu → %@",
+                        (unsigned long)s_dumpCount, (unsigned long)len, (unsigned long)charIdx, hex];
+                }
+            }
+
             // ── DIAGNOSTIC Variante D ──────────────────────────────────
             // ts2 est un textStorage PAR MESSAGE/CELLULE (recréé/recyclé),
             // pas un buffer unique qui grossit pour tout le chat — donc on

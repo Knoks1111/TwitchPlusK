@@ -1283,18 +1283,22 @@ static NSString *s7tv_encodeShortIDMarker(uint16_t shortID) {
         channel = self.channelEmotes ?: @{};
     });
 
-    // Scanner chaque mot et construire le tag emotes=
-    // On construit AUSSI une version du texte du message avec un marqueur
-    // invisible (Variante B) inséré juste après chaque mot d'emote détecté.
-    // cumulativeOffset suit le décalage introduit par NOS PROPRES marqueurs
-    // déjà insérés plus tôt dans la boucle — contrairement au décalage
-    // introduit par le pseudo/badges (qu'on ne maîtrise pas), celui-ci est
-    // entièrement sous notre contrôle, donc calculable avec certitude.
+    // Scanner chaque mot et construire le tag emotes=.
+    // IMPORTANT (Variante D) : on ne touche plus DU TOUT au texte entre les
+    // mots. Les positions start/end du tag emotes= restent celles du texte
+    // ORIGINAL, non modifié — exactement comme avant toute tentative de
+    // marqueur (ce qui marchait). Les deux variantes précédentes (marqueur
+    // inséré juste après chaque mot) cassaient systématiquement le matching
+    // emote de Twitch dès qu'un marqueur était présent, quel que soit son
+    // encodage — donc le problème n'était pas la survie du caractère, mais
+    // le fait même d'insérer quelque chose ENTRE les mots.
+    // Les marqueurs sont maintenant collectés à part et ajoutés une seule
+    // fois, tous ensemble, à la TOUTE FIN du message (après le dernier
+    // caractère visible) — donc aucune position de mot n'est jamais décalée.
     NSMutableArray<NSString *> *entries = [NSMutableArray array];
     NSArray<NSString *> *words = [messageText componentsSeparatedByString:@" "];
-    NSMutableString *markedMessageText = [messageText mutableCopy];
+    NSMutableString *trailingMarkers = [NSMutableString string];
     NSUInteger pos = 0;
-    NSInteger cumulativeOffset = 0;
 
     for (NSString *word in words) {
         if (word.length > 0) {
@@ -1302,14 +1306,9 @@ static NSString *s7tv_encodeShortIDMarker(uint16_t shortID) {
             if (emote) {
                 NSUInteger start = pos;
                 NSUInteger end   = pos + word.length - 1;
-                // Positions ajustées : celles que Twitch va réellement voir
-                // dans markedMessageText, une fois tous les marqueurs
-                // PRÉCÉDENTS déjà insérés (cumulativeOffset).
-                NSUInteger adjStart = (NSUInteger)((NSInteger)start + cumulativeOffset);
-                NSUInteger adjEnd   = (NSUInteger)((NSInteger)end   + cumulativeOffset);
                 NSString *entry  = [NSString stringWithFormat:@"%@%@:%lu-%lu",
                                     S7TV_EMOTE_ID_PREFIX, emote.emoteID,
-                                    (unsigned long)adjStart, (unsigned long)adjEnd];
+                                    (unsigned long)start, (unsigned long)end];
                 [entries addObject:entry];
                 // Stocker { emoteID -> ratio } pour le resize proportionnel
                 if (emote.width > 0 && emote.height > 0) {
@@ -1320,7 +1319,7 @@ static NSString *s7tv_encodeShortIDMarker(uint16_t shortID) {
                     self.emoteRatios[emote.emoteID] = @(1.0);
                 }
                 // Stocker { characterIndex → emoteID } pour sizeOfImageAttachmentAtCharacterIndex:
-                self.emotePositions[@(adjStart)] = emote.emoteID;
+                self.emotePositions[@(start)] = emote.emoteID;
                 [self log:@"✅ Emote détectée: %@ → %@", word, entry];
 
                 // Générer un petit ID court (0-65535) pour cette occurrence,
@@ -1330,16 +1329,12 @@ static NSString *s7tv_encodeShortIDMarker(uint16_t shortID) {
                 self.shortIDToEmoteID[@(shortID)] = emote.emoteID;
 
 #if S7TV_ENABLE_TAGID_MARKER
-                // Insérer le marqueur invisible (2 sélecteurs de variation)
-                // juste après ce mot, dans markedMessageText (qui contient
-                // déjà tous les marqueurs précédents — insertAt tient compte
-                // de cumulativeOffset).
-                NSString *marker = s7tv_encodeShortIDMarker(shortID);
-                NSUInteger insertAt = adjEnd + 1;
-                if (insertAt <= markedMessageText.length) {
-                    [markedMessageText insertString:marker atIndex:insertAt];
-                    cumulativeOffset += (NSInteger)marker.length;
-                }
+                // Marqueur ajouté à la suite des précédents dans le bloc de
+                // fin de message — ordre = ordre de détection des emotes
+                // dans le message, ce qui permet côté lecture de les
+                // associer au Nème attachment 7TV rencontré (matching par
+                // ORDRE, plus par position).
+                [trailingMarkers appendString:s7tv_encodeShortIDMarker(shortID)];
 #endif
             }
         }
@@ -1351,17 +1346,22 @@ static NSString *s7tv_encodeShortIDMarker(uint16_t shortID) {
     NSString *emoteTag = [entries componentsJoinedByString:@"/"];
     [self log:@"💉 Injection: emotes=%@", emoteTag];
 
-    // Remplacer le texte du message dans raw par la version marquée
-    // (markedMessageText) — même position/longueur que messageText
-    // (original), puisque markedMessageText est une copie de messageText
-    // avec uniquement des insertions APRÈS chaque mot détecté.
-    NSUInteger messageStartInRaw = privmsgRange.location + colonSpace.location + 2;
-    if (messageStartInRaw + messageText.length <= raw.length) {
-        NSMutableString *rawWithMarkers = [raw mutableCopy];
-        [rawWithMarkers replaceCharactersInRange:NSMakeRange(messageStartInRaw, messageText.length)
-                                       withString:markedMessageText];
-        raw = [rawWithMarkers copy];
+#if S7TV_ENABLE_TAGID_MARKER
+    // Ajouter le bloc de marqueurs à la toute fin du texte du message —
+    // après le dernier caractère visible, donc sans influence sur AUCUNE
+    // position de mot utilisée par le tag emotes=.
+    if (trailingMarkers.length > 0) {
+        NSMutableString *messageTextWithMarkers = [messageText mutableCopy];
+        [messageTextWithMarkers appendString:trailingMarkers];
+        NSUInteger messageStartInRaw = privmsgRange.location + colonSpace.location + 2;
+        if (messageStartInRaw + messageText.length <= raw.length) {
+            NSMutableString *rawWithMarkers = [raw mutableCopy];
+            [rawWithMarkers replaceCharactersInRange:NSMakeRange(messageStartInRaw, messageText.length)
+                                           withString:messageTextWithMarkers];
+            raw = [rawWithMarkers copy];
+        }
     }
+#endif
 
     // Injecter dans le tag emotes= existant ou créer un nouveau tag
     NSRange existingTag = [raw rangeOfString:@"emotes="];

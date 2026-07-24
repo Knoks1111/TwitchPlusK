@@ -2045,39 +2045,41 @@ static void s7tv_dbg_hookAttachmentBounds(void) {
             NSLayoutManager *lm2 = tc ? tc.layoutManager : nil;
             NSTextStorage *ts2 = lm2 ? lm2.textStorage : nil;
 
-            // ── DIAGNOSTIC Variante D : les marqueurs sont groupés en bloc à
-            // la fin de CHAQUE message (plus juste après chaque attachment),
-            // donc on ne cherche plus à charIdx+1 — on scanne ts2.string à
-            // la recherche de blocs de tag characters, où qu'ils soient, et
-            // on décode tous les shortID qu'on y trouve. s_lastScannedLength
-            // évite de re-décoder ce qu'on a déjà vu (ts2 grandit au fil des
-            // messages qui arrivent).
+            // ── DIAGNOSTIC Variante D ──────────────────────────────────
+            // ts2 est un textStorage PAR MESSAGE/CELLULE (recréé/recyclé),
+            // pas un buffer unique qui grossit pour tout le chat — donc on
+            // rescanne TOUT ts2.string à chaque appel (c'est petit, un seul
+            // message), et on déduplique par shortID déjà vu plutôt que par
+            // longueur de texte déjà scannée (qui n'a pas de sens ici).
             if (ts2 && ts2.length > 0) {
-                static NSUInteger s_lastScannedLength = 0;
+                static NSMutableSet<NSNumber *> *s_seenShortIDs = nil;
                 static NSUInteger s_tagDiagCount = 0;
+                if (!s_seenShortIDs) s_seenShortIDs = [NSMutableSet set];
                 NSString *full = ts2.string;
                 NSUInteger len = full.length;
-                if (len > s_lastScannedLength) {
-                    NSUInteger i = s_lastScannedLength;
-                    while (i < len) {
-                        NSRange run = s7tv_tagCharRunAt(full, i, len);
-                        if (run.location == NSNotFound) break;
-                        NSUInteger p = run.location;
-                        while (p + 4 <= run.location + run.length && s_tagDiagCount <= 60) {
-                            uint16_t shortID = 0;
-                            if (!s7tv_decodeShortIDMarkerAt(full, p, &shortID)) break;
+                NSUInteger i = 0;
+                while (i < len) {
+                    NSRange run = s7tv_tagCharRunAt(full, i, len);
+                    if (run.location == NSNotFound) break;
+                    NSUInteger p = run.location;
+                    while (p + 4 <= run.location + run.length) {
+                        uint16_t shortID = 0;
+                        if (!s7tv_decodeShortIDMarkerAt(full, p, &shortID)) break;
+                        if (![s_seenShortIDs containsObject:@(shortID)]) {
+                            [s_seenShortIDs addObject:@(shortID)];
                             NSString *resolvedEmoteID = [[SevenTVManager sharedManager] emoteIDForShortIndex:shortID];
                             s_tagDiagCount++;
                             NSString *result = resolvedEmoteID
                                 ? [NSString stringWithFormat:@"✅ shortID=%u → %@", shortID, resolvedEmoteID]
                                 : [NSString stringWithFormat:@"⚠️ shortID=%u décodé mais introuvable dans le dictionnaire", shortID];
-                            [[SevenTVManager sharedManager] log:@"🏷️ [TAGID-DIAG] #%lu pos=%lu → %@",
-                                (unsigned long)s_tagDiagCount, (unsigned long)p, result];
-                            p += 4;
+                            if (s_tagDiagCount <= 60) {
+                                [[SevenTVManager sharedManager] log:@"🏷️ [TAGID-DIAG] #%lu pos=%lu → %@",
+                                    (unsigned long)s_tagDiagCount, (unsigned long)p, result];
+                            }
                         }
-                        i = run.location + run.length;
+                        p += 4;
                     }
-                    s_lastScannedLength = len;
+                    i = run.location + run.length;
                 }
             }
 

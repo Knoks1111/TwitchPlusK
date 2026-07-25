@@ -2021,11 +2021,12 @@ static void s7tv_dbg_hookAttachmentBounds(void) {
         // peu importe la taille que Twitch propose pour cet attachment
         // (le gate isDefaultSize2 ne matche plus forcément maintenant que
         // les emotes s'affichent correctement).
-        if (ts_d && ts_d.length > 0) {
+        if (tc && tc.layoutManager && tc.layoutManager.textStorage && tc.layoutManager.textStorage.length > 0) {
+            NSTextStorage *ts_dump = tc.layoutManager.textStorage;
             static NSUInteger s_dumpCount = 0;
             if (s_dumpCount < 5) {
                 s_dumpCount++;
-                NSString *full = ts_d.string;
+                NSString *full = ts_dump.string;
                 NSUInteger len = full.length;
                 NSMutableString *hex = [NSMutableString string];
                 for (NSUInteger i = 0; i < len; i++) {

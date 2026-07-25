@@ -2016,6 +2016,27 @@ static void s7tv_dbg_hookAttachmentBounds(void) {
             }
         }
 
+        // ── DUMP BRUT (sans devinette), INCONDITIONNEL ──────────────────
+        // Placé AVANT le gate isDefaultSize2 : on veut voir le texte réel
+        // peu importe la taille que Twitch propose pour cet attachment
+        // (le gate isDefaultSize2 ne matche plus forcément maintenant que
+        // les emotes s'affichent correctement).
+        if (ts_d && ts_d.length > 0) {
+            static NSUInteger s_dumpCount = 0;
+            if (s_dumpCount < 5) {
+                s_dumpCount++;
+                NSString *full = ts_d.string;
+                NSUInteger len = full.length;
+                NSMutableString *hex = [NSMutableString string];
+                for (NSUInteger i = 0; i < len; i++) {
+                    unichar c = [full characterAtIndex:i];
+                    [hex appendFormat:@"%lu:%04X ", (unsigned long)i, c];
+                }
+                [[SevenTVManager sharedManager] log:@"🔬 [HEXDUMP NSTextAttachment] #%lu len=%lu attachmentCharIdx=%lu → %@",
+                    (unsigned long)s_dumpCount, (unsigned long)len, (unsigned long)charIdx, hex];
+            }
+        }
+
         // Condition : bounds "par defaut" (hauteur <=22pt, avant correction)
         // OU déjà à notre targetSize (rappel ultérieur sur un attachment
         // qu'on a déjà traité — voir commentaire détaillé dans ATTSIZE).
@@ -2044,28 +2065,6 @@ static void s7tv_dbg_hookAttachmentBounds(void) {
             // Dès qu'on trouve un char alphanumérique → username → zone message.
             NSLayoutManager *lm2 = tc ? tc.layoutManager : nil;
             NSTextStorage *ts2 = lm2 ? lm2.textStorage : nil;
-
-            // ── DUMP BRUT (sans devinette) ──────────────────────────────
-            // Au lieu de supposer où se trouve le marqueur, on affiche
-            // TOUT le texte final tel que Twitch l'a construit, caractère
-            // par caractère, avec son code hexadécimal et sa position.
-            // Limité aux 5 premiers messages avec attachment pour ne pas
-            // noyer les logs.
-            if (ts2 && ts2.length > 0) {
-                static NSUInteger s_dumpCount = 0;
-                if (s_dumpCount < 5) {
-                    s_dumpCount++;
-                    NSString *full = ts2.string;
-                    NSUInteger len = full.length;
-                    NSMutableString *hex = [NSMutableString string];
-                    for (NSUInteger i = 0; i < len; i++) {
-                        unichar c = [full characterAtIndex:i];
-                        [hex appendFormat:@"%lu:%04X ", (unsigned long)i, c];
-                    }
-                    [[SevenTVManager sharedManager] log:@"🔬 [HEXDUMP] #%lu len=%lu attachmentCharIdx=%lu → %@",
-                        (unsigned long)s_dumpCount, (unsigned long)len, (unsigned long)charIdx, hex];
-                }
-            }
 
             // ── DIAGNOSTIC Variante D ──────────────────────────────────
             // ts2 est un textStorage PAR MESSAGE/CELLULE (recréé/recyclé),

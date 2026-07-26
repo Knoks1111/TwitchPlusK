@@ -129,10 +129,6 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 - (void)loadEmotesForChannelName:(NSString *)channelName;
 - (void)loadEmotesForChannelTwitchID:(NSString *)twitchUserID;
 
-// --- Injection IRC ---
-// Détecte les emotes 7TV dans un message IRC et injecte le tag emotes=
-- (NSString *)injectSevenTVEmotesIntoIRCMessage:(NSString *)rawIRCMessage;
-
 // --- Extraction depuis réponses Twitch GQL ---
 - (void)extractAndLoadEmotesFromGQLResponse:(NSData *)responseData;
 
@@ -167,19 +163,5 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 
 // Vide le buffer de logs
 - (void)clearLogs;
-
-// --- Ratios et positions emotes ---
-// Dictionnaire { emoteID → ratio (width/height) } utilisé par willDisplayCell pour resize
-- (NSMutableDictionary *)emoteRatios;
-// Dictionnaire { @(characterIndex) → emoteID } utilisé par sizeOfImageAttachmentAtCharacterIndex:
-- (NSMutableDictionary *)emotePositions;
-// Taille cible emote (hauteur) depuis NSUserDefaults
-- (CGFloat)targetEmoteSize;
-
-// --- Marqueur invisible (Variante B) ---
-// Résolution inverse : retrouve l'emoteID à partir du petit index numérique
-// décodé dans le texte final (voir shortIDToEmoteID). Retourne nil si
-// l'index est inconnu. Thread-safe.
-- (NSString *)emoteIDForShortIndex:(NSUInteger)shortIndex;
 
 @end

@@ -4,16 +4,12 @@
  * Ce fichier intercepte les requêtes HTTP que Twitch fait pour charger
  * les images des emotes. Quand Twitch demande une image avec un ID
  * commençant par "7tv_", on redirige vers le vrai CDN de 7TV.
+ *
+ * Format servi : WebP natif tel que fourni par le CDN 7TV (animé ou
+ * statique) — aucune conversion en GIF.
  */
 
 #import <Foundation/Foundation.h>
-
-// Clé d'association (objc_setAssociatedObject) posée sur la NSData brute
-// servie via didLoadData:, contenant l'emoteID 7TV (NSString) correspondant.
-// Permet à TweakSevenTV.m de retrouver, au moment où Twitch décode cette
-// donnée en UIImage (+imageWithData:), quel ratio appliquer — sans dépendre
-// d'un pipeline de chargement d'image qu'on ne contrôle pas.
-extern const char kS7TVEmoteIDOnDataKey;
 
 @interface SevenTVURLProtocol : NSURLProtocol
 
@@ -35,10 +31,8 @@ extern const char kS7TVEmoteIDOnDataKey;
 // dans le picker sans aucun réseau supplémentaire.
 + (NSURLCache *)sharedEmoteCache;
 
-// Compteurs de conversion — nombre d'emotes converties en GIF animé
-// et nombre d'emotes statiques servies en WebP depuis le démarrage.
-// Utilisés par SevenTVManager pour le log bilan de fin de prefetch.
-+ (NSInteger)gifConvertedCount;
-+ (NSInteger)webpStaticCount;
+// Nombre total d'emotes mises en cache (WebP natif) depuis le démarrage.
+// Utilisé par SevenTVManager pour le log bilan de fin de prefetch.
++ (NSInteger)cachedEmoteCount;
 
 @end

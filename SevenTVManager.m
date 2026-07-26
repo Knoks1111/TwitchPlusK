@@ -103,20 +103,6 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 
 // Buffer de logs in-app
 @property (nonatomic, strong) NSMutableArray<NSString *> *logBuffer;
-// Dictionnaire { emoteID: ratio (width/height) } pour le resize proportionnel
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *emoteRatios;
-// Dictionnaire { @(characterIndex): emoteID } pour sizeOfImageAttachmentAtCharacterIndex:
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *emotePositions;
-// Dictionnaire { @(shortID) : emoteID } — Variante B : le marqueur invisible
-// (sélecteurs de variation) transporte un petit numéro (0-65535), pas
-// l'ID complet. Ce dictionnaire fait la correspondance à la lecture.
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *shortIDToEmoteID;
-// Table inverse { emoteID : @(shortID) } — UN shortID stable PAR EMOTE UNIQUE,
-// pas un par occurrence. Une chaîne a ~1000 emotes max, donc ce dictionnaire
-// reste petit et borné naturellement (pas besoin de purge), contrairement à
-// un compteur qui incrémente à chaque fois que la même emote réapparaît.
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *emoteIDToShortID;
-@property (nonatomic, assign) uint16_t nextShortID;
 @property (nonatomic, strong) NSLock *logLock;
 
 // Dossier racine du cache JSON (créé à la demande)
@@ -287,18 +273,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 @implementation SevenTVManager
 
 // ============================================================
-// MARK: - Taille cible emote
-// ============================================================
-
-- (CGFloat)targetEmoteSize {
-    NSInteger stored = [[NSUserDefaults standardUserDefaults] integerForKey:@"s7tv_emote_size"];
-    if (stored <= 0) {
-        return 30.0; // valeur par défaut
-    }
-    return (CGFloat)stored;
-}
-
-// ============================================================
 // MARK: - Singleton
 // ============================================================
 
@@ -350,11 +324,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
 
         _logBuffer = [NSMutableArray arrayWithCapacity:256];
-    _emoteRatios = [NSMutableDictionary dictionary];
-    _emotePositions = [NSMutableDictionary dictionary];
-    _shortIDToEmoteID = [NSMutableDictionary dictionary];
-    _emoteIDToShortID = [NSMutableDictionary dictionary];
-    _nextShortID = 0;
         _logLock   = [[NSLock alloc] init];
 
         _favoriteEmoteIDs        = [NSMutableSet set];
@@ -749,23 +718,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     [self log:@"Channel rejoint: %@, recherche ID Twitch...", channelName];
     self.currentChannelName = channelName;
 
-    // ── Purge des dictionnaires de tracking marqueur/position ───────────
-    // shortIDToEmoteID et emotePositions ne sont JAMAIS vidés ailleurs —
-    // sur une chaîne qui spam beaucoup, ça grossit sans limite pendant
-    // toute la session (des dizaines de milliers d'entrées possibles),
-    // ce qui peut causer une pression mémoire/crash. On repart propre à
-    // chaque changement de chaîne (les positions/shortIDs de l'ancien
-    // channel n'ont plus aucun sens de toute façon).
-    @synchronized (self.emotePositions) {
-        [self.emotePositions removeAllObjects];
-    }
-    @synchronized (self.shortIDToEmoteID) {
-        [self.shortIDToEmoteID removeAllObjects];
-        [self.emoteIDToShortID removeAllObjects];
-        self.nextShortID = 0;
-    }
-    [self log:@"🧹 Purge shortIDToEmoteID/emoteIDToShortID/emotePositions (changement de channel)"];
-
     // Préchauffer la connexion CDN maintenant — les messages arrivent
     // ~1-2s après le JOIN, donc la connexion sera chaude à temps.
     [SevenTVURLProtocol prewarmCDNConnection];
@@ -925,11 +877,10 @@ static const CGFloat kS7TVMenuHeight = 520.0;
          (unsigned long)(total - skipped),
          (unsigned long)skipped];
 
-        // Bilan animées / statiques — compteurs tenus par SevenTVURLProtocol.
-        NSInteger gifCount  = [SevenTVURLProtocol gifConvertedCount];
-        NSInteger webpCount = [SevenTVURLProtocol webpStaticCount];
-        [self log:@"📊 Bilan conversion : %ld animées (GIF) / %ld statiques (WebP) sur %ld emotes traitées",
-         (long)gifCount, (long)webpCount, (long)(gifCount + webpCount)];
+        // Bilan des emotes mises en cache — compteur tenu par SevenTVURLProtocol.
+        NSInteger cachedCount = [SevenTVURLProtocol cachedEmoteCount];
+        [self log:@"📊 Bilan : %ld emotes mises en cache en WebP natif depuis le démarrage",
+         (long)cachedCount];
 
         // Libérer la clé → permettre un re-prefetch si le set change
         @synchronized(self) {
@@ -1230,229 +1181,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     return [NSURL URLWithString:
             [NSString stringWithFormat:@"%@/%@/2x.webp", S7TV_CDN_BASE, emote.emoteID]];
 }
-
-
-// ============================================================
-// MARK: - Injection IRC (V0.1 — simple)
-// ============================================================
-
-// ── Variante C : marqueur "tag character" survivant + invisibilité forcée ──
-// Constat des tests réels :
-//   - Tag characters (U+E0000+)      → survivent au filtrage Twitch, MAIS
-//                                       s'affichent (glyphe "tofu" visible)
-//                                       car aucune police ne les rend
-//                                       invisibles hors séquence drapeau.
-//   - Variation selectors (VS1-256)  → invisibles nativement, MAIS filtrés
-//                                       à 100% par Twitch (texte + emotes
-//                                       cassés, cf. test précédent).
-// On combine les deux propriétés séparément au lieu de compter sur Unicode
-// pour donner l'invisibilité gratuitement :
-//   1. On encode avec des tag characters → passent le filtre Twitch intact.
-//   2. On les rend invisibles NOUS-MÊMES côté rendu, dans le hook
-//      addAttribute:/setAttributes: de TweakSevenTV.m (couleur transparente
-//      + police quasi nulle + kerning négatif), APRÈS que Twitch ait fini
-//      de construire l'attributed string — donc indépendant du filtrage
-//      texte brut qui, lui, a déjà eu lieu avant.
-//
-// On encode un petit numéro court (0-65535, voir shortIDToEmoteID/
-// nextShortID) sur exactement 2 tag characters (= 2 octets, plage
-// U+E0000-U+E00FF, toujours codée en paire de substitution UTF-16).
-static NSString *s7tv_encodeTagCharByte(uint8_t b) {
-    uint32_t codepoint = 0xE0000 + b;
-    uint16_t high = (uint16_t)(0xD800 + ((codepoint - 0x10000) >> 10));
-    uint16_t low  = (uint16_t)(0xDC00 + ((codepoint - 0x10000) & 0x3FF));
-    return [NSString stringWithFormat:@"%C%C", high, low];
-}
-
-static NSString *s7tv_encodeShortIDMarker(uint16_t shortID) {
-    uint8_t highByte = (uint8_t)((shortID >> 8) & 0xFF);
-    uint8_t lowByte  = (uint8_t)(shortID & 0xFF);
-    NSMutableString *marker = [NSMutableString stringWithCapacity:4];
-    [marker appendString:s7tv_encodeTagCharByte(highByte)];
-    [marker appendString:s7tv_encodeTagCharByte(lowByte)];
-    return marker;
-}
-
-// Marqueur réactivé (Variante C) — voir hideMarkerCharsInRange dans
-// TweakSevenTV.m pour la partie "invisibilité forcée" côté rendu.
-#define S7TV_ENABLE_TAGID_MARKER 1
-
-- (NSString *)injectSevenTVEmotesIntoIRCMessage:(NSString *)raw {
-    if (!self.isEnabled || raw.length == 0) return raw;
-
-    // On ne traite que les messages PRIVMSG
-    NSRange privmsgRange = [raw rangeOfString:@"PRIVMSG"];
-    if (privmsgRange.location == NSNotFound) return raw;
-
-    // Extraire le texte du message : chercher " :" APRÈS "PRIVMSG #channel"
-    // Un message IRC ressemble à :
-    //   @tags :user!user@twitch.tv PRIVMSG #channel :texte du message
-    // Il y a un premier " :" entre les tags et le préfixe user — on l'ignore.
-    // On cherche " :" à partir de la position PRIVMSG pour trouver le bon " :".
-    NSString *afterPrivmsg = [raw substringFromIndex:privmsgRange.location];
-    NSRange colonSpace = [afterPrivmsg rangeOfString:@" :"];
-    if (colonSpace.location == NSNotFound) return raw;
-    NSString *messageText = [afterPrivmsg substringFromIndex:colonSpace.location + 2];
-
-    // Retirer \r\n en fin
-    messageText = [messageText stringByTrimmingCharactersInSet:
-                   [NSCharacterSet newlineCharacterSet]];
-    if (messageText.length == 0) return raw;
-
-    // Lire les emotes (thread-safe)
-    __block NSDictionary *global, *channel;
-    dispatch_sync(self.emoteQueue, ^{
-        global  = self.globalEmotes  ?: @{};
-        channel = self.channelEmotes ?: @{};
-    });
-
-    // Scanner chaque mot et construire le tag emotes=.
-    // IMPORTANT (Variante D) : on ne touche plus DU TOUT au texte entre les
-    // mots. Les positions start/end du tag emotes= restent celles du texte
-    // ORIGINAL, non modifié — exactement comme avant toute tentative de
-    // marqueur (ce qui marchait). Les deux variantes précédentes (marqueur
-    // inséré juste après chaque mot) cassaient systématiquement le matching
-    // emote de Twitch dès qu'un marqueur était présent, quel que soit son
-    // encodage — donc le problème n'était pas la survie du caractère, mais
-    // le fait même d'insérer quelque chose ENTRE les mots.
-    // Les marqueurs sont maintenant collectés à part et ajoutés une seule
-    // fois, tous ensemble, à la TOUTE FIN du message (après le dernier
-    // caractère visible) — donc aucune position de mot n'est jamais décalée.
-    NSMutableArray<NSString *> *entries = [NSMutableArray array];
-    NSArray<NSString *> *words = [messageText componentsSeparatedByString:@" "];
-    NSMutableString *trailingMarkers = [NSMutableString string];
-    NSUInteger pos = 0;
-
-    for (NSString *word in words) {
-        if (word.length > 0) {
-            SevenTVEmote *emote = channel[word] ?: global[word];
-            if (emote) {
-                NSUInteger start = pos;
-                NSUInteger end   = pos + word.length - 1;
-                NSString *entry  = [NSString stringWithFormat:@"%@%@:%lu-%lu",
-                                    S7TV_EMOTE_ID_PREFIX, emote.emoteID,
-                                    (unsigned long)start, (unsigned long)end];
-                [entries addObject:entry];
-                // Stocker { emoteID -> ratio } pour le resize proportionnel
-                if (emote.width > 0 && emote.height > 0) {
-                    CGFloat ratio = (CGFloat)emote.width / (CGFloat)emote.height;
-                    self.emoteRatios[emote.emoteID] = @(ratio);
-                } else {
-                    // Ratio carré par défaut si dimensions inconnues
-                    self.emoteRatios[emote.emoteID] = @(1.0);
-                }
-                // Stocker { characterIndex → emoteID } pour sizeOfImageAttachmentAtCharacterIndex:
-                // Purge de sécurité : sous fort spam (gros stream), ce dictionnaire
-                // peut grossir sans limite en quelques minutes sans jamais changer
-                // de chaîne — on le vide dès qu'il devient trop gros (les anciennes
-                // entrées ne servent plus, les messages correspondants ont scrollé).
-                // @synchronized(self.emotePositions) : MÊME verrou que la lecture
-                // côté TweakSevenTV.m (tagAttachmentWithRatio) — sans ça, la lecture
-                // se croit protégée mais l'écriture ici mutait sans aucun verrou.
-                @synchronized (self.emotePositions) {
-                    if (self.emotePositions.count > 3000) {
-                        [self.emotePositions removeAllObjects];
-                    }
-                    self.emotePositions[@(start)] = emote.emoteID;
-                }
-                [self log:@"✅ Emote détectée: %@ → %@", word, entry];
-
-                // Générer un petit ID court (0-65535) UNE FOIS PAR EMOTE UNIQUE,
-                // pas un par occurrence — "LOL" garde toujours le même shortID
-                // peu importe combien de fois il apparaît dans le chat. Une
-                // chaîne a ~1000 emotes max, donc ce dictionnaire reste petit
-                // naturellement, pas besoin de purge par taille ici.
-                // @synchronized(self.shortIDToEmoteID) : le check "existe déjà ?"
-                // et l'écriture doivent être ATOMIQUES ensemble — sinon deux
-                // messages traités en parallèle peuvent tous les deux rater
-                // l'entrée existante et attribuer 2 shortID différents à la
-                // même emote, désynchronisant les deux tables entre elles.
-                uint16_t shortID;
-                @synchronized (self.shortIDToEmoteID) {
-                    NSNumber *existingShortID = self.emoteIDToShortID[emote.emoteID];
-                    if (existingShortID) {
-                        shortID = existingShortID.unsignedShortValue;
-                    } else {
-                        shortID = self.nextShortID;
-                        self.nextShortID = (uint16_t)(self.nextShortID + 1); // wrap naturel à 65536
-                        self.shortIDToEmoteID[@(shortID)] = emote.emoteID;
-                        self.emoteIDToShortID[emote.emoteID] = @(shortID);
-                    }
-                }
-
-#if S7TV_ENABLE_TAGID_MARKER
-                // Marqueur ajouté à la suite des précédents dans le bloc de
-                // fin de message — ordre = ordre de détection des emotes
-                // dans le message, ce qui permet côté lecture de les
-                // associer au Nème attachment 7TV rencontré (matching par
-                // ORDRE, plus par position).
-                [trailingMarkers appendString:s7tv_encodeShortIDMarker(shortID)];
-#endif
-            }
-        }
-        pos += word.length + 1;
-    }
-
-    if (entries.count == 0) return raw;
-
-    NSString *emoteTag = [entries componentsJoinedByString:@"/"];
-    [self log:@"💉 Injection: emotes=%@", emoteTag];
-
-#if S7TV_ENABLE_TAGID_MARKER
-    // Ajouter le bloc de marqueurs à la toute fin du texte du message —
-    // après le dernier caractère visible, donc sans influence sur AUCUNE
-    // position de mot utilisée par le tag emotes=.
-    if (trailingMarkers.length > 0) {
-        NSMutableString *messageTextWithMarkers = [messageText mutableCopy];
-        [messageTextWithMarkers appendString:trailingMarkers];
-        NSUInteger messageStartInRaw = privmsgRange.location + colonSpace.location + 2;
-        if (messageStartInRaw + messageText.length <= raw.length) {
-            NSMutableString *rawWithMarkers = [raw mutableCopy];
-            [rawWithMarkers replaceCharactersInRange:NSMakeRange(messageStartInRaw, messageText.length)
-                                           withString:messageTextWithMarkers];
-            raw = [rawWithMarkers copy];
-        }
-    }
-#endif
-
-    // Injecter dans le tag emotes= existant ou créer un nouveau tag
-    NSRange existingTag = [raw rangeOfString:@"emotes="];
-    if (existingTag.location != NSNotFound) {
-        NSMutableString *result = [raw mutableCopy];
-        NSUInteger insertAt = existingTag.location + existingTag.length;
-        NSString *existing = [raw substringFromIndex:insertAt];
-        // Si déjà des emotes → ajouter après avec "/"
-        NSRange semi = [existing rangeOfString:@";"];
-        NSRange space = [existing rangeOfString:@" "];
-        NSUInteger endTag = existing.length;
-        if (semi.location != NSNotFound) endTag = MIN(endTag, semi.location);
-        if (space.location != NSNotFound) endTag = MIN(endTag, space.location);
-        NSString *existingEmotes = [existing substringToIndex:endTag];
-        NSString *combined = existingEmotes.length > 0
-            ? [NSString stringWithFormat:@"%@/%@", existingEmotes, emoteTag]
-            : emoteTag;
-        [result replaceCharactersInRange:NSMakeRange(insertAt, endTag)
-                              withString:combined];
-        return [result copy];
-    } else {
-        // Pas de tag emotes= → on l'ajoute au début
-        if ([raw hasPrefix:@"@"]) {
-            return [NSString stringWithFormat:@"@emotes=%@;%@",
-                    emoteTag, [raw substringFromIndex:1]];
-        }
-        return [NSString stringWithFormat:@"@emotes=%@ %@", emoteTag, raw];
-    }
-}
-
-- (NSString *)emoteIDForShortIndex:(NSUInteger)shortIndex {
-    if (shortIndex > 0xFFFF) return nil;
-    __block NSString *result = nil;
-    @synchronized (self.shortIDToEmoteID) {
-        result = self.shortIDToEmoteID[@(shortIndex)];
-    }
-    return result;
-}
-
 
 // ============================================================
 // MARK: - Picker d'emotes 7TV
@@ -2885,40 +2613,26 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
         has(@"fin hiérarchie"))
         return S7TVLogCategoryTap;
 
-    // 4. Resize / CoreText (pipeline de resize des emotes en cours de debug)
-    if (has(@"attachmentBoundsForTextContainer") || has(@"setAttachmentSize") ||
-        has(@"willDisplayCell") || has(@"Hooks resize layout") ||
-        has(@"Tag propagé") || has(@"NSTextAttachment") ||
-        ([msg rangeOfString:@"ImageAttachmentLayer"].location != NSNotFound &&
-         [msg rangeOfString:@"Animated"].location == NSNotFound))
-        return S7TVLogCategoryResize;
-
-    // 5. Orientation Lock
+    // 4. Orientation Lock
     if (has(@"Orientation") || has(@"orientation") || has(@"verrou") || has(@"Rotation"))
         return S7TVLogCategoryOrientation;
 
-    // 6. Conversion Image (pipeline WebP→GIF + hooks d'animation)
-    if (has(@"WebP") || has(@"GIF") || has(@"animatedImageAtURL") ||
-        has(@"imageAtURL:") || has(@"🟢7TV") || has(@"🖼A") || has(@"🖼B") ||
-        has(@"AnimatedImageAttachmentLayer") || has(@"animatedImageLayer") ||
-        has(@"currentImageLayer") || has(@"Réponse CDN") || has(@"Bilan conversion") ||
-        has(@"Cache miss statique"))
+    // 5. CDN / Cache emotes (téléchargement + mise en cache WebP natif)
+    if (has(@"WebP") || has(@"URLProtocol cache") || has(@"Réponse CDN") ||
+        has(@"Préfetch") || has(@"Bilan :"))
         return S7TVLogCategoryImageConversion;
 
-    // 7. Favoris
+    // 6. Favoris
     if (has(@"Favori")) return S7TVLogCategoryFavorites;
 
-    // 8. IRC Injection
-    if (has(@"Injection: emotes=") || has(@"Emote détectée")) return S7TVLogCategoryIRCInjection;
-
-    // 9. IRC / Channel
+    // 7. IRC / Channel
     if (has(@"ROOMSTATE") || has(@"room-id") || has(@"broadcaster ID") ||
         has(@"GQL") || has(@"Mapping sauvé") || has(@"Rejoint le channel") ||
         has(@"Channel rejoint") || has(@"twitchID en cache") || has(@"twitchID") ||
         has(@"Pas de twitchID"))
         return S7TVLogCategoryIRCChannel;
 
-    // 10. Prefetch
+    // 8. Prefetch
     if (has(@"Prefetch") || has(@"Préfetch") || has(@"Fetch déjà en cours"))
         return S7TVLogCategoryPrefetch;
 

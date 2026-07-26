@@ -2036,6 +2036,31 @@ static void s7tv_dbg_hookAttachmentBounds(void) {
                 [[SevenTVManager sharedManager] log:@"🔬 [HEXDUMP NSTextAttachment] #%lu len=%lu attachmentCharIdx=%lu → %@",
                     (unsigned long)s_dumpCount, (unsigned long)len, (unsigned long)charIdx, hex];
             }
+
+            // ── Vérification DIFFÉRÉE de la couleur sur les tag characters ──
+            // Ce point (layout, via attachmentBoundsForTextContainer:) s'exécute
+            // PLUS TARD que le hook addAttribute:/setAttributes: qui a tenté de
+            // les rendre invisibles. Si la couleur ici n'est PAS clearColor,
+            // ça veut dire que quelque chose (Twitch, très probablement) a
+            // réappliqué son propre style APRÈS notre passage — écrasant
+            // le nôtre. Ça tranche la question d'ordre d'exécution.
+            static NSUInteger s_colorCheckCount = 0;
+            if (s_colorCheckCount < 20) {
+                NSString *full2 = ts_dump.string;
+                NSUInteger i2 = 0;
+                while (i2 < full2.length && s_colorCheckCount < 20) {
+                    NSRange run = s7tv_tagCharRunAt(full2, i2, full2.length);
+                    if (run.location == NSNotFound) break;
+                    UIColor *colorNow = [ts_dump attribute:NSForegroundColorAttributeName
+                                                     atIndex:run.location effectiveRange:NULL];
+                    BOOL isClear = colorNow && CGColorEqualToColor(colorNow.CGColor, [UIColor clearColor].CGColor);
+                    s_colorCheckCount++;
+                    [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG] vérif différée (layout) pos=%lu couleur=%@ → %@",
+                        (unsigned long)run.location, colorNow,
+                        isClear ? @"✅ toujours transparente" : @"⚠️ ÉCRASÉE par autre chose"];
+                    i2 = run.location + run.length;
+                }
+            }
         }
 
         // Condition : bounds "par defaut" (hauteur <=22pt, avant correction)
@@ -2406,25 +2431,47 @@ static void s7tv_dbg_hookAddAttribute(void) {
     // boucle — s_origAddAttributeIMP est assigné juste après le swizzle
     // de sel1 ci-dessous, avant que ce bloc soit jamais exécuté.
     void (^hideMarkerIfPresent)(id, NSRange) = ^(id self_, NSRange range) {
-        static NSUInteger s_hookCallCount = 0;
-        s_hookCallCount++;
-        if (s_hookCallCount <= 5 || s_hookCallCount % 200 == 0) {
-            [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG] hook appelé #%lu (class=%@ range={%lu,%lu})",
-                (unsigned long)s_hookCallCount, NSStringFromClass([self_ class]),
-                (unsigned long)range.location, (unsigned long)range.length];
-        }
         if (!s_origAddAttributeIMP || !s_selAddAttribute) return;
         NSString *full = [self_ string];
         if (!full) return;
         NSUInteger limit = MIN(full.length, range.location + range.length);
+
+        // 1) Plage reçue à cet appel + 2) contenu hex de cette plage précise
+        //    (pas tout ts2, juste ce que CE call reçoit).
+        static NSUInteger s_hideDiagCount = 0;
+        s_hideDiagCount++;
+        if (s_hideDiagCount <= 40) {
+            NSMutableString *hex = [NSMutableString string];
+            for (NSUInteger i = range.location; i < limit; i++) {
+                [hex appendFormat:@"%04X ", [full characterAtIndex:i]];
+            }
+            [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG] #%lu range={%lu,%lu} contenu=%@",
+                (unsigned long)s_hideDiagCount, (unsigned long)range.location,
+                (unsigned long)range.length, hex];
+        }
+
         if (range.location >= limit) return;
         NSRange found = s7tv_tagCharRunAt(full, range.location, limit);
         if (found.location == NSNotFound) return;
+
+        // 3) Ce qu'on tente réellement d'appliquer, et à quelle range exacte
+        //    (celle du tag character trouvé, pas la range reçue en entrée).
         void (*rawAdd)(id, SEL, NSString *, id, NSRange) =
             (void(*)(id, SEL, NSString *, id, NSRange))s_origAddAttributeIMP;
+        [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG] tag character trouvé à {%lu,%lu} → application couleur/police/kern",
+            (unsigned long)found.location, (unsigned long)found.length];
         rawAdd(self_, s_selAddAttribute, NSForegroundColorAttributeName, [UIColor clearColor], found);
         rawAdd(self_, s_selAddAttribute, NSFontAttributeName, [UIFont systemFontOfSize:0.1], found);
         rawAdd(self_, s_selAddAttribute, NSKernAttributeName, @(-0.1), found);
+
+        // Vérification immédiate : est-ce que ce qu'on vient d'écrire est bien
+        // là si on le relit tout de suite (pas une preuve qu'il n'est pas
+        // écrasé PLUS TARD par Twitch, mais confirme au moins l'écriture
+        // elle-même, et donne un point de comparaison pour le check différé
+        // fait plus bas dans le HEXDUMP/TAGID-DIAG).
+        id colorReadBack = [self_ attribute:NSForegroundColorAttributeName atIndex:found.location effectiveRange:NULL];
+        [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG] relecture immédiate couleur à pos=%lu → %@",
+            (unsigned long)found.location, colorReadBack];
     };
 
     SEL sel1 = @selector(addAttribute:value:range:);

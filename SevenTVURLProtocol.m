@@ -26,15 +26,14 @@
  * de lancer le dataTask. Si l'image est en cache → répondre immédiatement,
  * dans le même call stack → CoreText a l'image pendant le calcul → jamais
  * de case vide, même sans le workaround scroll.
+ *
+ * FORMAT: les emotes sont servies telles que reçues du CDN 7TV, en WebP natif
+ * (animé ou statique) — aucune conversion en GIF. iOS décode le WebP animé
+ * nativement, ce qui économise CPU/batterie par rapport à une conversion GIF.
  */
 
 #import "SevenTVURLProtocol.h"
 #import "SevenTVManager.h"
-#import <ImageIO/ImageIO.h>
-#import <MobileCoreServices/MobileCoreServices.h>
-#import <objc/runtime.h>
-
-const char kS7TVEmoteIDOnDataKey = 0;
 
 static NSString *const kSevenTVEmoteIDPrefix = @"7tv_";
 static NSString *const kHandledKey           = @"SevenTVURLProtocolHandled";
@@ -137,9 +136,8 @@ static NSURLSession *SevenTVGetUrgentSession(void) {
 }
 
 // ── URL CDN pour un emote ID ─────────────────────────────────────────────────
-// 2x.webp : passage de 1x → 2x pour réduire le flou visible. Les emotes
-// statiques ne sont plus converties en GIF (servies en WebP directement),
-// donc la charge CPU extra est compensée. À retester si lag revient.
+// 2x.webp : passage de 1x → 2x pour réduire le flou visible. Servi tel quel
+// (WebP natif, animé ou statique) — aucune conversion, aucun retraitement.
 static NSURL *SevenTVCDNURLForEmoteID(NSString *emoteID) {
     NSString *str = [NSString stringWithFormat:@"https://cdn.7tv.app/emote/%@/2x.webp", emoteID];
     return [NSURL URLWithString:str];
@@ -175,158 +173,8 @@ static BOOL SevenTVIsValidWebPResponse(NSURLResponse *response, NSData *data) {
     return hasRIFF && hasWEBP;
 }
 
-// ── Conversion WebP animé → GIF animé ────────────────────────────────────────
-//
-// POURQUOI : le GIF a déjà été confirmé fonctionnel pour l'animation sur le
-// pipeline Twitch.AnimatedImageAttachmentLayer (session antérieure, voir
-// historique). Le WebP, lui, se charge et s'affiche (signature validée,
-// startAnimating appelé, displayLayer: se déclenche) mais reste figé sur une
-// frame fixe — Twitch ne semble pas faire progresser l'animation WebP via ce
-// pipeline d'injection (contrairement à son pipeline natif pour ses propres
-// emotes). On télécharge donc en WebP (seul format dispo sur le CDN 7TV) puis
-// on convertit en GIF localement avant de mettre en cache, pour ne servir à
-// Twitch QUE du GIF — jamais de WebP.
-//
-// kCGImagePropertyWebPDelayTime / kCGImagePropertyWebPDictionary disponibles
-// depuis iOS 14 (ImageIO) — donc le timing par frame du WebP source est lu
-// correctement, pas une valeur arbitraire.
-static NSData *SevenTVConvertWebPDataToGIF(NSData *webpData, NSString **outFailReason) {
-    if (!webpData) {
-        if (outFailReason) *outFailReason = @"webpData nil";
-        return nil;
-    }
-
-    CGImageSourceRef source = CGImageSourceCreateWithData((CFDataRef)webpData, NULL);
-    if (!source) {
-        if (outFailReason) *outFailReason = @"CGImageSourceCreateWithData a échoué (données pas reconnues comme image)";
-        return nil;
-    }
-
-    size_t frameCount = CGImageSourceGetCount(source);
-    if (frameCount == 0) {
-        if (outFailReason) *outFailReason = @"frameCount==0";
-        CFRelease(source);
-        return nil;
-    }
-    // Emote statique (1 seule frame) → pas de conversion nécessaire.
-    // On retourne nil avec une raison spéciale que les call sites
-    // reconnaissent pour servir le WebP tel quel au lieu de GIF.
-    if (frameCount == 1) {
-        if (outFailReason) *outFailReason = @"static";
-        CFRelease(source);
-        return nil;
-    }
-
-    // Loop count global — lu depuis les propriétés WebP si dispo, sinon boucle infinie (0).
-    NSDictionary *sourceProps = (NSDictionary *)CFBridgingRelease(CGImageSourceCopyProperties(source, NULL));
-    NSDictionary *webpSourceDict = sourceProps[(NSString *)kCGImagePropertyWebPDictionary];
-    NSNumber *loopCount = webpSourceDict[(NSString *)kCGImagePropertyWebPLoopCount] ?: @0;
-
-    // Sous-échantillonnage adaptatif — les GIF à beaucoup de frames (200+)
-    // pesaient plusieurs Mo (ex: 268 frames → 5.5 Mo), causant un lag visible
-    // sur l'appareil. On saute des frames au-delà d'un seuil, en cumulant le
-    // delay des frames sautées sur la frame gardée pour garder la même durée
-    // totale d'animation (juste moins fluide), pas un effet accéléré.
-    size_t stride = 1;
-    if (frameCount > 150) stride = 3;
-    else if (frameCount > 60) stride = 2;
-
-    // BUG CORRIGÉ : (frameCount + stride - 1) / stride sous-comptait d'une
-    // frame chaque fois que (frameCount-1) n'est pas déjà un multiple de
-    // stride — la frame finale forcée par "i == frameCount-1" plus bas
-    // n'était alors pas comptée dans la capacité déclarée à la création.
-    // CGImageDestinationFinalize échoue silencieusement si on ajoute plus
-    // d'images que la capacité annoncée (confirmé par les logs : 100% des
-    // échecs avaient framesNil=0, donc le décodage marchait — seul le
-    // compte capacité/ajouts ne correspondait pas). On compte ici exactement
-    // les frames qui seront gardées, avec la même règle que isKeptFrame plus
-    // bas, pour que la capacité déclarée soit toujours exacte.
-    size_t keptFrameCount = 0;
-    for (size_t i = 0; i < frameCount; i++) {
-        if ((i % stride == 0) || (i == frameCount - 1)) keptFrameCount++;
-    }
-
-    NSMutableData *gifData = [NSMutableData data];
-    CGImageDestinationRef dest = CGImageDestinationCreateWithData(
-        (CFMutableDataRef)gifData, (CFStringRef)@"com.compuserve.gif",
-        keptFrameCount, NULL);
-    if (!dest) {
-        if (outFailReason) *outFailReason = [NSString stringWithFormat:
-            @"CGImageDestinationCreateWithData a échoué (frameCount=%lu)", (unsigned long)frameCount];
-        CFRelease(source);
-        return nil;
-    }
-
-    NSDictionary *gifProperties = @{
-        (NSString *)kCGImagePropertyGIFDictionary: @{
-            (NSString *)kCGImagePropertyGIFLoopCount: loopCount
-        }
-    };
-    CGImageDestinationSetProperties(dest, (CFDictionaryRef)gifProperties);
-
-    BOOL anyFrameAdded = NO;
-    size_t framesNilCount = 0;
-    double pendingDelay = 0.0;
-    for (size_t i = 0; i < frameCount; i++) {
-        NSDictionary *frameProps = (NSDictionary *)CFBridgingRelease(
-            CGImageSourceCopyPropertiesAtIndex(source, i, NULL));
-        NSDictionary *webpFrameDict = frameProps[(NSString *)kCGImagePropertyWebPDictionary];
-        // Délai en secondes — fallback 0.1s (100ms) si absent, cohérent avec le
-        // minimum standard GIF (kCGImagePropertyGIFDelayTime est clampé à 100ms).
-        NSNumber *delayNum = webpFrameDict[(NSString *)kCGImagePropertyWebPUnclampedDelayTime]
-                           ?: webpFrameDict[(NSString *)kCGImagePropertyWebPDelayTime]
-                           ?: @0.1;
-        pendingDelay += delayNum.doubleValue;
-
-        // On ne garde que les frames à intervalle "stride" — les frames
-        // sautées entre-temps ont déjà cumulé leur délai dans pendingDelay.
-        BOOL isKeptFrame = (i % stride == 0) || (i == frameCount - 1);
-        if (!isKeptFrame) continue;
-
-        CGImageRef frame = CGImageSourceCreateImageAtIndex(source, i, NULL);
-        if (!frame) {
-            framesNilCount++;
-            continue;
-        }
-
-        NSNumber *delay = @(pendingDelay);
-        pendingDelay = 0.0;
-
-        NSDictionary *frameProperties = @{
-            (NSString *)kCGImagePropertyGIFDictionary: @{
-                (NSString *)kCGImagePropertyGIFDelayTime: delay,
-                (NSString *)kCGImagePropertyGIFUnclampedDelayTime: delay
-            }
-        };
-        CGImageDestinationAddImage(dest, frame, (CFDictionaryRef)frameProperties);
-        CGImageRelease(frame);
-        anyFrameAdded = YES;
-    }
-
-    CFRelease(source);
-
-    if (!anyFrameAdded) {
-        if (outFailReason) *outFailReason = [NSString stringWithFormat:
-            @"aucune frame ajoutée (frameCount=%lu, stride=%lu, framesNil=%lu)",
-            (unsigned long)frameCount, (unsigned long)stride, (unsigned long)framesNilCount];
-        CFRelease(dest);
-        return nil;
-    }
-    if (!CGImageDestinationFinalize(dest)) {
-        if (outFailReason) *outFailReason = [NSString stringWithFormat:
-            @"CGImageDestinationFinalize a échoué (frameCount=%lu, stride=%lu, framesNil=%lu)",
-            (unsigned long)frameCount, (unsigned long)stride, (unsigned long)framesNilCount];
-        CFRelease(dest);
-        return nil;
-    }
-    CFRelease(dest);
-
-    return gifData;
-}
-
-// ── Compteurs globaux animé / statique (partagés entre startLoading et prefetchEmoteID:completion:)
-static _Atomic(NSInteger) s_gifCount  = 0;  // emotes converties en GIF animé
-static _Atomic(NSInteger) s_webpCount = 0;  // emotes statiques servies en WebP
+// ── Compteur global des emotes mises en cache (WebP natif, plus de conversion) ──
+static _Atomic(NSInteger) s_cachedCount = 0;
 
 
 @interface SevenTVURLProtocol ()
@@ -336,8 +184,7 @@ static _Atomic(NSInteger) s_webpCount = 0;  // emotes statiques servies en WebP
 
 @implementation SevenTVURLProtocol
 
-+ (NSInteger)gifConvertedCount  { return s_gifCount; }
-+ (NSInteger)webpStaticCount    { return s_webpCount; }
++ (NSInteger)cachedEmoteCount   { return s_cachedCount; }
 
 // ============================================================
 // MARK: - NSURLProtocol — interception des requêtes Twitch
@@ -405,19 +252,18 @@ static _Atomic(NSInteger) s_webpCount = 0;  // emotes statiques servies en WebP
     NSCachedURLResponse *cached = [SevenTVGetSharedCache() cachedResponseForRequest:cacheCheckReq];
 
     if (cached) {
-        [mgr log:@"⚡️ URLProtocol cache hit (sync) → emote:%@ (servi en image/gif converti, %lu bytes)",
+        [mgr log:@"⚡️ URLProtocol cache hit (sync) → emote:%@ (WebP natif, %lu bytes)",
             emoteID, (unsigned long)cached.data.length];
 
         NSHTTPURLResponse *spoofed = [[NSHTTPURLResponse alloc]
             initWithURL:self.request.URL
             statusCode:200
            HTTPVersion:@"HTTP/1.1"
-          headerFields:@{@"Content-Type": @"image/gif"}];
+          headerFields:@{@"Content-Type": @"image/webp"}];
 
         [self.client URLProtocol:self
               didReceiveResponse:spoofed
               cacheStoragePolicy:NSURLCacheStorageAllowed];
-        objc_setAssociatedObject(cached.data, &kS7TVEmoteIDOnDataKey, emoteID, OBJC_ASSOCIATION_RETAIN);
         [self.client URLProtocol:self didLoadData:cached.data];
         [self.client URLProtocolDidFinishLoading:self];
         return; // ← on sort sans jamais créer de dataTask
@@ -458,68 +304,26 @@ static _Atomic(NSInteger) s_webpCount = 0;  // emotes statiques servies en WebP
                 return;
             }
 
-            NSString *failReason = nil;
-            NSData *gifData = SevenTVConvertWebPDataToGIF(data, &failReason);
-
-            if (!gifData && [failReason isEqualToString:@"static"]) {
-                // Emote statique (1 frame) → servir le WebP original tel quel,
-                // pas de conversion. Twitch affiche le WebP statique nativement.
-                s_webpCount++;
-                [mgr log:@"🖼 Cache miss statique → emote:%@ servi en image/webp (%lu bytes) [GIF:%ld WebP:%ld]",
-                    emoteID, (unsigned long)data.length, (long)s_gifCount, (long)s_webpCount];
-
-                NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
-                NSHTTPURLResponse *spoofed = [[NSHTTPURLResponse alloc]
-                    initWithURL:strongSelf.request.URL
-                    statusCode:http.statusCode
-                   HTTPVersion:@"HTTP/1.1"
-                  headerFields:@{@"Content-Type": @"image/webp"}];
-
-                NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
-                    initWithResponse:spoofed data:data];
-                NSURLRequest *cacheKey = [NSURLRequest requestWithURL:strongSelf.request.URL];
-                [SevenTVGetSharedCache() storeCachedResponse:toCache forRequest:cacheKey];
-
-                [strongSelf.client URLProtocol:strongSelf
-                            didReceiveResponse:spoofed
-                            cacheStoragePolicy:NSURLCacheStorageAllowed];
-                objc_setAssociatedObject(data, &kS7TVEmoteIDOnDataKey, emoteID, OBJC_ASSOCIATION_RETAIN);
-                [strongSelf.client URLProtocol:strongSelf didLoadData:data];
-                [strongSelf.client URLProtocolDidFinishLoading:strongSelf];
-                return;
-            }
-
-            if (!gifData) {
-                [mgr log:@"❌ Conversion WebP→GIF échouée (cache miss) → emote:%@ bytes:%lu raison:%@ — non mise en cache",
-                    emoteID, (unsigned long)data.length, failReason ?: @"?"];
-                [strongSelf.client URLProtocol:strongSelf
-                              didFailWithError:[NSError errorWithDomain:NSURLErrorDomain
-                                                                  code:NSURLErrorCannotDecodeContentData
-                                                              userInfo:nil]];
-                return;
-            }
-
-            s_gifCount++;
-            CGImageSourceRef gifSrcForCount = CGImageSourceCreateWithData((CFDataRef)gifData, NULL);
-            size_t frameCountForLog = gifSrcForCount ? CGImageSourceGetCount(gifSrcForCount) : 0;
-            if (gifSrcForCount) CFRelease(gifSrcForCount);
-
-            [mgr log:@"✅ Réponse CDN valide (cache miss) → emote:%@ converti WebP→GIF, %lu frames, %lu → %lu bytes [GIF:%ld WebP:%ld]",
-                emoteID, (unsigned long)frameCountForLog, (unsigned long)data.length, (unsigned long)gifData.length,
-                (long)s_gifCount, (long)s_webpCount];
-
             NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
             NSHTTPURLResponse *spoofed = [[NSHTTPURLResponse alloc]
                 initWithURL:strongSelf.request.URL
                 statusCode:http.statusCode
                HTTPVersion:@"HTTP/1.1"
-              headerFields:@{@"Content-Type": @"image/gif"}];
+              headerFields:@{@"Content-Type": @"image/webp"}];
+
+            NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
+                initWithResponse:spoofed data:data];
+            NSURLRequest *cacheKey = [NSURLRequest requestWithURL:strongSelf.request.URL];
+            [SevenTVGetSharedCache() storeCachedResponse:toCache forRequest:cacheKey];
+
+            s_cachedCount++;
+            [mgr log:@"✅ Réponse CDN valide (cache miss) → emote:%@ mis en cache en WebP natif (%lu bytes) [total:%ld]",
+                emoteID, (unsigned long)data.length, (long)s_cachedCount];
 
             [strongSelf.client URLProtocol:strongSelf
                         didReceiveResponse:spoofed
                         cacheStoragePolicy:NSURLCacheStorageAllowed];
-            objc_setAssociatedObject(gifData, &kS7TVEmoteIDOnDataKey, emoteID, OBJC_ASSOCIATION_RETAIN);
-            [strongSelf.client URLProtocol:strongSelf didLoadData:gifData];
+            [strongSelf.client URLProtocol:strongSelf didLoadData:data];
             [strongSelf.client URLProtocolDidFinishLoading:strongSelf];
         } else {
             [strongSelf.client URLProtocol:strongSelf
@@ -605,62 +409,30 @@ static _Atomic(NSInteger) s_webpCount = 0;  // emotes statiques servies en WebP
         // lit via cachedResponseForRequest:, évitant un cache miss à cause de
         // cachePolicy/timeoutInterval différents.
         //
-        // Validation AVANT conversion : sans ça, un 404 7TV avec un petit corps
+        // Validation AVANT stockage : sans ça, un 404 7TV avec un petit corps
         // JSON/HTML d'erreur était accepté comme image valide et restait en
         // cache pour toujours → carré vide permanent que même le scroll ne
         // corrige jamais.
         //
-        // Conversion WebP→GIF AVANT stockage : on ne met jamais de WebP en
-        // cache, uniquement le GIF déjà converti — startLoading (cache hit
-        // sync) sert alors directement du GIF sans reconvertir à la lecture.
+        // On stocke le WebP natif tel que reçu du CDN 7TV — plus de conversion
+        // GIF, Twitch reçoit directement le format d'origine.
         if (data && resp && !err) {
             if (SevenTVIsValidWebPResponse(resp, data)) {
-                NSString *failReason = nil;
-                NSData *gifData = SevenTVConvertWebPDataToGIF(data, &failReason);
+                NSHTTPURLResponse *http = (NSHTTPURLResponse *)resp;
+                NSHTTPURLResponse *webpResp = [[NSHTTPURLResponse alloc]
+                    initWithURL:url
+                    statusCode:http.statusCode
+                   HTTPVersion:@"HTTP/1.1"
+                  headerFields:@{@"Content-Type": @"image/webp"}];
+                NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
+                    initWithResponse:webpResp data:data];
+                NSURLRequest *cacheKey = [NSURLRequest requestWithURL:url];
+                [SevenTVGetSharedCache() storeCachedResponse:toCache forRequest:cacheKey];
 
-                if (!gifData && [failReason isEqualToString:@"static"]) {
-                    // Emote statique → stocker le WebP original directement.
-                    s_webpCount++;
-                    NSHTTPURLResponse *http = (NSHTTPURLResponse *)resp;
-                    NSHTTPURLResponse *webpResp = [[NSHTTPURLResponse alloc]
-                        initWithURL:url
-                        statusCode:http.statusCode
-                       HTTPVersion:@"HTTP/1.1"
-                      headerFields:@{@"Content-Type": @"image/webp"}];
-                    NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
-                        initWithResponse:webpResp data:data];
-                    NSURLRequest *cacheKey = [NSURLRequest requestWithURL:url];
-                    [SevenTVGetSharedCache() storeCachedResponse:toCache forRequest:cacheKey];
-                    [[SevenTVManager sharedManager] log:
-                        @"🖼 Préfetch %@ → statique WebP stocké (%lu bytes) [GIF:%ld WebP:%ld]",
-                        emoteID, (unsigned long)data.length, (long)s_gifCount, (long)s_webpCount];
-
-                } else if (gifData) {
-                    s_gifCount++;
-                    NSHTTPURLResponse *http = (NSHTTPURLResponse *)resp;
-                    NSHTTPURLResponse *gifResp = [[NSHTTPURLResponse alloc]
-                        initWithURL:url
-                        statusCode:http.statusCode
-                       HTTPVersion:@"HTTP/1.1"
-                      headerFields:@{@"Content-Type": @"image/gif"}];
-                    NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
-                        initWithResponse:gifResp data:gifData];
-                    NSURLRequest *cacheKey = [NSURLRequest requestWithURL:url];
-                    [SevenTVGetSharedCache() storeCachedResponse:toCache forRequest:cacheKey];
-
-                    CGImageSourceRef gifSrcForCount = CGImageSourceCreateWithData((CFDataRef)gifData, NULL);
-                    size_t frameCountForLog = gifSrcForCount ? CGImageSourceGetCount(gifSrcForCount) : 0;
-                    if (gifSrcForCount) CFRelease(gifSrcForCount);
-                    [[SevenTVManager sharedManager] log:
-                        @"✅ Préfetch %@ → converti WebP→GIF, %lu frames, %lu → %lu bytes [GIF:%ld WebP:%ld]",
-                        emoteID, (unsigned long)frameCountForLog,
-                        (unsigned long)data.length, (unsigned long)gifData.length,
-                        (long)s_gifCount, (long)s_webpCount];
-                } else {
-                    [[SevenTVManager sharedManager] log:
-                        @"❌ Préfetch %@ → conversion WebP→GIF échouée bytes:%lu raison:%@ — non mise en cache",
-                        emoteID, (unsigned long)data.length, failReason ?: @"?"];
-                }
+                s_cachedCount++;
+                [[SevenTVManager sharedManager] log:
+                    @"🖼 Préfetch %@ → WebP natif mis en cache (%lu bytes) [total:%ld]",
+                    emoteID, (unsigned long)data.length, (long)s_cachedCount];
             } else {
                 NSInteger status = [resp isKindOfClass:[NSHTTPURLResponse class]]
                     ? ((NSHTTPURLResponse *)resp).statusCode : -1;

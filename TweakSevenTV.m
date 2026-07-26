@@ -2055,7 +2055,7 @@ static void s7tv_dbg_hookAttachmentBounds(void) {
                                                      atIndex:run.location effectiveRange:NULL];
                     BOOL isClear = colorNow && CGColorEqualToColor(colorNow.CGColor, [UIColor clearColor].CGColor);
                     s_colorCheckCount++;
-                    [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG] vérif différée (layout) pos=%lu couleur=%@ → %@",
+                    [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG NSTextAttachment] vérif différée (layout) pos=%lu couleur=%@ → %@",
                         (unsigned long)run.location, colorNow,
                         isClear ? @"✅ toujours transparente" : @"⚠️ ÉCRASÉE par autre chose"];
                     i2 = run.location + run.length;
@@ -2445,7 +2445,7 @@ static void s7tv_dbg_hookAddAttribute(void) {
             for (NSUInteger i = range.location; i < limit; i++) {
                 [hex appendFormat:@"%04X ", [full characterAtIndex:i]];
             }
-            [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG] #%lu range={%lu,%lu} contenu=%@",
+            [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG NSTextAttachment] #%lu range={%lu,%lu} contenu=%@",
                 (unsigned long)s_hideDiagCount, (unsigned long)range.location,
                 (unsigned long)range.length, hex];
         }
@@ -2458,7 +2458,7 @@ static void s7tv_dbg_hookAddAttribute(void) {
         //    (celle du tag character trouvé, pas la range reçue en entrée).
         void (*rawAdd)(id, SEL, NSString *, id, NSRange) =
             (void(*)(id, SEL, NSString *, id, NSRange))s_origAddAttributeIMP;
-        [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG] tag character trouvé à {%lu,%lu} → application couleur/police/kern",
+        [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG NSTextAttachment] tag character trouvé à {%lu,%lu} → application couleur/police/kern",
             (unsigned long)found.location, (unsigned long)found.length];
         rawAdd(self_, s_selAddAttribute, NSForegroundColorAttributeName, [UIColor clearColor], found);
         rawAdd(self_, s_selAddAttribute, NSFontAttributeName, [UIFont systemFontOfSize:0.1], found);
@@ -2470,7 +2470,7 @@ static void s7tv_dbg_hookAddAttribute(void) {
         // elle-même, et donne un point de comparaison pour le check différé
         // fait plus bas dans le HEXDUMP/TAGID-DIAG).
         id colorReadBack = [self_ attribute:NSForegroundColorAttributeName atIndex:found.location effectiveRange:NULL];
-        [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG] relecture immédiate couleur à pos=%lu → %@",
+        [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG NSTextAttachment] relecture immédiate couleur à pos=%lu → %@",
             (unsigned long)found.location, colorReadBack];
     };
 

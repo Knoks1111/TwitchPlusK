@@ -111,6 +111,11 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 // (sélecteurs de variation) transporte un petit numéro (0-65535), pas
 // l'ID complet. Ce dictionnaire fait la correspondance à la lecture.
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *shortIDToEmoteID;
+// Table inverse { emoteID : @(shortID) } — UN shortID stable PAR EMOTE UNIQUE,
+// pas un par occurrence. Une chaîne a ~1000 emotes max, donc ce dictionnaire
+// reste petit et borné naturellement (pas besoin de purge), contrairement à
+// un compteur qui incrémente à chaque fois que la même emote réapparaît.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *emoteIDToShortID;
 @property (nonatomic, assign) uint16_t nextShortID;
 @property (nonatomic, strong) NSLock *logLock;
 
@@ -348,6 +353,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     _emoteRatios = [NSMutableDictionary dictionary];
     _emotePositions = [NSMutableDictionary dictionary];
     _shortIDToEmoteID = [NSMutableDictionary dictionary];
+    _emoteIDToShortID = [NSMutableDictionary dictionary];
     _nextShortID = 0;
         _logLock   = [[NSLock alloc] init];
 
@@ -742,6 +748,23 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if (!channelName.length) return;
     [self log:@"Channel rejoint: %@, recherche ID Twitch...", channelName];
     self.currentChannelName = channelName;
+
+    // ── Purge des dictionnaires de tracking marqueur/position ───────────
+    // shortIDToEmoteID et emotePositions ne sont JAMAIS vidés ailleurs —
+    // sur une chaîne qui spam beaucoup, ça grossit sans limite pendant
+    // toute la session (des dizaines de milliers d'entrées possibles),
+    // ce qui peut causer une pression mémoire/crash. On repart propre à
+    // chaque changement de chaîne (les positions/shortIDs de l'ancien
+    // channel n'ont plus aucun sens de toute façon).
+    @synchronized (self.emotePositions) {
+        [self.emotePositions removeAllObjects];
+    }
+    @synchronized (self.shortIDToEmoteID) {
+        [self.shortIDToEmoteID removeAllObjects];
+        [self.emoteIDToShortID removeAllObjects];
+        self.nextShortID = 0;
+    }
+    [self log:@"🧹 Purge shortIDToEmoteID/emoteIDToShortID/emotePositions (changement de channel)"];
 
     // Préchauffer la connexion CDN maintenant — les messages arrivent
     // ~1-2s après le JOIN, donc la connexion sera chaude à temps.
@@ -1319,14 +1342,43 @@ static NSString *s7tv_encodeShortIDMarker(uint16_t shortID) {
                     self.emoteRatios[emote.emoteID] = @(1.0);
                 }
                 // Stocker { characterIndex → emoteID } pour sizeOfImageAttachmentAtCharacterIndex:
-                self.emotePositions[@(start)] = emote.emoteID;
+                // Purge de sécurité : sous fort spam (gros stream), ce dictionnaire
+                // peut grossir sans limite en quelques minutes sans jamais changer
+                // de chaîne — on le vide dès qu'il devient trop gros (les anciennes
+                // entrées ne servent plus, les messages correspondants ont scrollé).
+                // @synchronized(self.emotePositions) : MÊME verrou que la lecture
+                // côté TweakSevenTV.m (tagAttachmentWithRatio) — sans ça, la lecture
+                // se croit protégée mais l'écriture ici mutait sans aucun verrou.
+                @synchronized (self.emotePositions) {
+                    if (self.emotePositions.count > 3000) {
+                        [self.emotePositions removeAllObjects];
+                    }
+                    self.emotePositions[@(start)] = emote.emoteID;
+                }
                 [self log:@"✅ Emote détectée: %@ → %@", word, entry];
 
-                // Générer un petit ID court (0-65535) pour cette occurrence,
-                // et retenir la correspondance courte→complète pour la lecture.
-                uint16_t shortID = self.nextShortID;
-                self.nextShortID = (uint16_t)(self.nextShortID + 1); // wrap naturel à 65536
-                self.shortIDToEmoteID[@(shortID)] = emote.emoteID;
+                // Générer un petit ID court (0-65535) UNE FOIS PAR EMOTE UNIQUE,
+                // pas un par occurrence — "LOL" garde toujours le même shortID
+                // peu importe combien de fois il apparaît dans le chat. Une
+                // chaîne a ~1000 emotes max, donc ce dictionnaire reste petit
+                // naturellement, pas besoin de purge par taille ici.
+                // @synchronized(self.shortIDToEmoteID) : le check "existe déjà ?"
+                // et l'écriture doivent être ATOMIQUES ensemble — sinon deux
+                // messages traités en parallèle peuvent tous les deux rater
+                // l'entrée existante et attribuer 2 shortID différents à la
+                // même emote, désynchronisant les deux tables entre elles.
+                uint16_t shortID;
+                @synchronized (self.shortIDToEmoteID) {
+                    NSNumber *existingShortID = self.emoteIDToShortID[emote.emoteID];
+                    if (existingShortID) {
+                        shortID = existingShortID.unsignedShortValue;
+                    } else {
+                        shortID = self.nextShortID;
+                        self.nextShortID = (uint16_t)(self.nextShortID + 1); // wrap naturel à 65536
+                        self.shortIDToEmoteID[@(shortID)] = emote.emoteID;
+                        self.emoteIDToShortID[emote.emoteID] = @(shortID);
+                    }
+                }
 
 #if S7TV_ENABLE_TAGID_MARKER
                 // Marqueur ajouté à la suite des précédents dans le bloc de
@@ -1394,7 +1446,11 @@ static NSString *s7tv_encodeShortIDMarker(uint16_t shortID) {
 
 - (NSString *)emoteIDForShortIndex:(NSUInteger)shortIndex {
     if (shortIndex > 0xFFFF) return nil;
-    return self.shortIDToEmoteID[@(shortIndex)];
+    __block NSString *result = nil;
+    @synchronized (self.shortIDToEmoteID) {
+        result = self.shortIDToEmoteID[@(shortIndex)];
+    }
+    return result;
 }
 
 

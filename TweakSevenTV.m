@@ -2430,24 +2430,27 @@ static void s7tv_dbg_hookAddAttribute(void) {
     // (non swizzlé) pour éviter de re-déclencher notre propre hook en
     // boucle — s_origAddAttributeIMP est assigné juste après le swizzle
     // de sel1 ci-dessous, avant que ce bloc soit jamais exécuté.
-    void (^hideMarkerIfPresent)(id, NSRange) = ^(id self_, NSRange range) {
+    void (^hideMarkerIfPresent)(id, NSRange, NSString *) = ^(id self_, NSRange range, NSString *attrNameForDiag) {
         if (!s_origAddAttributeIMP || !s_selAddAttribute) return;
         NSString *full = [self_ string];
         if (!full) return;
         NSUInteger limit = MIN(full.length, range.location + range.length);
 
-        // 1) Plage reçue à cet appel + 2) contenu hex de cette plage précise
-        //    (pas tout ts2, juste ce que CE call reçoit).
+        // Preuve complète et sans filtre : attrName + range + contenu de
+        // CHAQUE appel réel à addAttribute:/setAttributes:, pour trancher
+        // définitivement si un appel a déjà porté sur autre chose qu'un
+        // attachment (ex: couleur du pseudo sur une range de plusieurs
+        // caractères) — pas de biais possible, rien n'est filtré ici.
         static NSUInteger s_hideDiagCount = 0;
         s_hideDiagCount++;
-        if (s_hideDiagCount <= 40) {
+        if (s_hideDiagCount <= 60) {
             NSMutableString *hex = [NSMutableString string];
             for (NSUInteger i = range.location; i < limit; i++) {
                 [hex appendFormat:@"%04X ", [full characterAtIndex:i]];
             }
-            [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG NSTextAttachment] #%lu range={%lu,%lu} contenu=%@",
-                (unsigned long)s_hideDiagCount, (unsigned long)range.location,
-                (unsigned long)range.length, hex];
+            [[SevenTVManager sharedManager] log:@"🙈 [HIDE-DIAG NSTextAttachment] #%lu attrName=%@ range={%lu,%lu} contenu=%@",
+                (unsigned long)s_hideDiagCount, attrNameForDiag ?: @"(setAttributes: plusieurs attrs)",
+                (unsigned long)range.location, (unsigned long)range.length, hex];
         }
 
         if (range.location >= limit) return;
@@ -2492,7 +2495,7 @@ static void s7tv_dbg_hookAddAttribute(void) {
                 }
             }
             ((void(*)(id,SEL,NSString*,id,NSRange))orig1)(self_, sel1, attrName, value, range);
-            hideMarkerIfPresent(self_, range);
+            hideMarkerIfPresent(self_, range, attrName);
         }));
     }
 
@@ -2513,7 +2516,8 @@ static void s7tv_dbg_hookAddAttribute(void) {
                 }
             }
             ((void(*)(id,SEL,NSDictionary*,NSRange))orig2)(self_, sel2, attrs, range);
-            hideMarkerIfPresent(self_, range);
+            NSString *keysDesc = [[attrs.allKeys valueForKey:@"description"] componentsJoinedByString:@","];
+            hideMarkerIfPresent(self_, range, [NSString stringWithFormat:@"setAttributes:[%@]", keysDesc]);
         }));
     }
     [[SevenTVManager sharedManager] log:@"✅ [DBG] addAttribute:/setAttributes: hookés sur NSMutableAttributedString (+ tag ratio précoce + invisibilité marqueur)"];

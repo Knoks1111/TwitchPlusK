@@ -46,15 +46,13 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
     S7TVLogCategoryPrefetch,         // 🚀 Prefetch
     S7TVLogCategoryAPI,              // 🌍 API Emotes
     S7TVLogCategoryIRCChannel,       // 📡 IRC / Channel
-    S7TVLogCategoryIRCInjection,     // 💉 IRC Injection
     S7TVLogCategoryUIPicker,         // 🎨 UI / Picker
     S7TVLogCategoryFavorites,        // ⭐ Favoris
-    S7TVLogCategoryResize,           // 📐 Resize / CoreText
     S7TVLogCategoryOrientation,      // 🔒 Orientation Lock
-    S7TVLogCategoryImageConversion,  // 🖼 Conversion Image
+    S7TVLogCategoryImageConversion,  // 🖼 CDN / Cache emotes
     S7TVLogCategoryDump,             // 🗑️ Dump (et tout ce qui n'est pas classé)
 };
-#define S7TV_LOG_CATEGORY_COUNT 14
+#define S7TV_LOG_CATEGORY_COUNT 12
 
 
 // ============================================================
@@ -101,12 +99,10 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, assign) BOOL logPrefetch;            // 🚀 Prefetch
 @property (nonatomic, assign) BOOL logAPI;                 // 🌍 API Emotes
 @property (nonatomic, assign) BOOL logIRCChannel;          // 📡 IRC / Channel
-@property (nonatomic, assign) BOOL logIRCInjection;        // 💉 IRC Injection
 @property (nonatomic, assign) BOOL logUIPicker;            // 🎨 UI / Picker
 @property (nonatomic, assign) BOOL logFavorites;           // ⭐ Favoris
-@property (nonatomic, assign) BOOL logResize;              // 📐 Resize / CoreText
 @property (nonatomic, assign) BOOL logOrientation;         // 🔒 Orientation Lock
-@property (nonatomic, assign) BOOL logImageConversion;     // 🖼 Conversion Image
+@property (nonatomic, assign) BOOL logImageConversion;     // 🖼 CDN / Cache emotes
 @property (nonatomic, assign) BOOL logDump;                // 🗑️ Dump
 
 // --- Données des emotes ---

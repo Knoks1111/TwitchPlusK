@@ -238,10 +238,6 @@ static void S7TVStyleTableView(UITableView *tv) {
     tv.separatorInset    = UIEdgeInsetsMake(0, 52, 0, 0);
 }
 
-static UIColor *S7TVGreen(void)  { return [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0]; }
-static UIColor *S7TVOrange(void) { return [UIColor colorWithRed:1.00 green:0.58 blue:0.00 alpha:1.0]; }
-static UIColor *S7TVRed(void)    { return [UIColor systemRedColor]; }
-
 // Helper NSUserDefaults
 static BOOL S7TVBool(NSString *key) {
     return [[NSUserDefaults standardUserDefaults] boolForKey:key];
@@ -1227,7 +1223,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 #define S7TV_LOGS_ROW_VIEW        1
 #define S7TV_LOGS_ROW_CONSOLE     2
 #define S7TV_LOGS_ROW_FIRST_CAT   3
-#define S7TV_LOGS_CAT_COUNT       14
+#define S7TV_LOGS_CAT_COUNT       12
 #define S7TV_LOGS_ROW_COUNT       (S7TV_LOGS_ROW_FIRST_CAT + S7TV_LOGS_CAT_COUNT)
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
@@ -1340,25 +1336,25 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         NSArray<NSString *> *titles = @[
             @"Erreurs / Avertissements", @"Tap Logger", @"Swizzle / Boot",
             @"Cache / Réseau", @"Prefetch", @"API Emotes", @"IRC / Channel",
-            @"IRC Injection", @"UI / Picker", @"Favoris", @"Resize / CoreText",
-            @"Orientation Lock", @"Conversion Image", @"Dump",
+            @"UI / Picker", @"Favoris",
+            @"Orientation Lock", @"CDN / Cache emotes", @"Dump",
         ];
         NSArray<NSString *> *icons = @[
             @"exclamationmark.triangle.fill", @"hand.tap.fill", @"bolt.horizontal.circle.fill",
             @"network", @"arrow.down.circle.fill", @"globe", @"antenna.radiowaves.left.and.right",
-            @"syringe.fill", @"paintbrush.fill", @"star.fill", @"arrow.up.left.and.arrow.down.right",
+            @"paintbrush.fill", @"star.fill",
             @"lock.rotation", @"photo.fill", @"trash.fill",
         ];
         NSArray<NSNumber *> *values = @[
             @(mgr.logErrors), @(mgr.logTap), @(mgr.logSwizzle), @(mgr.logCache),
-            @(mgr.logPrefetch), @(mgr.logAPI), @(mgr.logIRCChannel), @(mgr.logIRCInjection),
-            @(mgr.logUIPicker), @(mgr.logFavorites), @(mgr.logResize), @(mgr.logOrientation),
+            @(mgr.logPrefetch), @(mgr.logAPI), @(mgr.logIRCChannel),
+            @(mgr.logUIPicker), @(mgr.logFavorites), @(mgr.logOrientation),
             @(mgr.logImageConversion), @(mgr.logDump),
         ];
         NSArray *selectors = @[
             @"toggleLogErrors:", @"toggleLogTap:", @"toggleLogSwizzle:", @"toggleLogCache:",
-            @"toggleLogPrefetch:", @"toggleLogAPI:", @"toggleLogIRCChannel:", @"toggleLogIRCInjection:",
-            @"toggleLogUIPicker:", @"toggleLogFavorites:", @"toggleLogResize:", @"toggleLogOrientation:",
+            @"toggleLogPrefetch:", @"toggleLogAPI:", @"toggleLogIRCChannel:",
+            @"toggleLogUIPicker:", @"toggleLogFavorites:", @"toggleLogOrientation:",
             @"toggleLogImageConversion:", @"toggleLogDump:",
         ];
 
@@ -1456,10 +1452,8 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 - (void)toggleLogPrefetch:(UISwitch *)sw         { [SevenTVManager sharedManager].logPrefetch         = sw.isOn; }
 - (void)toggleLogAPI:(UISwitch *)sw              { [SevenTVManager sharedManager].logAPI              = sw.isOn; }
 - (void)toggleLogIRCChannel:(UISwitch *)sw       { [SevenTVManager sharedManager].logIRCChannel       = sw.isOn; }
-- (void)toggleLogIRCInjection:(UISwitch *)sw     { [SevenTVManager sharedManager].logIRCInjection     = sw.isOn; }
 - (void)toggleLogUIPicker:(UISwitch *)sw         { [SevenTVManager sharedManager].logUIPicker         = sw.isOn; }
 - (void)toggleLogFavorites:(UISwitch *)sw        { [SevenTVManager sharedManager].logFavorites        = sw.isOn; }
-- (void)toggleLogResize:(UISwitch *)sw           { [SevenTVManager sharedManager].logResize           = sw.isOn; }
 - (void)toggleLogOrientation:(UISwitch *)sw      { [SevenTVManager sharedManager].logOrientation      = sw.isOn; }
 - (void)toggleLogImageConversion:(UISwitch *)sw  { [SevenTVManager sharedManager].logImageConversion  = sw.isOn; }
 - (void)toggleLogDump:(UISwitch *)sw             { [SevenTVManager sharedManager].logDump             = sw.isOn; }

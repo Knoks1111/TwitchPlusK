@@ -303,10 +303,8 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         _logPrefetch       = NO;
         _logAPI            = NO;
         _logIRCChannel     = NO;
-        _logIRCInjection   = NO;
         _logUIPicker       = NO;
         _logFavorites      = NO;
-        _logResize         = NO;
         _logOrientation    = NO;
         _logImageConversion = NO;
         _logDump           = NO;
@@ -569,10 +567,8 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if ([prefs objectForKey:@"s7tv_log_prefetch"]      != nil) _logPrefetch           = [prefs boolForKey:@"s7tv_log_prefetch"];
     if ([prefs objectForKey:@"s7tv_log_api"]           != nil) _logAPI                = [prefs boolForKey:@"s7tv_log_api"];
     if ([prefs objectForKey:@"s7tv_log_irc_channel"]   != nil) _logIRCChannel         = [prefs boolForKey:@"s7tv_log_irc_channel"];
-    if ([prefs objectForKey:@"s7tv_log_irc_injection"] != nil) _logIRCInjection       = [prefs boolForKey:@"s7tv_log_irc_injection"];
     if ([prefs objectForKey:@"s7tv_log_ui_picker"]     != nil) _logUIPicker           = [prefs boolForKey:@"s7tv_log_ui_picker"];
     if ([prefs objectForKey:@"s7tv_log_favorites"]     != nil) _logFavorites          = [prefs boolForKey:@"s7tv_log_favorites"];
-    if ([prefs objectForKey:@"s7tv_log_resize"]        != nil) _logResize             = [prefs boolForKey:@"s7tv_log_resize"];
     if ([prefs objectForKey:@"s7tv_log_orientation"]   != nil) _logOrientation        = [prefs boolForKey:@"s7tv_log_orientation"];
     if ([prefs objectForKey:@"s7tv_log_image_conv"]    != nil) _logImageConversion    = [prefs boolForKey:@"s7tv_log_image_conv"];
     if ([prefs objectForKey:@"s7tv_log_dump"]          != nil) _logDump               = [prefs boolForKey:@"s7tv_log_dump"];
@@ -600,10 +596,8 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     [prefs setBool:self.logPrefetch          forKey:@"s7tv_log_prefetch"];
     [prefs setBool:self.logAPI               forKey:@"s7tv_log_api"];
     [prefs setBool:self.logIRCChannel        forKey:@"s7tv_log_irc_channel"];
-    [prefs setBool:self.logIRCInjection      forKey:@"s7tv_log_irc_injection"];
     [prefs setBool:self.logUIPicker          forKey:@"s7tv_log_ui_picker"];
     [prefs setBool:self.logFavorites         forKey:@"s7tv_log_favorites"];
-    [prefs setBool:self.logResize            forKey:@"s7tv_log_resize"];
     [prefs setBool:self.logOrientation       forKey:@"s7tv_log_orientation"];
     [prefs setBool:self.logImageConversion   forKey:@"s7tv_log_image_conv"];
     [prefs setBool:self.logDump              forKey:@"s7tv_log_dump"];
@@ -655,10 +649,8 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 - (void)setLogPrefetch:(BOOL)v        { _logPrefetch = v;        [self savePreferences]; }
 - (void)setLogAPI:(BOOL)v             { _logAPI = v;             [self savePreferences]; }
 - (void)setLogIRCChannel:(BOOL)v      { _logIRCChannel = v;      [self savePreferences]; }
-- (void)setLogIRCInjection:(BOOL)v    { _logIRCInjection = v;    [self savePreferences]; }
 - (void)setLogUIPicker:(BOOL)v        { _logUIPicker = v;        [self savePreferences]; }
 - (void)setLogFavorites:(BOOL)v       { _logFavorites = v;       [self savePreferences]; }
-- (void)setLogResize:(BOOL)v          { _logResize = v;          [self savePreferences]; }
 - (void)setLogOrientation:(BOOL)v     { _logOrientation = v;     [self savePreferences]; }
 - (void)setLogImageConversion:(BOOL)v { _logImageConversion = v; [self savePreferences]; }
 - (void)setLogDump:(BOOL)v            { _logDump = v;            [self savePreferences]; }
@@ -2674,10 +2666,8 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
         case S7TVLogCategoryPrefetch:        return self.logPrefetch;
         case S7TVLogCategoryAPI:             return self.logAPI;
         case S7TVLogCategoryIRCChannel:      return self.logIRCChannel;
-        case S7TVLogCategoryIRCInjection:    return self.logIRCInjection;
         case S7TVLogCategoryUIPicker:        return self.logUIPicker;
         case S7TVLogCategoryFavorites:       return self.logFavorites;
-        case S7TVLogCategoryResize:          return self.logResize;
         case S7TVLogCategoryOrientation:     return self.logOrientation;
         case S7TVLogCategoryImageConversion: return self.logImageConversion;
         case S7TVLogCategoryDump:            return self.logDump;

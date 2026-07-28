@@ -84,6 +84,10 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, assign) BOOL showAnimated;          // Afficher les emotes animées dans le chat
 @property (nonatomic, assign) BOOL showPickerAnimations;  // Animer les emotes dans le picker (favoris seulement)
 @property (nonatomic, assign) BOOL showFloatingButton;    // Afficher/masquer le bouton flottant 7TV
+// Kill switch Phase 0 (plan chat custom) : quand ON, cache la vraie
+// ChatTranscriptView et pose une vue flashy à sa place dans son UIStackView
+// parent — test de validation du point d'insertion. OFF par défaut.
+@property (nonatomic, assign) BOOL chatCustomTestEnabled;
 @property (nonatomic, assign) BOOL debugLogging;          // NSLog console activé (mirroring Console.app)
 
 // --- Logs : interrupteur global ---

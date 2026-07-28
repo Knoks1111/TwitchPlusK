@@ -166,6 +166,64 @@ static void s7tv_dumpChatHierarchy(UIView *chatView, NSString *reason) {
     [mgr log:@"[ChatCustom] 🏗 ── Fin dump (%@) ──────────────────", reason];
 }
 
+// ── Test de validation Phase 0 (kill switch : Settings → Débogage) ──────────
+//
+// Cache la VRAIE ChatTranscriptView (superview == UIStackView, alpha=1 sur
+// toute la chaîne — voir dump) et insère une vue flashy à sa place dans le
+// même UIStackView, au même index. Ne touche PAS à l'instance fantôme
+// hébergée via Twitch.ChatTranscriptViewRepresentable (pont SwiftUI).
+//
+// UIStackView retire automatiquement du layout ses arranged subviews dont
+// isHidden == YES — donc masquer suffit, pas besoin de la retirer du stack
+// (plus sûr : Twitch garde sa référence forte intacte, rien ne casse côté
+// état interne si jamais on désactive le test).
+
+static const char kS7TVChatTestFlashyView = 21;
+
+static void s7tv_applyChatCustomTest(UIView *chatView) {
+    UIStackView *stack = (UIStackView *)chatView.superview;
+    if (!stack) return;
+
+    // Déjà appliqué pour cette instance ? (évite un doublon si didMoveToWindow
+    // se redéclenche, ex: passage normal ↔ théâtre)
+    UIView *existing = objc_getAssociatedObject(chatView, &kS7TVChatTestFlashyView);
+    if (existing && existing.superview == stack) return;
+
+    NSInteger idx = [stack.arrangedSubviews indexOfObject:chatView];
+    if (idx == NSNotFound) {
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] ⚠️ ChatTranscriptView introuvable dans arrangedSubviews"];
+        return;
+    }
+
+    chatView.hidden = YES;
+
+    UIView *flashy = [[UIView alloc] init];
+    flashy.backgroundColor = [UIColor colorWithRed:1.0 green:0.0 blue:0.85 alpha:1.0];
+
+    UILabel *label = [[UILabel alloc] init];
+    label.text = @"🏗 CHAT CUSTOM TEST";
+    label.textColor = [UIColor whiteColor];
+    label.font = [UIFont boldSystemFontOfSize:16];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.numberOfLines = 0;
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [flashy addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.centerXAnchor constraintEqualToAnchor:flashy.centerXAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:flashy.centerYAnchor],
+        [label.leadingAnchor constraintGreaterThanOrEqualToAnchor:flashy.leadingAnchor constant:8],
+        [label.trailingAnchor constraintLessThanOrEqualToAnchor:flashy.trailingAnchor constant:-8],
+    ]];
+
+    [stack insertArrangedSubview:flashy atIndex:idx];
+    objc_setAssociatedObject(chatView, &kS7TVChatTestFlashyView, flashy, OBJC_ASSOCIATION_RETAIN);
+
+    [[SevenTVManager sharedManager]
+        log:@"[ChatCustom] 🏗 Vue flashy insérée (index %ld du UIStackView, chat réel caché)",
+        (long)idx];
+}
+
 
 // ────────────────────────────────────────────────────────────
 // MARK: - Hijack du bouton Bits → bouton 7TV (+ diagnostic Phase 0 chat)
@@ -265,6 +323,15 @@ static void s7tv_dumpChatHierarchy(UIView *chatView, NSString *reason) {
     // contextes (normal/théâtre/PiP) directement depuis les logs in-app.
     if ([selfClass isEqualToString:@"Twitch.ChatTranscriptView"] && self.window) {
         s7tv_dumpChatHierarchy(self, @"didMoveToWindow");
+
+        // Test de validation Phase 0 — gardé par le kill switch des Settings.
+        // Ne cible QUE l'instance réelle (superview == UIStackView, alpha=1
+        // sur toute la chaîne) — pas l'instance fantôme du pont SwiftUI
+        // (Twitch.ChatTranscriptViewRepresentable), qu'on laisse intacte.
+        if ([SevenTVManager sharedManager].chatCustomTestEnabled &&
+            [self.superview isKindOfClass:[UIStackView class]]) {
+            s7tv_applyChatCustomTest(self);
+        }
     }
 
     // ── Détection fermeture du stream ────────────────────────────────────────

@@ -961,60 +961,6 @@ static void s7tv_imp_didSelect(id self, SEL _cmd, UITableView *tv, NSIndexPath *
     [[SevenTVManager sharedManager] log:@"✅ 7TV Settings ouvert depuis les paramètres Twitch"];
 }
 
-// ────────────────────────────────────────────────────────────
-// MARK: - Diagnostic Phase 0 (suite) : layoutSubviews de ChatTranscriptView
-// ────────────────────────────────────────────────────────────
-//
-// didMoveToWindow (plus haut) ne se redéclenche que si la vue change de
-// fenêtre — un passage en mode théâtre peut simplement redimensionner la
-// vue sans la déplacer vers une nouvelle fenêtre. On complète donc avec un
-// hook ciblé (uniquement Twitch.ChatTranscriptView, pas toutes les UIView,
-// pour rester négligeable en perf) sur layoutSubviews, throttlé : on ne log
-// que si la taille a changé depuis le dernier log de cette vue.
-
-static const char kS7TVChatDiagLastSize = 20;
-
-@interface UIView (S7TVChatDiagnosticLayout)
-- (void)s7tv_chatDiag_layoutSubviews;
-@end
-
-@implementation UIView (S7TVChatDiagnosticLayout)
-
-- (void)s7tv_chatDiag_layoutSubviews {
-    [self s7tv_chatDiag_layoutSubviews]; // appel original
-
-    NSValue *lastSizeVal = objc_getAssociatedObject(self, &kS7TVChatDiagLastSize);
-    CGSize lastSize = lastSizeVal ? lastSizeVal.CGSizeValue : CGSizeZero;
-    CGSize currentSize = self.bounds.size;
-
-    // Tolérance 1pt pour ignorer le bruit d'arrondi Auto Layout.
-    if (fabs(currentSize.width - lastSize.width) < 1.0 &&
-        fabs(currentSize.height - lastSize.height) < 1.0) {
-        return;
-    }
-    objc_setAssociatedObject(self, &kS7TVChatDiagLastSize,
-                             [NSValue valueWithCGSize:currentSize],
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    // Ignore le tout premier layout (lastSize == zero) — déjà couvert par
-    // le dump didMoveToWindow, pas la peine de doubler le log à l'init.
-    if (CGSizeEqualToSize(lastSize, CGSizeZero)) return;
-
-    s7tv_dumpChatHierarchy(self, [NSString stringWithFormat:
-        @"layoutSubviews taille changée %@ → %@",
-        NSStringFromCGSize(lastSize), NSStringFromCGSize(currentSize)]);
-}
-
-@end
-
-static void s7tv_swizzle_chat_diagnostic_layout(void) {
-    Class target = NSClassFromString(@"Twitch.ChatTranscriptView");
-    s7tv_swizzle(target,
-                 [UIView class],
-                 @selector(layoutSubviews),
-                 @selector(s7tv_chatDiag_layoutSubviews));
-}
-
 static void s7tv_swizzle_account_menu(void) {
     Class target = NSClassFromString(@"_TtC6Twitch25AccountMenuViewController");
     if (!target) {
@@ -1442,9 +1388,6 @@ static void TwitchSevenTVInit(void) {
                  [UIView class],
                  @selector(didMoveToWindow),
                  @selector(s7tv_didMoveToWindow));
-
-    // Diagnostic Phase 0 : hiérarchie ChatTranscriptView (voir logs → Chat Custom)
-    s7tv_swizzle_chat_diagnostic_layout();
 
     // Interception réponses GQL Twitch
     s7tv_swizzle_session();

@@ -6,7 +6,6 @@
  *   - Picker d'emotes 7TV (favoris + recherche)
  *   - Interception IRC WebSocket (ROOMSTATE → chargement emotes channel)
  *   - Interception GQL Twitch (broadcaster ID → chargement emotes channel)
- *   - Redirection CDN (SevenTVURLProtocol)
  *   - Section 7TV Settings dans les paramètres Twitch (AccountMenuViewController)
  *   - Tap logger de diagnostic
  *
@@ -15,6 +14,12 @@
  * a été retiré. Il est devenu inutile suite au passage prévu à un rendu de
  * chat maison qui connaît les dimensions des emotes dès la construction
  * (voir plan.txt). Le picker, les données 7TV, l'IRC et le GQL restent inchangés.
+ *
+ * Note : la redirection CDN (SevenTVURLProtocol) et son enregistrement ont
+ * aussi été retirés d'ici — ce mécanisme ne se déclenchait que via le tag
+ * emotes= injecté dans les messages IRC, injection elle-même supprimée.
+ * SevenTVURLProtocol reste utilisé ailleurs (SevenTVManager) comme simple
+ * utilitaire de cache/prefetch, plus comme intercepteur.
  */
 
 #import <objc/runtime.h>
@@ -22,7 +27,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import "SevenTVManager.h"
-#import "SevenTVURLProtocol.h"
 #import "SevenTVLogo.h"
 #import "SevenTVSettingsController.h"
 // Cle NSUserDefaults Auto Collect Channel Points
@@ -392,30 +396,6 @@ static void s7tv_swizzle(Class targetClass,
     }
     if (!chatInputView || !chatInputView.window) return;
     [self toggleEmotePickerForChatInputView:chatInputView];
-}
-
-@end
-
-
-// ────────────────────────────────────────────────────────────
-// MARK: - Fix B: NSURLSessionConfiguration → protocolClasses
-// ────────────────────────────────────────────────────────────
-
-@interface NSURLSessionConfiguration (SevenTV)
-- (NSArray *)s7tv_protocolClasses;
-@end
-
-@implementation NSURLSessionConfiguration (SevenTV)
-
-- (NSArray *)s7tv_protocolClasses {
-    NSArray *original = [self s7tv_protocolClasses];
-    Class ourClass = [SevenTVURLProtocol class];
-    if (![original containsObject:ourClass]) {
-        NSMutableArray *arr = [NSMutableArray arrayWithObject:ourClass];
-        if (original.count > 0) [arr addObjectsFromArray:original];
-        return [arr copy];
-    }
-    return original;
 }
 
 @end
@@ -970,22 +950,6 @@ static void s7tv_swizzle_account_menu(void) {
 
 
 // ────────────────────────────────────────────────────────────
-// MARK: - Swizzle NSURLSessionConfiguration.protocolClasses
-// ────────────────────────────────────────────────────────────
-
-static void s7tv_swizzle_protocol_classes(void) {
-    NSURLSessionConfiguration *probe = [NSURLSessionConfiguration defaultSessionConfiguration];
-    Class configClass = object_getClass(probe);
-    [[SevenTVManager sharedManager] log:@"🔍 NSURLSessionConfiguration classe: %@",
-     NSStringFromClass(configClass)];
-    s7tv_swizzle(configClass,
-                 [NSURLSessionConfiguration class],
-                 @selector(protocolClasses),
-                 @selector(s7tv_protocolClasses));
-}
-
-
-// ────────────────────────────────────────────────────────────
 // MARK: - Swizzle NSURLSession (classe concrète via sonde)
 // ────────────────────────────────────────────────────────────
 
@@ -1357,9 +1321,6 @@ static void TwitchSevenTVInit(void) {
                  @selector(didMoveToWindow),
                  @selector(s7tv_didMoveToWindow));
 
-    // URLProtocol (redirection CDN 7TV)
-    s7tv_swizzle_protocol_classes();
-
     // Interception réponses GQL Twitch
     s7tv_swizzle_session();
 
@@ -1371,6 +1332,13 @@ static void TwitchSevenTVInit(void) {
     // setAttachmentSize:forGlyphRange:, displayLayer:, willDisplayCell BFS...)
     // a été retiré — il est devenu inutile avec le passage à un rendu de chat
     // maison qui connaît les dimensions dès la construction (voir plan.txt).
+    //
+    // Note historique 2 : l'interception NSURLProtocol des requêtes image
+    // Twitch (redirection CDN 7TV via faux ID "7tv_") a aussi été retirée.
+    // Elle ne se déclenchait que grâce au tag emotes= injecté dans les
+    // messages IRC — injection elle-même retirée. Le cache et le prefetch
+    // (SevenTVURLProtocol) restent actifs : ils sont alimentés directement
+    // par le join de channel, indépendamment du chat.
 
     // Section 7TV dans les paramètres Twitch
     s7tv_swizzle_account_menu();
@@ -1381,8 +1349,7 @@ static void TwitchSevenTVInit(void) {
     // Setup sur le main thread
     dispatch_async(dispatch_get_main_queue(), ^{
         [[SevenTVManager sharedManager] setup];
-        [NSURLProtocol registerClass:[SevenTVURLProtocol class]];
-        [[SevenTVManager sharedManager] log:@"✅ SevenTVManager prêt, URLProtocol enregistré"];
+        [[SevenTVManager sharedManager] log:@"✅ SevenTVManager prêt"];
 
         // Démarrer le local proxy si activé
 

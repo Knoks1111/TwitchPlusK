@@ -1,62 +1,37 @@
 /*
  * SevenTVURLProtocol.m
  *
- * HOW IT WORKS:
- * Twitch charge les images d'emotes depuis:
- *   https://static-cdn.jtvnw.net/emoticons/v2/{emoteID}/default/dark/3.0
+ * Utilitaire de téléchargement/cache des images d'emotes 7TV.
  *
- * On injecte de faux IDs préfixés "7tv_{realID}" dans les messages IRC.
- * Quand Twitch essaie de charger l'image pour "7tv_63071bb9464de28875c52531",
- * cette classe intercepte la requête et la redirige vers:
- *   https://cdn.7tv.app/emote/63071bb9464de28875c52531/4x.webp
+ * HISTORIQUE : cette classe s'appelait ainsi car elle interceptait les
+ * requêtes HTTP que Twitch faisait pour charger les images d'emotes (via un
+ * faux ID "7tv_{realID}" injecté dans le tag emotes= du message IRC). Cette
+ * injection a été retirée (le rendu du chat passe à une vue maison), donc
+ * l'interception ne se déclenche plus jamais — le code NSURLProtocol
+ * (canInitWithRequest:/startLoading/stopLoading) a été supprimé.
  *
- * FIX "cellule vide" (v1.2):
- * Le message IRC est retenu dans TweakSevenTV.m jusqu'à ce que toutes ses
- * emotes soient dans le cache (via prefetchEmoteID:completion:).
- * Twitch reçoit le message APRÈS que les images sont prêtes → plus jamais
- * de case vide, même à la première occurrence d'une emote.
+ * Ce qui reste et qui est toujours utilisé :
+ *   - prefetchEmoteID:completion: / isEmoteIDCached: — appelés directement
+ *     par SevenTVManager au JOIN d'un channel (prefetch en masse).
+ *   - sharedEmoteCache — lu directement par le picker pour afficher les
+ *     images sans réseau supplémentaire.
  *
- * FIX "cellule vide" (v1.3) — réponse synchrone sur cache hit:
- * Même avec le prefetch v1.2, startLoading passait TOUJOURS par un dataTask
- * asynchrone. Le callback arrivait sur un thread background APRÈS que CoreText
- * avait déjà calculé le layout du message → attachment vide → layout figé.
- * Workaround utilisateur : scroller manuellement pour forcer un re-render UIKit.
- *
- * Le fix : dans startLoading, interroger NSURLCache de façon SYNCHRONE avant
- * de lancer le dataTask. Si l'image est en cache → répondre immédiatement,
- * dans le même call stack → CoreText a l'image pendant le calcul → jamais
- * de case vide, même sans le workaround scroll.
- *
- * FORMAT: les emotes sont servies telles que reçues du CDN 7TV, en WebP natif
- * (animé ou statique) — aucune conversion en GIF. iOS décode le WebP animé
- * nativement, ce qui économise CPU/batterie par rapport à une conversion GIF.
+ * FORMAT: les emotes sont stockées telles que reçues du CDN 7TV, en WebP
+ * natif (animé ou statique) — aucune conversion en GIF.
  */
 
 #import "SevenTVURLProtocol.h"
 #import "SevenTVManager.h"
 
-static NSString *const kSevenTVEmoteIDPrefix = @"7tv_";
-static NSString *const kHandledKey           = @"SevenTVURLProtocolHandled";
-
 // ── Sessions CDN ──────────────────────────────────────────────────────────────
 //
 // ARCHITECTURE (important pour la cohérence du cache) :
 //
-//   SevenTVGetCDNSession()      — utilisée par URLProtocol/startLoading et prewarm
+//   SevenTVGetCDNSession()      — utilisée par prewarm
 //   SevenTVGetPrefetchSession() — utilisée par prefetchEmoteID:completion:
 //
-// Les deux partagent le MÊME objet NSURLCache (s_emoteCache).
-// Les deux ont protocolClasses = @[] → SevenTVURLProtocol n'est jamais
-// dans leur liste de protocoles → aucune boucle d'interception possible →
-// aucun besoin de mettre kHandledKey sur les requêtes CDN →
-// les requêtes arrivent au cache avec la clé URL brute (identique dans les deux).
-//
-// Avant ce correctif, kHandledKey était appliqué sur les NSMutableURLRequest
-// via [NSURLProtocol setProperty:@YES forKey:kHandledKey inRequest:req].
-// Cette propriété passe par CFURLRequestSetProtocolProperty et est prise en
-// compte dans le calcul de la clé NSURLCache. Résultat : le prefetch stockait
-// sous (URL + kHandledKey=YES) mais isEmoteIDCached vérifiait sous (URL seul) →
-// miss systématique à chaque première occurrence d'une emote.
+// Les deux partagent le MÊME objet NSURLCache (s_emoteCache), donc les
+// requêtes arrivent au cache avec la clé URL brute (identique dans les deux).
 
 static NSURLCache      *s_emoteCache     = nil;
 static dispatch_once_t  s_emoteCacheOnce;
@@ -86,7 +61,7 @@ static NSURLSession *SevenTVGetCDNSession(void) {
             [NSURLSessionConfiguration ephemeralSessionConfiguration];
         cfg.URLCache           = SevenTVGetSharedCache(); // notre cache isolé
         cfg.requestCachePolicy = NSURLRequestReturnCacheDataElseLoad;
-        cfg.protocolClasses    = @[]; // pas de boucle d'interception
+        cfg.protocolClasses    = @[]; // isolation totale, aucun protocole custom
         s_cdnSession = [NSURLSession sessionWithConfiguration:cfg];
     });
     return s_cdnSession;
@@ -145,13 +120,11 @@ static NSURL *SevenTVCDNURLForEmoteID(NSString *emoteID) {
 
 // ── Validation réponse CDN ───────────────────────────────────────────────────
 //
-// PROBLÈME CORRIGÉ : ni startLoading (cache miss) ni prefetchEmoteID:completion:
-// ne vérifiaient le statut HTTP ni le contenu réel des données avant de les
-// mettre en cache et de les transmettre à Twitch. Si le CDN renvoie un 404
-// avec un petit corps JSON/HTML d'erreur, ce corps était accepté comme "image
-// valide", stocké en cache tel quel, et servi à Twitch qui échoue à le décoder
-// → carré vide PERMANENT (le mauvais contenu reste en cache pour toujours, le
-// scroll ne corrige rien puisque ce n'est pas un problème de timing).
+// PROBLÈME CORRIGÉ (historique) : prefetchEmoteID:completion: ne vérifiait pas
+// le statut HTTP ni le contenu réel des données avant de les mettre en cache.
+// Si le CDN renvoie un 404 avec un petit corps JSON/HTML d'erreur, ce corps
+// était accepté comme "image valide" et stocké en cache tel quel → entrée de
+// cache corrompue permanente pour cette emote.
 //
 // Double vérification :
 //   - statusCode == 200 — élimine 404/403/5xx etc.
@@ -177,170 +150,9 @@ static BOOL SevenTVIsValidWebPResponse(NSURLResponse *response, NSData *data) {
 static _Atomic(NSInteger) s_cachedCount = 0;
 
 
-@interface SevenTVURLProtocol ()
-@property (nonatomic, strong) NSURLSessionDataTask *activeTask;
-@end
-
-
 @implementation SevenTVURLProtocol
 
 + (NSInteger)cachedEmoteCount   { return s_cachedCount; }
-
-// ============================================================
-// MARK: - NSURLProtocol — interception des requêtes Twitch
-// ============================================================
-
-+ (BOOL)canInitWithRequest:(NSURLRequest *)request {
-    // Éviter les boucles infinies
-    if ([NSURLProtocol propertyForKey:kHandledKey inRequest:request]) return NO;
-    NSString *url = request.URL.absoluteString ?: @"";
-    return [url containsString:kSevenTVEmoteIDPrefix];
-}
-
-+ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
-    return request;
-}
-
-+ (BOOL)requestIsCacheEquivalent:(NSURLRequest *)a toRequest:(NSURLRequest *)b {
-    return [super requestIsCacheEquivalent:a toRequest:b];
-}
-
-- (void)startLoading {
-    NSString *urlString = self.request.URL.absoluteString;
-
-    // Extraire l'emote ID depuis l'URL Twitch (ex: .../7tv_63071bb9.../default/...)
-    NSRange prefixRange = [urlString rangeOfString:kSevenTVEmoteIDPrefix];
-    if (prefixRange.location == NSNotFound) {
-        [self.client URLProtocol:self
-                didFailWithError:[NSError errorWithDomain:NSURLErrorDomain
-                                                     code:NSURLErrorBadURL
-                                                 userInfo:nil]];
-        return;
-    }
-
-    NSString *afterPrefix = [urlString substringFromIndex:prefixRange.location
-                                                         + kSevenTVEmoteIDPrefix.length];
-    NSString *emoteID = [afterPrefix componentsSeparatedByString:@"/"].firstObject;
-
-    if (!emoteID.length) {
-        [self.client URLProtocol:self
-                didFailWithError:[NSError errorWithDomain:NSURLErrorDomain
-                                                     code:NSURLErrorBadURL
-                                                 userInfo:nil]];
-        return;
-    }
-
-    // Construire l'URL CDN 7TV
-    NSURL *targetURL = SevenTVCDNURLForEmoteID(emoteID);
-    if (!targetURL) {
-        [self.client URLProtocol:self
-                didFailWithError:[NSError errorWithDomain:NSURLErrorDomain
-                                                     code:NSURLErrorBadURL
-                                                 userInfo:nil]];
-        return;
-    }
-
-    SevenTVManager *mgr = [SevenTVManager sharedManager];
-
-    // ── v1.3 FIX: vérification synchrone du cache ─────────────────────────────
-    // NSURLCache.cachedResponseForRequest: est synchrone et thread-safe.
-    // Si l'image est en cache (grâce au prefetch v1.2), on répond IMMÉDIATEMENT
-    // dans le même call stack → CoreText a l'image pendant le calcul du layout
-    // → plus jamais de case vide, plus besoin du workaround scroll.
-    NSMutableURLRequest *cacheCheckReq = [NSMutableURLRequest requestWithURL:targetURL];
-    cacheCheckReq.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
-    NSCachedURLResponse *cached = [SevenTVGetSharedCache() cachedResponseForRequest:cacheCheckReq];
-
-    if (cached) {
-        [mgr log:@"⚡️ URLProtocol cache hit (sync) → emote:%@ (WebP natif, %lu bytes)",
-            emoteID, (unsigned long)cached.data.length];
-
-        NSHTTPURLResponse *spoofed = [[NSHTTPURLResponse alloc]
-            initWithURL:self.request.URL
-            statusCode:200
-           HTTPVersion:@"HTTP/1.1"
-          headerFields:@{@"Content-Type": @"image/webp"}];
-
-        [self.client URLProtocol:self
-              didReceiveResponse:spoofed
-              cacheStoragePolicy:NSURLCacheStorageAllowed];
-        [self.client URLProtocol:self didLoadData:cached.data];
-        [self.client URLProtocolDidFinishLoading:self];
-        return; // ← on sort sans jamais créer de dataTask
-    }
-    // ─────────────────────────────────────────────────────────────────────────
-
-    // Cache miss (ne devrait arriver que si le prefetch a échoué ou expiré).
-    // On tombe en fallback asynchrone normal.
-    [mgr log:@"🌐 URLProtocol cache miss (async) → emote:%@", emoteID];
-
-    // Pas de kHandledKey : SevenTVGetCDNSession a protocolClasses=@[],
-    // donc SevenTVURLProtocol n'intercepte jamais ses propres requêtes.
-    NSMutableURLRequest *newRequest = [NSMutableURLRequest requestWithURL:targetURL];
-    newRequest.cachePolicy = NSURLRequestReturnCacheDataElseLoad;
-
-    __weak typeof(self) weakSelf = self;
-    self.activeTask = [SevenTVGetCDNSession()
-        dataTaskWithRequest:newRequest
-          completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) return;
-
-        if (error) {
-            [strongSelf.client URLProtocol:strongSelf didFailWithError:error];
-            return;
-        }
-
-        if (data && response) {
-            if (!SevenTVIsValidWebPResponse(response, data)) {
-                NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
-                    ? ((NSHTTPURLResponse *)response).statusCode : -1;
-                [mgr log:@"❌ Réponse CDN invalide (cache miss) → emote:%@ status:%ld bytes:%lu — non mise en cache",
-                    emoteID, (long)status, (unsigned long)data.length];
-                [strongSelf.client URLProtocol:strongSelf
-                              didFailWithError:[NSError errorWithDomain:NSURLErrorDomain
-                                                                  code:NSURLErrorBadServerResponse
-                                                              userInfo:nil]];
-                return;
-            }
-
-            NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
-            NSHTTPURLResponse *spoofed = [[NSHTTPURLResponse alloc]
-                initWithURL:strongSelf.request.URL
-                statusCode:http.statusCode
-               HTTPVersion:@"HTTP/1.1"
-              headerFields:@{@"Content-Type": @"image/webp"}];
-
-            NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
-                initWithResponse:spoofed data:data];
-            NSURLRequest *cacheKey = [NSURLRequest requestWithURL:strongSelf.request.URL];
-            [SevenTVGetSharedCache() storeCachedResponse:toCache forRequest:cacheKey];
-
-            s_cachedCount++;
-            [mgr log:@"✅ Réponse CDN valide (cache miss) → emote:%@ mis en cache en WebP natif (%lu bytes) [total:%ld]",
-                emoteID, (unsigned long)data.length, (long)s_cachedCount];
-
-            [strongSelf.client URLProtocol:strongSelf
-                        didReceiveResponse:spoofed
-                        cacheStoragePolicy:NSURLCacheStorageAllowed];
-            [strongSelf.client URLProtocol:strongSelf didLoadData:data];
-            [strongSelf.client URLProtocolDidFinishLoading:strongSelf];
-        } else {
-            [strongSelf.client URLProtocol:strongSelf
-                          didFailWithError:[NSError errorWithDomain:NSURLErrorDomain
-                                                              code:NSURLErrorZeroByteResource
-                                                          userInfo:nil]];
-        }
-    }];
-
-    [self.activeTask resume];
-}
-
-- (void)stopLoading {
-    [self.activeTask cancel];
-    self.activeTask = nil;
-}
-
 
 // ============================================================
 // MARK: - Utilitaires (appelés depuis TweakSevenTV.m)
@@ -352,7 +164,6 @@ static _Atomic(NSInteger) s_cachedCount = 0;
     NSURL *url = SevenTVCDNURLForEmoteID(emoteID);
     if (!url) return NO;
 
-    // Requête propre (sans kHandledKey) → même clé que prefetch et URLProtocol.
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
     return ([SevenTVGetSharedCache() cachedResponseForRequest:req] != nil);
@@ -361,11 +172,9 @@ static _Atomic(NSInteger) s_cachedCount = 0;
 // Télécharge l'image et appelle completion quand elle est en cache.
 // completion est toujours appelé (succès, erreur, ou timeout 1s).
 //
-// Utilise SevenTVGetPrefetchSession() — session avec protocolClasses=@[] et
-// même NSURLCache que SevenTVGetCDNSession() — pour garantir que :
-//   • la requête ne boucle pas via SevenTVURLProtocol (pas besoin de kHandledKey)
-//   • la réponse est stockée sous la clé URL brute
-//   • URLProtocol/startLoading trouve l'entrée en cache au premier coup
+// Utilise SevenTVGetPrefetchSession() — même NSURLCache que les autres
+// sessions CDN — pour garantir que la réponse est stockée sous la clé
+// URL brute, la même que lit isEmoteIDCached:/le picker.
 + (void)prefetchEmoteID:(NSString *)emoteID completion:(void(^)(void))completion {
     if (!emoteID.length) {
         if (completion) completion();
@@ -379,7 +188,6 @@ static _Atomic(NSInteger) s_cachedCount = 0;
     }
 
     // Si déjà en cache → completion immédiate, pas de réseau.
-    // Requête propre (sans kHandledKey) → clé identique à ce que stocke prefetch.
     NSMutableURLRequest *checkReq = [NSMutableURLRequest requestWithURL:url];
     checkReq.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
     if ([SevenTVGetSharedCache() cachedResponseForRequest:checkReq]) {
@@ -405,17 +213,15 @@ static _Atomic(NSInteger) s_cachedCount = 0;
         }
         // Stockage manuel — NSURLSession ne stocke que si le CDN retourne les
         // bons headers Cache-Control. On utilise une requête propre (juste l'URL)
-        // pour que la clé de cache corresponde exactement à ce que startLoading
-        // lit via cachedResponseForRequest:, évitant un cache miss à cause de
-        // cachePolicy/timeoutInterval différents.
+        // pour que la clé de cache corresponde exactement à ce que lit
+        // isEmoteIDCached:/le picker via cachedResponseForRequest:.
         //
         // Validation AVANT stockage : sans ça, un 404 7TV avec un petit corps
         // JSON/HTML d'erreur était accepté comme image valide et restait en
-        // cache pour toujours → carré vide permanent que même le scroll ne
-        // corrige jamais.
+        // cache pour toujours.
         //
         // On stocke le WebP natif tel que reçu du CDN 7TV — plus de conversion
-        // GIF, Twitch reçoit directement le format d'origine.
+        // GIF, format d'origine conservé tel quel.
         if (data && resp && !err) {
             if (SevenTVIsValidWebPResponse(resp, data)) {
                 NSHTTPURLResponse *http = (NSHTTPURLResponse *)resp;

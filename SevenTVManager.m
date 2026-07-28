@@ -307,6 +307,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         _logFavorites      = NO;
         _logOrientation    = NO;
         _logImageConversion = NO;
+        _logChatCustom     = YES;   // ON par défaut pendant le dev du chat custom (Phase 0+)
         _logDump           = NO;
 
         _globalEmotes      = @{};
@@ -571,6 +572,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if ([prefs objectForKey:@"s7tv_log_favorites"]     != nil) _logFavorites          = [prefs boolForKey:@"s7tv_log_favorites"];
     if ([prefs objectForKey:@"s7tv_log_orientation"]   != nil) _logOrientation        = [prefs boolForKey:@"s7tv_log_orientation"];
     if ([prefs objectForKey:@"s7tv_log_image_conv"]    != nil) _logImageConversion    = [prefs boolForKey:@"s7tv_log_image_conv"];
+    if ([prefs objectForKey:@"s7tv_log_chat_custom"]   != nil) _logChatCustom         = [prefs boolForKey:@"s7tv_log_chat_custom"];
     if ([prefs objectForKey:@"s7tv_log_dump"]          != nil) _logDump               = [prefs boolForKey:@"s7tv_log_dump"];
 
     // Charger les favoris (array d'IDs 7TV)
@@ -600,6 +602,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     [prefs setBool:self.logFavorites         forKey:@"s7tv_log_favorites"];
     [prefs setBool:self.logOrientation       forKey:@"s7tv_log_orientation"];
     [prefs setBool:self.logImageConversion   forKey:@"s7tv_log_image_conv"];
+    [prefs setBool:self.logChatCustom        forKey:@"s7tv_log_chat_custom"];
     [prefs setBool:self.logDump              forKey:@"s7tv_log_dump"];
     [prefs synchronize];
 }
@@ -653,6 +656,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 - (void)setLogFavorites:(BOOL)v       { _logFavorites = v;       [self savePreferences]; }
 - (void)setLogOrientation:(BOOL)v     { _logOrientation = v;     [self savePreferences]; }
 - (void)setLogImageConversion:(BOOL)v { _logImageConversion = v; [self savePreferences]; }
+- (void)setLogChatCustom:(BOOL)v      { _logChatCustom = v;      [self savePreferences]; }
 - (void)setLogDump:(BOOL)v            { _logDump = v;            [self savePreferences]; }
 
 
@@ -2596,10 +2600,14 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
     // 1. Erreurs / Avertissements — priorité absolue
     if (has(@"❌") || has(@"⚠️")) return S7TVLogCategoryError;
 
-    // 2. Dump (architecture/méthodes — très verbeux, à part)
+    // 2. Chat Custom (diagnostic Phase 0+ du chat maison — tag explicite,
+    // avant le Dump générique pour ne pas y être noyé)
+    if (has(@"[ChatCustom]")) return S7TVLogCategoryChatCustom;
+
+    // 3. Dump (architecture/méthodes — très verbeux, à part)
     if (has(@"[DBG-DUMP]") || has(@"🩻")) return S7TVLogCategoryDump;
 
-    // 3. Tap Logger
+    // 4. Tap Logger
     if (has(@"👆") || has(@"FIRST_RESPONDER") || has(@"SCAN CHAT") ||
         has(@"FIN SCAN") || (has(@"HIT:") && has(@"frame=")) ||
         has(@"fin hiérarchie"))
@@ -2670,6 +2678,7 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
         case S7TVLogCategoryFavorites:       return self.logFavorites;
         case S7TVLogCategoryOrientation:     return self.logOrientation;
         case S7TVLogCategoryImageConversion: return self.logImageConversion;
+        case S7TVLogCategoryChatCustom:      return self.logChatCustom;
         case S7TVLogCategoryDump:            return self.logDump;
     }
     return NO;

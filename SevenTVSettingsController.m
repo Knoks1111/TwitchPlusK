@@ -1223,7 +1223,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 #define S7TV_LOGS_ROW_VIEW        1
 #define S7TV_LOGS_ROW_CONSOLE     2
 #define S7TV_LOGS_ROW_FIRST_CAT   3
-#define S7TV_LOGS_CAT_COUNT       12
+#define S7TV_LOGS_CAT_COUNT       13
 #define S7TV_LOGS_ROW_COUNT       (S7TV_LOGS_ROW_FIRST_CAT + S7TV_LOGS_CAT_COUNT)
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
@@ -1337,25 +1337,25 @@ forRowAtIndexPath:(NSIndexPath *)ip {
             @"Erreurs / Avertissements", @"Tap Logger", @"Swizzle / Boot",
             @"Cache / Réseau", @"Prefetch", @"API Emotes", @"IRC / Channel",
             @"UI / Picker", @"Favoris",
-            @"Orientation Lock", @"CDN / Cache emotes", @"Dump",
+            @"Orientation Lock", @"CDN / Cache emotes", @"Chat Custom", @"Dump",
         ];
         NSArray<NSString *> *icons = @[
             @"exclamationmark.triangle.fill", @"hand.tap.fill", @"bolt.horizontal.circle.fill",
             @"network", @"arrow.down.circle.fill", @"globe", @"antenna.radiowaves.left.and.right",
             @"paintbrush.fill", @"star.fill",
-            @"lock.rotation", @"photo.fill", @"trash.fill",
+            @"lock.rotation", @"photo.fill", @"hammer.fill", @"trash.fill",
         ];
         NSArray<NSNumber *> *values = @[
             @(mgr.logErrors), @(mgr.logTap), @(mgr.logSwizzle), @(mgr.logCache),
             @(mgr.logPrefetch), @(mgr.logAPI), @(mgr.logIRCChannel),
             @(mgr.logUIPicker), @(mgr.logFavorites), @(mgr.logOrientation),
-            @(mgr.logImageConversion), @(mgr.logDump),
+            @(mgr.logImageConversion), @(mgr.logChatCustom), @(mgr.logDump),
         ];
         NSArray *selectors = @[
             @"toggleLogErrors:", @"toggleLogTap:", @"toggleLogSwizzle:", @"toggleLogCache:",
             @"toggleLogPrefetch:", @"toggleLogAPI:", @"toggleLogIRCChannel:",
             @"toggleLogUIPicker:", @"toggleLogFavorites:", @"toggleLogOrientation:",
-            @"toggleLogImageConversion:", @"toggleLogDump:",
+            @"toggleLogImageConversion:", @"toggleLogChatCustom:", @"toggleLogDump:",
         ];
 
         UITableViewCell *cell = S7TVSwitchCell(titles[catIdx],
@@ -1456,6 +1456,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 - (void)toggleLogFavorites:(UISwitch *)sw        { [SevenTVManager sharedManager].logFavorites        = sw.isOn; }
 - (void)toggleLogOrientation:(UISwitch *)sw      { [SevenTVManager sharedManager].logOrientation      = sw.isOn; }
 - (void)toggleLogImageConversion:(UISwitch *)sw  { [SevenTVManager sharedManager].logImageConversion  = sw.isOn; }
+- (void)toggleLogChatCustom:(UISwitch *)sw       { [SevenTVManager sharedManager].logChatCustom       = sw.isOn; }
 - (void)toggleLogDump:(UISwitch *)sw             { [SevenTVManager sharedManager].logDump             = sw.isOn; }
 
 @end

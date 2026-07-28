@@ -558,6 +558,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if ([prefs objectForKey:@"s7tv_debug"]             != nil) _debugLogging          = [prefs boolForKey:@"s7tv_debug"];
     if ([prefs objectForKey:@"s7tv_floating_btn"]      != nil) _showFloatingButton     = [prefs boolForKey:@"s7tv_floating_btn"];
     else _showFloatingButton = YES; // activé par défaut
+    if ([prefs objectForKey:@"s7tv_chat_custom_test"]  != nil) _chatCustomTestEnabled  = [prefs boolForKey:@"s7tv_chat_custom_test"];
 
     // --- Logs : interrupteur global + catégories ---
     if ([prefs objectForKey:@"s7tv_logs_enabled"]      != nil) _logsEnabled           = [prefs boolForKey:@"s7tv_logs_enabled"];
@@ -589,6 +590,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     [prefs setBool:self.showPickerAnimations forKey:@"s7tv_picker_anim"];
     [prefs setBool:self.debugLogging         forKey:@"s7tv_debug"];
     [prefs setBool:self.showFloatingButton   forKey:@"s7tv_floating_btn"];
+    [prefs setBool:self.chatCustomTestEnabled forKey:@"s7tv_chat_custom_test"];
 
     [prefs setBool:self.logsEnabled          forKey:@"s7tv_logs_enabled"];
     [prefs setBool:self.logErrors            forKey:@"s7tv_log_errors"];
@@ -623,6 +625,11 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     dispatch_async(dispatch_get_main_queue(), ^{
         self.floatingWindow.hidden = !v;
     });
+}
+- (void)setChatCustomTestEnabled:(BOOL)v {
+    _chatCustomTestEnabled = v;
+    [self savePreferences];
+    [self log:@"[ChatCustom] 🏗 Test chat custom %@", v ? @"ACTIVÉ" : @"désactivé"];
 }
 - (void)setDebugLogging:(BOOL)v {
     _debugLogging  = v;

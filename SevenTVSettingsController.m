@@ -1227,7 +1227,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 #define S7TV_LOGS_ROW_COUNT       (S7TV_LOGS_ROW_FIRST_CAT + S7TV_LOGS_CAT_COUNT)
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    switch (s) { case 0: return 1; case 1: return S7TV_LOGS_ROW_COUNT; case 2: return 1; default: return 0; }
+    switch (s) { case 0: return 2; case 1: return S7TV_LOGS_ROW_COUNT; case 2: return 1; default: return 0; }
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
@@ -1257,12 +1257,22 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
 
     if (ip.section == 0) {
-        // Section Options : uniquement le bouton flottant
-        return S7TVSwitchCell(@"Bouton flottant 7TV",
-                    @"circle.grid.2x1.fill",
-                    [UIColor colorWithWhite:0.75 alpha:1.0],
-                    mgr.showFloatingButton,
-                    self, @selector(toggleFloatingButton:));
+        // Section Options : bouton flottant + test expérimental chat custom
+        if (ip.row == 0) {
+            return S7TVSwitchCell(@"Bouton flottant 7TV",
+                        @"circle.grid.2x1.fill",
+                        [UIColor colorWithWhite:0.75 alpha:1.0],
+                        mgr.showFloatingButton,
+                        self, @selector(toggleFloatingButton:));
+        }
+        // Kill switch Phase 0 : cache ChatTranscriptView et pose une vue
+        // flashy à sa place dans le UIStackView parent — test de validation
+        // du point d'insertion. OFF par défaut, à activer manuellement.
+        return S7TVSwitchCell(@"⚠️ Test chat custom (expérimental)",
+                    @"testtube.2",
+                    [UIColor systemOrangeColor],
+                    mgr.chatCustomTestEnabled,
+                    self, @selector(toggleChatCustomTest:));
     }
 
     if (ip.section == 1) {
@@ -1444,6 +1454,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 }
 - (void)toggleDebug:(UISwitch *)sw                  { [SevenTVManager sharedManager].debugLogging        = sw.isOn; }
 - (void)toggleFloatingButton:(UISwitch *)sw         { [SevenTVManager sharedManager].showFloatingButton  = sw.isOn; }
+- (void)toggleChatCustomTest:(UISwitch *)sw          { [SevenTVManager sharedManager].chatCustomTestEnabled = sw.isOn; }
 
 - (void)toggleLogErrors:(UISwitch *)sw           { [SevenTVManager sharedManager].logErrors           = sw.isOn; }
 - (void)toggleLogTap:(UISwitch *)sw              { [SevenTVManager sharedManager].logTap              = sw.isOn; }

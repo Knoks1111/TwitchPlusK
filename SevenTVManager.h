@@ -7,6 +7,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
+@class S7TVChatMessageStore;
+
 // ============================================================
 // CONFIGURATION - Modifie ces valeurs selon tes besoins
 // ============================================================
@@ -122,6 +124,13 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // Utiliser dispatch_sync(mgr.emoteQueue, ^{ ... }) pour lire,
 // dispatch_barrier_async(mgr.emoteQueue, ^{ ... }) pour écrire.
 @property (nonatomic, strong, readonly) dispatch_queue_t emoteQueue;
+
+// --- Chat custom (Phase 1a+) ---
+// Store des messages du chat en cours. Réinitialisé automatiquement à
+// chaque changement de chaîne détecté (voir handleRoomState dans
+// TweakSevenTV.m) pour éviter qu'un message de l'ancienne chaîne fuite
+// dans la nouvelle (exigence Phase 0).
+@property (nonatomic, strong, readonly) S7TVChatMessageStore *chatMessageStore;
 
 // --- Initialisation ---
 - (void)setup;

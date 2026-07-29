@@ -29,6 +29,9 @@
 #import "SevenTVManager.h"
 #import "SevenTVLogo.h"
 #import "SevenTVSettingsController.h"
+#import "SevenTVChatMessage.h"
+#import "SevenTVChatAppearanceConfig.h"
+#import "SevenTVChatCustomView.h"
 // Cle NSUserDefaults Auto Collect Channel Points
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 
@@ -166,19 +169,36 @@ static void s7tv_dumpChatHierarchy(UIView *chatView, NSString *reason) {
     [mgr log:@"[ChatCustom] 🏗 ── Fin dump (%@) ──────────────────", reason];
 }
 
-// ── Test de validation Phase 0 (kill switch : Settings → Débogage) ──────────
+// ── Test de validation Phase 0/1c (kill switch : Settings → Débogage) ───────
 //
 // Cache la VRAIE ChatTranscriptView (superview == UIStackView, alpha=1 sur
-// toute la chaîne — voir dump) et insère une vue flashy à sa place dans le
-// même UIStackView, au même index. Ne touche PAS à l'instance fantôme
-// hébergée via Twitch.ChatTranscriptViewRepresentable (pont SwiftUI).
+// toute la chaîne — voir dump) et insère SevenTVChatCustomView à sa place
+// dans le même UIStackView, au même index. Ne touche PAS à l'instance
+// fantôme hébergée via Twitch.ChatTranscriptViewRepresentable (pont SwiftUI).
 //
 // UIStackView retire automatiquement du layout ses arranged subviews dont
 // isHidden == YES — donc masquer suffit, pas besoin de la retirer du stack
 // (plus sûr : Twitch garde sa référence forte intacte, rien ne casse côté
 // état interne si jamais on désactive le test).
 
-static const char kS7TVChatTestFlashyView = 21;
+static const char kS7TVChatCustomInstalledView = 21;
+
+// Référence faible vers la vue actuellement affichée à l'écran, pour que le
+// hook IRC (ci-dessous) puisse la notifier d'un nouveau message sans avoir
+// à la retrouver dans la hiérarchie à chaque fois. Une seule vue visible à
+// la fois en pratique (normal OU théâtre, jamais les deux en même temps).
+static __weak SevenTVChatCustomView *s_activeChatCustomView = nil;
+
+// Appelée après un changement qui invalide l'affichage courant (nouveau
+// message, changement de chaîne...). No-op silencieux si aucune vue custom
+// n'est actuellement montée (kill switch désactivé, ou chat pas encore ouvert).
+static void s7tv_reloadActiveChatCustomView(void) {
+    SevenTVChatCustomView *view = s_activeChatCustomView;
+    if (!view) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [view reloadMessages];
+    });
+}
 
 static void s7tv_applyChatCustomTest(UIView *chatView) {
     UIStackView *stack = (UIStackView *)chatView.superview;
@@ -186,8 +206,12 @@ static void s7tv_applyChatCustomTest(UIView *chatView) {
 
     // Déjà appliqué pour cette instance ? (évite un doublon si didMoveToWindow
     // se redéclenche, ex: passage normal ↔ théâtre)
-    UIView *existing = objc_getAssociatedObject(chatView, &kS7TVChatTestFlashyView);
-    if (existing && existing.superview == stack) return;
+    SevenTVChatCustomView *existing =
+        objc_getAssociatedObject(chatView, &kS7TVChatCustomInstalledView);
+    if (existing && existing.superview == stack) {
+        s_activeChatCustomView = existing;
+        return;
+    }
 
     NSInteger idx = [stack.arrangedSubviews indexOfObject:chatView];
     if (idx == NSNotFound) {
@@ -198,30 +222,119 @@ static void s7tv_applyChatCustomTest(UIView *chatView) {
 
     chatView.hidden = YES;
 
-    UIView *flashy = [[UIView alloc] init];
-    flashy.backgroundColor = [UIColor colorWithRed:1.0 green:0.0 blue:0.85 alpha:1.0];
+    SevenTVChatCustomView *customView =
+        [[SevenTVChatCustomView alloc] initWithStore:[SevenTVManager sharedManager].chatMessageStore];
 
-    UILabel *label = [[UILabel alloc] init];
-    label.text = @"🏗 CHAT CUSTOM TEST";
-    label.textColor = [UIColor whiteColor];
-    label.font = [UIFont boldSystemFontOfSize:16];
-    label.textAlignment = NSTextAlignmentCenter;
-    label.numberOfLines = 0;
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    [flashy addSubview:label];
-    [NSLayoutConstraint activateConstraints:@[
-        [label.centerXAnchor constraintEqualToAnchor:flashy.centerXAnchor],
-        [label.centerYAnchor constraintEqualToAnchor:flashy.centerYAnchor],
-        [label.leadingAnchor constraintGreaterThanOrEqualToAnchor:flashy.leadingAnchor constant:8],
-        [label.trailingAnchor constraintLessThanOrEqualToAnchor:flashy.trailingAnchor constant:-8],
-    ]];
+    [stack insertArrangedSubview:customView atIndex:idx];
+    objc_setAssociatedObject(chatView, &kS7TVChatCustomInstalledView, customView, OBJC_ASSOCIATION_RETAIN);
+    s_activeChatCustomView = customView;
 
-    [stack insertArrangedSubview:flashy atIndex:idx];
-    objc_setAssociatedObject(chatView, &kS7TVChatTestFlashyView, flashy, OBJC_ASSOCIATION_RETAIN);
+    [customView reloadMessages];
 
     [[SevenTVManager sharedManager]
-        log:@"[ChatCustom] 🏗 Vue flashy insérée (index %ld du UIStackView, chat réel caché)",
+        log:@"[ChatCustom] 🏗 SevenTVChatCustomView insérée (index %ld du UIStackView, chat réel caché)",
         (long)idx];
+}
+
+
+// ────────────────────────────────────────────────────────────
+// MARK: - Parsing IRC PRIVMSG (Phase 1c — texte brut, sans emotes)
+// ────────────────────────────────────────────────────────────
+//
+// Parsing robuste : tags malformés ou absents → valeurs par défaut, jamais
+// de crash (exigence Phase 1a). Le tokenizer emotes/mentions (Phase 2)
+// viendra remplacer le "rawText brut" par de vrais tokens sans changer la
+// forme de S7TVChatMessage.
+
+// Extrait la valeur d'un tag IRC donné depuis le dictionnaire de tags déjà
+// parsé. Retourne defaultValue (jamais nil) si absent/vide.
+static NSString *s7tv_tagValue(NSDictionary<NSString *, NSString *> *tags,
+                                NSString *key,
+                                NSString *defaultValue) {
+    NSString *v = tags[key];
+    return v.length ? v : defaultValue;
+}
+
+// Parse le bloc de tags IRC "@key1=val1;key2=val2;... " en dictionnaire.
+// Tolère les tags sans valeur (key= ou key seul) et les lignes sans tags.
+static NSDictionary<NSString *, NSString *> *s7tv_parseIRCTags(NSString *tagBlock) {
+    NSMutableDictionary<NSString *, NSString *> *tags = [NSMutableDictionary dictionary];
+    if (!tagBlock.length) return tags;
+
+    for (NSString *pair in [tagBlock componentsSeparatedByString:@";"]) {
+        if (pair.length == 0) continue;
+        NSRange eq = [pair rangeOfString:@"="];
+        if (eq.location == NSNotFound) {
+            tags[pair] = @""; // tag sans valeur (ex: présence simple)
+            continue;
+        }
+        NSString *key = [pair substringToIndex:eq.location];
+        NSString *val = [pair substringFromIndex:eq.location + 1];
+        if (key.length) tags[key] = val;
+    }
+    return tags;
+}
+
+// Parse une ligne IRC complète et retourne un S7TVChatMessage si c'est un
+// PRIVMSG exploitable, nil sinon (autre type de commande, ou PRIVMSG dont
+// le texte n'a pas pu être isolé — on ne construit jamais de message à
+// moitié rempli).
+static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
+    if (![ircLine containsString:@"PRIVMSG"]) return nil;
+
+    // Bloc de tags : tout ce qui précède le premier espace, s'il commence
+    // par '@'. Absent sur certains messages (tags malformés/désactivés
+    // côté serveur) — on tolère et on retombe sur des defaults.
+    NSDictionary<NSString *, NSString *> *tags = @{};
+    NSString *rest = ircLine;
+    if ([ircLine hasPrefix:@"@"]) {
+        NSRange firstSpace = [ircLine rangeOfString:@" "];
+        if (firstSpace.location != NSNotFound) {
+            NSString *tagBlock = [ircLine substringWithRange:
+                NSMakeRange(1, firstSpace.location - 1)];
+            tags = s7tv_parseIRCTags(tagBlock);
+            rest = [ircLine substringFromIndex:firstSpace.location + 1];
+        }
+    }
+
+    // Le texte du message suit toujours " :" après "PRIVMSG #channel" —
+    // on cherche la PREMIÈRE occurrence de " :" après "PRIVMSG" précisément
+    // pour ne pas confondre avec un ':' qui apparaîtrait dans le pseudo
+    // (":nick!user@host") plus tôt dans la ligne.
+    NSRange privmsgRange = [rest rangeOfString:@"PRIVMSG"];
+    if (privmsgRange.location == NSNotFound) return nil;
+
+    NSRange searchRange = NSMakeRange(privmsgRange.location,
+                                       rest.length - privmsgRange.location);
+    NSRange textMarker = [rest rangeOfString:@" :" options:0 range:searchRange];
+    if (textMarker.location == NSNotFound) return nil; // pas de texte exploitable
+
+    NSString *messageText = [rest substringFromIndex:textMarker.location + 2];
+    if (!messageText.length) return nil;
+
+    NSString *messageID    = s7tv_tagValue(tags, @"id", [[NSUUID UUID] UUIDString]);
+    NSString *userID       = s7tv_tagValue(tags, @"user-id", @"");
+    NSString *displayName  = s7tv_tagValue(tags, @"display-name", @"???");
+    NSString *colorHex     = s7tv_tagValue(tags, @"color", @"");
+
+    S7TVChatMessage *msg = [[S7TVChatMessage alloc] initWithMessageID:messageID
+                                                             timestamp:[NSDate date]
+                                                          authorUserID:userID
+                                                     authorDisplayName:displayName
+                                                               rawText:messageText];
+    if (colorHex.length >= 7) {
+        // Format "#RRGGBB" — parsing tolérant : couleur nil (fallback blanc
+        // côté rendu) si le hex ne parse pas plutôt que crasher.
+        unsigned int rgb = 0;
+        NSScanner *scanner = [NSScanner scannerWithString:[colorHex substringFromIndex:1]];
+        if ([scanner scanHexInt:&rgb]) {
+            msg.authorColor = [UIColor colorWithRed:((rgb >> 16) & 0xFF) / 255.0
+                                               green:((rgb >> 8)  & 0xFF) / 255.0
+                                                blue:(rgb         & 0xFF) / 255.0
+                                               alpha:1.0];
+        }
+    }
+    return msg;
 }
 
 
@@ -612,6 +725,13 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
             roomID, mgr.currentChannelTwitchID ?: @"aucun"];
         mgr.currentChannelTwitchID = roomID;
 
+        // Changement de chaîne détecté → vider le store pour éviter qu'un
+        // message de l'ancienne chaîne fuite dans la nouvelle (exigence
+        // Phase 0 : nettoyage au changement rapide de chaîne).
+        [mgr.chatMessageStore removeAllMessages];
+        [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Store de messages vidé (changement de chaîne)"];
+        s7tv_reloadActiveChatCustomView();
+
         if (mgr.currentChannelName.length > 0) {
             NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
             NSMutableDictionary *map =
@@ -671,6 +791,16 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                     // où placer une image. Le futur rendu de chat maison lira les
                     // emotes directement depuis le texte, donc on transmet le
                     // message tel quel (lecture seule, pas de rewrite).
+
+                    // Phase 1c : parsing texte brut, alimente le store même si
+                    // la vue custom n'est pas active (kill switch OFF) — le
+                    // store existe indépendamment de l'affichage, comme prévu
+                    // par le modèle de données (Phase 1a).
+                    S7TVChatMessage *chatMsg = s7tv_parsePRIVMSG(textToProcess);
+                    if (chatMsg) {
+                        [[SevenTVManager sharedManager].chatMessageStore addMessage:chatMsg];
+                        s7tv_reloadActiveChatCustomView();
+                    }
                 }
             }
             completionHandler(message, error);

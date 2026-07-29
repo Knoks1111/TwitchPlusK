@@ -32,6 +32,7 @@
  */
 
 #import "SevenTVManager.h"
+#import "SevenTVChatMessage.h"
 #import "SevenTVSettingsController.h"
 #import "SevenTVURLProtocol.h"
 #import "SevenTVLogo.h"
@@ -69,6 +70,7 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 
 // File de dispatch pour la thread-safety des données d'emotes
 @property (nonatomic, strong, readwrite) dispatch_queue_t emoteQueue;
+@property (nonatomic, strong, readwrite) S7TVChatMessageStore *chatMessageStore;
 
 // File série pour les I/O fichier (lecture/écriture cache JSON)
 // Série = pas de concurrent file access, pas besoin de lock séparé.
@@ -316,6 +318,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         _activePrefetchKeys  = [NSMutableSet set];
 
         _emoteQueue  = dispatch_queue_create("tv.s7tv.emote-queue",  DISPATCH_QUEUE_CONCURRENT);
+        _chatMessageStore = [[S7TVChatMessageStore alloc] init];
         _fileIOQueue = dispatch_queue_create("tv.s7tv.file-io-queue", DISPATCH_QUEUE_SERIAL);
 
         // Cache image RAM : 40 MB max — environ 1000 emotes statiques 40×40pt décompressées.

@@ -200,6 +200,26 @@ static void s7tv_reloadActiveChatCustomView(void) {
     });
 }
 
+// ── Batching (exigence transverse #3) ────────────────────────────────────────
+// Sur une chaîne à fort volume, un reload par message individuel devient
+// coûteux (chaque reload retraverse toute la table). On regroupe donc les
+// messages arrivés dans une fenêtre de ~150ms en un seul reload, plutôt que
+// d'appeler s7tv_reloadActiveChatCustomView() à chaque message. Réservé au
+// flux IRC — le changement de chaîne (rare, doit être immédiat) continue
+// d'appeler la fonction non-batchée directement.
+static BOOL s_chatReloadScheduled = NO;
+
+static void s7tv_scheduleChatCustomReload(void) {
+    if (s_chatReloadScheduled) return; // un reload est déjà en attente,
+                                        // ce message y sera inclus
+    s_chatReloadScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        s_chatReloadScheduled = NO;
+        s7tv_reloadActiveChatCustomView();
+    });
+}
+
 static void s7tv_applyChatCustomTest(UIView *chatView) {
     UIStackView *stack = (UIStackView *)chatView.superview;
     if (!stack) return;
@@ -799,7 +819,7 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                     S7TVChatMessage *chatMsg = s7tv_parsePRIVMSG(textToProcess);
                     if (chatMsg) {
                         [[SevenTVManager sharedManager].chatMessageStore addMessage:chatMsg];
-                        s7tv_reloadActiveChatCustomView();
+                        s7tv_scheduleChatCustomReload();
                     }
                 }
             }

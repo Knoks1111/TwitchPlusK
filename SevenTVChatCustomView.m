@@ -99,15 +99,59 @@
 - (void)reloadMessages {
     NSAssert([NSThread isMainThread],
              @"reloadMessages doit être appelé depuis le main thread (touche UIKit)");
-    self.displayedMessages = [self.store allMessages];
-    [self.tableView reloadData];
 
-    // Auto-scroll systématique en bas — version minimale Phase 1c. La
-    // suspension au scroll manuel + bouton "nouveaux messages" est prévue
-    // explicitement en Phase 4, pas avant : ne pas l'anticiper ici pour ne
-    // pas dupliquer cette logique deux fois.
-    if (self.displayedMessages.count > 0) {
-        NSIndexPath *last = [NSIndexPath indexPathForRow:self.displayedMessages.count - 1
+    NSArray<S7TVChatMessage *> *oldMessages = self.displayedMessages;
+    NSArray<S7TVChatMessage *> *newMessages = [self.store allMessages];
+
+    // Ne fige "on est en bas" qu'AVANT de toucher au contenu — sinon la
+    // comparaison se ferait sur une table déjà mise à jour. Version minimale :
+    // la vraie suspension du scroll manuel (bouton "nouveaux messages") est
+    // prévue explicitement en Phase 4 ; ce garde-fou évite juste qu'un flux
+    // rapide fasse sauter la vue sous les yeux de quelqu'un qui remonte lire
+    // l'historique.
+    CGFloat distanceFromBottom = self.tableView.contentSize.height
+        - (self.tableView.contentOffset.y + self.tableView.bounds.size.height);
+    BOOL wasNearBottom = (oldMessages.count == 0) || (distanceFromBottom < 80);
+
+    self.displayedMessages = newMessages;
+
+    // Cas fréquent sur un flux actif : uniquement des messages ajoutés en
+    // fin de liste depuis le dernier reload (pas de suppression/purge entre
+    // les deux) → insertion incrémentale des nouvelles lignes seulement,
+    // bien moins coûteuse qu'un reloadData complet qui retraverse toute la
+    // table à chaque message (exigence transverse #3 — perf grosse chaîne).
+    //
+    // Comparaison par référence (isEqualToArray → isEqual: → pointeur pour
+    // NSObject) : les messages sont les mêmes instances mutables d'un appel
+    // à l'autre, donc ce test est fiable ET gratuit — pas de deep-copy.
+    //
+    // LIMITE CONNUE (Phase 5) : si un message déjà affiché change d'état
+    // (ex: passage en .deletedCollapsed suite à un timeout) sans qu'aucun
+    // message ne soit ajouté après lui, ce chemin rapide ne rafraîchit PAS
+    // sa cellule (même référence d'objet, donc "préfixe identique" reste
+    // vrai). Non bloquant pour l'instant : le pipeline de suppression n'est
+    // pas encore branché sur reloadMessages. À corriger quand la Phase 5
+    // sera câblée ici — invalider spécifiquement les indexPaths concernés
+    // via reloadRowsAtIndexPaths: plutôt que de se fier au seul appendage.
+    BOOL isSimpleAppend = newMessages.count > oldMessages.count &&
+        [[newMessages subarrayWithRange:NSMakeRange(0, oldMessages.count)]
+            isEqualToArray:oldMessages];
+
+    if (isSimpleAppend) {
+        NSMutableArray<NSIndexPath *> *newIndexPaths = [NSMutableArray array];
+        for (NSUInteger i = oldMessages.count; i < newMessages.count; i++) {
+            [newIndexPaths addObject:[NSIndexPath indexPathForRow:i inSection:0]];
+        }
+        [self.tableView insertRowsAtIndexPaths:newIndexPaths
+                              withRowAnimation:UITableViewRowAnimationNone];
+    } else {
+        // Suppression, purge mémoire, ou premier reload → pas de diff fiable
+        // possible, reload complet (plus sûr qu'un diff partiel incorrect).
+        [self.tableView reloadData];
+    }
+
+    if (wasNearBottom && newMessages.count > 0) {
+        NSIndexPath *last = [NSIndexPath indexPathForRow:newMessages.count - 1
                                                  inSection:0];
         [self.tableView scrollToRowAtIndexPath:last
                                atScrollPosition:UITableViewScrollPositionBottom

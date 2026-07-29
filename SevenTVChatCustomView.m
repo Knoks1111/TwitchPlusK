@@ -61,6 +61,17 @@
 // change pendant que la table itère dessus (lecture thread-safe côté store,
 // mais la table a besoin d'un tableau stable pendant tout le reload).
 @property (nonatomic, strong) NSArray<S7TVChatMessage *> *displayedMessages;
+// Cache messageID → hauteur exacte déjà mesurée. Remplace complètement
+// UITableViewAutomaticDimension (voir raison dans reloadMessages) : avec une
+// hauteur connue à l'avance, UIKit n'a plus jamais besoin de re-mesurer une
+// cellule après son insertion, donc plus de "saut" visuel entre l'estimation
+// et la vraie taille — c'était la cause du rebond qui persistait malgré le
+// performBatchUpdates. Bonus perf : une cellule déjà vue ne recalcule plus
+// sa hauteur au scroll non plus.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *rowHeightCache;
+// Largeur pour laquelle rowHeightCache a été calculé — invalidé si la vue
+// change de largeur (rotation, passage normal/théâtre).
+@property (nonatomic, assign) CGFloat cachedContentWidth;
 @end
 
 @implementation SevenTVChatCustomView
@@ -70,6 +81,8 @@
     if (self) {
         _store = store;
         _displayedMessages = @[];
+        _rowHeightCache = [NSMutableDictionary dictionary];
+        _cachedContentWidth = 0;
 
         _tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
         _tableView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -77,8 +90,11 @@
         _tableView.separatorStyle         = UITableViewCellSeparatorStyleNone;
         _tableView.dataSource             = self;
         _tableView.delegate               = self;
-        _tableView.rowHeight              = UITableViewAutomaticDimension;
-        _tableView.estimatedRowHeight     = 24;
+        // Pas d'UITableViewAutomaticDimension : la hauteur exacte de chaque
+        // cellule est calculée à l'avance (voir s7tv_heightForMessage:) et
+        // mise en cache — élimine le cycle "estimation puis correction" qui
+        // causait le rebond, et évite à UIKit de re-mesurer une cellule à
+        // chaque passage en scroll.
         // Le clavier/barre de saisie restent 100% natifs Twitch (principe
         // directeur du plan) — cette table n'a donc pas à gérer le clavier.
         [_tableView registerClass:[S7TVChatCustomCell class]
@@ -94,6 +110,20 @@
         ]];
     }
     return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    // Rotation, ou passage normal ↔ théâtre : la largeur change, donc les
+    // hauteurs mises en cache (calculées pour l'ancienne largeur) ne sont
+    // plus valables. On invalide tout et on redemande les hauteurs — sans
+    // ça, le texte se ré-enroule visuellement mais la ligne garde son
+    // ancienne hauteur figée en cache → texte tronqué ou espace vide.
+    if (self.bounds.size.width > 0 && self.bounds.size.width != self.cachedContentWidth) {
+        self.cachedContentWidth = self.bounds.size.width;
+        [self.rowHeightCache removeAllObjects];
+        [self.tableView reloadData];
+    }
 }
 
 - (void)reloadMessages {
@@ -160,6 +190,20 @@
     } else {
         // Suppression, purge mémoire, ou premier reload → pas de diff fiable
         // possible, reload complet (plus sûr qu'un diff partiel incorrect).
+
+        // Purge les entrées du cache dont le message n'existe plus dans le
+        // store (sinon rowHeightCache grossirait sans limite sur une session
+        // longue — un message purgé par maxMessageCount ne revient jamais).
+        if (self.rowHeightCache.count > 0) {
+            NSMutableSet<NSString *> *validIDs = [NSMutableSet setWithCapacity:newMessages.count];
+            for (S7TVChatMessage *m in newMessages) [validIDs addObject:m.messageID];
+            NSMutableArray<NSString *> *staleKeys = [NSMutableArray array];
+            for (NSString *key in self.rowHeightCache) {
+                if (![validIDs containsObject:key]) [staleKeys addObject:key];
+            }
+            [self.rowHeightCache removeObjectsForKeys:staleKeys];
+        }
+
         [self.tableView reloadData];
         // reloadData n'a pas de completion — layoutIfNeeded force le calcul
         // des vraies hauteurs de cellule avant de scroller, même raison que
@@ -172,6 +216,16 @@
 - (void)s7tv_scrollToBottomIfNeeded:(BOOL)wasNearBottom {
     NSInteger count = self.displayedMessages.count;
     if (!wasNearBottom || count == 0) return;
+
+    // Ne JAMAIS forcer un scroll pendant que le doigt de la personne est sur
+    // l'écran (ou que la table décélère après un swipe) — sinon chaque batch
+    // de messages (~150ms sur un flux actif) entre en conflit avec le geste
+    // en cours et casse la fluidité du scroll manuel. On retente simplement
+    // au prochain reloadMessages une fois le geste terminé.
+    if (self.tableView.isTracking || self.tableView.isDragging || self.tableView.isDecelerating) {
+        return;
+    }
+
     NSIndexPath *last = [NSIndexPath indexPathForRow:count - 1 inSection:0];
     [self.tableView scrollToRowAtIndexPath:last
                            atScrollPosition:UITableViewScrollPositionBottom
@@ -191,6 +245,39 @@
     S7TVChatMessage *msg = self.displayedMessages[indexPath.row];
     cell.messageLabel.attributedText = [self s7tv_attributedTextForMessage:msg];
     return cell;
+}
+
+#pragma mark - UITableViewDelegate
+
+- (CGFloat)tableView:(UITableView *)tableView
+    heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    S7TVChatMessage *msg = self.displayedMessages[indexPath.row];
+    return [self s7tv_heightForMessage:msg];
+}
+
+// Hauteur exacte mise en cache par messageID — voir rowHeightCache pour le
+// raisonnement complet (élimine le rebond causé par l'auto-dimension).
+- (CGFloat)s7tv_heightForMessage:(S7TVChatMessage *)msg {
+    NSNumber *cached = self.rowHeightCache[msg.messageID];
+    if (cached) return cached.doubleValue;
+
+    // Largeur dispo = largeur de la vue moins les marges horizontales de la
+    // cellule (8+8, voir S7TVChatCustomCell). Fallback avant le tout premier
+    // layout (largeur encore à 0) : une valeur raisonnable plutôt qu'un
+    // boundingRect avec largeur 0 qui donnerait une hauteur ~infinie.
+    CGFloat availableWidth = self.bounds.size.width - 16;
+    if (availableWidth <= 0) availableWidth = 300;
+
+    NSAttributedString *text = [self s7tv_attributedTextForMessage:msg];
+    CGRect rect = [text boundingRectWithSize:CGSizeMake(availableWidth, CGFLOAT_MAX)
+                                      options:NSStringDrawingUsesLineFragmentOrigin |
+                                              NSStringDrawingUsesFontLeading
+                                      context:nil];
+    // +8 = marges verticales de la cellule (4 haut + 4 bas, voir
+    // S7TVChatCustomCell). ceil() : jamais couper un pixel de la dernière ligne.
+    CGFloat height = ceil(rect.size.height) + 8;
+    self.rowHeightCache[msg.messageID] = @(height);
+    return height;
 }
 
 #pragma mark - Construction du texte

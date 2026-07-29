@@ -142,21 +142,40 @@
         for (NSUInteger i = oldMessages.count; i < newMessages.count; i++) {
             [newIndexPaths addObject:[NSIndexPath indexPathForRow:i inSection:0]];
         }
-        [self.tableView insertRowsAtIndexPaths:newIndexPaths
-                              withRowAnimation:UITableViewRowAnimationNone];
+        // performBatchUpdates coordonne l'insertion ET le scroll comme une
+        // seule transaction de layout — sans ça, UITableViewAutomaticDimension
+        // recalcule la vraie hauteur des cellules APRÈS le scroll déjà fait
+        // (l'estimatedRowHeight sert de placeholder le temps du premier
+        // passage), ce qui décale le contenu une deuxième fois juste après
+        // coup → effet de rebond. En scrollant dans le bloc completion (donc
+        // après que le layout final soit connu), on scrolle une seule fois,
+        // au bon endroit, sans à-coup.
+        __weak typeof(self) weakSelf = self;
+        [self.tableView performBatchUpdates:^{
+            [weakSelf.tableView insertRowsAtIndexPaths:newIndexPaths
+                                       withRowAnimation:UITableViewRowAnimationNone];
+        } completion:^(BOOL finished) {
+            [weakSelf s7tv_scrollToBottomIfNeeded:wasNearBottom];
+        }];
     } else {
         // Suppression, purge mémoire, ou premier reload → pas de diff fiable
         // possible, reload complet (plus sûr qu'un diff partiel incorrect).
         [self.tableView reloadData];
+        // reloadData n'a pas de completion — layoutIfNeeded force le calcul
+        // des vraies hauteurs de cellule avant de scroller, même raison que
+        // ci-dessus (éviter de scroller sur une estimation puis rebondir).
+        [self.tableView layoutIfNeeded];
+        [self s7tv_scrollToBottomIfNeeded:wasNearBottom];
     }
+}
 
-    if (wasNearBottom && newMessages.count > 0) {
-        NSIndexPath *last = [NSIndexPath indexPathForRow:newMessages.count - 1
-                                                 inSection:0];
-        [self.tableView scrollToRowAtIndexPath:last
-                               atScrollPosition:UITableViewScrollPositionBottom
-                                       animated:NO];
-    }
+- (void)s7tv_scrollToBottomIfNeeded:(BOOL)wasNearBottom {
+    NSInteger count = self.displayedMessages.count;
+    if (!wasNearBottom || count == 0) return;
+    NSIndexPath *last = [NSIndexPath indexPathForRow:count - 1 inSection:0];
+    [self.tableView scrollToRowAtIndexPath:last
+                           atScrollPosition:UITableViewScrollPositionBottom
+                                   animated:NO];
 }
 
 #pragma mark - UITableViewDataSource
@@ -176,12 +195,37 @@
 
 #pragma mark - Construction du texte
 
+// Twitch n'affiche jamais une couleur de pseudo brute telle que choisie par
+// l'utilisateur : son client applique un plancher de luminosité pour rester
+// lisible sur fond sombre (certains pseudos ont une couleur proche du noir
+// en valeur brute, invisible sur notre fond noir sinon). On reproduit ce
+// comportement ici, au moment du RENDU — pas au parsing/stockage — pour que
+// S7TVChatMessage garde la vraie couleur choisie par l'utilisateur (utile
+// si un thème clair arrive un jour, Phase 6 : le calcul de lisibilité doit
+// alors se faire contre un fond clair, pas être figé dans le modèle).
+static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
+    if (!color) return [UIColor whiteColor];
+
+    CGFloat h, s, b, a;
+    if (![color getHue:&h saturation:&s brightness:&b alpha:&a]) {
+        return [UIColor whiteColor]; // couleur non convertible (espace exotique) → fallback sûr
+    }
+
+    // Seuil et plancher choisis empiriquement pour rester proches du rendu
+    // natif Twitch (couleurs vives préservées telles quelles, seules les
+    // couleurs franchement trop sombres sont relevées).
+    static const CGFloat kMinBrightness = 0.50;
+    if (b >= kMinBrightness) return color;
+
+    return [UIColor colorWithHue:h saturation:s brightness:kMinBrightness alpha:a];
+}
+
 - (NSAttributedString *)s7tv_attributedTextForMessage:(S7TVChatMessage *)msg {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
 
     UIFont *usernameFont = [UIFont boldSystemFontOfSize:cfg.usernameFontSize];
     UIFont *messageFont  = [UIFont systemFontOfSize:cfg.messageFontSize];
-    UIColor *usernameColor = msg.authorColor ?: [UIColor whiteColor];
+    UIColor *usernameColor = s7tv_readableColorOnDarkBackground(msg.authorColor);
     UIColor *messageColor  = [UIColor whiteColor];
 
     NSMutableAttributedString *result = [NSMutableAttributedString new];

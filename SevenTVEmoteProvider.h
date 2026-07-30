@@ -57,4 +57,15 @@ NS_ASSUME_NONNULL_BEGIN
 @interface S7TVSevenTVEmoteProvider : NSObject <S7TVEmoteProvider>
 @end
 
+
+// Emotes Twitch natives : contrairement à 7TV, on ne les résout PAS par nom
+// — Twitch envoie déjà l'ID exact et la position dans le tag IRC `emotes=`
+// de chaque PRIVMSG (voir s7tv_parsePRIVMSG dans TweakSevenTV.m), donc pas
+// besoin de dictionnaire nom→ID à maintenir. Construction directe depuis
+// l'ID, pas de protocole S7TVEmoteProvider ici (qui suppose une résolution
+// par nom, inadaptée à ce cas).
+@interface S7TVTwitchNativeEmoteFactory : NSObject
++ (id<S7TVResolvedEmote>)resolvedEmoteForTwitchEmoteID:(NSString *)emoteID;
+@end
+
 NS_ASSUME_NONNULL_END

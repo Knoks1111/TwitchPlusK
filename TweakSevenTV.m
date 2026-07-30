@@ -311,6 +311,101 @@ static NSDictionary<NSString *, NSString *> *s7tv_parseIRCTags(NSString *tagBloc
     return tags;
 }
 
+// ────────────────────────────────────────────────────────────
+// MARK: - Emotes Twitch natives (tag IRC emotes=)
+// ────────────────────────────────────────────────────────────
+//
+// Contrairement à 7TV, Twitch fournit déjà l'ID exact ET la position de
+// chaque emote native directement dans le tag IRC — pas de lookup par nom
+// nécessaire, juste un splicing du texte autour de ces positions connues.
+
+// Parse "emoteID1:start-end,start-end/emoteID2:start-end..." en liste triée
+// par position de départ. Chaque entrée : @[emoteID, @(start), @(end)]
+// (end inclusif, comme le format Twitch). Tolère les entrées malformées
+// (les ignore silencieusement plutôt que planter — exigence Phase 1a).
+static NSArray<NSArray *> *s7tv_parseTwitchEmotesTag(NSString *tagValue) {
+    NSMutableArray<NSArray *> *ranges = [NSMutableArray array];
+    if (!tagValue.length) return ranges;
+
+    for (NSString *emoteBlock in [tagValue componentsSeparatedByString:@"/"]) {
+        NSRange colonRange = [emoteBlock rangeOfString:@":"];
+        if (colonRange.location == NSNotFound) continue;
+        NSString *emoteID = [emoteBlock substringToIndex:colonRange.location];
+        NSString *positionsStr = [emoteBlock substringFromIndex:colonRange.location + 1];
+        if (!emoteID.length) continue;
+
+        for (NSString *pos in [positionsStr componentsSeparatedByString:@","]) {
+            NSRange dashRange = [pos rangeOfString:@"-"];
+            if (dashRange.location == NSNotFound) continue;
+            NSInteger start = [[pos substringToIndex:dashRange.location] integerValue];
+            NSInteger end   = [[pos substringFromIndex:dashRange.location + 1] integerValue];
+            if (end < start || start < 0) continue;
+            [ranges addObject:@[emoteID, @(start), @(end)]];
+        }
+    }
+
+    [ranges sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
+        return [(NSNumber *)a[1] compare:(NSNumber *)b[1]];
+    }];
+    return ranges;
+}
+
+// Tokenise le texte du message en épissant les emotes Twitch natives (position
+// exacte connue via le tag) avec le tokenizer 7TV existant (mots, résolution
+// par nom) pour tout le texte autour. Chemin le plus fréquent (aucune emote
+// native dans le message) : identique à avant, aucun coût supplémentaire.
+static NSArray<S7TVChatToken *> *s7tv_tokenizeMessageWithNativeEmotes(NSString *text,
+                                                                        NSString *emotesTag) {
+    NSArray<NSArray *> *ranges = s7tv_parseTwitchEmotesTag(emotesTag);
+    if (ranges.count == 0) {
+        return [SevenTVChatTokenizer tokenizeText:text providers:s7tv_emoteProviders()];
+    }
+
+    NSMutableArray<S7TVChatToken *> *tokens = [NSMutableArray array];
+    NSInteger cursor = 0; // position courante dans text (unités UTF-16, comme NSString)
+
+    for (NSArray *range in ranges) {
+        NSString *emoteID = range[0];
+        NSInteger start = [(NSNumber *)range[1] integerValue];
+        NSInteger end   = [(NSNumber *)range[2] integerValue]; // inclusif
+
+        // Garde-fou : jamais faire confiance à 100% à des positions reçues du
+        // réseau (exigence Phase 1a "parsing robuste, jamais de crash").
+        if (start < cursor || start >= (NSInteger)text.length || end >= (NSInteger)text.length) {
+            continue;
+        }
+
+        if (start > cursor) {
+            NSString *span = [text substringWithRange:NSMakeRange(cursor, start - cursor)];
+            [tokens addObjectsFromArray:
+                [SevenTVChatTokenizer tokenizeText:span providers:s7tv_emoteProviders()]];
+        }
+
+        NSString *emoteText = [text substringWithRange:NSMakeRange(start, end - start + 1)];
+        id<S7TVResolvedEmote> resolved =
+            [S7TVTwitchNativeEmoteFactory resolvedEmoteForTwitchEmoteID:emoteID];
+        if (resolved) {
+            S7TVChatToken *token = [S7TVChatToken emoteToken:emoteText
+                                                     provider:S7TVChatTokenTypeEmoteTwitch
+                                                      emoteID:emoteID];
+            token.resolvedEmote = resolved;
+            [tokens addObject:token];
+        } else {
+            [tokens addObject:[S7TVChatToken textToken:emoteText]];
+        }
+
+        cursor = end + 1;
+    }
+
+    if (cursor < (NSInteger)text.length) {
+        NSString *span = [text substringFromIndex:cursor];
+        [tokens addObjectsFromArray:
+            [SevenTVChatTokenizer tokenizeText:span providers:s7tv_emoteProviders()]];
+    }
+
+    return tokens;
+}
+
 // Parse une ligne IRC complète et retourne un S7TVChatMessage si c'est un
 // PRIVMSG exploitable, nil sinon (autre type de commande, ou PRIVMSG dont
 // le texte n'a pas pu être isolé — on ne construit jamais de message à
@@ -352,6 +447,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     NSString *userID       = s7tv_tagValue(tags, @"user-id", @"");
     NSString *displayName  = s7tv_tagValue(tags, @"display-name", @"???");
     NSString *colorHex     = s7tv_tagValue(tags, @"color", @"");
+    NSString *emotesTag    = s7tv_tagValue(tags, @"emotes", @"");
 
     S7TVChatMessage *msg = [[S7TVChatMessage alloc] initWithMessageID:messageID
                                                              timestamp:[NSDate date]
@@ -372,12 +468,11 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     }
 
     // Tokenisation à la construction, pas au rendu (Phase 2) : chaque emote
-    // du message a déjà ses dimensions connues (via le fournisseur) avant
-    // même le premier passage dans la table — c'est ce qui permet de
+    // du message (7TV comme Twitch native) a déjà ses dimensions connues
+    // avant même le premier passage dans la table — c'est ce qui permet de
     // réserver l'espace exact dès le départ côté renderer, sans jamais avoir
     // à resize après coup une fois l'image chargée.
-    msg.tokens = [SevenTVChatTokenizer tokenizeText:messageText
-                                            providers:s7tv_emoteProviders()];
+    msg.tokens = s7tv_tokenizeMessageWithNativeEmotes(messageText, emotesTag);
 
     return msg;
 }

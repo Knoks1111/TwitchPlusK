@@ -6,15 +6,22 @@
 
 #import "SevenTVChatCustomView.h"
 #import "SevenTVChatAppearanceConfig.h"
+#import "SevenTVEmoteImageCache.h"
 #import "SevenTVManager.h"
 
 
 // ============================================================
-// MARK: - Cellule (texte brut, hauteur dynamique)
+// MARK: - Cellule (texte + emotes, hauteur dynamique)
 // ============================================================
 
 @interface S7TVChatCustomCell : UITableViewCell
 @property (nonatomic, strong) UILabel *messageLabel;
+// messageID actuellement affiché par cette cellule — vérifié avant
+// d'appliquer une image d'emote chargée en asynchrone (Phase 2) : la
+// cellule peut avoir été recyclée pour un autre message entre le lancement
+// du chargement et sa fin (scroll rapide), auquel cas on ignore le résultat
+// plutôt que d'afficher une emote sur la mauvaise ligne.
+@property (nonatomic, copy) NSString *currentMessageID;
 @end
 
 @implementation S7TVChatCustomCell
@@ -243,7 +250,38 @@
     S7TVChatCustomCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"
                                                                 forIndexPath:indexPath];
     S7TVChatMessage *msg = self.displayedMessages[indexPath.row];
-    cell.messageLabel.attributedText = [self s7tv_attributedTextForMessage:msg];
+    cell.currentMessageID = msg.messageID;
+
+    NSMutableArray<NSTextAttachment *> *attachments = [NSMutableArray array];
+    NSMutableArray<id<S7TVResolvedEmote>> *emotes = [NSMutableArray array];
+    cell.messageLabel.attributedText = [self s7tv_buildAttributedStringForMessage:msg
+                                                                 collectAttachments:attachments
+                                                                     collectEmotes:emotes];
+
+    // Les emotes déjà en cache ont été injectées directement par le builder
+    // ci-dessus (voir cachedImageForResolvedEmote: dedans) — ici on ne
+    // déclenche un chargement async QUE pour celles encore manquantes.
+    SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
+    __weak S7TVChatCustomCell *weakCell = cell;
+    NSString *expectedMessageID = msg.messageID;
+    for (NSUInteger i = 0; i < attachments.count; i++) {
+        NSTextAttachment *attachment = attachments[i];
+        if (attachment.image) continue;
+        id<S7TVResolvedEmote> emote = emotes[i];
+        [imageCache imageForResolvedEmote:emote completion:^(UIImage * _Nullable image) {
+            if (!image) return; // échec réseau/décodage → le nom reste affiché en fallback (token.text déjà dans le run texte)
+            S7TVChatCustomCell *strongCell = weakCell;
+            if (!strongCell || ![strongCell.currentMessageID isEqualToString:expectedMessageID]) {
+                return; // cellule recyclée pour un autre message entre-temps
+            }
+            attachment.image = image;
+            // Mutation en place de l'attachment ne suffit pas à faire
+            // redessiner UILabel — la réaffectation (même objet) force le
+            // redraw en tenant compte de l'image maintenant présente.
+            strongCell.messageLabel.attributedText = strongCell.messageLabel.attributedText;
+        }];
+    }
+
     return cell;
 }
 
@@ -268,7 +306,17 @@
     CGFloat availableWidth = self.bounds.size.width - 16;
     if (availableWidth <= 0) availableWidth = 300;
 
-    NSAttributedString *text = [self s7tv_attributedTextForMessage:msg];
+    // Mesure pure : les tableaux collectés ne sont pas utilisés ici, seule
+    // la taille des attachments (déjà fixée par le builder à partir des
+    // dimensions du fournisseur, indépendamment de l'image chargée ou non)
+    // compte pour boundingRect. C'est exactement ce qui permet de réserver
+    // la bonne hauteur dès le premier passage, avant même que l'image ait
+    // fini de télécharger (le point qui bloquait le rendu natif Twitch).
+    NSMutableArray<NSTextAttachment *> *unusedAttachments = [NSMutableArray array];
+    NSMutableArray<id<S7TVResolvedEmote>> *unusedEmotes = [NSMutableArray array];
+    NSAttributedString *text = [self s7tv_buildAttributedStringForMessage:msg
+                                                         collectAttachments:unusedAttachments
+                                                             collectEmotes:unusedEmotes];
     CGRect rect = [text boundingRectWithSize:CGSizeMake(availableWidth, CGFLOAT_MAX)
                                       options:NSStringDrawingUsesLineFragmentOrigin |
                                               NSStringDrawingUsesFontLeading
@@ -307,7 +355,9 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
     return [UIColor colorWithHue:h saturation:s brightness:kMinBrightness alpha:a];
 }
 
-- (NSAttributedString *)s7tv_attributedTextForMessage:(S7TVChatMessage *)msg {
+- (NSAttributedString *)s7tv_buildAttributedStringForMessage:(S7TVChatMessage *)msg
+                                          collectAttachments:(NSMutableArray<NSTextAttachment *> *)outAttachments
+                                              collectEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outEmotes {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
 
     UIFont *usernameFont = [UIFont boldSystemFontOfSize:cfg.usernameFontSize];
@@ -316,31 +366,88 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
     UIColor *messageColor  = [UIColor whiteColor];
 
     NSMutableAttributedString *result = [NSMutableAttributedString new];
-
     NSString *displayName = msg.authorDisplayName.length ? msg.authorDisplayName : @"???";
-
-    // Placeholder texte de la Phase 5 (déjà anticipé par le modèle de
-    // données — state géré ici en attendant l'implémentation complète du
-    // tap-to-reveal, qui viendra avec sa propre cellule dédiée en Phase 5).
-    NSString *bodyText;
-    if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
-        bodyText = @"[message supprimé]";
-        messageColor = [UIColor grayColor];
-    } else {
-        // .normal et .deletedExpanded affichent tous deux rawText pour
-        // l'instant — la distinction visuelle (texte atténué) pour
-        // .deletedExpanded arrive avec la cellule dédiée en Phase 5.
-        bodyText = msg.rawText ?: @"";
-    }
 
     [result appendAttributedString:[[NSAttributedString alloc]
         initWithString:[displayName stringByAppendingString:@": "]
             attributes:@{NSFontAttributeName: usernameFont,
                          NSForegroundColorAttributeName: usernameColor}]];
-    [result appendAttributedString:[[NSAttributedString alloc]
-        initWithString:bodyText
-            attributes:@{NSFontAttributeName: messageFont,
-                         NSForegroundColorAttributeName: messageColor}]];
+
+    // Placeholder texte de la Phase 5 (déjà anticipé par le modèle de
+    // données — state géré ici en attendant l'implémentation complète du
+    // tap-to-reveal, qui viendra avec sa propre cellule dédiée en Phase 5).
+    if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
+        [result appendAttributedString:[[NSAttributedString alloc]
+            initWithString:@"[message supprimé]"
+                attributes:@{NSFontAttributeName: messageFont,
+                             NSForegroundColorAttributeName: [UIColor grayColor]}]];
+        return result;
+    }
+
+    NSArray<S7TVChatToken *> *tokens = msg.tokens;
+    if (!tokens.count) {
+        // Fallback Phase 1c : pas de tokens (tokenizer pas encore passé sur
+        // ce message, ou aucune emote détectée dedans) → texte brut tel quel.
+        [result appendAttributedString:[[NSAttributedString alloc]
+            initWithString:msg.rawText ?: @""
+                attributes:@{NSFontAttributeName: messageFont,
+                             NSForegroundColorAttributeName: messageColor}]];
+        return result;
+    }
+
+    SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
+
+    for (S7TVChatToken *token in tokens) {
+        if (token.type == S7TVChatTokenTypeEmote7TV || token.type == S7TVChatTokenTypeEmoteTwitch) {
+            id<S7TVResolvedEmote> emote = token.resolvedEmote;
+            if (!emote) {
+                // Ne devrait pas arriver (le tokenizer ne crée un token
+                // emote qu'avec une résolution) — filet de sécurité plutôt
+                // que planter le rendu.
+                [result appendAttributedString:[[NSAttributedString alloc]
+                    initWithString:token.text ?: @""
+                        attributes:@{NSFontAttributeName: messageFont,
+                                     NSForegroundColorAttributeName: messageColor}]];
+                continue;
+            }
+
+            // Taille réservée à partir des dimensions natives du fournisseur
+            // (déjà connues, résolues à la construction du message) — le
+            // point qui règle le problème historique du projet : on n'a
+            // jamais besoin de corriger après coup une fois l'image chargée.
+            CGFloat targetHeight = (token.type == S7TVChatTokenTypeEmote7TV)
+                ? cfg.emote7TVSize : cfg.emoteTwitchSize;
+            CGFloat ratio = (emote.nativeSize.height > 0)
+                ? emote.nativeSize.width / emote.nativeSize.height : 1.0;
+            CGFloat targetWidth = targetHeight * ratio;
+
+            NSTextAttachment *attachment = [[NSTextAttachment alloc] init];
+            // Léger décalage vertical pour rapprocher l'emote de la ligne de
+            // base du texte plutôt que de son sommet — réglage fin visuel à
+            // reprendre en Phase 6 si besoin, pas critique pour l'instant.
+            attachment.bounds = CGRectMake(0, -4, targetWidth, targetHeight);
+            // Cache hit → image injectée immédiatement, aucun flash vide.
+            // Cache miss → bounds déjà corrects, l'espace est réservé ; le
+            // chargement async (déclenché côté cellForRowAtIndexPath, pas
+            // ici — cette méthode reste pure/sans effet de bord pour rester
+            // réutilisable pour la mesure de hauteur) remplira l'image
+            // plus tard sans jamais changer la taille de la ligne.
+            attachment.image = [imageCache cachedImageForResolvedEmote:emote];
+
+            [result appendAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];
+            [outAttachments addObject:attachment];
+            [outEmotes addObject:emote];
+            continue;
+        }
+
+        // .text, .mention, .url : même style pour l'instant. Le highlight
+        // visuel distinct des mentions (fond coloré si c'est nous) et le
+        // style tappable des URLs sont prévus explicitement en Phase 6.
+        [result appendAttributedString:[[NSAttributedString alloc]
+            initWithString:token.text ?: @""
+                attributes:@{NSFontAttributeName: messageFont,
+                             NSForegroundColorAttributeName: messageColor}]];
+    }
 
     return result;
 }

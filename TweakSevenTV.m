@@ -32,6 +32,8 @@
 #import "SevenTVChatMessage.h"
 #import "SevenTVChatAppearanceConfig.h"
 #import "SevenTVChatCustomView.h"
+#import "SevenTVEmoteProvider.h"
+#import "SevenTVChatTokenizer.h"
 // Cle NSUserDefaults Auto Collect Channel Points
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 
@@ -258,13 +260,27 @@ static void s7tv_applyChatCustomTest(UIView *chatView) {
 
 
 // ────────────────────────────────────────────────────────────
-// MARK: - Parsing IRC PRIVMSG (Phase 1c — texte brut, sans emotes)
+// MARK: - Parsing IRC PRIVMSG (Phase 1c/2 — texte + emotes 7TV)
 // ────────────────────────────────────────────────────────────
 //
 // Parsing robuste : tags malformés ou absents → valeurs par défaut, jamais
-// de crash (exigence Phase 1a). Le tokenizer emotes/mentions (Phase 2)
-// viendra remplacer le "rawText brut" par de vrais tokens sans changer la
-// forme de S7TVChatMessage.
+// de crash (exigence Phase 1a). Tokenisation via SevenTVChatTokenizer
+// (Phase 2) — emotes Twitch natives pas encore branchées (point d'extension
+// naturel : parser le tag emotes= que Twitch envoie déjà tel quel côté
+// serveur, jamais lu pour l'instant).
+
+// Liste ordonnée des fournisseurs d'emotes essayés pour chaque mot du
+// message (architecture générique, voir SevenTVEmoteProvider.h). Un seul
+// fournisseur pour l'instant (7TV) — l'ajout d'un futur fournisseur
+// BTTV/FFZ se ferait uniquement ici, sans toucher au tokenizer.
+static NSArray<id<S7TVEmoteProvider>> *s7tv_emoteProviders(void) {
+    static NSArray<id<S7TVEmoteProvider>> *providers = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        providers = @[ [S7TVSevenTVEmoteProvider new] ];
+    });
+    return providers;
+}
 
 // Extrait la valeur d'un tag IRC donné depuis le dictionnaire de tags déjà
 // parsé. Retourne defaultValue (jamais nil) si absent/vide.
@@ -354,6 +370,15 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
                                                alpha:1.0];
         }
     }
+
+    // Tokenisation à la construction, pas au rendu (Phase 2) : chaque emote
+    // du message a déjà ses dimensions connues (via le fournisseur) avant
+    // même le premier passage dans la table — c'est ce qui permet de
+    // réserver l'espace exact dès le départ côté renderer, sans jamais avoir
+    // à resize après coup une fois l'image chargée.
+    msg.tokens = [SevenTVChatTokenizer tokenizeText:messageText
+                                            providers:s7tv_emoteProviders()];
+
     return msg;
 }
 

@@ -20,7 +20,10 @@ TwitchSevenTV_FILES = \
     SevenTVLogsController.m \
     SevenTVChatMessage.m \
     SevenTVChatAppearanceConfig.m \
-    SevenTVChatCustomView.m
+    SevenTVChatCustomView.m \
+    SevenTVEmoteProvider.m \
+    SevenTVChatTokenizer.m \
+    SevenTVEmoteImageCache.m
 
 # ── Options de compilation ──
 TwitchSevenTV_CFLAGS = \

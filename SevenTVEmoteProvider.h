@@ -17,7 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 // renderer ont besoin de savoir, indépendamment de la source (7TV/BTTV/FFZ).
 @protocol S7TVResolvedEmote <NSObject>
 
-@property (nonatomic, readonly) NSString *emoteID;
+@property (nonatomic, copy, readonly) NSString *emoteID;
 
 // Dimensions natives en points (1x), telles que fournies par l'API du
 // fournisseur — permet de calculer le ratio largeur/hauteur exact avant même

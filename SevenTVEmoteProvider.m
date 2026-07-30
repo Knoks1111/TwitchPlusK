@@ -37,16 +37,22 @@
     SevenTVEmote *emote = [[SevenTVManager sharedManager] emoteForName:name];
     if (!emote) return nil;
 
-    // Dimensions absentes (vieilles entrées de cache sans dimensions, voir
-    // commentaire sur SevenTVEmote.width/height) → on ne peut pas réserver
-    // un espace fiable, donc pas de token emote pour ce nom : le tokenizer
-    // retombera sur un token texte brut (fallback nom d'emote, exigence
-    // Phase 2 "échec réseau/dimensions inconnues").
-    if (emote.width <= 0 || emote.height <= 0) return nil;
+    // Dimensions absentes (vieilles entrées de cache disque écrites avant
+    // que ce champ n'existe, voir commentaire sur SevenTVEmote.width/height
+    // dans SevenTVManager.h) → on ne connaît pas le vrai ratio, mais on ne
+    // renonce PAS pour autant à afficher l'image : la quasi-totalité des
+    // emotes 7TV sont carrées, donc un fallback 1:1 est une bien meilleure
+    // approximation que de retomber sur du texte brut pour une emote pourtant
+    // bien identifiée. Le cache disque se réécrit avec les vraies dimensions
+    // dès le prochain fetch API frais (loadGlobalEmotes/loadEmotesForChannel...),
+    // donc ce fallback ne dure qu'un temps, pas indéfiniment.
+    CGSize nativeSize = (emote.width > 0 && emote.height > 0)
+        ? CGSizeMake(emote.width, emote.height)
+        : CGSizeMake(1, 1);
 
     S7TVResolved7TVEmote *resolved = [S7TVResolved7TVEmote new];
     resolved.emoteID    = emote.emoteID;
-    resolved.nativeSize  = CGSizeMake(emote.width, emote.height);
+    resolved.nativeSize  = nativeSize;
     resolved.isAnimated  = emote.isAnimated;
 
     NSInteger res = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;

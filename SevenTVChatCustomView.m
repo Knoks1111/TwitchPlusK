@@ -97,11 +97,23 @@
         _tableView.separatorStyle         = UITableViewCellSeparatorStyleNone;
         _tableView.dataSource             = self;
         _tableView.delegate               = self;
-        // Pas d'UITableViewAutomaticDimension : la hauteur exacte de chaque
-        // cellule est calculée à l'avance (voir s7tv_heightForMessage:) et
-        // mise en cache — élimine le cycle "estimation puis correction" qui
-        // causait le rebond, et évite à UIKit de re-mesurer une cellule à
-        // chaque passage en scroll.
+        // Pas de rowHeight = UITableViewAutomaticDimension : la hauteur
+        // exacte de chaque cellule est calculée à l'avance (voir
+        // s7tv_heightForMessage:) — élimine le cycle "estimation puis
+        // correction" de l'auto-sizing qui causait le rebond.
+        //
+        // MAIS estimatedRowHeight reste nécessaire : sans lui, UITableView
+        // n'a aucune base pour estimer sa taille totale de scroll, et se
+        // retrouve à appeler heightForRowAtIndexPath: pour TOUTES les lignes
+        // d'un coup, de façon synchrone sur le main thread, dès qu'un gros
+        // paquet de messages arrive (typiquement à l'arrivée sur une chaîne
+        // active) — c'était la cause du scroll saccadé au join. Avec
+        // estimatedRowHeight défini, UIKit s'en sert comme approximation
+        // pour le calcul de contentSize et n'appelle notre hauteur exacte
+        // que pour les lignes réellement proches de l'écran (lazy). Ce
+        // mécanisme est indépendant de l'auto-sizing des cellules : pas de
+        // retour du rebond.
+        _tableView.estimatedRowHeight = 24;
         // Le clavier/barre de saisie restent 100% natifs Twitch (principe
         // directeur du plan) — cette table n'a donc pas à gérer le clavier.
         [_tableView registerClass:[S7TVChatCustomCell class]

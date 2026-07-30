@@ -16,12 +16,6 @@
 
 @interface S7TVChatCustomCell : UITableViewCell
 @property (nonatomic, strong) UILabel *messageLabel;
-// messageID actuellement affiché par cette cellule — vérifié avant
-// d'appliquer une image d'emote chargée en asynchrone (Phase 2) : la
-// cellule peut avoir été recyclée pour un autre message entre le lancement
-// du chargement et sa fin (scroll rapide), auquel cas on ignore le résultat
-// plutôt que d'afficher une emote sur la mauvaise ligne.
-@property (nonatomic, copy) NSString *currentMessageID;
 @end
 
 @implementation S7TVChatCustomCell
@@ -262,7 +256,6 @@
     S7TVChatCustomCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"
                                                                 forIndexPath:indexPath];
     S7TVChatMessage *msg = self.displayedMessages[indexPath.row];
-    cell.currentMessageID = msg.messageID;
 
     NSMutableArray<NSTextAttachment *> *attachments = [NSMutableArray array];
     NSMutableArray<id<S7TVResolvedEmote>> *emotes = [NSMutableArray array];
@@ -273,28 +266,68 @@
     // Les emotes déjà en cache ont été injectées directement par le builder
     // ci-dessus (voir cachedImageForResolvedEmote: dedans) — ici on ne
     // déclenche un chargement async QUE pour celles encore manquantes.
+    //
+    // IMPORTANT : sur un chat actif avec auto-scroll, les cellules sont
+    // recyclées en continu — largement plus vite que le temps d'un aller-
+    // retour réseau. Capturer la cellule courante (weak) et vérifier son
+    // identité au retour du chargement échouait donc la plupart du temps :
+    // le réseau avait bien réussi, mais la cellule qui avait lancé la
+    // requête montrait déjà un AUTRE message par le temps que ça revienne,
+    // donc on abandonnait l'application de l'image — et rien ne redonnait
+    // sa chance à la ligne d'origine (d'où "sortir de vision et remettre"
+    // qui "corrige" : ça relance cellForRowAtIndexPath, qui retrouve alors
+    // l'image déjà en cache et l'applique directement, sans passer par le
+    // chemin async cassé).
+    //
+    // Le fix : au lieu de suivre une cellule capturée, on retrouve la ligne
+    // ACTUELLE du message par son id au moment où l'image arrive, puis on
+    // demande à la table view sa cellule EN CE MOMENT à cet indexPath —
+    // tableView:cellForRowAtIndexPath: (méthode UIKit, pas notre delegate)
+    // retourne nil si la ligne n'est pas à l'écran, ou la bonne cellule
+    // sinon. C'est la seule source de vérité fiable pour "qui affiche quoi
+    // maintenant" dans une liste qui recycle ses cellules.
     SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
-    __weak S7TVChatCustomCell *weakCell = cell;
-    NSString *expectedMessageID = msg.messageID;
+    NSString *messageID = msg.messageID;
+    __weak typeof(self) weakSelf = self;
     for (NSUInteger i = 0; i < attachments.count; i++) {
         NSTextAttachment *attachment = attachments[i];
         if (attachment.image) continue;
         id<S7TVResolvedEmote> emote = emotes[i];
         [imageCache imageForResolvedEmote:emote completion:^(UIImage * _Nullable image) {
             if (!image) return; // échec réseau/décodage → le nom reste affiché en fallback (token.text déjà dans le run texte)
-            S7TVChatCustomCell *strongCell = weakCell;
-            if (!strongCell || ![strongCell.currentMessageID isEqualToString:expectedMessageID]) {
-                return; // cellule recyclée pour un autre message entre-temps
-            }
-            attachment.image = image;
-            // Mutation en place de l'attachment ne suffit pas à faire
-            // redessiner UILabel — la réaffectation (même objet) force le
-            // redraw en tenant compte de l'image maintenant présente.
-            strongCell.messageLabel.attributedText = strongCell.messageLabel.attributedText;
+            [weakSelf s7tv_applyImage:image toAttachment:attachment forMessageID:messageID];
         }];
     }
 
     return cell;
+}
+
+// Applique l'image à la BONNE cellule, quelle qu'elle soit MAINTENANT — pas
+// celle qui existait au moment où le chargement a été lancé. On retrouve la
+// ligne actuelle du message par son id (peut avoir bougé si des messages
+// ont été insérés avant lui depuis), puis on demande à la table sa cellule
+// EN CE MOMENT à cet indexPath (nil si la ligne n'est pas à l'écran — pas
+// grave, elle se construira avec l'image déjà en cache la prochaine fois
+// qu'elle redevient visible, voir cachedImageForResolvedEmote: dans le builder).
+- (void)s7tv_applyImage:(UIImage *)image
+            toAttachment:(NSTextAttachment *)attachment
+            forMessageID:(NSString *)messageID {
+    NSUInteger row = [self.displayedMessages indexOfObjectPassingTest:
+        ^BOOL(S7TVChatMessage *m, NSUInteger idx, BOOL *stop) {
+            return [m.messageID isEqualToString:messageID];
+        }];
+    if (row == NSNotFound) return; // message plus dans la liste affichée (purgé)
+
+    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:row inSection:0];
+    S7TVChatCustomCell *visibleCell =
+        (S7TVChatCustomCell *)[self.tableView cellForRowAtIndexPath:indexPath];
+    if (!visibleCell) return; // ligne pas à l'écran actuellement, rien à faire maintenant
+
+    attachment.image = image;
+    // Mutation en place de l'attachment ne suffit pas à faire redessiner
+    // UILabel — la réaffectation (même objet) force le redraw en tenant
+    // compte de l'image maintenant présente.
+    visibleCell.messageLabel.attributedText = visibleCell.messageLabel.attributedText;
 }
 
 #pragma mark - UITableViewDelegate

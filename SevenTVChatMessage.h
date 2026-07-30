@@ -15,6 +15,12 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Forward declaration plutôt qu'un #import de SevenTVEmoteProvider.h : évite
+// une dépendance circulaire (le fournisseur 7TV importe déjà ce fichier pour
+// S7TVChatTokenType). Le modèle 1a n'a besoin de connaître que le nom du
+// protocole, pas son contenu.
+@protocol S7TVResolvedEmote;
+
 
 // ============================================================
 // MARK: - Token (segment de message)
@@ -46,6 +52,11 @@ typedef NS_ENUM(NSInteger, S7TVChatTokenType) {
 // que c'est forcément du 7TV, juste "un identifiant que le provider du bon
 // type saura résoudre en image".
 @property (nonatomic, copy, nullable) NSString *providerEmoteID;
+
+// Emote déjà résolue par le tokenizer (Phase 2) — dimensions/URL/animé,
+// mis en cache ici pour que le renderer n'ait pas à re-interroger le
+// fournisseur à chaque passage de cellule. nil pour les tokens non-emote.
+@property (nonatomic, strong, nullable) id<S7TVResolvedEmote> resolvedEmote;
 
 + (instancetype)textToken:(NSString *)text;
 + (instancetype)mentionToken:(NSString *)text;

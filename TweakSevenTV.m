@@ -185,46 +185,102 @@ static void s7tv_dumpChatHierarchy(UIView *chatView, NSString *reason) {
 // "Chat Custom"), pas besoin de Mac/LLDB/Reveal.
 
 // Twitch.MessageStringView n'a pas de UILabel enfant (constaté en dump réel :
-// la vue dessine son texte elle-même, TextKit/CoreText interne, pas de sous-
-// vue à inspecter) — on va donc lire directement ses ivars Objective-C pour
-// trouver la police utilisée (UIFont ou NSAttributedString avec attribut
-// NSFontAttributeName). Lecture seule, aucun setter appelé.
-static void s7tv_dumpIvars(id obj, NSString *label) {
+// la vue dessine son texte elle-même). Lire ses ivars bruts s'est révélé
+// risqué : les classes Swift exposent des encodages de type VIDES via
+// ivar_getTypeEncoding (constaté en dump réel : "()" partout, y compris sur
+// des BOOL/CGFloat/CGSize) — donc impossible de distinguer un ivar objet
+// d'un scalaire avant de le lire, et object_getIvar sur un scalaire peut
+// planter l'app (tentative de retain sur un pointeur invalide).
+//
+// Approche sûre à la place :
+//   1. view.layer — accesseur UIKit standard, toujours valide, zéro risque.
+//   2. class_copyPropertyList sur cette layer — introspection de métadonnées
+//      pure, aucun appel de méthode, zéro risque.
+//   3. Lecture de valeur via KVC (valueForKey:) UNIQUEMENT pour les
+//      propriétés dont l'attribut commence par "T@" (objet, encodage fiable
+//      pour les propriétés @objc déclarées, contrairement aux ivars bruts),
+//      protégée par @try/@catch.
+static void s7tv_dumpProperties(id obj, NSString *label) {
     if (!obj) return;
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     Class cls = [obj class];
     unsigned int count = 0;
-    Ivar *ivars = class_copyIvarList(cls, &count);
-    [mgr log:@"[ChatCustom] 🏗   ── Ivars %@ (%@) — %u ivars ──",
+    objc_property_t *props = class_copyPropertyList(cls, &count);
+    [mgr log:@"[ChatCustom] 🏗   ── Propriétés %@ (%@) — %u propriétés ──",
         label, NSStringFromClass(cls), count];
     for (unsigned int i = 0; i < count; i++) {
-        Ivar iv = ivars[i];
-        const char *name = ivar_getName(iv);
-        const char *type = ivar_getTypeEncoding(iv);
-        NSString *valueDesc = @"<non-objet>";
-        // Ne lit la valeur que pour les ivars objet ('@' en tête d'encodage) —
-        // on ne touche pas aux ivars scalaires pour rester strictement lecture
-        // seule et sans risque de mauvaise interprétation de type.
-        if (type && type[0] == '@') {
-            id value = object_getIvar(obj, iv);
-            if ([value isKindOfClass:[UIFont class]]) {
-                UIFont *f = (UIFont *)value;
-                valueDesc = [NSString stringWithFormat:@"UIFont %@ %.1fpt", f.fontName, f.pointSize];
-            } else if ([value isKindOfClass:[NSAttributedString class]]) {
-                NSAttributedString *a = (NSAttributedString *)value;
-                UIFont *f = a.length > 0
-                    ? [a attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] : nil;
-                valueDesc = [NSString stringWithFormat:@"NSAttributedString len=%lu font=%@ %.1fpt",
-                    (unsigned long)a.length, f.fontName ?: @"?", f.pointSize];
-            } else if (value) {
-                valueDesc = NSStringFromClass([value class]);
-            } else {
-                valueDesc = @"nil";
+        objc_property_t p = props[i];
+        const char *name = property_getName(p);
+        const char *attrs = property_getAttributes(p);
+        NSString *attrStr = attrs ? [NSString stringWithUTF8String:attrs] : @"";
+        NSString *valueDesc = @"(non-objet, ignoré)";
+        if ([attrStr hasPrefix:@"T@"]) {
+            @try {
+                id value = [obj valueForKey:[NSString stringWithUTF8String:name]];
+                if ([value isKindOfClass:[UIFont class]]) {
+                    UIFont *f = (UIFont *)value;
+                    valueDesc = [NSString stringWithFormat:@"UIFont %@ %.1fpt", f.fontName, f.pointSize];
+                } else if ([value isKindOfClass:[NSAttributedString class]]) {
+                    NSAttributedString *a = (NSAttributedString *)value;
+                    UIFont *f = a.length > 0
+                        ? [a attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] : nil;
+                    valueDesc = [NSString stringWithFormat:@"NSAttributedString len=%lu font=%@ %.1fpt",
+                        (unsigned long)a.length, f.fontName ?: @"?", f.pointSize];
+                } else if (value) {
+                    valueDesc = NSStringFromClass([value class]);
+                } else {
+                    valueDesc = @"nil";
+                }
+            } @catch (NSException *ex) {
+                valueDesc = [NSString stringWithFormat:@"<exception: %@>", ex.reason];
             }
         }
-        [mgr log:@"[ChatCustom] 🏗     %s (%s) = %@", name, type ?: "?", valueDesc];
+        [mgr log:@"[ChatCustom] 🏗     %s (%@) = %@", name, attrStr, valueDesc];
     }
-    free(ivars);
+    free(props);
+
+    // .layer — très souvent, une vue qui dessine son propre contenu (comme
+    // ici) le fait via un CALayer custom défini par +layerClass. Zéro risque
+    // à lire view.layer (accesseur UIKit standard).
+    if ([obj isKindOfClass:[UIView class]]) {
+        CALayer *layer = ((UIView *)obj).layer;
+        if (layer && ![layer isMemberOfClass:[CALayer class]]) {
+            [mgr log:@"[ChatCustom] 🏗   layer réel = %@", NSStringFromClass([layer class])];
+            unsigned int lcount = 0;
+            objc_property_t *lprops = class_copyPropertyList([layer class], &lcount);
+            [mgr log:@"[ChatCustom] 🏗   ── Propriétés layer (%@) — %u propriétés ──",
+                NSStringFromClass([layer class]), lcount];
+            for (unsigned int i = 0; i < lcount; i++) {
+                const char *name = property_getName(lprops[i]);
+                const char *attrs = property_getAttributes(lprops[i]);
+                NSString *attrStr = attrs ? [NSString stringWithUTF8String:attrs] : @"";
+                NSString *valueDesc = @"(non-objet, ignoré)";
+                if ([attrStr hasPrefix:@"T@"]) {
+                    @try {
+                        id value = [layer valueForKey:[NSString stringWithUTF8String:name]];
+                        if ([value isKindOfClass:[UIFont class]]) {
+                            UIFont *f = (UIFont *)value;
+                            valueDesc = [NSString stringWithFormat:@"UIFont %@ %.1fpt", f.fontName, f.pointSize];
+                        } else if ([value isKindOfClass:[NSAttributedString class]]) {
+                            NSAttributedString *a = (NSAttributedString *)value;
+                            UIFont *f = a.length > 0
+                                ? [a attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] : nil;
+                            valueDesc = [NSString stringWithFormat:@"NSAttributedString len=%lu font=%@ %.1fpt",
+                                (unsigned long)a.length, f.fontName ?: @"?", f.pointSize];
+                        } else if (value) {
+                            valueDesc = NSStringFromClass([value class]);
+                        } else {
+                            valueDesc = @"nil";
+                        }
+                    } @catch (NSException *ex) {
+                        valueDesc = [NSString stringWithFormat:@"<exception: %@>", ex.reason];
+                    }
+                }
+                [mgr log:@"[ChatCustom] 🏗     %s (%@) = %@", name, attrStr, valueDesc];
+            }
+            free(lprops);
+        }
+    }
 }
 
 static void s7tv_dumpViewSubtree(UIView *view, NSString *indent, NSInteger maxDepth,
@@ -238,7 +294,7 @@ static void s7tv_dumpViewSubtree(UIView *view, NSString *indent, NSInteger maxDe
     if ([NSStringFromClass([view class]) isEqualToString:@"Twitch.MessageStringView"] &&
         ivarDumpsRemaining && *ivarDumpsRemaining > 0) {
         (*ivarDumpsRemaining)--;
-        s7tv_dumpIvars(view, [NSString stringWithFormat:@"frame=%@", NSStringFromCGRect(view.frame)]);
+        s7tv_dumpProperties(view, [NSString stringWithFormat:@"frame=%@", NSStringFromCGRect(view.frame)]);
     }
 
     if ([view isKindOfClass:[UILabel class]]) {

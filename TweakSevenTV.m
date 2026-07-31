@@ -1627,15 +1627,37 @@ static void s7tv_swizzle_account_menu(void) {
 @end
 
 static void s7tv_swizzle_token_capture(void) {
-    s7tv_swizzle([NSMutableURLRequest class], [NSMutableURLRequest class],
+    // NSMutableURLRequest est un class cluster : l'instance réelle créée par
+    // Twitch est une sous-classe privée d'Apple qui a SA PROPRE implémentation
+    // de setValue:forHTTPHeaderField: — swizzler la classe publique de base
+    // ne sert à rien (même piège que NSURLSession, cf. s7tv_swizzle_session).
+    // On sonde donc la vraie classe concrète avant de swizzler.
+    NSMutableURLRequest *probeReq = [[NSMutableURLRequest alloc]
+                                      initWithURL:[NSURL URLWithString:@"https://gql.twitch.tv/"]];
+    Class classReq = object_getClass(probeReq);
+    [[SevenTVManager sharedManager] log:@"🔍 NSMutableURLRequest concret: %@",
+     NSStringFromClass(classReq)];
+    s7tv_swizzle(classReq, [NSMutableURLRequest class],
                  @selector(setValue:forHTTPHeaderField:),
                  @selector(s7tv_setValue:forHTTPHeaderField:));
 
-    // NSURLSessionConfiguration est une vraie classe (pas un cluster) —
-    // swizzle direct sur la classe de base, sans sonde nécessaire.
-    s7tv_swizzle([NSURLSessionConfiguration class], [NSURLSessionConfiguration class],
+    // NSURLSessionConfiguration n'est PAS un class cluster (classe concrète
+    // normale) mais on sonde quand même par prudence/cohérence — et on
+    // couvre les deux variantes (default + ephemeral) au cas où Twitch en
+    // utilise une différente pour ses requêtes GQL.
+    Class classCfgDefault = object_getClass([NSURLSessionConfiguration defaultSessionConfiguration]);
+    Class classCfgEphemeral = object_getClass([NSURLSessionConfiguration ephemeralSessionConfiguration]);
+    [[SevenTVManager sharedManager] log:@"🔍 NSURLSessionConfiguration default: %@ / ephemeral: %@",
+     NSStringFromClass(classCfgDefault), NSStringFromClass(classCfgEphemeral)];
+
+    s7tv_swizzle(classCfgDefault, [NSURLSessionConfiguration class],
                  @selector(setHTTPAdditionalHeaders:),
                  @selector(s7tv_setHTTPAdditionalHeaders:));
+    if (classCfgEphemeral != classCfgDefault) {
+        s7tv_swizzle(classCfgEphemeral, [NSURLSessionConfiguration class],
+                     @selector(setHTTPAdditionalHeaders:),
+                     @selector(s7tv_setHTTPAdditionalHeaders:));
+    }
 
     [[SevenTVManager sharedManager] log:@"🔌 Token capture (request + session config) installé"];
 }

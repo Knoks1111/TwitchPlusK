@@ -127,6 +127,9 @@
 // Dernière hauteur de bounds connue — sert à détecter un redimensionnement
 // externe dans layoutSubviews (voir isPinnedToBottom ci-dessus).
 @property (nonatomic, assign) CGFloat lastKnownBoundsHeight;
+// Garde-fou anti-empilement pour le dispatch_async coalescé dans
+// layoutSubviews — voir cette méthode pour le raisonnement complet.
+@property (nonatomic, assign) BOOL hasScheduledRescroll;
 @end
 
 @implementation SevenTVChatCustomView
@@ -218,11 +221,26 @@
     // pinné en bas, on le reste — sans ça, la mesure de distance se
     // retrouve faussée par le redimensionnement lui-même et l'autoscroll
     // reste cassé jusqu'à ce que l'utilisateur scrolle manuellement.
+    //
+    // dispatch_async coalescé (PAS d'appel synchrone ici) : layoutSubviews
+    // peut se déclencher très fréquemment pendant qu'un conteneur externe
+    // est en train de se redimensionner (constaté en test réel : bounds.h
+    // oscillait plusieurs fois par seconde). Appeler layoutIfNeeded + poser
+    // contentOffset DEPUIS layoutSubviews lui-même entrait en conflit avec
+    // ce redimensionnement en cours côté Twitch — géométrie incohérente au
+    // moment de la mesure, dernière ligne coupée. hasScheduledRescroll évite
+    // d'empiler un dispatch par oscillation ; un seul rescroll suffit une
+    // fois que TOUT le remous de layout est retombé.
     if (self.bounds.size.height > 0 && self.bounds.size.height != self.lastKnownBoundsHeight) {
         BOOL isFirstLayout = (self.lastKnownBoundsHeight == 0);
         self.lastKnownBoundsHeight = self.bounds.size.height;
-        if (!isFirstLayout && self.isPinnedToBottom) {
-            [self s7tv_scrollToBottomIfNeeded:YES];
+        if (!isFirstLayout && self.isPinnedToBottom && !self.hasScheduledRescroll) {
+            self.hasScheduledRescroll = YES;
+            __weak typeof(self) weakSelf = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                weakSelf.hasScheduledRescroll = NO;
+                [weakSelf s7tv_scrollToBottomIfNeeded:YES];
+            });
         }
     }
 }

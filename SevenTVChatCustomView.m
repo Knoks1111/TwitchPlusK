@@ -55,13 +55,32 @@
 // MARK: - SevenTVChatCustomView
 // ============================================================
 
-@interface SevenTVChatCustomView () <UITableViewDataSource, UITableViewDelegate>
+@interface SevenTVChatCustomView () <UITableViewDelegate>
 @property (nonatomic, strong) S7TVChatMessageStore *store;
 @property (nonatomic, strong) UITableView *tableView;
+// Diffable data source, section unique identifiée par messageID (NSString,
+// stable et unique — voir S7TVChatMessage.messageID). Remplace l'ancien
+// UITableViewDataSource manuel + comparaison de préfixe "isSimpleAppend" :
+// ce dernier ne détectait QUE le cas "ajout pur en fin de liste" et tombait
+// systématiquement en reloadData complet dès qu'un message était purgé en
+// tête (S7TVChatMessageStore.maxMessageCount) — ce qui arrive en continu sur
+// une chaîne active dès que le store est plein. Le diffable data source
+// calcule le vrai diff (suppressions en tête + ajouts en fin) quel que soit
+// le motif, et surtout sérialise en interne tous les apply(), donc un reload
+// d'image en cours de route (voir s7tv_reloadMessageWithID:) ne peut plus
+// jamais entrer en collision avec un batch d'insertion en cours — c'était la
+// cause du flash/superposition observé sur un chat rapide.
+@property (nonatomic, strong) UITableViewDiffableDataSource<NSString *, NSString *> *dataSource;
 // Snapshot pris à chaque reload — évite un décalage d'index si le store
 // change pendant que la table itère dessus (lecture thread-safe côté store,
 // mais la table a besoin d'un tableau stable pendant tout le reload).
 @property (nonatomic, strong) NSArray<S7TVChatMessage *> *displayedMessages;
+// Index messageID → message, reconstruit à chaque reload en même temps que
+// displayedMessages. Utilisé par le cellProvider et par heightForRowAtIndexPath:
+// pour retrouver le contenu d'un message à partir de son identifiant — le
+// diffable data source ne manipule que des identifiants, jamais les objets
+// message directement.
+@property (nonatomic, strong) NSDictionary<NSString *, S7TVChatMessage *> *messagesByID;
 // Cache messageID → hauteur exacte déjà mesurée. Remplace complètement
 // UITableViewAutomaticDimension (voir raison dans reloadMessages) : avec une
 // hauteur connue à l'avance, UIKit n'a plus jamais besoin de re-mesurer une
@@ -82,6 +101,7 @@
     if (self) {
         _store = store;
         _displayedMessages = @[];
+        _messagesByID = @{};
         _rowHeightCache = [NSMutableDictionary dictionary];
         _cachedContentWidth = 0;
 
@@ -89,7 +109,6 @@
         _tableView.translatesAutoresizingMaskIntoConstraints = NO;
         _tableView.backgroundColor        = [UIColor clearColor];
         _tableView.separatorStyle         = UITableViewCellSeparatorStyleNone;
-        _tableView.dataSource             = self;
         _tableView.delegate               = self;
         // Pas de rowHeight = UITableViewAutomaticDimension : la hauteur
         // exacte de chaque cellule est calculée à l'avance (voir
@@ -112,6 +131,19 @@
         // directeur du plan) — cette table n'a donc pas à gérer le clavier.
         [_tableView registerClass:[S7TVChatCustomCell class]
             forCellReuseIdentifier:@"cell"];
+
+        // cellProvider capture faible : le data source vit tant que la vue
+        // existe, mais on évite quand même le cycle de rétention implicite
+        // (dataSource → block → self → dataSource).
+        __weak typeof(self) weakSelf = self;
+        _dataSource = [[UITableViewDiffableDataSource alloc]
+            initWithTableView:_tableView
+                 cellProvider:^UITableViewCell * _Nullable(UITableView * _Nonnull tv,
+                                                             NSIndexPath * _Nonnull indexPath,
+                                                             NSString * _Nonnull messageID) {
+            return [weakSelf s7tv_cellForMessageID:messageID atIndexPath:indexPath];
+        }];
+        _tableView.dataSource = _dataSource;
 
         self.backgroundColor = [UIColor clearColor];
         [self addSubview:_tableView];
@@ -143,7 +175,6 @@
     NSAssert([NSThread isMainThread],
              @"reloadMessages doit être appelé depuis le main thread (touche UIKit)");
 
-    NSArray<S7TVChatMessage *> *oldMessages = self.displayedMessages;
     NSArray<S7TVChatMessage *> *newMessages = [self.store allMessages];
 
     // Ne fige "on est en bas" qu'AVANT de toucher au contenu — sinon la
@@ -154,76 +185,53 @@
     // l'historique.
     CGFloat distanceFromBottom = self.tableView.contentSize.height
         - (self.tableView.contentOffset.y + self.tableView.bounds.size.height);
-    BOOL wasNearBottom = (oldMessages.count == 0) || (distanceFromBottom < 80);
+    BOOL wasNearBottom = (self.displayedMessages.count == 0) || (distanceFromBottom < 80);
 
-    self.displayedMessages = newMessages;
-
-    // Cas fréquent sur un flux actif : uniquement des messages ajoutés en
-    // fin de liste depuis le dernier reload (pas de suppression/purge entre
-    // les deux) → insertion incrémentale des nouvelles lignes seulement,
-    // bien moins coûteuse qu'un reloadData complet qui retraverse toute la
-    // table à chaque message (exigence transverse #3 — perf grosse chaîne).
-    //
-    // Comparaison par référence (isEqualToArray → isEqual: → pointeur pour
-    // NSObject) : les messages sont les mêmes instances mutables d'un appel
-    // à l'autre, donc ce test est fiable ET gratuit — pas de deep-copy.
-    //
-    // LIMITE CONNUE (Phase 5) : si un message déjà affiché change d'état
-    // (ex: passage en .deletedCollapsed suite à un timeout) sans qu'aucun
-    // message ne soit ajouté après lui, ce chemin rapide ne rafraîchit PAS
-    // sa cellule (même référence d'objet, donc "préfixe identique" reste
-    // vrai). Non bloquant pour l'instant : le pipeline de suppression n'est
-    // pas encore branché sur reloadMessages. À corriger quand la Phase 5
-    // sera câblée ici — invalider spécifiquement les indexPaths concernés
-    // via reloadRowsAtIndexPaths: plutôt que de se fier au seul appendage.
-    BOOL isSimpleAppend = newMessages.count > oldMessages.count &&
-        [[newMessages subarrayWithRange:NSMakeRange(0, oldMessages.count)]
-            isEqualToArray:oldMessages];
-
-    if (isSimpleAppend) {
-        NSMutableArray<NSIndexPath *> *newIndexPaths = [NSMutableArray array];
-        for (NSUInteger i = oldMessages.count; i < newMessages.count; i++) {
-            [newIndexPaths addObject:[NSIndexPath indexPathForRow:i inSection:0]];
-        }
-        // performBatchUpdates coordonne l'insertion ET le scroll comme une
-        // seule transaction de layout — sans ça, UITableViewAutomaticDimension
-        // recalcule la vraie hauteur des cellules APRÈS le scroll déjà fait
-        // (l'estimatedRowHeight sert de placeholder le temps du premier
-        // passage), ce qui décale le contenu une deuxième fois juste après
-        // coup → effet de rebond. En scrollant dans le bloc completion (donc
-        // après que le layout final soit connu), on scrolle une seule fois,
-        // au bon endroit, sans à-coup.
-        __weak typeof(self) weakSelf = self;
-        [self.tableView performBatchUpdates:^{
-            [weakSelf.tableView insertRowsAtIndexPaths:newIndexPaths
-                                       withRowAnimation:UITableViewRowAnimationNone];
-        } completion:^(BOOL finished) {
-            [weakSelf s7tv_scrollToBottomIfNeeded:wasNearBottom];
-        }];
-    } else {
-        // Suppression, purge mémoire, ou premier reload → pas de diff fiable
-        // possible, reload complet (plus sûr qu'un diff partiel incorrect).
-
-        // Purge les entrées du cache dont le message n'existe plus dans le
-        // store (sinon rowHeightCache grossirait sans limite sur une session
-        // longue — un message purgé par maxMessageCount ne revient jamais).
-        if (self.rowHeightCache.count > 0) {
-            NSMutableSet<NSString *> *validIDs = [NSMutableSet setWithCapacity:newMessages.count];
-            for (S7TVChatMessage *m in newMessages) [validIDs addObject:m.messageID];
-            NSMutableArray<NSString *> *staleKeys = [NSMutableArray array];
-            for (NSString *key in self.rowHeightCache) {
-                if (![validIDs containsObject:key]) [staleKeys addObject:key];
-            }
-            [self.rowHeightCache removeObjectsForKeys:staleKeys];
-        }
-
-        [self.tableView reloadData];
-        // reloadData n'a pas de completion — layoutIfNeeded force le calcul
-        // des vraies hauteurs de cellule avant de scroller, même raison que
-        // ci-dessus (éviter de scroller sur une estimation puis rebondir).
-        [self.tableView layoutIfNeeded];
-        [self s7tv_scrollToBottomIfNeeded:wasNearBottom];
+    // Index messageID → message reconstruit à chaque reload : utilisé par le
+    // cellProvider et par heightForRowAtIndexPath: (voir propriétés).
+    NSMutableDictionary<NSString *, S7TVChatMessage *> *byID =
+        [NSMutableDictionary dictionaryWithCapacity:newMessages.count];
+    NSMutableArray<NSString *> *identifiers = [NSMutableArray arrayWithCapacity:newMessages.count];
+    for (S7TVChatMessage *m in newMessages) {
+        byID[m.messageID] = m;
+        [identifiers addObject:m.messageID];
     }
+    self.displayedMessages = newMessages;
+    self.messagesByID       = byID;
+
+    // Purge les entrées du cache dont le message n'existe plus dans le store
+    // (sinon rowHeightCache grossirait sans limite sur une session longue —
+    // un message purgé par maxMessageCount ne revient jamais).
+    if (self.rowHeightCache.count > 0) {
+        NSMutableArray<NSString *> *staleKeys = [NSMutableArray array];
+        for (NSString *key in self.rowHeightCache) {
+            if (!byID[key]) [staleKeys addObject:key];
+        }
+        [self.rowHeightCache removeObjectsForKeys:staleKeys];
+    }
+
+    // Le diffable data source calcule lui-même le vrai diff (suppressions +
+    // insertions, dans n'importe quel ordre) à partir des identifiants — plus
+    // besoin de détecter "cas simple = append en fin" à la main : le cas le
+    // plus fréquent sur une chaîne active (le plus vieux message est purgé en
+    // tête PENDANT qu'un nouveau arrive en queue) est géré nativement, sans
+    // jamais retomber sur un reloadData complet de toute la table.
+    NSDiffableDataSourceSnapshot<NSString *, NSString *> *snapshot =
+        [[NSDiffableDataSourceSnapshot alloc] init];
+    [snapshot appendSectionsWithIdentifiers:@[@"main"]];
+    [snapshot appendItemsWithIdentifiers:identifiers intoSectionWithIdentifier:@"main"];
+
+    // animatingDifferences:NO — même choix que l'ancien insertRowsAtIndexPaths
+    // avec UITableViewRowAnimationNone : pas d'animation d'insertion/suppression
+    // individuelle, on ne veut qu'un scroll net une fois le contenu à jour.
+    // apply(...) sérialise en interne tous les appels (y compris ceux issus de
+    // s7tv_reloadMessageWithID: quand une image finit de charger) — c'est ce
+    // qui élimine la collision entre un batch d'insertion et un reload de
+    // ligne qui causait le flash/superposition sur un chat rapide.
+    __weak typeof(self) weakSelf = self;
+    [self.dataSource applySnapshot:snapshot animatingDifferences:NO completion:^{
+        [weakSelf s7tv_scrollToBottomIfNeeded:wasNearBottom];
+    }];
 }
 
 - (void)s7tv_scrollToBottomIfNeeded:(BOOL)wasNearBottom {
@@ -245,17 +253,18 @@
                                    animated:NO];
 }
 
-#pragma mark - UITableViewDataSource
+#pragma mark - Cell provider (appelé par le diffable data source, voir initWithStore:)
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.displayedMessages.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView
-          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    S7TVChatCustomCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"
-                                                                forIndexPath:indexPath];
-    S7TVChatMessage *msg = self.displayedMessages[indexPath.row];
+// Remplace l'ancien tableView:cellForRowAtIndexPath: — même logique, mais le
+// message est retrouvé par identifiant (messagesByID) plutôt que par index
+// de ligne, puisque le diffable data source ne raisonne qu'en identifiants.
+- (UITableViewCell *)s7tv_cellForMessageID:(NSString *)messageID
+                                atIndexPath:(NSIndexPath *)indexPath {
+    S7TVChatCustomCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"cell"
+                                                                     forIndexPath:indexPath];
+    S7TVChatMessage *msg = self.messagesByID[messageID];
+    if (!msg) return cell; // filet de sécurité — ne devrait pas arriver, l'identifiant
+                            // vient toujours de messagesByID juste avant l'apply du snapshot
 
     NSMutableArray<id<S7TVResolvedEmote>> *uncachedEmotes = [NSMutableArray array];
     cell.messageLabel.attributedText = [self s7tv_buildAttributedStringForMessage:msg
@@ -285,7 +294,6 @@
     // sinon. C'est la seule source de vérité fiable pour "qui affiche quoi
     // maintenant" dans une liste qui recycle ses cellules.
     SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
-    NSString *messageID = msg.messageID;
     __weak typeof(self) weakSelf = self;
     for (id<S7TVResolvedEmote> emote in uncachedEmotes) {
         [imageCache imageForResolvedEmote:emote completion:^(UIImage * _Nullable image) {
@@ -300,25 +308,34 @@
 // Une image arrivée est dans le cache : on reconstruit alors la ligne depuis
 // les données du message. Ainsi, aucun NSTextAttachment vide ne survit à un
 // rebuild de cellule ou à un basculement du chat custom.
+//
+// Passe par reloadItemsWithIdentifiers: sur une copie du snapshot courant
+// plutôt que par reloadRowsAtIndexPaths: direct — l'ancien code capturait un
+// indexPath calculé à l'instant du chargement, qui pouvait ne plus être
+// valable une fois l'appel réseau terminé (cellules recyclées entre-temps
+// sur un chat rapide). Ici, applySnapshot: sérialise cet appel avec tout
+// batch d'insertion/suppression en cours (voir reloadMessages) — plus de
+// risque de collision entre les deux, quelle que soit la cadence du flux.
 - (void)s7tv_reloadMessageWithID:(NSString *)messageID {
-    NSUInteger row = [self.displayedMessages indexOfObjectPassingTest:
-        ^BOOL(S7TVChatMessage *m, NSUInteger idx, BOOL *stop) {
-            return [m.messageID isEqualToString:messageID];
-        }];
-    if (row == NSNotFound) return; // message plus dans la liste affichée (purgé)
+    if (!self.messagesByID[messageID]) return; // message plus dans la liste affichée (purgé)
 
-    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:row inSection:0];
-    if (![self.tableView cellForRowAtIndexPath:indexPath]) return;
     [self.rowHeightCache removeObjectForKey:messageID];
-    [self.tableView reloadRowsAtIndexPaths:@[indexPath]
-                          withRowAnimation:UITableViewRowAnimationNone];
+
+    NSDiffableDataSourceSnapshot<NSString *, NSString *> *snapshot = [self.dataSource snapshot];
+    [snapshot reloadItemsWithIdentifiers:@[messageID]];
+    [self.dataSource applySnapshot:snapshot animatingDifferences:NO];
 }
 
 #pragma mark - UITableViewDelegate
 
 - (CGFloat)tableView:(UITableView *)tableView
     heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    S7TVChatMessage *msg = self.displayedMessages[indexPath.row];
+    NSString *messageID = [self.dataSource itemIdentifierForIndexPath:indexPath];
+    S7TVChatMessage *msg = messageID ? self.messagesByID[messageID] : nil;
+    // Filet de sécurité pendant une transition de snapshot (indexPath pas
+    // encore résolu) — ne devrait être qu'une estimation transitoire, jamais
+    // la valeur finale affichée pour une ligne.
+    if (!msg) return self.tableView.estimatedRowHeight;
     return [self s7tv_heightForMessage:msg];
 }
 

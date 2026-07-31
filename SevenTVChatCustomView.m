@@ -114,6 +114,13 @@
 // méthode pour le raisonnement complet (remplace boundingRectWithSize:,
 // qui pouvait diverger du rendu effectif sur certains points de wrap).
 @property (nonatomic, strong) UILabel *measuringLabel;
+// État persistant "on veut rester en bas" — mis à jour UNIQUEMENT par un
+// vrai geste utilisateur (voir scrollViewDidScroll:), jamais recalculé à
+// partir d'une simple mesure de distance à chaque message. Contrairement à
+// un recalcul systématique, ça résiste à un redimensionnement externe
+// passager de la vue (ex: bannière au-dessus du chat) qui fausserait sinon
+// la mesure de distance sans qu'aucun geste utilisateur n'ait eu lieu.
+@property (nonatomic, assign) BOOL isPinnedToBottom;
 @end
 
 @implementation SevenTVChatCustomView
@@ -126,6 +133,7 @@
         _messagesByID = @{};
         _rowHeightCache = [NSMutableDictionary dictionary];
         _cachedContentWidth = 0;
+        _isPinnedToBottom = YES;
 
         // Config strictement identique à S7TVChatCustomCell.messageLabel —
         // voir s7tv_measureAttributedText: pour pourquoi c'est nécessaire.
@@ -213,17 +221,17 @@
     // l'historique.
     CGFloat distanceFromBottom = self.tableView.contentSize.height
         - (self.tableView.contentOffset.y + self.tableView.bounds.size.height);
-    BOOL wasNearBottom = (self.displayedMessages.count == 0) || (distanceFromBottom < 80);
+    BOOL wasNearBottom = (self.displayedMessages.count == 0) || self.isPinnedToBottom;
 
-    // Diagnostic autoscroll (constaté en usage réel : l'autoscroll s'arrête
-    // parfois même sans interaction tactile) — capture l'état exact au
-    // moment de la décision, pour comparer avec ce qui se passe côté
-    // s7tv_scrollToBottomIfNeeded: juste après.
+    // Diagnostic autoscroll — distanceFromBottom reste loguée à titre
+    // indicatif (comparaison avec isPinnedToBottom), elle ne pilote plus la
+    // décision de scroll (voir isPinnedToBottom pour le raisonnement).
     [[SevenTVManager sharedManager]
         log:@"[ChatCustom] 🏗 reloadMessages: contentSize.h=%.1f offset.y=%.1f bounds.h=%.1f "
-             @"distanceFromBottom=%.1f wasNearBottom=%@ ancienCount=%ld nouveauCount=%ld",
+             @"distanceFromBottom=%.1f isPinnedToBottom=%@ wasNearBottom=%@ ancienCount=%ld nouveauCount=%ld",
         self.tableView.contentSize.height, self.tableView.contentOffset.y,
-        self.tableView.bounds.size.height, distanceFromBottom, wasNearBottom ? @"OUI" : @"NON",
+        self.tableView.bounds.size.height, distanceFromBottom,
+        self.isPinnedToBottom ? @"OUI" : @"NON", wasNearBottom ? @"OUI" : @"NON",
         (long)self.displayedMessages.count, (long)newMessages.count];
 
     // Index messageID → message reconstruit à chaque reload : utilisé par le
@@ -380,6 +388,25 @@
 }
 
 #pragma mark - UITableViewDelegate
+
+// UITableViewDelegate hérite de UIScrollViewDelegate — pas besoin d'ajouter
+// le protocole séparément à l'@interface.
+//
+// Ne met à jour isPinnedToBottom QUE quand le scroll vient réellement de
+// l'utilisateur (tracking/dragging/decelerating) — sinon notre propre appel
+// programmatique à scrollToRowAtIndexPath: (dans s7tv_scrollToBottomIfNeeded:)
+// déclencherait aussi scrollViewDidScroll: et fausserait l'état à chaque
+// fois qu'on scrolle nous-mêmes. isTracking/isDragging/isDecelerating sont
+// tous à NO pendant un scroll programmatique non-animé, ce qui les
+// distingue proprement d'un vrai geste.
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (!scrollView.isTracking && !scrollView.isDragging && !scrollView.isDecelerating) {
+        return;
+    }
+    CGFloat distanceFromBottom = scrollView.contentSize.height
+        - (scrollView.contentOffset.y + scrollView.bounds.size.height);
+    self.isPinnedToBottom = (distanceFromBottom < 80);
+}
 
 - (CGFloat)tableView:(UITableView *)tableView
     heightForRowAtIndexPath:(NSIndexPath *)indexPath {

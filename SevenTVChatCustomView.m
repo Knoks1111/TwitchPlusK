@@ -302,7 +302,18 @@
     // ligne qui causait le flash/superposition sur un chat rapide.
     __weak typeof(self) weakSelf = self;
     [self.dataSource applySnapshot:snapshot animatingDifferences:NO completion:^{
-        [weakSelf s7tv_scrollToBottomIfNeeded:wasNearBottom];
+        // dispatch_async (pas d'appel direct) — constaté en test réel : même
+        // dans la completion de applySnapshot, UIKit peut encore avoir une
+        // réconciliation de hauteur DIFFÉRÉE en attente pour une cellule tout
+        // juste insérée (contentSize continuait de changer entre plusieurs
+        // scrollToBottomIfNeeded successifs, à quelques dizaines de ms
+        // d'écart, sans qu'aucun message ne soit ajouté/retiré entre-temps).
+        // On scrollait alors sur un contentSize pas encore définitif, laissant
+        // la dernière ligne partiellement coupée. Un tick de run loop plus
+        // tard, cette réconciliation est terminée.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf s7tv_scrollToBottomIfNeeded:wasNearBottom];
+        });
     }];
 }
 

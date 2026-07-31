@@ -134,6 +134,17 @@
         // mécanisme est indépendant de l'auto-sizing des cellules : pas de
         // retour du rebond.
         _tableView.estimatedRowHeight = 24;
+        // Sans ça, UIKit peut réduire la largeur réelle de contentView de
+        // chaque cellule selon la safe area (nonzéro en landscape/théâtre
+        // selon la disposition), alors que s7tv_heightForMessage: calcule
+        // la hauteur avec `self.bounds.size.width` qui, lui, ignore cette
+        // réduction. Constaté en test réel : la hauteur réservée devient
+        // légèrement trop courte, et le dernier mot d'une ligne proche du
+        // bord se retrouve tronqué sans qu'aucune ligne supplémentaire ne
+        // s'affiche pour le contenir (le label ne peut pas grandir au-delà
+        // de la hauteur de cellule déjà fixée). Désactiver garantit que la
+        // largeur de mesure et la largeur de rendu sont TOUJOURS identiques.
+        _tableView.insetsContentViewsToSafeArea = NO;
         // Le clavier/barre de saisie restent 100% natifs Twitch (principe
         // directeur du plan) — cette table n'a donc pas à gérer le clavier.
         [_tableView registerClass:[S7TVChatCustomCell class]

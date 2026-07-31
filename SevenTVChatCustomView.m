@@ -41,6 +41,12 @@
         // Voir aussi la paragraph style dans s7tv_buildAttributedStringForMessage:
         // pour que la hauteur calculée corresponde exactement à ce rendu.
         _messageLabel.lineBreakMode = NSLineBreakByWordWrapping;
+        // Filet de sécurité : même si un futur changement réintroduit un
+        // écart de mesure, le texte ne débordera plus jamais visuellement
+        // hors de la cellule — il sera coupé net plutôt que de déborder à
+        // droite (ce qui reste un bug visible, mais un bug propre plutôt
+        // qu'un débordement qui abîme la lisibilité des lignes suivantes).
+        _messageLabel.clipsToBounds = YES;
         _messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [self.contentView addSubview:_messageLabel];
 
@@ -101,6 +107,13 @@
 // Largeur pour laquelle rowHeightCache a été calculé — invalidé si la vue
 // change de largeur (rotation, passage normal/théâtre).
 @property (nonatomic, assign) CGFloat cachedContentWidth;
+// Label de mesure hors-écran, jamais ajouté à une hiérarchie de vues —
+// configuré EXACTEMENT comme S7TVChatCustomCell.messageLabel (même
+// numberOfLines, même lineBreakMode) pour que s7tv_measureAttributedText:
+// fasse tourner le même moteur TextKit que le rendu réel. Voir cette
+// méthode pour le raisonnement complet (remplace boundingRectWithSize:,
+// qui pouvait diverger du rendu effectif sur certains points de wrap).
+@property (nonatomic, strong) UILabel *measuringLabel;
 @end
 
 @implementation SevenTVChatCustomView
@@ -113,6 +126,12 @@
         _messagesByID = @{};
         _rowHeightCache = [NSMutableDictionary dictionary];
         _cachedContentWidth = 0;
+
+        // Config strictement identique à S7TVChatCustomCell.messageLabel —
+        // voir s7tv_measureAttributedText: pour pourquoi c'est nécessaire.
+        _measuringLabel = [[UILabel alloc] init];
+        _measuringLabel.numberOfLines = 0;
+        _measuringLabel.lineBreakMode = NSLineBreakByWordWrapping;
 
         _tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
         _tableView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -373,6 +392,24 @@
     return [self s7tv_heightForMessage:msg];
 }
 
+// Mesure via un vrai UILabel plutôt que boundingRectWithSize: — constaté en
+// test réel : boundingRectWithSize: peut diverger du rendu effectif d'un
+// UILabel sur certains points de wrap (un mot à cheval sur la limite de
+// largeur débordait à droite au lieu de sauter à la ligne, alors que la
+// hauteur calculée pour un autre mot juste à côté était correcte). En
+// passant par sizeThatFits: sur un label configuré IDENTIQUEMENT à celui
+// réellement affiché (measuringLabel — même numberOfLines, même
+// lineBreakMode), on fait tourner exactement le même moteur TextKit pour la
+// mesure et pour le rendu : les deux ne peuvent plus diverger, par
+// construction, plutôt qu'en espérant que deux chemins de calcul séparés
+// donnent toujours le même résultat.
+- (CGSize)s7tv_measureAttributedText:(NSAttributedString *)text width:(CGFloat)width {
+    self.measuringLabel.attributedText = text;
+    CGSize fit = [self.measuringLabel sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
+    self.measuringLabel.attributedText = nil; // libère la référence, pas besoin de la garder
+    return fit;
+}
+
 // Hauteur exacte mise en cache par messageID — voir rowHeightCache pour le
 // raisonnement complet (élimine le rebond causé par l'auto-dimension).
 - (CGFloat)s7tv_heightForMessage:(S7TVChatMessage *)msg {
@@ -389,16 +426,23 @@
     // Mesure pure : les tableaux collectés ne sont pas utilisés ici, seule
     // la taille des attachments (déjà fixée par le builder à partir des
     // dimensions du fournisseur, indépendamment de l'image chargée ou non)
-    // compte pour boundingRect. C'est exactement ce qui permet de réserver
+    // compte pour la mesure. C'est exactement ce qui permet de réserver
     // la bonne hauteur dès le premier passage, avant même que l'image ait
     // fini de télécharger (le point qui bloquait le rendu natif Twitch).
     NSMutableArray<id<S7TVResolvedEmote>> *unusedEmotes = [NSMutableArray array];
     NSAttributedString *text = [self s7tv_buildAttributedStringForMessage:msg
                                                       collectUncachedEmotes:unusedEmotes];
-    CGRect rect = [text boundingRectWithSize:CGSizeMake(availableWidth, CGFLOAT_MAX)
-                                      options:NSStringDrawingUsesLineFragmentOrigin |
-                                              NSStringDrawingUsesFontLeading
-                                      context:nil];
+    // Mesure via un vrai UILabel plutôt que boundingRectWithSize: — constaté
+    // en test réel : boundingRectWithSize: peut diverger du rendu effectif
+    // du label sur certains points de wrap (un mot à cheval sur la limite
+    // débordait à droite au lieu de sauter à la ligne, alors que la hauteur
+    // calculée était correcte pour un autre point de wrap juste à côté).
+    // sizeThatFits: fait tourner EXACTEMENT le même moteur TextKit que celui
+    // utilisé pour l'affichage réel (S7TVChatCustomCell.messageLabel a la
+    // même config : numberOfLines=0, lineBreakMode=.byWordWrapping) — donc
+    // mesure et rendu ne peuvent plus jamais diverger, par construction.
+    CGSize fitSize = [self s7tv_measureAttributedText:text width:availableWidth];
+    CGRect rect = CGRectMake(0, 0, fitSize.width, fitSize.height);
     // +8 = marges verticales de la cellule (4 haut + 4 bas, voir
     // S7TVChatCustomCell). ceil() : jamais couper un pixel de la dernière ligne.
     CGFloat height = ceil(rect.size.height) + 8;

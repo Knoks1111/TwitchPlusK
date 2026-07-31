@@ -190,6 +190,7 @@ static const char kS7TVChatCustomInstalledView = 21;
 // à la retrouver dans la hiérarchie à chaque fois. Une seule vue visible à
 // la fois en pratique (normal OU théâtre, jamais les deux en même temps).
 static __weak SevenTVChatCustomView *s_activeChatCustomView = nil;
+static __weak UIView *s_activeNativeChatView = nil;
 
 // Appelée après un changement qui invalide l'affichage courant (nouveau
 // message, changement de chaîne...). No-op silencieux si aucune vue custom
@@ -223,6 +224,7 @@ static void s7tv_scheduleChatCustomReload(void) {
 }
 
 static void s7tv_applyChatCustomTest(UIView *chatView) {
+    s_activeNativeChatView = chatView;
     UIStackView *stack = (UIStackView *)chatView.superview;
     if (!stack) return;
 
@@ -231,7 +233,10 @@ static void s7tv_applyChatCustomTest(UIView *chatView) {
     SevenTVChatCustomView *existing =
         objc_getAssociatedObject(chatView, &kS7TVChatCustomInstalledView);
     if (existing && existing.superview == stack) {
+        chatView.hidden = YES;
+        existing.hidden = NO;
         s_activeChatCustomView = existing;
+        [existing reloadMessages];
         return;
     }
 
@@ -256,6 +261,22 @@ static void s7tv_applyChatCustomTest(UIView *chatView) {
     [[SevenTVManager sharedManager]
         log:@"[ChatCustom] 🏗 SevenTVChatCustomView insérée (index %ld du UIStackView, chat réel caché)",
         (long)idx];
+}
+
+static void s7tv_applyChatCustomToggle(void) {
+    UIView *chatView = s_activeNativeChatView;
+    if (!chatView || ![chatView.superview isKindOfClass:[UIStackView class]]) return;
+
+    if ([SevenTVManager sharedManager].chatCustomTestEnabled) {
+        s7tv_applyChatCustomTest(chatView);
+        return;
+    }
+
+    SevenTVChatCustomView *customView =
+        objc_getAssociatedObject(chatView, &kS7TVChatCustomInstalledView);
+    chatView.hidden = NO;
+    customView.hidden = YES;
+    if (s_activeChatCustomView == customView) s_activeChatCustomView = nil;
 }
 
 
@@ -473,6 +494,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     // réserver l'espace exact dès le départ côté renderer, sans jamais avoir
     // à resize après coup une fois l'image chargée.
     msg.tokens = s7tv_tokenizeMessageWithNativeEmotes(messageText, emotesTag);
+    msg.twitchEmotesTag = emotesTag;
 
     return msg;
 }
@@ -581,9 +603,9 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
         // Ne cible QUE l'instance réelle (superview == UIStackView, alpha=1
         // sur toute la chaîne) — pas l'instance fantôme du pont SwiftUI
         // (Twitch.ChatTranscriptViewRepresentable), qu'on laisse intacte.
-        if ([SevenTVManager sharedManager].chatCustomTestEnabled &&
-            [self.superview isKindOfClass:[UIStackView class]]) {
-            s7tv_applyChatCustomTest(self);
+        if ([self.superview isKindOfClass:[UIStackView class]]) {
+            s_activeNativeChatView = self;
+            s7tv_applyChatCustomToggle();
         }
     }
 
@@ -922,25 +944,23 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                 }
 
                 if (textToProcess) {
-                    if ([textToProcess containsString:@"ROOMSTATE"]) {
-                        s7tv_handleRoomState(textToProcess);
-                    }
+                    BOOL addedMessage = NO;
+                    NSArray<NSString *> *ircLines = [textToProcess
+                        componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+                    for (NSString *rawLine in ircLines) {
+                        NSString *ircLine = [rawLine stringByTrimmingCharactersInSet:
+                            [NSCharacterSet newlineCharacterSet]];
+                        if (!ircLine.length) continue;
+                        if ([ircLine containsString:@"ROOMSTATE"]) {
+                            s7tv_handleRoomState(ircLine);
+                        }
 
-                    // Note : on ne réinjecte plus de tag emotes= dans le message —
-                    // c'était utile uniquement pour que le rendu natif Twitch sache
-                    // où placer une image. Le futur rendu de chat maison lira les
-                    // emotes directement depuis le texte, donc on transmet le
-                    // message tel quel (lecture seule, pas de rewrite).
-
-                    // Phase 1c : parsing texte brut, alimente le store même si
-                    // la vue custom n'est pas active (kill switch OFF) — le
-                    // store existe indépendamment de l'affichage, comme prévu
-                    // par le modèle de données (Phase 1a).
-                    S7TVChatMessage *chatMsg = s7tv_parsePRIVMSG(textToProcess);
-                    if (chatMsg) {
+                        S7TVChatMessage *chatMsg = s7tv_parsePRIVMSG(ircLine);
+                        if (!chatMsg) continue;
                         [[SevenTVManager sharedManager].chatMessageStore addMessage:chatMsg];
-                        s7tv_scheduleChatCustomReload();
+                        addedMessage = YES;
                     }
+                    if (addedMessage) s7tv_scheduleChatCustomReload();
                 }
             }
             completionHandler(message, error);
@@ -1710,6 +1730,27 @@ __attribute__((constructor))
 static void TwitchSevenTVInit(void) {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     [mgr log:@"🔌 Chargement TwitchSevenTV v2.0 (substrate-free)..."];
+
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:S7TVChatCustomToggleDidChangeNotification
+                    object:mgr
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(__unused NSNotification *note) {
+        s7tv_applyChatCustomToggle();
+    }];
+
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:S7TVEmoteCatalogDidUpdateNotification
+                    object:mgr
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(__unused NSNotification *note) {
+        [mgr.chatMessageStore retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
+            return s7tv_tokenizeMessageWithNativeEmotes(message.rawText ?: @"",
+                                                        message.twitchEmotesTag ?: @"");
+        } completion:^{
+            s7tv_reloadActiveChatCustomView();
+        }];
+    }];
 
     // Tap logger
     s7tv_swizzle([UIWindow class],

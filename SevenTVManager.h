@@ -31,6 +31,8 @@
 // Nom de la notification postée quand une nouvelle ligne est ajoutée au buffer
 // SevenTVLogsController écoute cette notification pour se rafraîchir.
 extern NSString *const S7TVLogsDidUpdateNotification;
+extern NSString *const S7TVEmoteCatalogDidUpdateNotification;
+extern NSString *const S7TVChatCustomToggleDidChangeNotification;
 
 
 // ============================================================

@@ -257,11 +257,9 @@
                                                                 forIndexPath:indexPath];
     S7TVChatMessage *msg = self.displayedMessages[indexPath.row];
 
-    NSMutableArray<NSTextAttachment *> *attachments = [NSMutableArray array];
-    NSMutableArray<id<S7TVResolvedEmote>> *emotes = [NSMutableArray array];
+    NSMutableArray<id<S7TVResolvedEmote>> *uncachedEmotes = [NSMutableArray array];
     cell.messageLabel.attributedText = [self s7tv_buildAttributedStringForMessage:msg
-                                                                 collectAttachments:attachments
-                                                                     collectEmotes:emotes];
+                                                              collectUncachedEmotes:uncachedEmotes];
 
     // Les emotes déjà en cache ont été injectées directement par le builder
     // ci-dessus (voir cachedImageForResolvedEmote: dedans) — ici on ne
@@ -289,29 +287,20 @@
     SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
     NSString *messageID = msg.messageID;
     __weak typeof(self) weakSelf = self;
-    for (NSUInteger i = 0; i < attachments.count; i++) {
-        NSTextAttachment *attachment = attachments[i];
-        if (attachment.image) continue;
-        id<S7TVResolvedEmote> emote = emotes[i];
+    for (id<S7TVResolvedEmote> emote in uncachedEmotes) {
         [imageCache imageForResolvedEmote:emote completion:^(UIImage * _Nullable image) {
-            if (!image) return; // échec réseau/décodage → le nom reste affiché en fallback (token.text déjà dans le run texte)
-            [weakSelf s7tv_applyImage:image toAttachment:attachment forMessageID:messageID];
+            if (!image) return; // échec réseau/décodage → le nom reste affiché en fallback
+            [weakSelf s7tv_reloadMessageWithID:messageID];
         }];
     }
 
     return cell;
 }
 
-// Applique l'image à la BONNE cellule, quelle qu'elle soit MAINTENANT — pas
-// celle qui existait au moment où le chargement a été lancé. On retrouve la
-// ligne actuelle du message par son id (peut avoir bougé si des messages
-// ont été insérés avant lui depuis), puis on demande à la table sa cellule
-// EN CE MOMENT à cet indexPath (nil si la ligne n'est pas à l'écran — pas
-// grave, elle se construira avec l'image déjà en cache la prochaine fois
-// qu'elle redevient visible, voir cachedImageForResolvedEmote: dans le builder).
-- (void)s7tv_applyImage:(UIImage *)image
-            toAttachment:(NSTextAttachment *)attachment
-            forMessageID:(NSString *)messageID {
+// Une image arrivée est dans le cache : on reconstruit alors la ligne depuis
+// les données du message. Ainsi, aucun NSTextAttachment vide ne survit à un
+// rebuild de cellule ou à un basculement du chat custom.
+- (void)s7tv_reloadMessageWithID:(NSString *)messageID {
     NSUInteger row = [self.displayedMessages indexOfObjectPassingTest:
         ^BOOL(S7TVChatMessage *m, NSUInteger idx, BOOL *stop) {
             return [m.messageID isEqualToString:messageID];
@@ -319,15 +308,10 @@
     if (row == NSNotFound) return; // message plus dans la liste affichée (purgé)
 
     NSIndexPath *indexPath = [NSIndexPath indexPathForRow:row inSection:0];
-    S7TVChatCustomCell *visibleCell =
-        (S7TVChatCustomCell *)[self.tableView cellForRowAtIndexPath:indexPath];
-    if (!visibleCell) return; // ligne pas à l'écran actuellement, rien à faire maintenant
-
-    attachment.image = image;
-    // Mutation en place de l'attachment ne suffit pas à faire redessiner
-    // UILabel — la réaffectation (même objet) force le redraw en tenant
-    // compte de l'image maintenant présente.
-    visibleCell.messageLabel.attributedText = visibleCell.messageLabel.attributedText;
+    if (![self.tableView cellForRowAtIndexPath:indexPath]) return;
+    [self.rowHeightCache removeObjectForKey:messageID];
+    [self.tableView reloadRowsAtIndexPaths:@[indexPath]
+                          withRowAnimation:UITableViewRowAnimationNone];
 }
 
 #pragma mark - UITableViewDelegate
@@ -357,11 +341,9 @@
     // compte pour boundingRect. C'est exactement ce qui permet de réserver
     // la bonne hauteur dès le premier passage, avant même que l'image ait
     // fini de télécharger (le point qui bloquait le rendu natif Twitch).
-    NSMutableArray<NSTextAttachment *> *unusedAttachments = [NSMutableArray array];
     NSMutableArray<id<S7TVResolvedEmote>> *unusedEmotes = [NSMutableArray array];
     NSAttributedString *text = [self s7tv_buildAttributedStringForMessage:msg
-                                                         collectAttachments:unusedAttachments
-                                                             collectEmotes:unusedEmotes];
+                                                      collectUncachedEmotes:unusedEmotes];
     CGRect rect = [text boundingRectWithSize:CGSizeMake(availableWidth, CGFLOAT_MAX)
                                       options:NSStringDrawingUsesLineFragmentOrigin |
                                               NSStringDrawingUsesFontLeading
@@ -401,8 +383,7 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
 }
 
 - (NSAttributedString *)s7tv_buildAttributedStringForMessage:(S7TVChatMessage *)msg
-                                          collectAttachments:(NSMutableArray<NSTextAttachment *> *)outAttachments
-                                              collectEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outEmotes {
+                                       collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
 
     UIFont *usernameFont = [UIFont boldSystemFontOfSize:cfg.usernameFontSize];
@@ -466,6 +447,19 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
                 ? emote.nativeSize.width / emote.nativeSize.height : 1.0;
             CGFloat targetWidth = targetHeight * ratio;
 
+            UIImage *cachedImage = [imageCache cachedImageForResolvedEmote:emote];
+            if (!cachedImage) {
+                // NSTextAttachment sans image = glyphe de remplacement UIKit.
+                // Le nom est un fallback lisible pendant le chargement; la ligne
+                // sera reconstruite lorsque l'image entrera dans le cache.
+                [result appendAttributedString:[[NSAttributedString alloc]
+                    initWithString:token.text ?: @""
+                        attributes:@{NSFontAttributeName: messageFont,
+                                     NSForegroundColorAttributeName: messageColor}]];
+                [outUncachedEmotes addObject:emote];
+                continue;
+            }
+
             NSTextAttachment *attachment = [[NSTextAttachment alloc] init];
             // Léger décalage vertical pour rapprocher l'emote de la ligne de
             // base du texte plutôt que de son sommet — réglage fin visuel à
@@ -477,11 +471,9 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
             // ici — cette méthode reste pure/sans effet de bord pour rester
             // réutilisable pour la mesure de hauteur) remplira l'image
             // plus tard sans jamais changer la taille de la ligne.
-            attachment.image = [imageCache cachedImageForResolvedEmote:emote];
+            attachment.image = cachedImage;
 
             [result appendAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];
-            [outAttachments addObject:attachment];
-            [outEmotes addObject:emote];
             continue;
         }
 

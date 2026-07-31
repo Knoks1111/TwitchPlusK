@@ -42,6 +42,8 @@
 // Constante de notification
 // ============================================================
 NSString *const S7TVLogsDidUpdateNotification = @"S7TVLogsDidUpdateNotification";
+NSString *const S7TVEmoteCatalogDidUpdateNotification = @"S7TVEmoteCatalogDidUpdateNotification";
+NSString *const S7TVChatCustomToggleDidChangeNotification = @"S7TVChatCustomToggleDidChangeNotification";
 
 // ============================================================
 // TTL du cache en secondes
@@ -633,6 +635,11 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     _chatCustomTestEnabled = v;
     [self savePreferences];
     [self log:@"[ChatCustom] 🏗 Test chat custom %@", v ? @"ACTIVÉ" : @"désactivé"];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:S7TVChatCustomToggleDidChangeNotification
+                          object:self];
+    });
 }
 - (void)setDebugLogging:(BOOL)v {
     _debugLogging  = v;
@@ -699,6 +706,10 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         dispatch_barrier_async(self.emoteQueue, ^{
             self.globalEmotes = parsed;
             [self log:@"✅ %lu emotes globales chargées depuis API", (unsigned long)parsed.count];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:S7TVEmoteCatalogDidUpdateNotification object:self];
+            });
         });
         // Invalider le cache de tri du picker
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -989,6 +1000,10 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         dispatch_barrier_async(self.emoteQueue, ^{
             self.channelEmotes = parsed;
             [self log:@"✅ %lu emotes du channel chargées depuis API", (unsigned long)parsed.count];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:S7TVEmoteCatalogDidUpdateNotification object:self];
+            });
         });
         // Invalider le cache de tri du picker — les nouvelles emotes doivent apparaître
         dispatch_async(dispatch_get_main_queue(), ^{

@@ -324,6 +324,16 @@ static void s7tv_dumpViewSubtree(UIView *view, NSString *indent, NSInteger maxDe
 // table est généralement encore vide — le temps de laisser au moins une
 // cellule de message se peupler avant de descendre l'arbre.
 static void s7tv_dumpNativeCellMetrics(UIView *chatView, NSString *reason) {
+    // One-shot par lancement d'app — ce dump est un outil de mesure ponctuel
+    // (Phase 1b), pas un diagnostic à rejouer en continu. Le laisser se
+    // redéclencher à chaque changement de chaîne (chaque didMoveToWindow)
+    // ajoute une traversée récursive + des appels valueForKey: à un moment
+    // où la vue peut être en cours de démontage (changement rapide de
+    // chaîne) — charge et risque inutiles une fois la mesure obtenue.
+    static BOOL s_alreadyDumped = NO;
+    if (s_alreadyDumped) return;
+    s_alreadyDumped = YES;
+
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     [mgr log:@"[ChatCustom] 🏗 ── Mesure cellule native (%@) ──────────────────", reason];
     NSInteger ivarDumpsRemaining = 2;

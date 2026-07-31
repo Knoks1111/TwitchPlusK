@@ -2003,6 +2003,19 @@ static void TwitchSevenTVInit(void) {
         // plus bas dans ce fichier depuis s7tv_handleRoomState, jamais
         // consommée jusqu'ici) — voir SevenTVBadgeProvider.h.
         [SevenTVBadgeProvider setup];
+        // Le fetch du catalogue badges est async : un message peut se rendre
+        // avant que le catalogue (global ou channel) ait fini de charger, et
+        // dans ce cas resolvedBadgeForIdentifier: retourne nil sans retry
+        // automatique (contrairement à une image manquante). On force un
+        // reload complet dès que le catalogue devient disponible pour que
+        // ces messages déjà affichés récupèrent leurs badges.
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:S7TVBadgesCatalogUpdatedNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *note) {
+            s7tv_reloadActiveChatCustomView();
+        }];
         [[SevenTVManager sharedManager] log:@"✅ SevenTVManager prêt"];
 
         // Démarrer le local proxy si activé

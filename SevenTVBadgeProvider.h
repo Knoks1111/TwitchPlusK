@@ -33,6 +33,17 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Postée sur le main thread dès qu'un catalogue (global OU channel) vient de
+// finir de charger avec succès. Corrige un bug de timing : un message rendu
+// AVANT la fin du fetch voit resolvedBadgeForIdentifier: retourner nil (badge
+// simplement sauté, PAS ajouté à outUncachedEmotes — contrairement à une
+// image manquante, il n'y a alors aucun mécanisme de retry automatique). Sans
+// cette notification, les messages affichés avant la fin du chargement du
+// catalogue n'auraient jamais leurs badges, même une fois le catalogue prêt.
+// TweakSevenTV.m écoute cette notification et déclenche un reload complet du
+// chat custom (même mécanisme que pour un changement de chaîne).
+extern NSString *const S7TVBadgesCatalogUpdatedNotification;
+
 // Badge résolu — conforme à S7TVResolvedEmote pour réutiliser tel quel
 // SevenTVEmoteImageCache (fetch/décodage/cache image) et le mécanisme de
 // reload-on-load déjà en place dans SevenTVChatCustomView

@@ -6,16 +6,12 @@
  * taille ne doit être écrite en dur ailleurs dans le code de layout
  * (exigence transverse #1).
  *
- * IMPORTANT — valeurs par défaut non encore mesurées :
- * L'exigence transverse #1 du plan demande de mesurer les tailles RÉELLES
- * rendues par Twitch.ChatTranscriptView avant d'écrire le moindre défaut.
- * Cette mesure n'a pas encore été faite (nécessite d'inspecter le rendu
- * natif en marche — candidat naturel : étendre le hook de diagnostic
- * didMoveToWindow de TweakSevenTV.m pour dumper les tailles de police/frame
- * des UILabel/UIImageView réels d'une cellule native). Toutes les valeurs
- * ci-dessous sont donc marquées "TODO mesure réelle" et sont des estimations
- * raisonnables temporaires, PAS des défauts Twitch confirmés — à corriger
- * dès que la mesure sera faite, avant de considérer la Phase 1b terminée.
+ * IMPORTANT — état des valeurs par défaut :
+ * emote7TVSize, badgeSize, usernameFontSize et messageFontSize ont été
+ * mesurées (screenshot device natif 3x retina + dump de cellule native
+ * in-app) — voir le détail dans SevenTVChatAppearanceConfig.m. emoteTwitchSize,
+ * lineSpacing et usernameMessageSpacing restent des estimations "TODO mesure
+ * réelle", pas encore confirmées.
  */
 
 #import <Foundation/Foundation.h>
@@ -30,15 +26,15 @@ NS_ASSUME_NONNULL_BEGIN
 // --- Tailles (points, pas pixels) — chacune indépendante, pas de facteur
 // d'échelle global unique (exigence transverse #1). ---
 
-// TODO mesure réelle — estimation temporaire.
+// Mesurée (screenshot 3x retina) — voir .m.
 @property (nonatomic, assign) CGFloat emote7TVSize;        // hauteur cible emote 7TV
-// TODO mesure réelle — estimation temporaire.
+// TODO mesure réelle — pas d'emote Twitch native isolée dans le screenshot dispo.
 @property (nonatomic, assign) CGFloat emoteTwitchSize;     // hauteur cible emote Twitch native
-// TODO mesure réelle — estimation temporaire.
+// Mesurée (screenshot 3x retina) — voir .m.
 @property (nonatomic, assign) CGFloat badgeSize;           // hauteur cible badge (sub/mod/VIP/custom)
-// TODO mesure réelle — estimation temporaire.
+// Mesurée (screenshot 3x retina) — voir .m.
 @property (nonatomic, assign) CGFloat usernameFontSize;    // taille texte pseudo
-// TODO mesure réelle — estimation temporaire.
+// Mesurée (screenshot 3x retina) — voir .m.
 @property (nonatomic, assign) CGFloat messageFontSize;     // taille texte message
 
 // Espacements — ajoutés dès 1b comme prévu par le plan (§1, "à étendre

@@ -20,15 +20,28 @@ static NSString *const kS7TVCfgUsernameMessageSpacing  = @"s7tv_cfg_username_mes
 static NSString *const kS7TVCfgEmote7TVResolution      = @"s7tv_cfg_emote_7tv_resolution";
 
 // ── Valeurs par défaut ────────────────────────────────────────────────────────
-// TODO mesure réelle (voir header) — estimations temporaires uniquement,
-// PAS des défauts Twitch confirmés.
+// Mesurées sur screenshot natif device (1170×2532px = 390×844pt @3x retina,
+// confirmé via le dump hiérarchie live) + dump de cellule native in-app :
+//   - emote7TVSize : bloc plein d'une emote 7TV isolé par érosion morphologique
+//     sur le screenshot → 86px = 28.7pt, arrondi à 28.0 (== ancienne estimation,
+//     confirmée).
+//   - badgeSize : disque plein du badge d'abonné (hors halo/sparkle décoratif)
+//     → 49px = 16.3pt, arrondi à 17.0 (ancienne estimation 18.0 trop haute).
+//   - usernameFontSize / messageFontSize : hauteur de glyphe (ascendantes +
+//     descendantes) mesurée sur le texte du screenshot → ~13pt, confirme
+//     l'ancienne estimation telle quelle.
+//   - emoteTwitchSize : pas de message avec emote Twitch native isolée dans le
+//     screenshot dispo — encore une estimation alignée sur emote7TVSize par
+//     cohérence visuelle, à confirmer plus tard.
+//   - lineSpacing / usernameMessageSpacing / emote7TVResolution : toujours
+//     TODO mesure réelle, pas couverts par cette passe.
 static const CGFloat kDefaultEmote7TVSize          = 28.0;
-static const CGFloat kDefaultEmoteTwitchSize        = 28.0;
-static const CGFloat kDefaultBadgeSize              = 18.0;
+static const CGFloat kDefaultEmoteTwitchSize        = 28.0; // TODO mesure réelle
+static const CGFloat kDefaultBadgeSize              = 17.0;
 static const CGFloat kDefaultUsernameFontSize       = 13.0;
 static const CGFloat kDefaultMessageFontSize        = 13.0;
-static const CGFloat kDefaultLineSpacing            = 4.0;
-static const CGFloat kDefaultUsernameMessageSpacing = 4.0;
+static const CGFloat kDefaultLineSpacing            = 4.0;  // TODO mesure réelle
+static const CGFloat kDefaultUsernameMessageSpacing = 4.0;  // TODO mesure réelle
 // Résolution : défaut technique assumé (pas une mesure), voir header.
 static const NSInteger kDefaultEmote7TVResolution   = 2;
 

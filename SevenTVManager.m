@@ -36,6 +36,7 @@
 #import "SevenTVSettingsController.h"
 #import "SevenTVURLProtocol.h"
 #import "SevenTVLogo.h"
+#import "SevenTVBadgeProvider.h"
 #import <objc/runtime.h>
 
 // ============================================================

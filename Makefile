@@ -24,7 +24,8 @@ TwitchSevenTV_FILES = \
     SevenTVEmoteProvider.m \
     SevenTVChatTokenizer.m \
     SevenTVEmoteImageCache.m \
-    SevenTVEmoteAnimationEngine.m
+    SevenTVEmoteAnimationEngine.m \
+    SevenTVBadgeProvider.m
 
 # ── Options de compilation ──
 TwitchSevenTV_CFLAGS = \

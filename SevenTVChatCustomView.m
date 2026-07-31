@@ -28,10 +28,17 @@
         self.selectionStyle  = UITableViewCellSelectionStyleNone;
 
         _messageLabel = [[UILabel alloc] init];
-        _messageLabel.numberOfLines = 0; // Phase 1c : word-wrap standard,
-                                          // le fallback character-wrap pour
-                                          // texte sans espace (URL énorme)
-                                          // arrive si le test le montre nécessaire.
+        _messageLabel.numberOfLines = 0; // Phase 1c : word-wrap standard.
+        // lineBreakMode : le défaut UIKit (.byTruncatingTail) tronque avec
+        // "…" un mot trop large pour la largeur disponible au lieu de le
+        // couper à la ligne suivante (constaté en test réel : "bonj..." sur
+        // un message sans espace assez long). .byCharWrapping wrap toujours
+        // aux espaces quand c'est possible, et coupe au caractère seulement
+        // quand un "mot" dépasse la largeur — voir aussi la paragraph style
+        // appliquée dans s7tv_buildAttributedStringForMessage: pour que la
+        // hauteur calculée (Phase 1c height cache) corresponde exactement à
+        // ce que ce label affiche réellement.
+        _messageLabel.lineBreakMode = NSLineBreakByCharWrapping;
         _messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [self.contentView addSubview:_messageLabel];
 
@@ -399,6 +406,29 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
     return [UIColor colorWithHue:h saturation:s brightness:kMinBrightness alpha:a];
 }
 
+// Aligne un NSAttributedString sur S7TVChatCustomCell.messageLabel.lineBreakMode
+// (.byCharWrapping) — sans ça, boundingRectWithSize: (utilisé pour la hauteur
+// de cellule, voir s7tv_heightForMessage:) mesure avec le défaut NSParagraphStyle
+// (.byWordWrapping) pendant que le label affiche avec .byCharWrapping : les
+// deux peuvent diverger sur un message avec un "mot" trop long, désynchronisant
+// la hauteur réservée et le rendu réel. Appelée sur les 3 points de sortie de
+// s7tv_buildAttributedStringForMessage:collectUncachedEmotes: (message normal,
+// message supprimé, fallback sans tokens) pour rester cohérente dans tous les cas.
+static void s7tv_applyLineBreakParagraphStyle(NSMutableAttributedString *attrString) {
+    static NSParagraphStyle *style = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableParagraphStyle *mutableStyle = [NSMutableParagraphStyle new];
+        mutableStyle.lineBreakMode = NSLineBreakByCharWrapping;
+        style = [mutableStyle copy];
+    });
+    if (attrString.length > 0) {
+        [attrString addAttribute:NSParagraphStyleAttributeName
+                            value:style
+                            range:NSMakeRange(0, attrString.length)];
+    }
+}
+
 - (NSAttributedString *)s7tv_buildAttributedStringForMessage:(S7TVChatMessage *)msg
                                        collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
@@ -424,6 +454,7 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
             initWithString:@"[message supprimé]"
                 attributes:@{NSFontAttributeName: messageFont,
                              NSForegroundColorAttributeName: [UIColor grayColor]}]];
+        s7tv_applyLineBreakParagraphStyle(result);
         return result;
     }
 
@@ -435,6 +466,7 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
             initWithString:msg.rawText ?: @""
                 attributes:@{NSFontAttributeName: messageFont,
                              NSForegroundColorAttributeName: messageColor}]];
+        s7tv_applyLineBreakParagraphStyle(result);
         return result;
     }
 
@@ -503,6 +535,7 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
                              NSForegroundColorAttributeName: messageColor}]];
     }
 
+    s7tv_applyLineBreakParagraphStyle(result);
     return result;
 }
 

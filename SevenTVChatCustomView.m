@@ -31,14 +31,16 @@
         _messageLabel.numberOfLines = 0; // Phase 1c : word-wrap standard.
         // lineBreakMode : le défaut UIKit (.byTruncatingTail) tronque avec
         // "…" un mot trop large pour la largeur disponible au lieu de le
-        // couper à la ligne suivante (constaté en test réel : "bonj..." sur
-        // un message sans espace assez long). .byCharWrapping wrap toujours
-        // aux espaces quand c'est possible, et coupe au caractère seulement
-        // quand un "mot" dépasse la largeur — voir aussi la paragraph style
-        // appliquée dans s7tv_buildAttributedStringForMessage: pour que la
-        // hauteur calculée (Phase 1c height cache) corresponde exactement à
-        // ce que ce label affiche réellement.
-        _messageLabel.lineBreakMode = NSLineBreakByCharWrapping;
+        // wrapper (constaté en test réel : "bonj..." sur un message sans
+        // espace assez long). .byWordWrapping pousse le mot ENTIER à la
+        // ligne suivante quand il ne tient pas, et ne le coupe en plein
+        // milieu que si le mot à lui seul dépasse la largeur d'une ligne
+        // complète (ex: spam sans espace) — contrairement à .byCharWrapping,
+        // testé d'abord, qui coupait des mots normaux ("crème"→"crè"/"me")
+        // alors qu'ils tenaient très bien sur la ligne suivante en entier.
+        // Voir aussi la paragraph style dans s7tv_buildAttributedStringForMessage:
+        // pour que la hauteur calculée corresponde exactement à ce rendu.
+        _messageLabel.lineBreakMode = NSLineBreakByWordWrapping;
         _messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [self.contentView addSubview:_messageLabel];
 
@@ -134,17 +136,6 @@
         // mécanisme est indépendant de l'auto-sizing des cellules : pas de
         // retour du rebond.
         _tableView.estimatedRowHeight = 24;
-        // Sans ça, UIKit peut réduire la largeur réelle de contentView de
-        // chaque cellule selon la safe area (nonzéro en landscape/théâtre
-        // selon la disposition), alors que s7tv_heightForMessage: calcule
-        // la hauteur avec `self.bounds.size.width` qui, lui, ignore cette
-        // réduction. Constaté en test réel : la hauteur réservée devient
-        // légèrement trop courte, et le dernier mot d'une ligne proche du
-        // bord se retrouve tronqué sans qu'aucune ligne supplémentaire ne
-        // s'affiche pour le contenir (le label ne peut pas grandir au-delà
-        // de la hauteur de cellule déjà fixée). Désactiver garantit que la
-        // largeur de mesure et la largeur de rendu sont TOUJOURS identiques.
-        _tableView.insetsContentViewsToSafeArea = NO;
         // Le clavier/barre de saisie restent 100% natifs Twitch (principe
         // directeur du plan) — cette table n'a donc pas à gérer le clavier.
         [_tableView registerClass:[S7TVChatCustomCell class]
@@ -443,11 +434,10 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
 }
 
 // Aligne un NSAttributedString sur S7TVChatCustomCell.messageLabel.lineBreakMode
-// (.byCharWrapping) — sans ça, boundingRectWithSize: (utilisé pour la hauteur
-// de cellule, voir s7tv_heightForMessage:) mesure avec le défaut NSParagraphStyle
-// (.byWordWrapping) pendant que le label affiche avec .byCharWrapping : les
-// deux peuvent diverger sur un message avec un "mot" trop long, désynchronisant
-// la hauteur réservée et le rendu réel. Appelée sur les 3 points de sortie de
+// (.byWordWrapping) — sans ça, boundingRectWithSize: (utilisé pour la hauteur
+// de cellule, voir s7tv_heightForMessage:) mesure avec un paragraph style qui
+// peut diverger de celui du label affiché, désynchronisant la hauteur
+// réservée et le rendu réel. Appelée sur les 3 points de sortie de
 // s7tv_buildAttributedStringForMessage:collectUncachedEmotes: (message normal,
 // message supprimé, fallback sans tokens) pour rester cohérente dans tous les cas.
 static void s7tv_applyLineBreakParagraphStyle(NSMutableAttributedString *attrString) {
@@ -455,7 +445,7 @@ static void s7tv_applyLineBreakParagraphStyle(NSMutableAttributedString *attrStr
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         NSMutableParagraphStyle *mutableStyle = [NSMutableParagraphStyle new];
-        mutableStyle.lineBreakMode = NSLineBreakByCharWrapping;
+        mutableStyle.lineBreakMode = NSLineBreakByWordWrapping;
         style = [mutableStyle copy];
     });
     if (attrString.length > 0) {

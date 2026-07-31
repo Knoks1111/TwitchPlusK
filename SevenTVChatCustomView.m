@@ -327,13 +327,22 @@
         return;
     }
 
-    NSIndexPath *last = [NSIndexPath indexPathForRow:count - 1 inSection:0];
+    // layoutIfNeeded force UIKit à finir tout calcul de layout en attente
+    // (contentSize recalculé avec la toute dernière cellule insérée) AVANT
+    // qu'on scroll — constaté en test réel : sans ça, scrollToRowAtIndexPath:
+    // pouvait viser une position basée sur un contentSize pas encore à jour,
+    // laissant la toute dernière ligne partiellement coupée en bas de la
+    // chatbox (visible à moitié). On positionne ensuite contentOffset
+    // DIRECTEMENT à partir du contentSize final plutôt que de passer par un
+    // index de ligne (scrollToRowAtIndexPath:atScrollPosition:) — élimine
+    // toute ambiguïté entre "quelle ligne" et "quelle position en pixels",
+    // les deux calculs ne pouvant plus diverger puisqu'il n'y en a qu'un.
+    [self.tableView layoutIfNeeded];
+    CGFloat targetY = MAX(0, self.tableView.contentSize.height - self.tableView.bounds.size.height);
     [[SevenTVManager sharedManager]
-        log:@"[ChatCustom] 🏗 scrollToBottomIfNeeded: scroll vers row %ld (contentSize.h AVANT=%.1f)",
-        (long)(count - 1), self.tableView.contentSize.height];
-    [self.tableView scrollToRowAtIndexPath:last
-                           atScrollPosition:UITableViewScrollPositionBottom
-                                   animated:NO];
+        log:@"[ChatCustom] 🏗 scrollToBottomIfNeeded: scroll vers offset.y=%.1f (contentSize.h APRÈS layoutIfNeeded=%.1f)",
+        targetY, self.tableView.contentSize.height];
+    self.tableView.contentOffset = CGPointMake(0, targetY);
     [[SevenTVManager sharedManager]
         log:@"[ChatCustom] 🏗 scrollToBottomIfNeeded: APRÈS scroll — contentSize.h=%.1f offset.y=%.1f",
         self.tableView.contentSize.height, self.tableView.contentOffset.y];

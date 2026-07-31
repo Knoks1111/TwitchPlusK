@@ -114,22 +114,6 @@
 // méthode pour le raisonnement complet (remplace boundingRectWithSize:,
 // qui pouvait diverger du rendu effectif sur certains points de wrap).
 @property (nonatomic, strong) UILabel *measuringLabel;
-// État persistant "on veut rester en bas" — mis à jour UNIQUEMENT par un
-// vrai geste utilisateur (voir scrollViewDidScroll:), jamais recalculé à
-// partir d'une simple mesure de distance à chaque message. Nécessaire car
-// un redimensionnement externe de la vue (ex: bannière/leaderboard qui
-// apparaît au-dessus du chat — constaté en test réel : bounds.h passe de
-// 411 à 237 en <0.5s sans aucune action de l'utilisateur) fausse la mesure
-// de distance instantanément, et sans état persistant, l'autoscroll reste
-// cassé indéfiniment ensuite (chaque nouveau message ne fait qu'agrandir
-// l'écart, jamais ne le corrige).
-@property (nonatomic, assign) BOOL isPinnedToBottom;
-// Dernière hauteur de bounds connue — sert à détecter un redimensionnement
-// externe dans layoutSubviews (voir isPinnedToBottom ci-dessus).
-@property (nonatomic, assign) CGFloat lastKnownBoundsHeight;
-// Garde-fou anti-empilement pour le dispatch_async coalescé dans
-// layoutSubviews — voir cette méthode pour le raisonnement complet.
-@property (nonatomic, assign) BOOL hasScheduledRescroll;
 @end
 
 @implementation SevenTVChatCustomView
@@ -142,8 +126,6 @@
         _messagesByID = @{};
         _rowHeightCache = [NSMutableDictionary dictionary];
         _cachedContentWidth = 0;
-        _isPinnedToBottom = YES;
-        _lastKnownBoundsHeight = 0;
 
         // Config strictement identique à S7TVChatCustomCell.messageLabel —
         // voir s7tv_measureAttributedText: pour pourquoi c'est nécessaire.
@@ -215,34 +197,6 @@
         [self.rowHeightCache removeAllObjects];
         [self.tableView reloadData];
     }
-
-    // Redimensionnement externe (bannière/leaderboard qui apparaît au-dessus
-    // du chat, rotation, changement normal/théâtre, etc.) : si on était
-    // pinné en bas, on le reste — sans ça, la mesure de distance se
-    // retrouve faussée par le redimensionnement lui-même et l'autoscroll
-    // reste cassé jusqu'à ce que l'utilisateur scrolle manuellement.
-    //
-    // dispatch_async coalescé (PAS d'appel synchrone ici) : layoutSubviews
-    // peut se déclencher très fréquemment pendant qu'un conteneur externe
-    // est en train de se redimensionner (constaté en test réel : bounds.h
-    // oscillait plusieurs fois par seconde). Appeler layoutIfNeeded + poser
-    // contentOffset DEPUIS layoutSubviews lui-même entrait en conflit avec
-    // ce redimensionnement en cours côté Twitch — géométrie incohérente au
-    // moment de la mesure, dernière ligne coupée. hasScheduledRescroll évite
-    // d'empiler un dispatch par oscillation ; un seul rescroll suffit une
-    // fois que TOUT le remous de layout est retombé.
-    if (self.bounds.size.height > 0 && self.bounds.size.height != self.lastKnownBoundsHeight) {
-        BOOL isFirstLayout = (self.lastKnownBoundsHeight == 0);
-        self.lastKnownBoundsHeight = self.bounds.size.height;
-        if (!isFirstLayout && self.isPinnedToBottom && !self.hasScheduledRescroll) {
-            self.hasScheduledRescroll = YES;
-            __weak typeof(self) weakSelf = self;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                weakSelf.hasScheduledRescroll = NO;
-                [weakSelf s7tv_scrollToBottomIfNeeded:YES];
-            });
-        }
-    }
 }
 
 - (void)reloadMessages {
@@ -257,24 +211,19 @@
     // prévue explicitement en Phase 4 ; ce garde-fou évite juste qu'un flux
     // rapide fasse sauter la vue sous les yeux de quelqu'un qui remonte lire
     // l'historique.
-    // On se fie à l'état persistant isPinnedToBottom (mis à jour uniquement
-    // par un vrai geste utilisateur, voir scrollViewDidScroll:) plutôt qu'à
-    // une mesure de distance recalculée ici — cette mesure peut être faussée
-    // par un redimensionnement externe survenu juste avant (voir
-    // isPinnedToBottom pour le détail du bug que ça causait).
-    BOOL wasNearBottom = (self.displayedMessages.count == 0) || self.isPinnedToBottom;
-
-    // Diagnostic autoscroll — la distance brute reste loguée à titre indicatif
-    // uniquement (comparaison avec isPinnedToBottom), elle ne pilote plus la
-    // décision de scroll.
     CGFloat distanceFromBottom = self.tableView.contentSize.height
         - (self.tableView.contentOffset.y + self.tableView.bounds.size.height);
+    BOOL wasNearBottom = (self.displayedMessages.count == 0) || (distanceFromBottom < 80);
+
+    // Diagnostic autoscroll (constaté en usage réel : l'autoscroll s'arrête
+    // parfois même sans interaction tactile) — capture l'état exact au
+    // moment de la décision, pour comparer avec ce qui se passe côté
+    // s7tv_scrollToBottomIfNeeded: juste après.
     [[SevenTVManager sharedManager]
         log:@"[ChatCustom] 🏗 reloadMessages: contentSize.h=%.1f offset.y=%.1f bounds.h=%.1f "
-             @"distanceFromBottom=%.1f isPinnedToBottom=%@ wasNearBottom=%@ ancienCount=%ld nouveauCount=%ld",
+             @"distanceFromBottom=%.1f wasNearBottom=%@ ancienCount=%ld nouveauCount=%ld",
         self.tableView.contentSize.height, self.tableView.contentOffset.y,
-        self.tableView.bounds.size.height, distanceFromBottom,
-        self.isPinnedToBottom ? @"OUI" : @"NON", wasNearBottom ? @"OUI" : @"NON",
+        self.tableView.bounds.size.height, distanceFromBottom, wasNearBottom ? @"OUI" : @"NON",
         (long)self.displayedMessages.count, (long)newMessages.count];
 
     // Index messageID → message reconstruit à chaque reload : utilisé par le
@@ -320,18 +269,7 @@
     // ligne qui causait le flash/superposition sur un chat rapide.
     __weak typeof(self) weakSelf = self;
     [self.dataSource applySnapshot:snapshot animatingDifferences:NO completion:^{
-        // dispatch_async (pas d'appel direct) — constaté en test réel : même
-        // dans la completion de applySnapshot, UIKit peut encore avoir une
-        // réconciliation de hauteur DIFFÉRÉE en attente pour une cellule tout
-        // juste insérée (contentSize continuait de changer entre plusieurs
-        // scrollToBottomIfNeeded successifs, à quelques dizaines de ms
-        // d'écart, sans qu'aucun message ne soit ajouté/retiré entre-temps).
-        // On scrollait alors sur un contentSize pas encore définitif, laissant
-        // la dernière ligne partiellement coupée. Un tick de run loop plus
-        // tard, cette réconciliation est terminée.
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf s7tv_scrollToBottomIfNeeded:wasNearBottom];
-        });
+        [weakSelf s7tv_scrollToBottomIfNeeded:wasNearBottom];
     }];
 }
 
@@ -356,22 +294,13 @@
         return;
     }
 
-    // layoutIfNeeded force UIKit à finir tout calcul de layout en attente
-    // (contentSize recalculé avec la toute dernière cellule insérée) AVANT
-    // qu'on scroll — constaté en test réel : sans ça, scrollToRowAtIndexPath:
-    // pouvait viser une position basée sur un contentSize pas encore à jour,
-    // laissant la toute dernière ligne partiellement coupée en bas de la
-    // chatbox (visible à moitié). On positionne ensuite contentOffset
-    // DIRECTEMENT à partir du contentSize final plutôt que de passer par un
-    // index de ligne (scrollToRowAtIndexPath:atScrollPosition:) — élimine
-    // toute ambiguïté entre "quelle ligne" et "quelle position en pixels",
-    // les deux calculs ne pouvant plus diverger puisqu'il n'y en a qu'un.
-    [self.tableView layoutIfNeeded];
-    CGFloat targetY = MAX(0, self.tableView.contentSize.height - self.tableView.bounds.size.height);
+    NSIndexPath *last = [NSIndexPath indexPathForRow:count - 1 inSection:0];
     [[SevenTVManager sharedManager]
-        log:@"[ChatCustom] 🏗 scrollToBottomIfNeeded: scroll vers offset.y=%.1f (contentSize.h APRÈS layoutIfNeeded=%.1f)",
-        targetY, self.tableView.contentSize.height];
-    self.tableView.contentOffset = CGPointMake(0, targetY);
+        log:@"[ChatCustom] 🏗 scrollToBottomIfNeeded: scroll vers row %ld (contentSize.h AVANT=%.1f)",
+        (long)(count - 1), self.tableView.contentSize.height];
+    [self.tableView scrollToRowAtIndexPath:last
+                           atScrollPosition:UITableViewScrollPositionBottom
+                                   animated:NO];
     [[SevenTVManager sharedManager]
         log:@"[ChatCustom] 🏗 scrollToBottomIfNeeded: APRÈS scroll — contentSize.h=%.1f offset.y=%.1f",
         self.tableView.contentSize.height, self.tableView.contentOffset.y];
@@ -451,25 +380,6 @@
 }
 
 #pragma mark - UITableViewDelegate
-
-// UITableViewDelegate hérite de UIScrollViewDelegate — pas besoin d'ajouter
-// le protocole séparément à l'@interface.
-//
-// Ne met à jour isPinnedToBottom QUE quand le scroll vient réellement de
-// l'utilisateur (tracking/dragging/decelerating) — sinon un appel
-// programmatique à scrollToRowAtIndexPath: (le nôtre, dans
-// s7tv_scrollToBottomIfNeeded:) déclencherait aussi scrollViewDidScroll: et
-// fausserait l'état à chaque fois qu'on scrolle nous-mêmes. isTracking /
-// isDragging / isDecelerating sont tous à NO pendant un scroll programmatique
-// non-animé, ce qui les distingue proprement d'un vrai geste.
-- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
-    if (!scrollView.isTracking && !scrollView.isDragging && !scrollView.isDecelerating) {
-        return;
-    }
-    CGFloat distanceFromBottom = scrollView.contentSize.height
-        - (scrollView.contentOffset.y + scrollView.bounds.size.height);
-    self.isPinnedToBottom = (distanceFromBottom < 80);
-}
 
 - (CGFloat)tableView:(UITableView *)tableView
     heightForRowAtIndexPath:(NSIndexPath *)indexPath {

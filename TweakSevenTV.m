@@ -1586,6 +1586,62 @@ static void s7tv_swizzle_account_menu(void) {
 
 
 // ────────────────────────────────────────────────────────────
+// MARK: - Interception du token Twitch (2 points de capture)
+// ────────────────────────────────────────────────────────────
+//
+// Le hook sur dataTaskWithRequest: ne voit QUE les headers posés directement
+// sur l'objet NSURLRequest. Si Twitch configure Authorization/Client-ID au
+// niveau de la session (HTTPAdditionalHeaders), ils n'apparaissent jamais
+// sur la requête individuelle. On capture donc à la source, aux deux
+// endroits possibles où ces headers peuvent être écrits.
+
+@interface NSMutableURLRequest (S7TVTokenCapture)
+- (void)s7tv_setValue:(NSString *)value forHTTPHeaderField:(NSString *)field;
+@end
+
+@implementation NSMutableURLRequest (S7TVTokenCapture)
+- (void)s7tv_setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
+    if (value.length) {
+        if ([field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame) {
+            [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:value];
+        } else if ([field caseInsensitiveCompare:@"Client-ID"] == NSOrderedSame) {
+            [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:value];
+        }
+    }
+    [self s7tv_setValue:value forHTTPHeaderField:field];
+}
+@end
+
+@interface NSURLSessionConfiguration (S7TVTokenCapture)
+- (void)s7tv_setHTTPAdditionalHeaders:(NSDictionary *)headers;
+@end
+
+@implementation NSURLSessionConfiguration (S7TVTokenCapture)
+- (void)s7tv_setHTTPAdditionalHeaders:(NSDictionary *)headers {
+    NSString *auth = headers[@"Authorization"] ?: headers[@"authorization"];
+    NSString *clientID = headers[@"Client-ID"] ?: headers[@"client-id"];
+    if (auth.length)     [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:auth];
+    if (clientID.length) [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:clientID];
+    [self s7tv_setHTTPAdditionalHeaders:headers];
+}
+@end
+
+static void s7tv_swizzle_token_capture(void) {
+    s7tv_swizzle([NSMutableURLRequest class], [NSMutableURLRequest class],
+                 @selector(setValue:forHTTPHeaderField:),
+                 @selector(s7tv_setValue:forHTTPHeaderField:));
+
+    // NSURLSessionConfiguration est une vraie classe (pas un cluster) —
+    // swizzle direct sur la classe de base, sans sonde nécessaire.
+    s7tv_swizzle([NSURLSessionConfiguration class], [NSURLSessionConfiguration class],
+                 @selector(setHTTPAdditionalHeaders:),
+                 @selector(s7tv_setHTTPAdditionalHeaders:));
+
+    [[SevenTVManager sharedManager] log:@"🔌 Token capture (request + session config) installé"];
+}
+
+
+// ────────────────────────────────────────────────────────────
 // MARK: - Swizzle NSURLSession (classe concrète via sonde)
 // ────────────────────────────────────────────────────────────
 
@@ -1979,6 +2035,7 @@ static void TwitchSevenTVInit(void) {
                  @selector(s7tv_didMoveToWindow));
 
     // Interception réponses GQL Twitch
+    s7tv_swizzle_token_capture();
     s7tv_swizzle_session();
 
     // Interception IRC WebSocket

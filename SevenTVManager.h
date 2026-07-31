@@ -148,6 +148,13 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, copy, readonly) NSString *twitchClientID;
 - (void)saveTwitchToken:(NSString *)token clientID:(NSString *)clientID;
 
+// Capture partielle : Authorization et Client-ID arrivent souvent via deux
+// appels séparés (setValue:forHTTPHeaderField: appelé une fois par header).
+// Chaque capture stocke sa valeur ; saveTwitchToken:clientID: n'est appelé
+// en interne que lorsque les deux sont disponibles.
+- (void)s7tv_captureAuthorizationHeader:(NSString *)value;
+- (void)s7tv_captureClientIDHeader:(NSString *)value;
+
 // --- Extraction depuis réponses Twitch GQL ---
 - (void)extractAndLoadEmotesFromGQLResponse:(NSData *)responseData;
 

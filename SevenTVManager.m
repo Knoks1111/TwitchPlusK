@@ -115,6 +115,9 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 // l'API Helix (badges, etc.) sans enregistrer une app développeur.
 @property (nonatomic, copy) NSString *twitchToken;
 @property (nonatomic, copy) NSString *twitchClientID;
+// Valeurs partielles en attendant d'avoir les deux (voir capture méthodes ci-dessous)
+@property (nonatomic, copy) NSString *pendingAuthHeader;
+@property (nonatomic, copy) NSString *pendingClientIDHeader;
 
 // Dossier racine du cache JSON (créé à la demande)
 @property (nonatomic, strong) NSString *cacheDirectory;
@@ -1105,6 +1108,24 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 // ============================================================
 // MARK: - Stockage token Twitch (intercepté depuis requêtes GQL)
 // ============================================================
+
+- (void)s7tv_captureAuthorizationHeader:(NSString *)value {
+    if (!value.length || [value isEqualToString:self.twitchToken]) return;
+    self.pendingAuthHeader = value;
+    [self s7tv_tryFinalizeTokenCapture];
+}
+
+- (void)s7tv_captureClientIDHeader:(NSString *)value {
+    if (!value.length || [value isEqualToString:self.twitchClientID]) return;
+    self.pendingClientIDHeader = value;
+    [self s7tv_tryFinalizeTokenCapture];
+}
+
+- (void)s7tv_tryFinalizeTokenCapture {
+    if (self.pendingAuthHeader.length && self.pendingClientIDHeader.length) {
+        [self saveTwitchToken:self.pendingAuthHeader clientID:self.pendingClientIDHeader];
+    }
+}
 
 - (void)saveTwitchToken:(NSString *)token clientID:(NSString *)clientID {
     if (!token.length || !clientID.length) return;

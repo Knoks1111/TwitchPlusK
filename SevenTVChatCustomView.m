@@ -7,6 +7,7 @@
 #import "SevenTVChatCustomView.h"
 #import "SevenTVChatAppearanceConfig.h"
 #import "SevenTVEmoteImageCache.h"
+#import "SevenTVEmoteAnimationEngine.h"
 #import "SevenTVManager.h"
 
 
@@ -16,6 +17,14 @@
 
 @interface S7TVChatCustomCell : UITableViewCell
 @property (nonatomic, strong) UILabel *messageLabel;
+// Clés d'animation (emote.imageURL.absoluteString) des emotes animées du
+// message actuellement affiché par cette cellule — calculées au moment du
+// binding (s7tv_cellForMessageID:), consommées par willDisplayCell/
+// didEndDisplayingCell pour (dés)inscrire messageLabel auprès de
+// SevenTVEmoteAnimationEngine selon la visibilité réelle à l'écran. nil ou
+// vide si le message ne contient aucune emote animée (ou que
+// SevenTVManager.showAnimated est désactivé).
+@property (nonatomic, strong, nullable) NSSet<NSString *> *animationKeys;
 @end
 
 @implementation S7TVChatCustomCell
@@ -328,8 +337,51 @@
                             // vient toujours de messagesByID juste avant l'apply du snapshot
 
     NSMutableArray<id<S7TVResolvedEmote>> *uncachedEmotes = [NSMutableArray array];
+    NSMutableArray<id<S7TVResolvedEmote>> *animatedEmotes = [NSMutableArray array];
     cell.messageLabel.attributedText = [self s7tv_buildAttributedStringForMessage:msg
-                                                              collectUncachedEmotes:uncachedEmotes];
+                                                              collectUncachedEmotes:uncachedEmotes
+                                                              collectAnimatedEmotes:animatedEmotes];
+
+    // Mémorise les clés d'animation de CE message sur la cellule — la vraie
+    // inscription/désinscription auprès du moteur partagé se fait dans
+    // willDisplayCell/didEndDisplayingCell (visibilité réelle à l'écran, voir
+    // plan §Phase 2 "démarrage/arrêt selon visibilité"), pas ici : cette
+    // méthode peut être appelée par le diffable data source sans que la
+    // cellule soit encore réellement visible.
+    if (animatedEmotes.count > 0) {
+        NSMutableSet<NSString *> *animationKeys = [NSMutableSet setWithCapacity:animatedEmotes.count];
+        SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
+        SevenTVEmoteImageCache *imgCache = [SevenTVEmoteImageCache sharedCache];
+        for (id<S7TVResolvedEmote> emote in animatedEmotes) {
+            NSString *key = emote.imageURL.absoluteString;
+            if (!key.length) continue;
+            [animationKeys addObject:key];
+
+            if ([engine hasFramesForKey:key]) continue; // déjà décodée, rien à refaire
+
+            // Chemin sync d'abord (frames déjà décodées par une apparition
+            // précédente de cette emote, ex: plus haut dans le même chat) —
+            // évite un aller-retour async inutile. Sinon décodage complet
+            // (réseau + toutes les frames), hors main thread.
+            S7TVEmoteAnimatedFrames *cachedFrames = [imgCache cachedFramesForResolvedEmote:emote];
+            if (cachedFrames) {
+                [engine registerFrames:cachedFrames forKey:key];
+            } else {
+                [imgCache framesForResolvedEmote:emote
+                                       completion:^(S7TVEmoteAnimatedFrames * _Nullable frames) {
+                    if (frames) [engine registerFrames:frames forKey:key];
+                    // Pas de reload de message ici : l'attachment animé lit
+                    // sa frame dynamiquement à chaque dessin (voir
+                    // S7TVAnimatedEmoteAttachment) — l'inscription au moteur
+                    // suffit, la cellule (si toujours à l'écran) sera
+                    // redessinée automatiquement via son observation.
+                }];
+            }
+        }
+        cell.animationKeys = animationKeys;
+    } else {
+        cell.animationKeys = nil;
+    }
 
     // Les emotes déjà en cache ont été injectées directement par le builder
     // ci-dessus (voir cachedImageForResolvedEmote: dedans) — ici on ne
@@ -408,6 +460,48 @@
     self.isPinnedToBottom = (distanceFromBottom < 80);
 }
 
+// Démarre l'animation UNIQUEMENT quand la cellule devient réellement visible
+// (voir plan §Phase 2 "démarrage/arrêt selon visibilité réelle") — pas au
+// moment du binding (s7tv_cellForMessageID:), qui peut être appelé sans que
+// la cellule soit encore à l'écran.
+- (void)tableView:(UITableView *)tableView
+  willDisplayCell:(UITableViewCell *)cell
+forRowAtIndexPath:(NSIndexPath *)indexPath {
+    S7TVChatCustomCell *s7tvCell = (S7TVChatCustomCell *)cell;
+    SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
+
+    // Repart toujours d'un état propre avant de (ré)inscrire : une cellule
+    // recyclée peut arriver ici avec un enregistrement résiduel d'un ANCIEN
+    // message si didEndDisplayingCell n'est pas encore passé entre les deux
+    // — voir plan "annulation propre au cell reuse".
+    [engine removeObserver:s7tvCell.messageLabel];
+
+    if (s7tvCell.animationKeys.count == 0) return;
+
+    __weak UILabel *weakLabel = s7tvCell.messageLabel;
+    [engine addObserver:s7tvCell.messageLabel
+                   keys:s7tvCell.animationKeys
+                 redraw:^{
+        // setNeedsDisplay (pas setNeedsLayout) : seul le dessin doit se
+        // refaire — TextKit ré-interroge alors l'attachment animé pour sa
+        // frame courante (voir S7TVAnimatedEmoteAttachment), la mise en page
+        // et la hauteur de ligne, elles, ne changent jamais.
+        [weakLabel setNeedsDisplay];
+    }];
+}
+
+// Coupe l'animation dès que la cellule sort réellement de l'écran — avant
+// même qu'elle soit recyclée pour une autre ligne. Sans ce hook, une
+// cellule qui reste inutilisée dans le pool de réutilisation continuerait
+// de recevoir des ticks pour rien (voir plan "annulation propre au cell
+// reuse" + "démarrage/arrêt selon visibilité").
+- (void)tableView:(UITableView *)tableView
+didEndDisplayingCell:(UITableViewCell *)cell
+forRowAtIndexPath:(NSIndexPath *)indexPath {
+    S7TVChatCustomCell *s7tvCell = (S7TVChatCustomCell *)cell;
+    [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:s7tvCell.messageLabel];
+}
+
 - (CGFloat)tableView:(UITableView *)tableView
     heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     NSString *messageID = [self.dataSource itemIdentifierForIndexPath:indexPath];
@@ -458,7 +552,8 @@
     // fini de télécharger (le point qui bloquait le rendu natif Twitch).
     NSMutableArray<id<S7TVResolvedEmote>> *unusedEmotes = [NSMutableArray array];
     NSAttributedString *text = [self s7tv_buildAttributedStringForMessage:msg
-                                                      collectUncachedEmotes:unusedEmotes];
+                                                      collectUncachedEmotes:unusedEmotes
+                                                      collectAnimatedEmotes:nil];
     // Mesure via un vrai UILabel plutôt que boundingRectWithSize: — constaté
     // en test réel : boundingRectWithSize: peut diverger du rendu effectif
     // du label sur certains points de wrap (un mot à cheval sur la limite
@@ -526,8 +621,15 @@ static void s7tv_applyLineBreakParagraphStyle(NSMutableAttributedString *attrStr
     }
 }
 
+// collectAnimatedEmotes : optionnel (peut être nil, ex: passe de mesure de
+// hauteur qui n'a pas besoin d'inscrire quoi que ce soit auprès du moteur
+// d'animation) — reçoit toute emote animée effectivement utilisée dans le
+// message (sous réserve que SevenTVManager.showAnimated soit actif), pour
+// que l'appelant sache quelles clés inscrire/décoder (voir
+// s7tv_cellForMessageID:).
 - (NSAttributedString *)s7tv_buildAttributedStringForMessage:(S7TVChatMessage *)msg
-                                       collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes {
+                                       collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes
+                                       collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
 
     UIFont *usernameFont = [UIFont boldSystemFontOfSize:cfg.usernameFontSize];
@@ -606,18 +708,36 @@ static void s7tv_applyLineBreakParagraphStyle(NSMutableAttributedString *attrStr
                 continue;
             }
 
-            NSTextAttachment *attachment = [[NSTextAttachment alloc] init];
+            // Animées (Phase 2 — décodage WebP animé) : seulement si le
+            // toggle global showAnimated est actif (voir SevenTVManager) —
+            // sinon on reste volontairement sur le chemin statique existant
+            // (1ère frame figée), pour économiser tout le pipeline de
+            // décodage/animation quand la personne ne veut pas d'animation.
+            BOOL wantsAnimation = emote.isAnimated && [SevenTVManager sharedManager].showAnimated;
+
+            NSTextAttachment *attachment;
+            if (wantsAnimation) {
+                S7TVAnimatedEmoteAttachment *animatedAttachment = [S7TVAnimatedEmoteAttachment new];
+                animatedAttachment.animationKey = emote.imageURL.absoluteString;
+                // Tant que le moteur n'a pas encore la 1ère frame animée
+                // décodée, on montre l'image statique déjà en cache — jamais
+                // de glyphe de remplacement une fois qu'on a déjà une image.
+                animatedAttachment.staticFallbackImage = cachedImage;
+                attachment = animatedAttachment;
+                if (outAnimatedEmotes) [outAnimatedEmotes addObject:emote];
+            } else {
+                attachment = [[NSTextAttachment alloc] init];
+                // Cache hit → image injectée immédiatement, aucun flash vide.
+                attachment.image = cachedImage;
+            }
             // Léger décalage vertical pour rapprocher l'emote de la ligne de
             // base du texte plutôt que de son sommet — réglage fin visuel à
             // reprendre en Phase 6 si besoin, pas critique pour l'instant.
+            // Bounds identiques dans les deux cas : la taille réservée ne
+            // dépend que des dimensions natives du fournisseur, jamais de
+            // l'image (statique ou frame animée) effectivement affichée —
+            // aucun risque de resize au fil de l'animation.
             attachment.bounds = CGRectMake(0, -4, targetWidth, targetHeight);
-            // Cache hit → image injectée immédiatement, aucun flash vide.
-            // Cache miss → bounds déjà corrects, l'espace est réservé ; le
-            // chargement async (déclenché côté cellForRowAtIndexPath, pas
-            // ici — cette méthode reste pure/sans effet de bord pour rester
-            // réutilisable pour la mesure de hauteur) remplira l'image
-            // plus tard sans jamais changer la taille de la ligne.
-            attachment.image = cachedImage;
 
             [result appendAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];
             continue;

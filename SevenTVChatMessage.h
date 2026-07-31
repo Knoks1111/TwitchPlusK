@@ -114,6 +114,10 @@ typedef NS_ENUM(NSInteger, S7TVChatMessageState) {
 // alors directement rawText en fallback texte brut.
 @property (nonatomic, copy, nullable) NSArray<S7TVChatToken *> *tokens;
 
+// Tag IRC `emotes=` conservé pour pouvoir retokeniser le message lorsque le
+// catalogue 7TV de la chaîne finit de charger, sans perdre les emotes Twitch.
+@property (nonatomic, copy) NSString *twitchEmotesTag;
+
 @property (nonatomic, assign) S7TVChatMessageType type;
 @property (nonatomic, assign) S7TVChatMessageState state;
 
@@ -180,6 +184,11 @@ typedef NS_ENUM(NSInteger, S7TVChatMessageState) {
 // Vide entièrement le store (changement de channel — voir Phase 0,
 // nettoyage à la fermeture/réouverture pour éviter les fuites entre chaînes).
 - (void)removeAllMessages;
+
+// Recalcule les tokens sous une barrière d'écriture, puis appelle completion
+// sur le main thread. Le bloc est exécuté hors du thread UIKit.
+- (void)retokenizeMessagesUsingBlock:(NSArray<S7TVChatToken *> * (^)(S7TVChatMessage *message))tokenizer
+                          completion:(void (^ _Nullable)(void))completion;
 
 // --- Lecture (thread-safe) ---
 

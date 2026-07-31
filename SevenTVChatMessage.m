@@ -69,6 +69,7 @@
         _authorUserID      = [authorUserID copy];
         _authorDisplayName = [authorDisplayName copy];
         _rawText           = [rawText copy];
+        _twitchEmotesTag   = @"";
         _type              = S7TVChatMessageTypeNormal;
         _state             = S7TVChatMessageStateNormal;
     }
@@ -207,6 +208,20 @@
         [self.orderedMessages removeAllObjects];
         [self.messagesByID removeAllObjects];
         [self.messageIDsByUserID removeAllObjects];
+    });
+}
+
+- (void)retokenizeMessagesUsingBlock:(NSArray<S7TVChatToken *> * (^)(S7TVChatMessage *message))tokenizer
+                          completion:(void (^ _Nullable)(void))completion {
+    if (!tokenizer) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        return;
+    }
+    dispatch_barrier_async(self.storeQueue, ^{
+        for (S7TVChatMessage *message in self.orderedMessages) {
+            message.tokens = tokenizer(message);
+        }
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
 }
 

@@ -171,6 +171,56 @@ static void s7tv_dumpChatHierarchy(UIView *chatView, NSString *reason) {
     [mgr log:@"[ChatCustom] 🏗 ── Fin dump (%@) ──────────────────", reason];
 }
 
+// ────────────────────────────────────────────────────────────
+// MARK: - Diagnostic Phase 1b : mesure des tailles réelles du rendu natif
+// ────────────────────────────────────────────────────────────
+//
+// Exigence transverse #1 du plan : les défauts de SevenTVChatAppearanceConfig
+// sont pour l'instant des estimations ("TODO mesure réelle"), pas les vraies
+// valeurs Twitch. Contrairement à s7tv_dumpChatHierarchy (qui remonte les
+// superviews), cette fonction DESCEND dans les subviews pour trouver les
+// UILabel/UIImageView réellement affichés dans une cellule de message et
+// logguer leur frame + police — lecture seule, aucune modification de
+// comportement. Uniquement via le système de logs in-app existant (catégorie
+// "Chat Custom"), pas besoin de Mac/LLDB/Reveal.
+
+static void s7tv_dumpViewSubtree(UIView *view, NSString *indent, NSInteger maxDepth) {
+    if (maxDepth <= 0) return;
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *lbl = (UILabel *)view;
+        [mgr log:@"[ChatCustom] 🏗 %@UILabel frame=%@ font=%@ %.1fpt texte=\"%@\"",
+            indent, NSStringFromCGRect(lbl.frame), lbl.font.fontName,
+            lbl.font.pointSize,
+            lbl.text.length > 24 ? [lbl.text substringToIndex:24] : (lbl.text ?: @"")];
+    } else if ([view isKindOfClass:[UIImageView class]]) {
+        UIImageView *iv = (UIImageView *)view;
+        [mgr log:@"[ChatCustom] 🏗 %@UIImageView frame=%@ imageSize=%@",
+            indent, NSStringFromCGRect(iv.frame), NSStringFromCGSize(iv.image.size)];
+    } else {
+        [mgr log:@"[ChatCustom] 🏗 %@%@ frame=%@",
+            indent, NSStringFromClass([view class]), NSStringFromCGRect(view.frame)];
+    }
+
+    NSString *childIndent = [indent stringByAppendingString:@"  "];
+    for (UIView *sub in view.subviews) {
+        s7tv_dumpViewSubtree(sub, childIndent, maxDepth - 1);
+    }
+}
+
+// Profondeur bornée à 8 : suffisant pour atteindre les UILabel/UIImageView
+// d'une cellule sans produire un dump illisible sur une hiérarchie profonde.
+// Délai avant appel (voir site d'appel) : au moment de didMoveToWindow, la
+// table est généralement encore vide — le temps de laisser au moins une
+// cellule de message se peupler avant de descendre l'arbre.
+static void s7tv_dumpNativeCellMetrics(UIView *chatView, NSString *reason) {
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    [mgr log:@"[ChatCustom] 🏗 ── Mesure cellule native (%@) ──────────────────", reason];
+    s7tv_dumpViewSubtree(chatView, @"", 8);
+    [mgr log:@"[ChatCustom] 🏗 ── Fin mesure (%@) ──────────────────", reason];
+}
+
 // ── Test de validation Phase 0/1c (kill switch : Settings → Débogage) ───────
 //
 // Cache la VRAIE ChatTranscriptView (superview == UIStackView, alpha=1 sur
@@ -606,6 +656,17 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
         if ([self.superview isKindOfClass:[UIStackView class]]) {
             s_activeNativeChatView = self;
             s7tv_applyChatCustomToggle();
+
+            // Mesure Phase 1b — délai 1s pour laisser au moins une cellule de
+            // message se peupler avant de descendre l'arbre des subviews.
+            __weak UIView *weakChatView = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                UIView *chatView = weakChatView;
+                if (chatView && chatView.window) {
+                    s7tv_dumpNativeCellMetrics(chatView, @"didMoveToWindow+1s");
+                }
+            });
         }
     }
 

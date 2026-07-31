@@ -17,6 +17,17 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Résultat du décodage WebP animé complet (toutes les frames, pas juste la
+// 1ère) — voir SevenTVEmoteAnimationEngine pour la lecture/synchro de ces
+// frames à l'affichage. images.count == durations.count, même index.
+@interface S7TVEmoteAnimatedFrames : NSObject
+@property (nonatomic, copy) NSArray<UIImage *> *images;
+// Durée de chaque frame en secondes (index correspondant à images) — issue
+// des métadonnées WebP (delay time), 0.1s de filet de sécurité si absente.
+@property (nonatomic, copy) NSArray<NSNumber *> *durations;
+@end
+
+
 @interface SevenTVEmoteImageCache : NSObject
 
 + (instancetype)sharedCache;
@@ -34,6 +45,27 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)imageForResolvedEmote:(id<S7TVResolvedEmote>)emote
                     completion:(void (^)(UIImage * _Nullable image))completion;
+
+// --- Animation (Phase 2 — décodage WebP animé natif) ---
+//
+// Ne s'applique qu'aux emotes avec emote.isAnimated == YES ; retourne nil
+// immédiatement pour une emote statique (utiliser imageForResolvedEmote:
+// dans ce cas). Le décodage de TOUTES les frames se fait hors thread
+// principal (ImageIO), jamais pendant le scroll — voir exigence transverse
+// #3 du plan chat-twitch-custom.
+//
+// Cache-first, synchrone, main thread — même rôle que
+// cachedImageForResolvedEmote: pour le chemin statique : évite un
+// round-trip async inutile quand les frames sont déjà décodées (ex: emote
+// déjà vue plus haut dans le même chat).
+- (nullable S7TVEmoteAnimatedFrames *)cachedFramesForResolvedEmote:(id<S7TVResolvedEmote>)emote;
+
+// completion appelé une fois sur le main thread : frames si le décodage a
+// réussi (WebP animé valide, ≥1 frame), nil sinon (réseau, décodage échoué,
+// ou emote non animée) — l'appelant garde alors le fallback statique déjà
+// affiché (voir S7TVAnimatedEmoteAttachment.staticFallbackImage).
+- (void)framesForResolvedEmote:(id<S7TVResolvedEmote>)emote
+                     completion:(void (^)(S7TVEmoteAnimatedFrames * _Nullable frames))completion;
 
 @end
 

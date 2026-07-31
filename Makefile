@@ -23,7 +23,8 @@ TwitchSevenTV_FILES = \
     SevenTVChatCustomView.m \
     SevenTVEmoteProvider.m \
     SevenTVChatTokenizer.m \
-    SevenTVEmoteImageCache.m
+    SevenTVEmoteImageCache.m \
+    SevenTVEmoteAnimationEngine.m
 
 # ── Options de compilation ──
 TwitchSevenTV_CFLAGS = \
@@ -38,7 +39,7 @@ TwitchSevenTV_LDFLAGS = \
     -Wl,-w
 
 # ── Frameworks Apple ──
-TwitchSevenTV_FRAMEWORKS = UIKit Foundation QuartzCore
+TwitchSevenTV_FRAMEWORKS = UIKit Foundation QuartzCore ImageIO
 
 include $(THEOS_MAKE_PATH)/library.mk
 

@@ -9,16 +9,15 @@
 
 NSString *const S7TVBadgesCatalogUpdatedNotification = @"S7TVBadgesCatalogUpdatedNotification";
 
-// Résolution 2x — cohérent avec le choix déjà fait pour les emotes Twitch
-// natives (S7TVTwitchNativeEmoteFactory, voir SevenTVEmoteProvider.m).
-static NSString *const kS7TVBadgeImageURLKey = @"image_url_2x";
+// Résolution 4x — Helix retourne image_url_4x comme clé principale.
+static NSString *const kS7TVBadgeImageURLKey = @"image_url_4x";
 
 static NSString *const kS7TVGlobalBadgesURL =
-    @"https://badges.twitch.tv/v1/badges/global/display";
+    @"https://api.twitch.tv/helix/chat/badges/global";
 
 static NSString *S7TVChannelBadgesURL(NSString *channelID) {
     return [NSString stringWithFormat:
-        @"https://badges.twitch.tv/v1/badges/channels/%@/display", channelID];
+        @"https://api.twitch.tv/helix/chat/badges?broadcaster_id=%@", channelID];
 }
 
 
@@ -96,15 +95,30 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
 
 #pragma mark - Chargement réseau
 
+- (NSURLRequest *)s7tv_helixRequestWithURL:(NSURL *)url {
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    if (mgr.twitchToken.length)   [req setValue:mgr.twitchToken   forHTTPHeaderField:@"Authorization"];
+    if (mgr.twitchClientID.length) [req setValue:mgr.twitchClientID forHTTPHeaderField:@"Client-ID"];
+    return req;
+}
+
 - (void)loadGlobalBadges {
     NSURL *url = [NSURL URLWithString:kS7TVGlobalBadgesURL];
     if (!url) return;
 
-    [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Badges: chargement catalogue global"];
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    if (!mgr.twitchToken.length) {
+        [mgr log:@"[ChatCustom] ⏳ Badges global: token pas encore dispo, attente GQL..."];
+        return; // saveTwitchToken:clientID: rappellera loadGlobalBadges dès que le token arrive
+    }
+
+    [mgr log:@"[ChatCustom] 🏗 Badges: chargement catalogue global"];
 
     __weak typeof(self) weakSelf = self;
+    NSURLRequest *req = [self s7tv_helixRequestWithURL:url];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
-        dataTaskWithURL:url
+        dataTaskWithRequest:req
       completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -141,11 +155,18 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
     NSURL *url = [NSURL URLWithString:S7TVChannelBadgesURL(channelID)];
     if (!url) return;
 
-    [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Badges: chargement catalogue channel %@", channelID];
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    if (!mgr.twitchToken.length) {
+        [mgr log:@"[ChatCustom] ⏳ Badges channel: token pas encore dispo, attente GQL..."];
+        return;
+    }
+
+    [mgr log:@"[ChatCustom] 🏗 Badges: chargement catalogue channel %@", channelID];
 
     __weak typeof(self) weakSelf = self;
+    NSURLRequest *req = [self s7tv_helixRequestWithURL:url];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
-        dataTaskWithURL:url
+        dataTaskWithRequest:req
       completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -170,8 +191,8 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
 
 // Parsing robuste (exigence transverse Phase 1a) : réponse absente, non-200,
 // JSON invalide ou structure inattendue → nil + log, jamais de crash.
-// Format badges.twitch.tv : { "badge_sets": { "<setID>": { "versions":
-// { "<version>": { "image_url_2x": "...", ... } } } } }
+// Format Helix : { "data": [ { "set_id": "<setID>", "versions": [
+//   { "id": "<version>", "image_url_4x": "...", ... } ] } ] }
 - (nullable NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)
     s7tv_parseBadgeSetsFromData:(NSData *)data error:(NSError *)networkError {
     if (networkError || !data.length) {
@@ -189,26 +210,34 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
         return nil;
     }
 
-    NSDictionary *badgeSets = [(NSDictionary *)root objectForKey:@"badge_sets"];
-    if (![badgeSets isKindOfClass:[NSDictionary class]]) return @{};
+    // Helix retourne { "data": [ ... ] } — tableau à la racine
+    NSArray *dataArray = [(NSDictionary *)root objectForKey:@"data"];
+    if (![dataArray isKindOfClass:[NSArray class]]) return @{};
 
     NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *result =
-        [NSMutableDictionary dictionaryWithCapacity:badgeSets.count];
+        [NSMutableDictionary dictionaryWithCapacity:dataArray.count];
 
-    for (NSString *setID in badgeSets) {
-        NSDictionary *setEntry = badgeSets[setID];
-        NSDictionary *versions = [setEntry isKindOfClass:[NSDictionary class]]
-            ? setEntry[@"versions"] : nil;
-        if (![versions isKindOfClass:[NSDictionary class]]) continue;
+    for (NSDictionary *set in dataArray) {
+        if (![set isKindOfClass:[NSDictionary class]]) continue;
+
+        NSString *setID = set[@"set_id"];
+        if (![setID isKindOfClass:[NSString class]] || !setID.length) continue;
+
+        NSArray *versions = set[@"versions"];
+        if (![versions isKindOfClass:[NSArray class]]) continue;
 
         NSMutableDictionary<NSString *, NSString *> *versionToURL =
             [NSMutableDictionary dictionaryWithCapacity:versions.count];
-        for (NSString *version in versions) {
-            NSDictionary *versionEntry = versions[version];
-            NSString *imageURL = [versionEntry isKindOfClass:[NSDictionary class]]
-                ? versionEntry[kS7TVBadgeImageURLKey] : nil;
-            if ([imageURL isKindOfClass:[NSString class]] && imageURL.length) {
-                versionToURL[version] = imageURL;
+
+        for (NSDictionary *versionEntry in versions) {
+            if (![versionEntry isKindOfClass:[NSDictionary class]]) continue;
+
+            NSString *versionID = versionEntry[@"id"];
+            NSString *imageURL  = versionEntry[kS7TVBadgeImageURLKey];
+
+            if ([versionID isKindOfClass:[NSString class]] && versionID.length &&
+                [imageURL  isKindOfClass:[NSString class]] && imageURL.length) {
+                versionToURL[versionID] = imageURL;
             }
         }
         if (versionToURL.count) result[setID] = [versionToURL copy];

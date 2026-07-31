@@ -142,6 +142,12 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 - (void)loadEmotesForChannelName:(NSString *)channelName;
 - (void)loadEmotesForChannelTwitchID:(NSString *)twitchUserID;
 
+// --- Token Twitch (intercepté depuis les requêtes GQL) ---
+// Stocké ici pour être réutilisé par SevenTVBadgeProvider (API Helix badges).
+@property (nonatomic, copy, readonly) NSString *twitchToken;
+@property (nonatomic, copy, readonly) NSString *twitchClientID;
+- (void)saveTwitchToken:(NSString *)token clientID:(NSString *)clientID;
+
 // --- Extraction depuis réponses Twitch GQL ---
 - (void)extractAndLoadEmotesFromGQLResponse:(NSData *)responseData;
 

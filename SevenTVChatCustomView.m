@@ -205,6 +205,17 @@
         - (self.tableView.contentOffset.y + self.tableView.bounds.size.height);
     BOOL wasNearBottom = (self.displayedMessages.count == 0) || (distanceFromBottom < 80);
 
+    // Diagnostic autoscroll (constaté en usage réel : l'autoscroll s'arrête
+    // parfois même sans interaction tactile) — capture l'état exact au
+    // moment de la décision, pour comparer avec ce qui se passe côté
+    // s7tv_scrollToBottomIfNeeded: juste après.
+    [[SevenTVManager sharedManager]
+        log:@"[ChatCustom] 🏗 reloadMessages: contentSize.h=%.1f offset.y=%.1f bounds.h=%.1f "
+             @"distanceFromBottom=%.1f wasNearBottom=%@ ancienCount=%ld nouveauCount=%ld",
+        self.tableView.contentSize.height, self.tableView.contentOffset.y,
+        self.tableView.bounds.size.height, distanceFromBottom, wasNearBottom ? @"OUI" : @"NON",
+        (long)self.displayedMessages.count, (long)newMessages.count];
+
     // Index messageID → message reconstruit à chaque reload : utilisé par le
     // cellProvider et par heightForRowAtIndexPath: (voir propriétés).
     NSMutableDictionary<NSString *, S7TVChatMessage *> *byID =
@@ -254,7 +265,12 @@
 
 - (void)s7tv_scrollToBottomIfNeeded:(BOOL)wasNearBottom {
     NSInteger count = self.displayedMessages.count;
-    if (!wasNearBottom || count == 0) return;
+    if (!wasNearBottom || count == 0) {
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] 🏗 scrollToBottomIfNeeded: skip (wasNearBottom=%@ count=%ld)",
+            wasNearBottom ? @"OUI" : @"NON", (long)count];
+        return;
+    }
 
     // Ne JAMAIS forcer un scroll pendant que le doigt de la personne est sur
     // l'écran (ou que la table décélère après un swipe) — sinon chaque batch
@@ -262,13 +278,22 @@
     // en cours et casse la fluidité du scroll manuel. On retente simplement
     // au prochain reloadMessages une fois le geste terminé.
     if (self.tableView.isTracking || self.tableView.isDragging || self.tableView.isDecelerating) {
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] 🏗 scrollToBottomIfNeeded: skip (tracking=%d dragging=%d decelerating=%d)",
+            self.tableView.isTracking, self.tableView.isDragging, self.tableView.isDecelerating];
         return;
     }
 
     NSIndexPath *last = [NSIndexPath indexPathForRow:count - 1 inSection:0];
+    [[SevenTVManager sharedManager]
+        log:@"[ChatCustom] 🏗 scrollToBottomIfNeeded: scroll vers row %ld (contentSize.h AVANT=%.1f)",
+        (long)(count - 1), self.tableView.contentSize.height];
     [self.tableView scrollToRowAtIndexPath:last
                            atScrollPosition:UITableViewScrollPositionBottom
                                    animated:NO];
+    [[SevenTVManager sharedManager]
+        log:@"[ChatCustom] 🏗 scrollToBottomIfNeeded: APRÈS scroll — contentSize.h=%.1f offset.y=%.1f",
+        self.tableView.contentSize.height, self.tableView.contentOffset.y];
 }
 
 #pragma mark - Cell provider (appelé par le diffable data source, voir initWithStore:)

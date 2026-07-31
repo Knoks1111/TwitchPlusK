@@ -7,6 +7,8 @@
 #import "SevenTVBadgeProvider.h"
 #import "SevenTVManager.h"
 
+NSString *const S7TVBadgesCatalogUpdatedNotification = @"S7TVBadgesCatalogUpdatedNotification";
+
 // Résolution 2x — cohérent avec le choix déjà fait pour les emotes Twitch
 // natives (S7TVTwitchNativeEmoteFactory, voir SevenTVEmoteProvider.m).
 static NSString *const kS7TVBadgeImageURLKey = @"image_url_2x";
@@ -113,6 +115,13 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
 
         dispatch_barrier_async(strongSelf.badgeQueue, ^{
             strongSelf.globalBadges = parsed;
+            // Voir S7TVBadgesCatalogUpdatedNotification (header) : sans ce
+            // reload, les messages déjà rendus avant la fin de ce fetch
+            // n'auraient jamais leurs badges appliqués.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:S7TVBadgesCatalogUpdatedNotification object:nil];
+            });
         });
         [[SevenTVManager sharedManager]
             log:@"[ChatCustom] 🏗 Badges globaux chargés (%lu sets)", (unsigned long)parsed.count];
@@ -147,6 +156,10 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
 
         dispatch_barrier_async(strongSelf.badgeQueue, ^{
             strongSelf.channelBadges = parsed;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:S7TVBadgesCatalogUpdatedNotification object:nil];
+            });
         });
         [[SevenTVManager sharedManager]
             log:@"[ChatCustom] 🏗 Badges channel chargés (%lu sets) pour %@",

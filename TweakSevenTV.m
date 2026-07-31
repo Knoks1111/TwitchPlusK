@@ -1031,6 +1031,13 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
 - (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request
                                  completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
     if ([request.URL.host isEqualToString:@"gql.twitch.tv"] && completionHandler) {
+        // Extraire et sauvegarder le token OAuth + Client-ID au passage
+        NSDictionary *headers = request.allHTTPHeaderFields;
+        NSString *auth = headers[@"Authorization"];
+        NSString *clientID = headers[@"Client-ID"];
+        if (auth.length && clientID.length) {
+            [[SevenTVManager sharedManager] saveTwitchToken:auth clientID:clientID];
+        }
         void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
             ^(NSData *data, NSURLResponse *response, NSError *error) {
                 if (data && !error) {

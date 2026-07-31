@@ -184,9 +184,62 @@ static void s7tv_dumpChatHierarchy(UIView *chatView, NSString *reason) {
 // comportement. Uniquement via le système de logs in-app existant (catégorie
 // "Chat Custom"), pas besoin de Mac/LLDB/Reveal.
 
-static void s7tv_dumpViewSubtree(UIView *view, NSString *indent, NSInteger maxDepth) {
+// Twitch.MessageStringView n'a pas de UILabel enfant (constaté en dump réel :
+// la vue dessine son texte elle-même, TextKit/CoreText interne, pas de sous-
+// vue à inspecter) — on va donc lire directement ses ivars Objective-C pour
+// trouver la police utilisée (UIFont ou NSAttributedString avec attribut
+// NSFontAttributeName). Lecture seule, aucun setter appelé.
+static void s7tv_dumpIvars(id obj, NSString *label) {
+    if (!obj) return;
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    Class cls = [obj class];
+    unsigned int count = 0;
+    Ivar *ivars = class_copyIvarList(cls, &count);
+    [mgr log:@"[ChatCustom] 🏗   ── Ivars %@ (%@) — %u ivars ──",
+        label, NSStringFromClass(cls), count];
+    for (unsigned int i = 0; i < count; i++) {
+        Ivar iv = ivars[i];
+        const char *name = ivar_getName(iv);
+        const char *type = ivar_getTypeEncoding(iv);
+        NSString *valueDesc = @"<non-objet>";
+        // Ne lit la valeur que pour les ivars objet ('@' en tête d'encodage) —
+        // on ne touche pas aux ivars scalaires pour rester strictement lecture
+        // seule et sans risque de mauvaise interprétation de type.
+        if (type && type[0] == '@') {
+            id value = object_getIvar(obj, iv);
+            if ([value isKindOfClass:[UIFont class]]) {
+                UIFont *f = (UIFont *)value;
+                valueDesc = [NSString stringWithFormat:@"UIFont %@ %.1fpt", f.fontName, f.pointSize];
+            } else if ([value isKindOfClass:[NSAttributedString class]]) {
+                NSAttributedString *a = (NSAttributedString *)value;
+                UIFont *f = a.length > 0
+                    ? [a attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] : nil;
+                valueDesc = [NSString stringWithFormat:@"NSAttributedString len=%lu font=%@ %.1fpt",
+                    (unsigned long)a.length, f.fontName ?: @"?", f.pointSize];
+            } else if (value) {
+                valueDesc = NSStringFromClass([value class]);
+            } else {
+                valueDesc = @"nil";
+            }
+        }
+        [mgr log:@"[ChatCustom] 🏗     %s (%s) = %@", name, type ?: "?", valueDesc];
+    }
+    free(ivars);
+}
+
+static void s7tv_dumpViewSubtree(UIView *view, NSString *indent, NSInteger maxDepth,
+                                  NSInteger *ivarDumpsRemaining) {
     if (maxDepth <= 0) return;
     SevenTVManager *mgr = [SevenTVManager sharedManager];
+
+    // Plafonné à 2 dumps d'ivars par appel (pas un par cellule visible) —
+    // largement assez pour comparer un message court et un message qui wrap
+    // sur plusieurs lignes, sans noyer les logs.
+    if ([NSStringFromClass([view class]) isEqualToString:@"Twitch.MessageStringView"] &&
+        ivarDumpsRemaining && *ivarDumpsRemaining > 0) {
+        (*ivarDumpsRemaining)--;
+        s7tv_dumpIvars(view, [NSString stringWithFormat:@"frame=%@", NSStringFromCGRect(view.frame)]);
+    }
 
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *lbl = (UILabel *)view;
@@ -205,7 +258,7 @@ static void s7tv_dumpViewSubtree(UIView *view, NSString *indent, NSInteger maxDe
 
     NSString *childIndent = [indent stringByAppendingString:@"  "];
     for (UIView *sub in view.subviews) {
-        s7tv_dumpViewSubtree(sub, childIndent, maxDepth - 1);
+        s7tv_dumpViewSubtree(sub, childIndent, maxDepth - 1, ivarDumpsRemaining);
     }
 }
 
@@ -217,7 +270,8 @@ static void s7tv_dumpViewSubtree(UIView *view, NSString *indent, NSInteger maxDe
 static void s7tv_dumpNativeCellMetrics(UIView *chatView, NSString *reason) {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     [mgr log:@"[ChatCustom] 🏗 ── Mesure cellule native (%@) ──────────────────", reason];
-    s7tv_dumpViewSubtree(chatView, @"", 8);
+    NSInteger ivarDumpsRemaining = 2;
+    s7tv_dumpViewSubtree(chatView, @"", 8, &ivarDumpsRemaining);
     [mgr log:@"[ChatCustom] 🏗 ── Fin mesure (%@) ──────────────────", reason];
 }
 

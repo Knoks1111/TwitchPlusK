@@ -1,0 +1,242 @@
+/*
+ * SevenTVBadgeProvider.m
+ *
+ * Voir SevenTVBadgeProvider.h pour le contexte (Phase 3).
+ */
+
+#import "SevenTVBadgeProvider.h"
+#import "SevenTVManager.h"
+
+// Résolution 2x — cohérent avec le choix déjà fait pour les emotes Twitch
+// natives (S7TVTwitchNativeEmoteFactory, voir SevenTVEmoteProvider.m).
+static NSString *const kS7TVBadgeImageURLKey = @"image_url_2x";
+
+static NSString *const kS7TVGlobalBadgesURL =
+    @"https://badges.twitch.tv/v1/badges/global/display";
+
+static NSString *S7TVChannelBadgesURL(NSString *channelID) {
+    return [NSString stringWithFormat:
+        @"https://badges.twitch.tv/v1/badges/channels/%@/display", channelID];
+}
+
+
+// ============================================================
+// MARK: - S7TVResolvedBadge
+// ============================================================
+
+@implementation S7TVResolvedBadge
+@end
+
+
+// ============================================================
+// MARK: - SevenTVBadgeProvider
+// ============================================================
+
+@interface SevenTVBadgeProvider ()
+// setID → (version → URL string). Catalogue global (mod/VIP/turbo/staff/
+// sub tiers par défaut/etc.) et catalogue channel (sub badges custom de la
+// chaîne, bits custom) tenus séparément — la résolution regarde le channel
+// D'ABORD (peut surcharger un set du global avec une variante custom),
+// PUIS le global en repli (voir resolvedBadgeForIdentifier:).
+@property (nonatomic, strong) NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *globalBadges;
+@property (nonatomic, strong) NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *channelBadges;
+// Même pattern que SevenTVManager.emoteQueue / S7TVChatMessageStore.storeQueue :
+// queue concurrente, lectures en dispatch_sync, écritures en
+// dispatch_barrier_async.
+@property (nonatomic, strong) dispatch_queue_t badgeQueue;
+@property (nonatomic, strong) NSString *lastLoadedChannelID; // évite un refetch si join répété sur le même channel
+@end
+
+@implementation SevenTVBadgeProvider
+
++ (instancetype)sharedProvider {
+    static SevenTVBadgeProvider *instance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [SevenTVBadgeProvider new];
+    });
+    return instance;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _globalBadges  = @{};
+        _channelBadges = @{};
+        _badgeQueue = dispatch_queue_create("tv.s7tv.badge-provider", DISPATCH_QUEUE_CONCURRENT);
+    }
+    return self;
+}
+
++ (void)setup {
+    SevenTVBadgeProvider *provider = [self sharedProvider];
+    [provider s7tv_startObservingChannelJoinsOnce];
+    [provider loadGlobalBadges];
+}
+
+// dispatch_once séparé du singleton lui-même : +setup peut être appelé
+// plusieurs fois sans jamais s'abonner deux fois à la notification (ce qui
+// dupliquerait les fetchs channel à chaque join).
+- (void)s7tv_startObservingChannelJoinsOnce {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        [[NSNotificationCenter defaultCenter] addObserverForName:@"S7TVChannelJoined"
+                                                            object:nil
+                                                             queue:nil
+                                                        usingBlock:^(NSNotification *note) {
+            NSString *channelID = note.userInfo[@"channelID"];
+            if (channelID.length) {
+                [[SevenTVBadgeProvider sharedProvider] loadBadgesForChannelID:channelID];
+            }
+        }];
+    });
+}
+
+#pragma mark - Chargement réseau
+
+- (void)loadGlobalBadges {
+    NSURL *url = [NSURL URLWithString:kS7TVGlobalBadgesURL];
+    if (!url) return;
+
+    [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Badges: chargement catalogue global"];
+
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession]
+        dataTaskWithURL:url
+      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *parsed =
+            [strongSelf s7tv_parseBadgeSetsFromData:data error:error];
+        if (!parsed) return; // déjà logué dans le parsing, no-op silencieux sinon
+
+        dispatch_barrier_async(strongSelf.badgeQueue, ^{
+            strongSelf.globalBadges = parsed;
+        });
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] 🏗 Badges globaux chargés (%lu sets)", (unsigned long)parsed.count];
+    }];
+    [task resume];
+}
+
+- (void)loadBadgesForChannelID:(NSString *)channelID {
+    if (!channelID.length) return;
+
+    // Évite un refetch identique si plusieurs ROOMSTATE arrivent pour la
+    // même chaîne (ex: reconnexion WebSocket sans vrai changement de
+    // channel) — pas une exigence stricte, juste évite du réseau superflu.
+    if ([channelID isEqualToString:self.lastLoadedChannelID]) return;
+    self.lastLoadedChannelID = channelID;
+
+    NSURL *url = [NSURL URLWithString:S7TVChannelBadgesURL(channelID)];
+    if (!url) return;
+
+    [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Badges: chargement catalogue channel %@", channelID];
+
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession]
+        dataTaskWithURL:url
+      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *parsed =
+            [strongSelf s7tv_parseBadgeSetsFromData:data error:error];
+        if (!parsed) return;
+
+        dispatch_barrier_async(strongSelf.badgeQueue, ^{
+            strongSelf.channelBadges = parsed;
+        });
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] 🏗 Badges channel chargés (%lu sets) pour %@",
+            (unsigned long)parsed.count, channelID];
+    }];
+    [task resume];
+}
+
+// Parsing robuste (exigence transverse Phase 1a) : réponse absente, non-200,
+// JSON invalide ou structure inattendue → nil + log, jamais de crash.
+// Format badges.twitch.tv : { "badge_sets": { "<setID>": { "versions":
+// { "<version>": { "image_url_2x": "...", ... } } } } }
+- (nullable NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)
+    s7tv_parseBadgeSetsFromData:(NSData *)data error:(NSError *)networkError {
+    if (networkError || !data.length) {
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] ⚠️ Badges: échec réseau (%@)",
+            networkError.localizedDescription ?: @"réponse vide"];
+        return nil;
+    }
+
+    NSError *jsonError = nil;
+    id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+    if (jsonError || ![root isKindOfClass:[NSDictionary class]]) {
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] ⚠️ Badges: JSON invalide (%@)", jsonError.localizedDescription ?: @"racine non-objet"];
+        return nil;
+    }
+
+    NSDictionary *badgeSets = [(NSDictionary *)root objectForKey:@"badge_sets"];
+    if (![badgeSets isKindOfClass:[NSDictionary class]]) return @{};
+
+    NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *result =
+        [NSMutableDictionary dictionaryWithCapacity:badgeSets.count];
+
+    for (NSString *setID in badgeSets) {
+        NSDictionary *setEntry = badgeSets[setID];
+        NSDictionary *versions = [setEntry isKindOfClass:[NSDictionary class]]
+            ? setEntry[@"versions"] : nil;
+        if (![versions isKindOfClass:[NSDictionary class]]) continue;
+
+        NSMutableDictionary<NSString *, NSString *> *versionToURL =
+            [NSMutableDictionary dictionaryWithCapacity:versions.count];
+        for (NSString *version in versions) {
+            NSDictionary *versionEntry = versions[version];
+            NSString *imageURL = [versionEntry isKindOfClass:[NSDictionary class]]
+                ? versionEntry[kS7TVBadgeImageURLKey] : nil;
+            if ([imageURL isKindOfClass:[NSString class]] && imageURL.length) {
+                versionToURL[version] = imageURL;
+            }
+        }
+        if (versionToURL.count) result[setID] = [versionToURL copy];
+    }
+
+    return [result copy];
+}
+
+#pragma mark - Résolution
+
+- (nullable id<S7TVResolvedEmote>)resolvedBadgeForIdentifier:(NSString *)identifier {
+    if (!identifier.length) return nil;
+
+    NSRange slash = [identifier rangeOfString:@"/"];
+    if (slash.location == NSNotFound) return nil; // format inattendu, jamais planter
+
+    NSString *setID   = [identifier substringToIndex:slash.location];
+    NSString *version = [identifier substringFromIndex:slash.location + 1];
+    if (!setID.length || !version.length) return nil;
+
+    __block NSString *imageURLString = nil;
+    dispatch_sync(self.badgeQueue, ^{
+        // Channel d'abord (peut surcharger, ex: sub badge custom de la
+        // chaîne), sinon repli sur le global.
+        imageURLString = self.channelBadges[setID][version] ?: self.globalBadges[setID][version];
+    });
+    if (!imageURLString.length) return nil;
+
+    NSURL *url = [NSURL URLWithString:imageURLString];
+    if (!url) return nil;
+
+    S7TVResolvedBadge *badge = [S7TVResolvedBadge new];
+    badge.emoteID = identifier;
+    // Tous les badges Twitch (sub/mod/VIP/custom) sont carrés — même
+    // raisonnement de fallback que S7TVTwitchNativeEmoteFactory pour les
+    // emotes natives (voir SevenTVEmoteProvider.m), pas une approximation
+    // risquée ici puisque c'est systématiquement vrai pour ce type d'asset.
+    badge.nativeSize = CGSizeMake(1, 1);
+    badge.isAnimated = NO;
+    badge.imageURL = url;
+    return badge;
+}
+
+@end

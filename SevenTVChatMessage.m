@@ -70,6 +70,7 @@
         _authorDisplayName = [authorDisplayName copy];
         _rawText           = [rawText copy];
         _twitchEmotesTag   = @"";
+        _badgeIdentifiers  = @[];
         _type              = S7TVChatMessageTypeNormal;
         _state             = S7TVChatMessageStateNormal;
     }

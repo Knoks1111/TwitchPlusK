@@ -118,6 +118,14 @@ typedef NS_ENUM(NSInteger, S7TVChatMessageState) {
 // catalogue 7TV de la chaîne finit de charger, sans perdre les emotes Twitch.
 @property (nonatomic, copy) NSString *twitchEmotesTag;
 
+// Identifiants de badges (Phase 3), tels qu'extraits du tag IRC `badges=`
+// (ex: @[@"subscriber/3", @"moderator/1"]), dans l'ordre d'affichage envoyé
+// par Twitch. Volontairement PAS dans `tokens` — un badge est un attribut de
+// l'auteur, pas un segment du texte du message (voir SevenTVBadgeProvider.h
+// pour le raisonnement complet). Résolu en image par SevenTVBadgeProvider au
+// moment du rendu, pas ici — ce modèle ne fait que porter la donnée brute.
+@property (nonatomic, copy, nullable) NSArray<NSString *> *badgeIdentifiers;
+
 @property (nonatomic, assign) S7TVChatMessageType type;
 @property (nonatomic, assign) S7TVChatMessageState state;
 

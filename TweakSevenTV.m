@@ -34,6 +34,7 @@
 #import "SevenTVChatCustomView.h"
 #import "SevenTVEmoteProvider.h"
 #import "SevenTVChatTokenizer.h"
+#import "SevenTVBadgeProvider.h"
 // Cle NSUserDefaults Auto Collect Channel Points
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 
@@ -597,6 +598,26 @@ static NSArray<S7TVChatToken *> *s7tv_tokenizeMessageWithNativeEmotes(NSString *
     return tokens;
 }
 
+// ────────────────────────────────────────────────────────────
+// MARK: - Badges (tag IRC badges=)
+// ────────────────────────────────────────────────────────────
+//
+// Format "setID1/version1,setID2/version2,..." — contrairement au tag
+// emotes=, pas de position à gérer : c'est déjà exactement la liste
+// d'identifiants attendue par SevenTVBadgeProvider.resolvedBadgeForIdentifier:.
+// Parsing tolérant (exigence Phase 1a) : entrées vides/malformées ignorées
+// silencieusement plutôt que de planter.
+static NSArray<NSString *> *s7tv_parseBadgesTag(NSString *tagValue) {
+    if (!tagValue.length) return @[];
+    NSMutableArray<NSString *> *identifiers = [NSMutableArray array];
+    for (NSString *entry in [tagValue componentsSeparatedByString:@","]) {
+        if (entry.length && [entry containsString:@"/"]) {
+            [identifiers addObject:entry];
+        }
+    }
+    return identifiers;
+}
+
 // Parse une ligne IRC complète et retourne un S7TVChatMessage si c'est un
 // PRIVMSG exploitable, nil sinon (autre type de commande, ou PRIVMSG dont
 // le texte n'a pas pu être isolé — on ne construit jamais de message à
@@ -639,6 +660,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     NSString *displayName  = s7tv_tagValue(tags, @"display-name", @"???");
     NSString *colorHex     = s7tv_tagValue(tags, @"color", @"");
     NSString *emotesTag    = s7tv_tagValue(tags, @"emotes", @"");
+    NSString *badgesTag    = s7tv_tagValue(tags, @"badges", @"");
 
     S7TVChatMessage *msg = [[S7TVChatMessage alloc] initWithMessageID:messageID
                                                              timestamp:[NSDate date]
@@ -665,6 +687,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     // à resize après coup une fois l'image chargée.
     msg.tokens = s7tv_tokenizeMessageWithNativeEmotes(messageText, emotesTag);
     msg.twitchEmotesTag = emotesTag;
+    msg.badgeIdentifiers = s7tv_parseBadgesTag(badgesTag);
 
     return msg;
 }
@@ -1976,6 +1999,10 @@ static void TwitchSevenTVInit(void) {
     // Setup sur le main thread
     dispatch_async(dispatch_get_main_queue(), ^{
         [[SevenTVManager sharedManager] setup];
+        // Catalogue global + abonnement à S7TVChannelJoined (déjà postée
+        // plus bas dans ce fichier depuis s7tv_handleRoomState, jamais
+        // consommée jusqu'ici) — voir SevenTVBadgeProvider.h.
+        [SevenTVBadgeProvider setup];
         [[SevenTVManager sharedManager] log:@"✅ SevenTVManager prêt"];
 
         // Démarrer le local proxy si activé

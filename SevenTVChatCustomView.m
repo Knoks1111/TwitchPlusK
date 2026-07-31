@@ -8,6 +8,7 @@
 #import "SevenTVChatAppearanceConfig.h"
 #import "SevenTVEmoteImageCache.h"
 #import "SevenTVEmoteAnimationEngine.h"
+#import "SevenTVBadgeProvider.h"
 #import "SevenTVManager.h"
 
 
@@ -640,6 +641,36 @@ static void s7tv_applyLineBreakParagraphStyle(NSMutableAttributedString *attrStr
     NSMutableAttributedString *result = [NSMutableAttributedString new];
     NSString *displayName = msg.authorDisplayName.length ? msg.authorDisplayName : @"???";
 
+    SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
+
+    // Badges (Phase 3) — avant le pseudo, comme le natif Twitch. Même
+    // pipeline attachment que les emotes ci-dessous (S7TVResolvedBadge
+    // conforme à S7TVResolvedEmote) : un badge encore non téléchargé rejoint
+    // outUncachedEmotes et déclenche le même reload générique que pour une
+    // emote manquante, sans code dédié — voir s7tv_cellForMessageID:.
+    // Toujours rendus (y compris message .deletedCollapsed) : même logique
+    // que le pseudo juste en dessous, qui reste affiché dans ce cas.
+    SevenTVBadgeProvider *badgeProvider = [SevenTVBadgeProvider sharedProvider];
+    for (NSString *badgeIdentifier in msg.badgeIdentifiers) {
+        id<S7TVResolvedEmote> badge = [badgeProvider resolvedBadgeForIdentifier:badgeIdentifier];
+        if (!badge) continue; // catalogue pas encore chargé, ou set/version inconnu — on saute, pas de glyphe vide
+
+        UIImage *cachedBadgeImage = [imageCache cachedImageForResolvedEmote:badge];
+        if (!cachedBadgeImage) {
+            [outUncachedEmotes addObject:badge];
+            continue; // pas d'image dispo → rien à afficher pour ce badge tant que le fetch n'a pas fini
+        }
+
+        NSTextAttachment *badgeAttachment = [[NSTextAttachment alloc] init];
+        badgeAttachment.image = cachedBadgeImage;
+        // Badges carrés (nativeSize (1,1), voir SevenTVBadgeProvider) →
+        // largeur == hauteur == cfg.badgeSize, pas de calcul de ratio requis
+        // contrairement aux emotes (dimensions variables).
+        badgeAttachment.bounds = CGRectMake(0, -3, cfg.badgeSize, cfg.badgeSize);
+        [result appendAttributedString:[NSAttributedString attributedStringWithAttachment:badgeAttachment]];
+        [result appendAttributedString:[[NSAttributedString alloc] initWithString:@" "]];
+    }
+
     [result appendAttributedString:[[NSAttributedString alloc]
         initWithString:[displayName stringByAppendingString:@": "]
             attributes:@{NSFontAttributeName: usernameFont,
@@ -668,8 +699,6 @@ static void s7tv_applyLineBreakParagraphStyle(NSMutableAttributedString *attrStr
         s7tv_applyLineBreakParagraphStyle(result);
         return result;
     }
-
-    SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
 
     for (S7TVChatToken *token in tokens) {
         if (token.type == S7TVChatTokenTypeEmote7TV || token.type == S7TVChatTokenTypeEmoteTwitch) {

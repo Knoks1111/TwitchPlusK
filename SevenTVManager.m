@@ -109,6 +109,12 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 @property (nonatomic, strong) NSMutableArray<NSString *> *logBuffer;
 @property (nonatomic, strong) NSLock *logLock;
 
+// Token OAuth Twitch + Client-ID — interceptés depuis les requêtes GQL
+// (voir TweakSevenTV.m s7tv_dataTaskWithRequest:) pour pouvoir appeler
+// l'API Helix (badges, etc.) sans enregistrer une app développeur.
+@property (nonatomic, copy) NSString *twitchToken;
+@property (nonatomic, copy) NSString *twitchClientID;
+
 // Dossier racine du cache JSON (créé à la demande)
 @property (nonatomic, strong) NSString *cacheDirectory;
 
@@ -1093,6 +1099,24 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     return [result copy];
 }
 
+
+// ============================================================
+// ============================================================
+// MARK: - Stockage token Twitch (intercepté depuis requêtes GQL)
+// ============================================================
+
+- (void)saveTwitchToken:(NSString *)token clientID:(NSString *)clientID {
+    if (!token.length || !clientID.length) return;
+    if ([token isEqualToString:self.twitchToken]) return; // déjà à jour
+    self.twitchToken   = token;
+    self.twitchClientID = clientID;
+    [self log:@"[Badges] ✅ Token Twitch intercepté"];
+    // Déclencher le chargement des badges maintenant qu'on a le token
+    [[SevenTVBadgeProvider sharedProvider] loadGlobalBadges];
+    if (self.currentChannelTwitchID.length) {
+        [[SevenTVBadgeProvider sharedProvider] loadBadgesForChannelID:self.currentChannelTwitchID];
+    }
+}
 
 // ============================================================
 // MARK: - Extraction du broadcaster ID depuis les réponses GQL Twitch

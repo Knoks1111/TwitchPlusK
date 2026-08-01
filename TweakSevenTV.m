@@ -2073,6 +2073,7 @@ __attribute__((constructor))
 static void TwitchSevenTVInit(void) {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     [mgr log:@"🔌 Chargement TwitchSevenTV v2.0 (substrate-free)..."];
+    [mgr log:@"[ChatCustom] 🏷️ BUILD-MARKER-BADGES-FIX-9F3K2"];
 
     [[NSNotificationCenter defaultCenter]
         addObserverForName:S7TVChatCustomToggleDidChangeNotification

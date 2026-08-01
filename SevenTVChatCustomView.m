@@ -627,22 +627,37 @@ static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
 
     CGFloat h, s, l;
     s7tv_rgbToHSL(r, g, b, &h, &s, &l);
+    CGFloat originalL = l;
 
-    // Recherche binaire sur la Lightness (teinte + saturation figées) —
-    // 20 itérations donnent largement une précision sub-pixel.
+    // Recherche binaire sur la Lightness (teinte + saturation ORIGINALE
+    // pendant la recherche — la désaturation est appliquée séparément
+    // ensuite, sinon la cible de luminance bougerait à chaque itération).
     CGFloat lo = l, hi = 1.0;
-    CGFloat bestR = r, bestG = g, bestB = b;
+    CGFloat bestL = l;
     for (int i = 0; i < 20; i++) {
         CGFloat mid = (lo + hi) / 2.0;
         CGFloat cr, cg, cb;
         s7tv_hslToRGB(h, s, mid, &cr, &cg, &cb);
         if (s7tv_relativeLuminance(cr, cg, cb) >= targetLuminance) {
-            bestR = cr; bestG = cg; bestB = cb;
+            bestL = mid;
             hi = mid;
         } else {
             lo = mid;
         }
     }
+
+    // Courbe de désaturation (documentée par l'équipe Twitch : "quand on
+    // éclaircit une couleur très sombre, le résultat semblait trop saturé —
+    // on a ajouté une courbe qui réduit la saturation"). Plus la Lightness a
+    // dû bouger pour atteindre le contraste cible, plus on désature — un
+    // ajustement léger reste presque inchangé, un ajustement extrême tend
+    // vers une couleur pâle plutôt qu'un ton "néon" trop vif.
+    CGFloat deltaL = bestL - originalL;
+    CGFloat easingFactor = 1.0 - MIN(deltaL * 0.8, 0.8); // borné à [0.2, 1.0]
+    CGFloat desaturatedS = s * easingFactor;
+
+    CGFloat bestR, bestG, bestB;
+    s7tv_hslToRGB(h, desaturatedS, bestL, &bestR, &bestG, &bestB);
 
     return [UIColor colorWithRed:bestR green:bestG blue:bestB alpha:a];
 }

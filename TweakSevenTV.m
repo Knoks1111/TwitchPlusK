@@ -1031,6 +1031,28 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
 - (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request
                                  completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
     if ([request.URL.host isEqualToString:@"gql.twitch.tv"] && completionHandler) {
+        // ── Diagnostic Chat Custom : dump des headers présents à l'envoi ────
+        // Sert à identifier PAR OÙ Twitch pose Authorization/Client-ID sans
+        // avoir à deviner (bulk setAllHTTPHeaderFields:, headers de session,
+        // ou header-by-header) — visible tant que le token n'est pas capturé.
+        if (![[SevenTVManager sharedManager] twitchToken].length) {
+            NSDictionary *reqHeaders = request.allHTTPHeaderFields;
+            [[SevenTVManager sharedManager]
+                log:@"[ChatCustom] 🔎 Requête GQL — clés headers présentes sur l'objet request: %@",
+                [reqHeaders.allKeys componentsJoinedByString:@", "] ?: @"(aucune)"];
+
+            NSString *authOnReq = reqHeaders[@"Authorization"] ?: reqHeaders[@"authorization"];
+            NSString *cidOnReq  = reqHeaders[@"Client-ID"] ?: reqHeaders[@"client-id"] ?: reqHeaders[@"Client-Id"];
+            [[SevenTVManager sharedManager]
+                log:@"[ChatCustom] 🔎 Authorization présent sur request: %@ / Client-ID présent: %@",
+                authOnReq.length ? @"OUI" : @"non", cidOnReq.length ? @"OUI" : @"non"];
+
+            // Capture de secours si les headers étaient là mais que nos
+            // hooks setValue:/setAllHTTPHeaderFields: ne les ont pas captés.
+            if (authOnReq.length) [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:authOnReq];
+            if (cidOnReq.length)  [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:cidOnReq];
+        }
+
         // Extraire et sauvegarder le token OAuth + Client-ID au passage
         NSDictionary *headers = request.allHTTPHeaderFields;
         NSString *auth = headers[@"Authorization"];
@@ -1597,18 +1619,42 @@ static void s7tv_swizzle_account_menu(void) {
 
 @interface NSMutableURLRequest (S7TVTokenCapture)
 - (void)s7tv_setValue:(NSString *)value forHTTPHeaderField:(NSString *)field;
+- (void)s7tv_setAllHTTPHeaderFields:(NSDictionary<NSString *, NSString *> *)headerFields;
 @end
 
 @implementation NSMutableURLRequest (S7TVTokenCapture)
 - (void)s7tv_setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
     if (value.length) {
         if ([field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame) {
+            [[SevenTVManager sharedManager] log:@"[ChatCustom] 🔎 setValue:forHTTPHeaderField: Authorization capté"];
+            [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:value];
+        } else if ([field caseInsensitiveCompare:@"Client-ID"] == NSOrderedSame) {
+            [[SevenTVManager sharedManager] log:@"[ChatCustom] 🔎 setValue:forHTTPHeaderField: Client-ID capté"];
+            [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:value];
+        }
+    }
+    [self s7tv_setValue:value forHTTPHeaderField:field];
+}
+
+// Beaucoup de code (surtout en Swift : `request.allHTTPHeaderFields = [...]`)
+// pose TOUS les headers d'un coup via cette méthode plutôt que field par
+// field — sans ce hook, ce cas échappe complètement à setValue:forHTTPHeaderField:.
+- (void)s7tv_setAllHTTPHeaderFields:(NSDictionary<NSString *, NSString *> *)headerFields {
+    if (headerFields.count) {
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] 🔎 setAllHTTPHeaderFields: clés reçues: %@",
+            [headerFields.allKeys componentsJoinedByString:@", "]];
+    }
+    for (NSString *field in headerFields) {
+        NSString *value = headerFields[field];
+        if (!value.length) continue;
+        if ([field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame) {
             [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:value];
         } else if ([field caseInsensitiveCompare:@"Client-ID"] == NSOrderedSame) {
             [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:value];
         }
     }
-    [self s7tv_setValue:value forHTTPHeaderField:field];
+    [self s7tv_setAllHTTPHeaderFields:headerFields];
 }
 @end
 
@@ -1618,6 +1664,11 @@ static void s7tv_swizzle_account_menu(void) {
 
 @implementation NSURLSessionConfiguration (S7TVTokenCapture)
 - (void)s7tv_setHTTPAdditionalHeaders:(NSDictionary *)headers {
+    if (headers.count) {
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] 🔎 setHTTPAdditionalHeaders: clés reçues: %@",
+            [headers.allKeys componentsJoinedByString:@", "]];
+    }
     NSString *auth = headers[@"Authorization"] ?: headers[@"authorization"];
     NSString *clientID = headers[@"Client-ID"] ?: headers[@"client-id"];
     if (auth.length)     [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:auth];
@@ -1640,6 +1691,9 @@ static void s7tv_swizzle_token_capture(void) {
     s7tv_swizzle(classReq, [NSMutableURLRequest class],
                  @selector(setValue:forHTTPHeaderField:),
                  @selector(s7tv_setValue:forHTTPHeaderField:));
+    s7tv_swizzle(classReq, [NSMutableURLRequest class],
+                 @selector(setAllHTTPHeaderFields:),
+                 @selector(s7tv_setAllHTTPHeaderFields:));
 
     // NSURLSessionConfiguration n'est PAS un class cluster (classe concrète
     // normale) mais on sonde quand même par prudence/cohérence — et on

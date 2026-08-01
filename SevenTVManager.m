@@ -2686,16 +2686,7 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 
     // 2. Chat Custom (diagnostic Phase 0+ du chat maison — tag explicite,
     // avant le Dump générique pour ne pas y être noyé)
-    //
-    // ⚠️ TEMP DEBUG (diagnostic badges Phase 3) : seuls les logs contenant
-    // "Badges" restent dans Chat Custom, le reste part dans Dump — pour
-    // isoler visuellement les logs de SevenTVBadgeProvider au milieu du
-    // volume existant. À RETIRER (revenir à la ligne simple ci-dessous en
-    // commentaire) une fois le diagnostic terminé :
-    //   if (has(@"[ChatCustom]")) return S7TVLogCategoryChatCustom;
-    if (has(@"[ChatCustom]")) {
-        return has(@"Badges") ? S7TVLogCategoryChatCustom : S7TVLogCategoryDump;
-    }
+    if (has(@"[ChatCustom]")) return S7TVLogCategoryChatCustom;
 
     // 3. Dump (architecture/méthodes — très verbeux, à part)
     if (has(@"[DBG-DUMP]") || has(@"🩻")) return S7TVLogCategoryDump;

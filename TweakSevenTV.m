@@ -1038,13 +1038,13 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
         if (![[SevenTVManager sharedManager] twitchToken].length) {
             NSDictionary *reqHeaders = request.allHTTPHeaderFields;
             [[SevenTVManager sharedManager]
-                log:@"[ChatCustom] 🔎 Requête GQL — clés headers présentes sur l'objet request: %@",
+                log:@"[ChatCustom] 🏗 Badges: Requête GQL — clés headers présentes sur l'objet request: %@",
                 [reqHeaders.allKeys componentsJoinedByString:@", "] ?: @"(aucune)"];
 
             NSString *authOnReq = reqHeaders[@"Authorization"] ?: reqHeaders[@"authorization"];
             NSString *cidOnReq  = reqHeaders[@"Client-ID"] ?: reqHeaders[@"client-id"] ?: reqHeaders[@"Client-Id"];
             [[SevenTVManager sharedManager]
-                log:@"[ChatCustom] 🔎 Authorization présent sur request: %@ / Client-ID présent: %@",
+                log:@"[ChatCustom] 🏗 Badges: Authorization présent sur request: %@ / Client-ID présent: %@",
                 authOnReq.length ? @"OUI" : @"non", cidOnReq.length ? @"OUI" : @"non"];
 
             // Capture de secours si les headers étaient là mais que nos
@@ -1626,10 +1626,10 @@ static void s7tv_swizzle_account_menu(void) {
 - (void)s7tv_setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
     if (value.length) {
         if ([field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame) {
-            [[SevenTVManager sharedManager] log:@"[ChatCustom] 🔎 setValue:forHTTPHeaderField: Authorization capté"];
+            [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Badges: setValue:forHTTPHeaderField: Authorization capté"];
             [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:value];
         } else if ([field caseInsensitiveCompare:@"Client-ID"] == NSOrderedSame) {
-            [[SevenTVManager sharedManager] log:@"[ChatCustom] 🔎 setValue:forHTTPHeaderField: Client-ID capté"];
+            [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Badges: setValue:forHTTPHeaderField: Client-ID capté"];
             [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:value];
         }
     }
@@ -1642,7 +1642,7 @@ static void s7tv_swizzle_account_menu(void) {
 - (void)s7tv_setAllHTTPHeaderFields:(NSDictionary<NSString *, NSString *> *)headerFields {
     if (headerFields.count) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] 🔎 setAllHTTPHeaderFields: clés reçues: %@",
+            log:@"[ChatCustom] 🏗 Badges: setAllHTTPHeaderFields: clés reçues: %@",
             [headerFields.allKeys componentsJoinedByString:@", "]];
     }
     for (NSString *field in headerFields) {
@@ -1666,7 +1666,7 @@ static void s7tv_swizzle_account_menu(void) {
 - (void)s7tv_setHTTPAdditionalHeaders:(NSDictionary *)headers {
     if (headers.count) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] 🔎 setHTTPAdditionalHeaders: clés reçues: %@",
+            log:@"[ChatCustom] 🏗 Badges: setHTTPAdditionalHeaders: clés reçues: %@",
             [headers.allKeys componentsJoinedByString:@", "]];
     }
     NSString *auth = headers[@"Authorization"] ?: headers[@"authorization"];
@@ -2073,7 +2073,7 @@ __attribute__((constructor))
 static void TwitchSevenTVInit(void) {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     [mgr log:@"🔌 Chargement TwitchSevenTV v2.0 (substrate-free)..."];
-    [mgr log:@"[ChatCustom] 🏷️ BUILD-MARKER-BADGES-FIX-9F3K2"];
+    [mgr log:@"[ChatCustom] 🏗 Badges: BUILD-MARKER-FIX-9F3K2"];
 
     [[NSNotificationCenter defaultCenter]
         addObserverForName:S7TVChatCustomToggleDidChangeNotification

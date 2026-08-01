@@ -10,6 +10,7 @@
 #import "SevenTVEmoteAnimationEngine.h"
 #import "SevenTVBadgeProvider.h"
 #import "SevenTVManager.h"
+#import <math.h>
 
 
 // ============================================================
@@ -552,28 +553,98 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
 #pragma mark - Construction du texte
 
 // Twitch n'affiche jamais une couleur de pseudo brute telle que choisie par
-// l'utilisateur : son client applique un plancher de luminosité pour rester
-// lisible sur fond sombre (certains pseudos ont une couleur proche du noir
-// en valeur brute, invisible sur notre fond noir sinon). On reproduit ce
-// comportement ici, au moment du RENDU — pas au parsing/stockage — pour que
-// S7TVChatMessage garde la vraie couleur choisie par l'utilisateur (utile
-// si un thème clair arrive un jour, Phase 6 : le calcul de lisibilité doit
+// l'utilisateur quand l'option "Couleurs lisibles" est activée (Chat Settings
+// → Apparence) : Twitch calcule un ratio de contraste WCAG 2.1 (minimum
+// 4.5:1, seuil texte normal) contre le fond du chat, et ajuste UNIQUEMENT la
+// luminosité (HSL) par recherche binaire jusqu'à atteindre ce ratio — teinte
+// et saturation d'origine préservées. Source : blog.twitch.tv "Using
+// Algorithms to Meet Accessibility Requirements for Color Contrast" (nov.
+// 2021). Reproduit ici au moment du RENDU — pas au parsing/stockage — pour
+// que S7TVChatMessage garde la vraie couleur choisie par l'utilisateur (utile
+// si un thème clair arrive un jour, Phase 6 : le calcul de contraste doit
 // alors se faire contre un fond clair, pas être figé dans le modèle).
+
+// Luminance relative WCAG (sRGB → linéaire → pondération perceptuelle).
+static CGFloat s7tv_relativeLuminance(CGFloat r, CGFloat g, CGFloat b) {
+    CGFloat (^chan)(CGFloat) = ^CGFloat(CGFloat c) {
+        return (c <= 0.03928) ? (c / 12.92) : (CGFloat)pow((c + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
+}
+
+// UIColor n'expose que HSB (Brightness) nativement, pas HSL (Lightness) —
+// or c'est bien la Lightness que Twitch ajuste (formule L = (max+min)/2,
+// différente de B = max). Conversion manuelle nécessaire.
+static void s7tv_rgbToHSL(CGFloat r, CGFloat g, CGFloat b, CGFloat *h, CGFloat *s, CGFloat *l) {
+    CGFloat maxC = MAX(r, MAX(g, b));
+    CGFloat minC = MIN(r, MIN(g, b));
+    CGFloat delta = maxC - minC;
+    *l = (maxC + minC) / 2.0;
+    if (delta < 1e-6) { *h = 0; *s = 0; return; }
+    *s = (*l < 0.5) ? (delta / (maxC + minC)) : (delta / (2.0 - maxC - minC));
+    if (maxC == r)      *h = fmod((g - b) / delta, 6.0);
+    else if (maxC == g) *h = ((b - r) / delta) + 2.0;
+    else                 *h = ((r - g) / delta) + 4.0;
+    *h *= 60.0;
+    if (*h < 0) *h += 360.0;
+}
+
+static CGFloat s7tv_hueToRGB(CGFloat p, CGFloat q, CGFloat t) {
+    if (t < 0) t += 1.0;
+    if (t > 1) t -= 1.0;
+    if (t < 1.0/6.0) return p + (q - p) * 6.0 * t;
+    if (t < 1.0/2.0) return q;
+    if (t < 2.0/3.0) return p + (q - p) * (2.0/3.0 - t) * 6.0;
+    return p;
+}
+
+static void s7tv_hslToRGB(CGFloat h, CGFloat s, CGFloat l, CGFloat *r, CGFloat *g, CGFloat *b) {
+    if (s < 1e-6) { *r = *g = *b = l; return; }
+    CGFloat q = (l < 0.5) ? (l * (1.0 + s)) : (l + s - l * s);
+    CGFloat p = 2.0 * l - q;
+    CGFloat hk = h / 360.0;
+    *r = s7tv_hueToRGB(p, q, hk + 1.0/3.0);
+    *g = s7tv_hueToRGB(p, q, hk);
+    *b = s7tv_hueToRGB(p, q, hk - 1.0/3.0);
+}
+
 static UIColor *s7tv_readableColorOnDarkBackground(UIColor * _Nullable color) {
     if (!color) return [UIColor whiteColor];
 
-    CGFloat h, s, b, a;
-    if (![color getHue:&h saturation:&s brightness:&b alpha:&a]) {
+    CGFloat r, g, b, a;
+    if (![color getRed:&r green:&g blue:&b alpha:&a]) {
         return [UIColor whiteColor]; // couleur non convertible (espace exotique) → fallback sûr
     }
 
-    // Seuil et plancher choisis empiriquement pour rester proches du rendu
-    // natif Twitch (couleurs vives préservées telles quelles, seules les
-    // couleurs franchement trop sombres sont relevées).
-    static const CGFloat kMinBrightness = 0.50;
-    if (b >= kMinBrightness) return color;
+    // Fond de référence : chat Twitch en thème sombre (#18181B), pas un noir
+    // pur — le ratio WCAG dépend de la luminance réelle du fond contre lequel
+    // le texte est lu.
+    static const CGFloat kBgLuminance      = 0.009281; // luminance relative de #18181B
+    static const CGFloat kMinContrastRatio = 4.5;       // WCAG 2.1 AA, texte normal
+    CGFloat targetLuminance = kMinContrastRatio * (kBgLuminance + 0.05) - 0.05;
 
-    return [UIColor colorWithHue:h saturation:s brightness:kMinBrightness alpha:a];
+    if (s7tv_relativeLuminance(r, g, b) >= targetLuminance) return color; // déjà lisible, on ne touche à rien
+
+    CGFloat h, s, l;
+    s7tv_rgbToHSL(r, g, b, &h, &s, &l);
+
+    // Recherche binaire sur la Lightness (teinte + saturation figées) —
+    // 20 itérations donnent largement une précision sub-pixel.
+    CGFloat lo = l, hi = 1.0;
+    CGFloat bestR = r, bestG = g, bestB = b;
+    for (int i = 0; i < 20; i++) {
+        CGFloat mid = (lo + hi) / 2.0;
+        CGFloat cr, cg, cb;
+        s7tv_hslToRGB(h, s, mid, &cr, &cg, &cb);
+        if (s7tv_relativeLuminance(cr, cg, cb) >= targetLuminance) {
+            bestR = cr; bestG = cg; bestB = cb;
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+
+    return [UIColor colorWithRed:bestR green:bestG blue:bestB alpha:a];
 }
 
 // Aligne un NSAttributedString sur S7TVChatCustomCell.messageLabel.lineBreakMode

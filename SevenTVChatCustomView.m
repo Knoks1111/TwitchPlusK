@@ -59,6 +59,14 @@
         // qu'un débordement qui abîme la lisibilité des lignes suivantes).
         _messageLabel.clipsToBounds = YES;
         _messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        // Liens tappables (URLs, Phase 6) : UILabel n'a pas de gestion
+        // native de NSLinkAttributeName (contrairement à UITextView) — on
+        // active l'interaction et on hit-teste manuellement via TextKit au
+        // tap (voir s7tv_handleTap:).
+        _messageLabel.userInteractionEnabled = YES;
+        [_messageLabel addGestureRecognizer:
+            [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                      action:@selector(s7tv_handleTap:)]];
         [self.contentView addSubview:_messageLabel];
 
         // Marges 8pt — pas encore dans la config (Phase 1b ne couvre que
@@ -72,6 +80,38 @@
         ]];
     }
     return self;
+}
+
+// Retrouve le lien (NSLinkAttributeName) sous le point tapé, s'il y en a
+// un, et l'ouvre. Reproduit manuellement ce que UITextView fait nativement,
+// via le même moteur TextKit1 que le reste du rendu (cohérent avec
+// s7tv_measureAttributedText: côté SevenTVChatCustomView).
+- (void)s7tv_handleTap:(UITapGestureRecognizer *)gesture {
+    NSAttributedString *attributedText = self.messageLabel.attributedText;
+    if (!attributedText.length) return;
+
+    NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
+    NSTextStorage *textStorage = [[NSTextStorage alloc] initWithAttributedString:attributedText];
+    [textStorage addLayoutManager:layoutManager];
+
+    NSTextContainer *textContainer = [[NSTextContainer alloc] initWithSize:self.messageLabel.bounds.size];
+    textContainer.lineFragmentPadding = 0;
+    textContainer.lineBreakMode = self.messageLabel.lineBreakMode;
+    textContainer.maximumNumberOfLines = self.messageLabel.numberOfLines;
+    [layoutManager addTextContainer:textContainer];
+
+    CGPoint tapPoint = [gesture locationInView:self.messageLabel];
+    NSUInteger charIndex = [layoutManager characterIndexForPoint:tapPoint
+                                                   inTextContainer:textContainer
+                          fractionOfDistanceBetweenInsertionPoints:NULL];
+    if (charIndex >= attributedText.length) return;
+
+    id linkValue = [attributedText attribute:NSLinkAttributeName atIndex:charIndex effectiveRange:NULL];
+    NSURL *url = [linkValue isKindOfClass:[NSURL class]] ? linkValue : nil;
+    if (!url && [linkValue isKindOfClass:[NSString class]]) url = [NSURL URLWithString:linkValue];
+    if (!url) return;
+
+    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
 }
 
 @end
@@ -132,6 +172,14 @@
 // passager de la vue (ex: bannière au-dessus du chat) qui fausserait sinon
 // la mesure de distance sans qu'aucun geste utilisateur n'ait eu lieu.
 @property (nonatomic, assign) BOOL isPinnedToBottom;
+// Bouton/bannière "X nouveaux messages" (Phase 4) : visible uniquement
+// quand la personne a scrollé pour lire l'historique (isPinnedToBottom ==
+// NO) et que de nouveaux messages arrivent pendant ce temps. Compteur
+// remis à zéro dès qu'on redevient épinglé en bas (scroll manuel jusqu'en
+// bas, ou tap sur le bouton lui-même).
+@property (nonatomic, assign) NSUInteger pendingNewMessagesCount;
+@property (nonatomic, strong) UIView *newMessagesBanner;
+@property (nonatomic, strong) UILabel *newMessagesBannerLabel;
 @end
 
 @implementation SevenTVChatCustomView
@@ -200,6 +248,51 @@
             [_tableView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
             [_tableView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
         ]];
+
+        // Bannière "X nouveaux messages" (Phase 4) — pilule sombre avec
+        // flèche vers le bas, ajoutée APRÈS la table view pour rester
+        // au-dessus en z-order. Cachée par défaut, affichée uniquement via
+        // s7tv_showNewMessagesBanner (voir reloadMessages).
+        _newMessagesBanner = [[UIView alloc] init];
+        _newMessagesBanner.translatesAutoresizingMaskIntoConstraints = NO;
+        _newMessagesBanner.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
+        _newMessagesBanner.layer.cornerRadius = 16;
+        _newMessagesBanner.clipsToBounds = YES;
+        _newMessagesBanner.hidden = YES;
+        _newMessagesBanner.userInteractionEnabled = YES;
+        [_newMessagesBanner addGestureRecognizer:
+            [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                      action:@selector(s7tv_didTapNewMessagesBanner)]];
+
+        UIImageView *arrowIcon = [[UIImageView alloc]
+            initWithImage:[UIImage systemImageNamed:@"arrow.down"]];
+        arrowIcon.tintColor = [UIColor whiteColor];
+        arrowIcon.contentMode = UIViewContentModeScaleAspectFit;
+        arrowIcon.translatesAutoresizingMaskIntoConstraints = NO;
+
+        _newMessagesBannerLabel = [[UILabel alloc] init];
+        _newMessagesBannerLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _newMessagesBannerLabel.textColor = [UIColor whiteColor];
+        _newMessagesBannerLabel.font = [UIFont boldSystemFontOfSize:13];
+
+        [_newMessagesBanner addSubview:arrowIcon];
+        [_newMessagesBanner addSubview:_newMessagesBannerLabel];
+        [self addSubview:_newMessagesBanner];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_newMessagesBanner.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
+            [_newMessagesBanner.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
+            [_newMessagesBanner.heightAnchor constraintEqualToConstant:32],
+
+            [arrowIcon.leadingAnchor constraintEqualToAnchor:_newMessagesBanner.leadingAnchor constant:12],
+            [arrowIcon.centerYAnchor constraintEqualToAnchor:_newMessagesBanner.centerYAnchor],
+            [arrowIcon.widthAnchor constraintEqualToConstant:14],
+            [arrowIcon.heightAnchor constraintEqualToConstant:14],
+
+            [_newMessagesBannerLabel.leadingAnchor constraintEqualToAnchor:arrowIcon.trailingAnchor constant:6],
+            [_newMessagesBannerLabel.trailingAnchor constraintEqualToAnchor:_newMessagesBanner.trailingAnchor constant:-12],
+            [_newMessagesBannerLabel.centerYAnchor constraintEqualToAnchor:_newMessagesBanner.centerYAnchor],
+        ]];
     }
     return self;
 }
@@ -225,25 +318,48 @@
     NSArray<S7TVChatMessage *> *newMessages = [self.store allMessages];
 
     // Ne fige "on est en bas" qu'AVANT de toucher au contenu — sinon la
-    // comparaison se ferait sur une table déjà mise à jour. Version minimale :
-    // la vraie suspension du scroll manuel (bouton "nouveaux messages") est
-    // prévue explicitement en Phase 4 ; ce garde-fou évite juste qu'un flux
-    // rapide fasse sauter la vue sous les yeux de quelqu'un qui remonte lire
-    // l'historique.
+    // comparaison se ferait sur une table déjà mise à jour.
     BOOL wasNearBottom = (self.displayedMessages.count == 0) || self.isPinnedToBottom;
 
+    // Snapshot des identifiants AVANT overwrite — sert à calculer combien
+    // de messages sont réellement nouveaux (pas juste "le compte a changé",
+    // qui serait faux dès qu'un vieux message est purgé pendant qu'un
+    // nouveau arrive) pour le compteur de la bannière ci-dessous.
+    NSMutableSet<NSString *> *oldIDs = nil;
+    if (!wasNearBottom) {
+        oldIDs = [NSMutableSet setWithCapacity:self.displayedMessages.count];
+        for (S7TVChatMessage *m in self.displayedMessages) {
+            [oldIDs addObject:m.messageID];
+        }
+    }
 
     // Index messageID → message reconstruit à chaque reload : utilisé par le
     // cellProvider et par heightForRowAtIndexPath: (voir propriétés).
     NSMutableDictionary<NSString *, S7TVChatMessage *> *byID =
         [NSMutableDictionary dictionaryWithCapacity:newMessages.count];
     NSMutableArray<NSString *> *identifiers = [NSMutableArray arrayWithCapacity:newMessages.count];
+    NSUInteger newlyAddedCount = 0;
     for (S7TVChatMessage *m in newMessages) {
         byID[m.messageID] = m;
         [identifiers addObject:m.messageID];
+        if (oldIDs && ![oldIDs containsObject:m.messageID]) newlyAddedCount++;
     }
     self.displayedMessages = newMessages;
     self.messagesByID       = byID;
+
+    // Bannière "X nouveaux messages" : épinglé en bas → jamais affichée
+    // (l'auto-scroll s'en charge, voir s7tv_scrollToBottomIfNeeded: plus
+    // bas). Pas épinglé + nouveaux messages détectés → compteur cumulé et
+    // bannière affichée, jusqu'au tap ou au retour manuel en bas (voir
+    // scrollViewDidScroll:).
+    if (wasNearBottom) {
+        self.pendingNewMessagesCount = 0;
+        [self s7tv_hideNewMessagesBanner];
+    } else if (newlyAddedCount > 0) {
+        self.pendingNewMessagesCount += newlyAddedCount;
+        [self s7tv_updateNewMessagesBannerText];
+        [self s7tv_showNewMessagesBanner];
+    }
 
     // Purge les entrées du cache dont le message n'existe plus dans le store
     // (sinon rowHeightCache grossirait sans limite sur une session longue —
@@ -435,7 +551,43 @@
     }
     CGFloat distanceFromBottom = scrollView.contentSize.height
         - (scrollView.contentOffset.y + scrollView.bounds.size.height);
-    self.isPinnedToBottom = (distanceFromBottom < 80);
+    BOOL nowPinned = (distanceFromBottom < 80);
+    if (nowPinned && !self.isPinnedToBottom) {
+        // Retour manuel en bas (scroll, pas tap sur la bannière) — même
+        // nettoyage que le tap : plus besoin du compteur/de la bannière.
+        self.pendingNewMessagesCount = 0;
+        [self s7tv_hideNewMessagesBanner];
+    }
+    self.isPinnedToBottom = nowPinned;
+}
+
+#pragma mark - Bannière "nouveaux messages" (Phase 4)
+
+- (void)s7tv_updateNewMessagesBannerText {
+    self.newMessagesBannerLabel.text = (self.pendingNewMessagesCount == 1)
+        ? @"1 nouveau message"
+        : [NSString stringWithFormat:@"%lu nouveaux messages", (unsigned long)self.pendingNewMessagesCount];
+}
+
+- (void)s7tv_showNewMessagesBanner {
+    self.newMessagesBanner.hidden = NO;
+}
+
+- (void)s7tv_hideNewMessagesBanner {
+    self.newMessagesBanner.hidden = YES;
+}
+
+- (void)s7tv_didTapNewMessagesBanner {
+    self.pendingNewMessagesCount = 0;
+    [self s7tv_hideNewMessagesBanner];
+    self.isPinnedToBottom = YES;
+
+    NSInteger count = self.displayedMessages.count;
+    if (count == 0) return;
+    NSIndexPath *last = [NSIndexPath indexPathForRow:count - 1 inSection:0];
+    [self.tableView scrollToRowAtIndexPath:last
+                           atScrollPosition:UITableViewScrollPositionBottom
+                                   animated:YES];
 }
 
 // Démarre l'animation UNIQUEMENT quand la cellule devient réellement visible
@@ -684,6 +836,81 @@ static void s7tv_applyLineBreakParagraphStyle(NSMutableAttributedString *attrStr
     }
 }
 
+// Détecte les URLs dans une chaîne (NSDataDetector, réutilisé — coûteux à
+// recréer à chaque message) et ajoute le texte à `result` en appliquant
+// NSLinkAttributeName + couleur/soulignement distincts sur les portions
+// détectées comme lien. Le tap est géré côté cellule (voir
+// S7TVChatCustomCell.s7tv_handleTap:) via un hit-test TextKit sur cet
+// attribut — UILabel n'ouvre rien tout seul.
+static NSDataDetector *s7tv_sharedURLDetector(void) {
+    static NSDataDetector *detector = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        detector = [NSDataDetector dataDetectorWithTypes:NSTextCheckingTypeLink error:nil];
+    });
+    return detector;
+}
+
+static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
+                                              NSString *text,
+                                              UIFont *font,
+                                              UIColor *textColor) {
+    if (!text.length) return;
+
+    NSDataDetector *detector = s7tv_sharedURLDetector();
+    NSArray<NSTextCheckingResult *> *matches = detector
+        ? [detector matchesInString:text options:0 range:NSMakeRange(0, text.length)]
+        : @[];
+
+    if (matches.count == 0) {
+        [result appendAttributedString:[[NSAttributedString alloc]
+            initWithString:text
+                attributes:@{NSFontAttributeName: font,
+                             NSForegroundColorAttributeName: textColor}]];
+        return;
+    }
+
+    // Couleur lien inspirée du bleu de lien natif Twitch — distincte du
+    // texte normal (blanc) pour rester repérable sans dépendre d'un
+    // soulignement seul (accessibilité daltonisme).
+    static UIColor *linkColor;
+    static dispatch_once_t colorToken;
+    dispatch_once(&colorToken, ^{
+        linkColor = [UIColor colorWithRed:0.482 green:0.667 blue:1.0 alpha:1.0];
+    });
+
+    NSUInteger cursor = 0;
+    for (NSTextCheckingResult *match in matches) {
+        if (match.range.location > cursor) {
+            NSString *plain = [text substringWithRange:NSMakeRange(cursor, match.range.location - cursor)];
+            [result appendAttributedString:[[NSAttributedString alloc]
+                initWithString:plain
+                    attributes:@{NSFontAttributeName: font,
+                                 NSForegroundColorAttributeName: textColor}]];
+        }
+
+        NSString *linkText = [text substringWithRange:match.range];
+        NSURL *url = match.URL ?: [NSURL URLWithString:linkText];
+        NSMutableDictionary *linkAttrs = [@{
+            NSFontAttributeName: font,
+            NSForegroundColorAttributeName: linkColor,
+            NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
+        } mutableCopy];
+        if (url) linkAttrs[NSLinkAttributeName] = url;
+        [result appendAttributedString:[[NSAttributedString alloc]
+            initWithString:linkText attributes:linkAttrs]];
+
+        cursor = match.range.location + match.range.length;
+    }
+    if (cursor < text.length) {
+        NSString *tail = [text substringFromIndex:cursor];
+        [result appendAttributedString:[[NSAttributedString alloc]
+            initWithString:tail
+                attributes:@{NSFontAttributeName: font,
+                             NSForegroundColorAttributeName: textColor}]];
+    }
+}
+
 // collectAnimatedEmotes : optionnel (peut être nil, ex: passe de mesure de
 // hauteur qui n'a pas besoin d'inscrire quoi que ce soit auprès du moteur
 // d'animation) — reçoit toute emote animée effectivement utilisée dans le
@@ -753,11 +980,9 @@ static void s7tv_applyLineBreakParagraphStyle(NSMutableAttributedString *attrStr
     NSArray<S7TVChatToken *> *tokens = msg.tokens;
     if (!tokens.count) {
         // Fallback Phase 1c : pas de tokens (tokenizer pas encore passé sur
-        // ce message, ou aucune emote détectée dedans) → texte brut tel quel.
-        [result appendAttributedString:[[NSAttributedString alloc]
-            initWithString:msg.rawText ?: @""
-                attributes:@{NSFontAttributeName: messageFont,
-                             NSForegroundColorAttributeName: messageColor}]];
+        // ce message, ou aucune emote détectée dedans) → texte brut tel quel,
+        // avec détection de liens (Phase 6).
+        s7tv_appendTextWithLinkDetection(result, msg.rawText ?: @"", messageFont, messageColor);
         s7tv_applyLineBreakParagraphStyle(result);
         return result;
     }
@@ -834,13 +1059,10 @@ static void s7tv_applyLineBreakParagraphStyle(NSMutableAttributedString *attrStr
             continue;
         }
 
-        // .text, .mention, .url : même style pour l'instant. Le highlight
-        // visuel distinct des mentions (fond coloré si c'est nous) et le
-        // style tappable des URLs sont prévus explicitement en Phase 6.
-        [result appendAttributedString:[[NSAttributedString alloc]
-            initWithString:token.text ?: @""
-                attributes:@{NSFontAttributeName: messageFont,
-                             NSForegroundColorAttributeName: messageColor}]];
+        // .text, .mention, .url : détection de lien appliquée (Phase 6) —
+        // le highlight visuel distinct des mentions (fond coloré si c'est
+        // nous) reste à faire séparément, pas dans le périmètre ici.
+        s7tv_appendTextWithLinkDetection(result, token.text ?: @"", messageFont, messageColor);
     }
 
     s7tv_applyLineBreakParagraphStyle(result);

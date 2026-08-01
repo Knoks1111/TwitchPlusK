@@ -178,8 +178,8 @@
 // remis à zéro dès qu'on redevient épinglé en bas (scroll manuel jusqu'en
 // bas, ou tap sur le bouton lui-même).
 @property (nonatomic, assign) NSUInteger pendingNewMessagesCount;
-@property (nonatomic, strong) UIView *newMessagesBanner;
-@property (nonatomic, strong) UILabel *newMessagesBannerLabel;
+@property (nonatomic, strong) UIView *unseenMessagesBanner;
+@property (nonatomic, strong) UILabel *unseenMessagesBannerLabel;
 @end
 
 @implementation SevenTVChatCustomView
@@ -253,14 +253,14 @@
         // flèche vers le bas, ajoutée APRÈS la table view pour rester
         // au-dessus en z-order. Cachée par défaut, affichée uniquement via
         // s7tv_showNewMessagesBanner (voir reloadMessages).
-        _newMessagesBanner = [[UIView alloc] init];
-        _newMessagesBanner.translatesAutoresizingMaskIntoConstraints = NO;
-        _newMessagesBanner.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
-        _newMessagesBanner.layer.cornerRadius = 16;
-        _newMessagesBanner.clipsToBounds = YES;
-        _newMessagesBanner.hidden = YES;
-        _newMessagesBanner.userInteractionEnabled = YES;
-        [_newMessagesBanner addGestureRecognizer:
+        _unseenMessagesBanner = [[UIView alloc] init];
+        _unseenMessagesBanner.translatesAutoresizingMaskIntoConstraints = NO;
+        _unseenMessagesBanner.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
+        _unseenMessagesBanner.layer.cornerRadius = 16;
+        _unseenMessagesBanner.clipsToBounds = YES;
+        _unseenMessagesBanner.hidden = YES;
+        _unseenMessagesBanner.userInteractionEnabled = YES;
+        [_unseenMessagesBanner addGestureRecognizer:
             [[UITapGestureRecognizer alloc] initWithTarget:self
                                                       action:@selector(s7tv_didTapNewMessagesBanner)]];
 
@@ -270,28 +270,28 @@
         arrowIcon.contentMode = UIViewContentModeScaleAspectFit;
         arrowIcon.translatesAutoresizingMaskIntoConstraints = NO;
 
-        _newMessagesBannerLabel = [[UILabel alloc] init];
-        _newMessagesBannerLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        _newMessagesBannerLabel.textColor = [UIColor whiteColor];
-        _newMessagesBannerLabel.font = [UIFont boldSystemFontOfSize:13];
+        _unseenMessagesBannerLabel = [[UILabel alloc] init];
+        _unseenMessagesBannerLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _unseenMessagesBannerLabel.textColor = [UIColor whiteColor];
+        _unseenMessagesBannerLabel.font = [UIFont boldSystemFontOfSize:13];
 
-        [_newMessagesBanner addSubview:arrowIcon];
-        [_newMessagesBanner addSubview:_newMessagesBannerLabel];
-        [self addSubview:_newMessagesBanner];
+        [_unseenMessagesBanner addSubview:arrowIcon];
+        [_unseenMessagesBanner addSubview:_unseenMessagesBannerLabel];
+        [self addSubview:_unseenMessagesBanner];
 
         [NSLayoutConstraint activateConstraints:@[
-            [_newMessagesBanner.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
-            [_newMessagesBanner.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
-            [_newMessagesBanner.heightAnchor constraintEqualToConstant:32],
+            [_unseenMessagesBanner.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
+            [_unseenMessagesBanner.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
+            [_unseenMessagesBanner.heightAnchor constraintEqualToConstant:32],
 
-            [arrowIcon.leadingAnchor constraintEqualToAnchor:_newMessagesBanner.leadingAnchor constant:12],
-            [arrowIcon.centerYAnchor constraintEqualToAnchor:_newMessagesBanner.centerYAnchor],
+            [arrowIcon.leadingAnchor constraintEqualToAnchor:_unseenMessagesBanner.leadingAnchor constant:12],
+            [arrowIcon.centerYAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerYAnchor],
             [arrowIcon.widthAnchor constraintEqualToConstant:14],
             [arrowIcon.heightAnchor constraintEqualToConstant:14],
 
-            [_newMessagesBannerLabel.leadingAnchor constraintEqualToAnchor:arrowIcon.trailingAnchor constant:6],
-            [_newMessagesBannerLabel.trailingAnchor constraintEqualToAnchor:_newMessagesBanner.trailingAnchor constant:-12],
-            [_newMessagesBannerLabel.centerYAnchor constraintEqualToAnchor:_newMessagesBanner.centerYAnchor],
+            [_unseenMessagesBannerLabel.leadingAnchor constraintEqualToAnchor:arrowIcon.trailingAnchor constant:6],
+            [_unseenMessagesBannerLabel.trailingAnchor constraintEqualToAnchor:_unseenMessagesBanner.trailingAnchor constant:-12],
+            [_unseenMessagesBannerLabel.centerYAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerYAnchor],
         ]];
     }
     return self;
@@ -564,17 +564,17 @@
 #pragma mark - Bannière "nouveaux messages" (Phase 4)
 
 - (void)s7tv_updateNewMessagesBannerText {
-    self.newMessagesBannerLabel.text = (self.pendingNewMessagesCount == 1)
+    self.unseenMessagesBannerLabel.text = (self.pendingNewMessagesCount == 1)
         ? @"1 nouveau message"
         : [NSString stringWithFormat:@"%lu nouveaux messages", (unsigned long)self.pendingNewMessagesCount];
 }
 
 - (void)s7tv_showNewMessagesBanner {
-    self.newMessagesBanner.hidden = NO;
+    self.unseenMessagesBanner.hidden = NO;
 }
 
 - (void)s7tv_hideNewMessagesBanner {
-    self.newMessagesBanner.hidden = YES;
+    self.unseenMessagesBanner.hidden = YES;
 }
 
 - (void)s7tv_didTapNewMessagesBanner {

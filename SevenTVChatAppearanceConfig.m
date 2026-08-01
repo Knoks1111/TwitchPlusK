@@ -8,8 +8,10 @@
 #import "SevenTVChatAppearanceConfig.h"
 #import "SevenTVManager.h"
 
+NSString *const S7TVChatAppearanceConfigDidChangeNotification =
+    @"S7TVChatAppearanceConfigDidChangeNotification";
+
 // ── Clés NSUserDefaults ──────────────────────────────────────────────────────
-// Même convention que SevenTVManager (préfixe "s7tv_").
 static NSString *const kS7TVCfgEmote7TVSize           = @"s7tv_cfg_emote_7tv_size";
 static NSString *const kS7TVCfgEmoteTwitchSize         = @"s7tv_cfg_emote_twitch_size";
 static NSString *const kS7TVCfgBadgeSize               = @"s7tv_cfg_badge_size";
@@ -19,22 +21,6 @@ static NSString *const kS7TVCfgLineSpacing             = @"s7tv_cfg_line_spacing
 static NSString *const kS7TVCfgUsernameMessageSpacing  = @"s7tv_cfg_username_message_spacing";
 static NSString *const kS7TVCfgEmote7TVResolution      = @"s7tv_cfg_emote_7tv_resolution";
 
-// ── Valeurs par défaut ────────────────────────────────────────────────────────
-// Mesurées sur screenshot natif device (1170×2532px = 390×844pt @3x retina,
-// confirmé via le dump hiérarchie live) + dump de cellule native in-app :
-//   - emote7TVSize : bloc plein d'une emote 7TV isolé par érosion morphologique
-//     sur le screenshot → 86px = 28.7pt, arrondi à 28.0 (== ancienne estimation,
-//     confirmée).
-//   - badgeSize : disque plein du badge d'abonné (hors halo/sparkle décoratif)
-//     → 49px = 16.3pt, arrondi à 17.0 (ancienne estimation 18.0 trop haute).
-//   - usernameFontSize / messageFontSize : hauteur de glyphe (ascendantes +
-//     descendantes) mesurée sur le texte du screenshot → ~13pt, confirme
-//     l'ancienne estimation telle quelle.
-//   - emoteTwitchSize : pas de message avec emote Twitch native isolée dans le
-//     screenshot dispo — encore une estimation alignée sur emote7TVSize par
-//     cohérence visuelle, à confirmer plus tard.
-//   - lineSpacing / usernameMessageSpacing / emote7TVResolution : toujours
-//     TODO mesure réelle, pas couverts par cette passe.
 static const CGFloat kDefaultEmote7TVSize          = 28.0;
 static const CGFloat kDefaultEmoteTwitchSize        = 28.0; // TODO mesure réelle
 static const CGFloat kDefaultBadgeSize              = 17.0;
@@ -42,7 +28,6 @@ static const CGFloat kDefaultUsernameFontSize       = 13.0;
 static const CGFloat kDefaultMessageFontSize        = 13.0;
 static const CGFloat kDefaultLineSpacing            = 4.0;  // TODO mesure réelle
 static const CGFloat kDefaultUsernameMessageSpacing = 4.0;  // TODO mesure réelle
-// Résolution : défaut technique assumé (pas une mesure), voir header.
 static const NSInteger kDefaultEmote7TVResolution   = 2;
 
 
@@ -119,6 +104,26 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     [prefs setInteger:self.emote7TVResolution    forKey:kS7TVCfgEmote7TVResolution];
 }
 
+#pragma mark - Notification de changement (preview live, Phase 6)
+
+- (void)s7tv_postDidChangeNotification {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:S7TVChatAppearanceConfigDidChangeNotification object:self];
+    });
+}
+
+- (void)setValue:(CGFloat)value forSizeKey:(NSString *)key {
+    if (!self.s7tv_resetTable[key]) {
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] ⚠️ setValue:forSizeKey: clé inconnue '%@'", key];
+        return;
+    }
+    [self setValue:@(value) forKey:key];
+    [self save];
+    [self s7tv_postDidChangeNotification];
+}
+
 #pragma mark - Reset (point d'accroche pour l'écran Phase 6)
 
 // Table nom-de-propriété → (défaut, clé UserDefaults). Une seule table à
@@ -136,6 +141,11 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     };
 }
 
+- (CGFloat)defaultValueForKey:(NSString *)key {
+    NSArray *entry = self.s7tv_resetTable[key];
+    return entry ? [entry.firstObject doubleValue] : 0.0;
+}
+
 - (void)resetKeyToDefault:(NSString *)key {
     NSArray *entry = self.s7tv_resetTable[key];
     if (!entry) {
@@ -146,6 +156,7 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     [self setValue:entry.firstObject forKey:key];
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:entry.lastObject];
     [self save];
+    [self s7tv_postDidChangeNotification];
 }
 
 - (void)resetAllToDefaults {
@@ -156,6 +167,7 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     }
     [self save];
     [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Config réinitialisée aux défauts"];
+    [self s7tv_postDidChangeNotification];
 }
 
 @end

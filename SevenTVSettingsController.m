@@ -16,6 +16,7 @@
 #import "SevenTVLogsController.h"
 #import "SevenTVURLProtocol.h"
 #import "SevenTVLogo.h"
+#import "SevenTVChatAppearanceConfig.h"
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -246,6 +247,200 @@ static void S7TVSetBool(NSString *key, BOOL val) {
     [[NSUserDefaults standardUserDefaults] setBool:val forKey:key];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - S7TVSizeSliderCell
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Cellule réglage de taille réutilisable pour SevenTVChatAppearanceConfig :
+// icône + titre + valeur courante ("28pt") + bouton reset individuel +
+// slider + preview LIVE qui grossit/rétrécit en direct pendant qu'on bouge
+// le slider (avant même de relâcher), pour "voir la taille que ça donnera"
+// sans avoir à ouvrir le chat pour vérifier. Deux modes de preview :
+//   - previewIsText == NO : un rond violet (placeholder emote/badge) dont
+//     la largeur/hauteur suit exactement la valeur du slider.
+//   - previewIsText == YES : un texte d'exemple dont la taille de police
+//     suit la valeur du slider (pour pseudo/message).
+//
+// Le slider pilote UNIQUEMENT sa propre config key (via
+// SevenTVChatAppearanceConfig.setValue:forSizeKey:), qui sauvegarde et
+// notifie automatiquement (voir S7TVChatAppearanceConfigDidChangeNotification)
+// — le chat en direct se redessine tout seul, cette cellule n'a pas à s'en
+// préoccuper plus loin que d'appeler ce setter.
+@interface S7TVSizeSliderCell : UITableViewCell
+@property (nonatomic, copy) NSString *configKey;      // clé pour SevenTVChatAppearanceConfig
+@property (nonatomic, assign) BOOL previewIsText;      // NO = rond preview, YES = texte preview
+@property (nonatomic, copy) NSString *previewText;      // utilisé seulement si previewIsText == YES
+- (void)configureWithTitle:(NSString *)title
+                     sfName:(NSString *)sfName
+                  iconTint:(UIColor *)iconTint
+                 configKey:(NSString *)configKey
+                    minVal:(CGFloat)minVal
+                    maxVal:(CGFloat)maxVal
+              previewIsText:(BOOL)previewIsText
+                previewText:(nullable NSString *)previewText;
+@end
+
+@implementation S7TVSizeSliderCell {
+    UILabel      *_titleLabel;
+    UILabel      *_valueLabel;
+    UIButton     *_resetButton;
+    UISlider     *_slider;
+    UIView       *_previewDot;
+    UILabel      *_previewLabel;
+    NSLayoutConstraint *_previewDotWidth;
+    NSLayoutConstraint *_previewDotHeight;
+    CGFloat       _minVal;
+    CGFloat       _maxVal;
+}
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.selectionStyle  = UITableViewCellSelectionStyleNone;
+        self.backgroundColor = S7TVCellBg();
+
+        _titleLabel = [[UILabel alloc] init];
+        _titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
+        _titleLabel.textColor = [UIColor whiteColor];
+        _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+        _valueLabel = [[UILabel alloc] init];
+        _valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightMedium];
+        _valueLabel.textColor = S7TVGray();
+        _valueLabel.textAlignment = NSTextAlignmentRight;
+        _valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+        _resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        UIImageSymbolConfiguration *resetCfg = [UIImageSymbolConfiguration
+            configurationWithPointSize:15 weight:UIImageSymbolWeightMedium];
+        [_resetButton setImage:[UIImage systemImageNamed:@"arrow.counterclockwise"
+                                       withConfiguration:resetCfg]
+                       forState:UIControlStateNormal];
+        _resetButton.tintColor = S7TVGray();
+        [_resetButton addTarget:self action:@selector(s7tv_didTapReset)
+                forControlEvents:UIControlEventTouchUpInside];
+        _resetButton.translatesAutoresizingMaskIntoConstraints = NO;
+
+        _slider = [[UISlider alloc] init];
+        _slider.minimumTrackTintColor = S7TVAccent();
+        _slider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.15];
+        _slider.thumbTintColor = [UIColor whiteColor];
+        [_slider addTarget:self action:@selector(s7tv_sliderChanged:)
+          forControlEvents:UIControlEventValueChanged];
+        _slider.translatesAutoresizingMaskIntoConstraints = NO;
+
+        // Preview "rond" (emotes/badges) — violet accent, taille pilotée en
+        // direct par les contraintes width/height (constant modifié à
+        // chaque mouvement du slider, voir s7tv_sliderChanged:).
+        _previewDot = [[UIView alloc] init];
+        _previewDot.backgroundColor = S7TVAccent();
+        _previewDot.layer.cornerRadius = 6;
+        _previewDot.translatesAutoresizingMaskIntoConstraints = NO;
+        _previewDotWidth  = [_previewDot.widthAnchor constraintEqualToConstant:20];
+        _previewDotHeight = [_previewDot.heightAnchor constraintEqualToConstant:20];
+        _previewDotWidth.active = YES;
+        _previewDotHeight.active = YES;
+
+        // Preview "texte" (pseudo/message) — police mise à jour à chaque
+        // mouvement du slider.
+        _previewLabel = [[UILabel alloc] init];
+        _previewLabel.textColor = S7TVAccent();
+        _previewLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+        [self.contentView addSubview:_titleLabel];
+        [self.contentView addSubview:_valueLabel];
+        [self.contentView addSubview:_resetButton];
+        [self.contentView addSubview:_slider];
+        [self.contentView addSubview:_previewDot];
+        [self.contentView addSubview:_previewLabel];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_titleLabel.leadingAnchor  constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+            [_titleLabel.topAnchor      constraintEqualToAnchor:self.contentView.topAnchor constant:12],
+
+            [_resetButton.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+            [_resetButton.centerYAnchor  constraintEqualToAnchor:_titleLabel.centerYAnchor],
+            [_resetButton.widthAnchor    constraintEqualToConstant:28],
+            [_resetButton.heightAnchor   constraintEqualToConstant:28],
+
+            [_valueLabel.trailingAnchor constraintEqualToAnchor:_resetButton.leadingAnchor constant:-8],
+            [_valueLabel.centerYAnchor  constraintEqualToAnchor:_titleLabel.centerYAnchor],
+            [_valueLabel.widthAnchor    constraintGreaterThanOrEqualToConstant:44],
+
+            // Preview alignée à droite du slider, sur sa propre ligne — assez
+            // de place verticale pour un rond jusqu'à ~40pt sans être coupé.
+            [_previewDot.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+            [_previewDot.centerYAnchor  constraintEqualToAnchor:_slider.centerYAnchor],
+
+            [_previewLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+            [_previewLabel.centerYAnchor  constraintEqualToAnchor:_slider.centerYAnchor],
+
+            [_slider.leadingAnchor  constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+            [_slider.trailingAnchor constraintEqualToAnchor:_previewDot.leadingAnchor constant:-12],
+            [_slider.topAnchor      constraintEqualToAnchor:_titleLabel.bottomAnchor constant:12],
+            [_slider.bottomAnchor   constraintEqualToAnchor:self.contentView.bottomAnchor constant:-14],
+            [_slider.heightAnchor   constraintEqualToConstant:44],
+        ]];
+    }
+    return self;
+}
+
+- (void)configureWithTitle:(NSString *)title
+                     sfName:(NSString *)sfName
+                  iconTint:(UIColor *)iconTint
+                 configKey:(NSString *)configKey
+                    minVal:(CGFloat)minVal
+                    maxVal:(CGFloat)maxVal
+              previewIsText:(BOOL)previewIsText
+                previewText:(nullable NSString *)previewText {
+    _titleLabel.text = title;
+    self.configKey = configKey;
+    self.previewIsText = previewIsText;
+    self.previewText = previewText ?: @"Aa";
+    _minVal = minVal;
+    _maxVal = maxVal;
+    _slider.minimumValue = minVal;
+    _slider.maximumValue = maxVal;
+
+    _previewDot.hidden   = previewIsText;
+    _previewLabel.hidden = !previewIsText;
+    _previewLabel.text   = self.previewText;
+
+    CGFloat current = [[SevenTVChatAppearanceConfig sharedConfig] valueForKey:configKey] ?
+        [[[SevenTVChatAppearanceConfig sharedConfig] valueForKey:configKey] doubleValue] : minVal;
+    _slider.value = current;
+    [self s7tv_updateDisplayForValue:current];
+}
+
+- (void)s7tv_sliderChanged:(UISlider *)sender {
+    CGFloat value = sender.value;
+    [self s7tv_updateDisplayForValue:value];
+    [[SevenTVChatAppearanceConfig sharedConfig] setValue:value forSizeKey:self.configKey];
+}
+
+- (void)s7tv_didTapReset {
+    [[SevenTVChatAppearanceConfig sharedConfig] resetKeyToDefault:self.configKey];
+    CGFloat defaultVal = [[SevenTVChatAppearanceConfig sharedConfig] defaultValueForKey:self.configKey];
+    _slider.value = defaultVal;
+    [self s7tv_updateDisplayForValue:defaultVal];
+}
+
+// Met à jour texte de valeur + taille de la preview EN DIRECT (appelé à
+// chaque frame de mouvement du slider, pas juste au relâchement) — c'est ça
+// qui donne l'effet "je vois la taille que ça donnera" en temps réel.
+- (void)s7tv_updateDisplayForValue:(CGFloat)value {
+    _valueLabel.text = [NSString stringWithFormat:@"%.0fpt", value];
+    if (self.previewIsText) {
+        _previewLabel.font = [UIFont boldSystemFontOfSize:value];
+    } else {
+        _previewDotWidth.constant  = value;
+        _previewDotHeight.constant = value;
+        [self.contentView layoutIfNeeded];
+    }
+}
+
+@end
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -521,12 +716,19 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     [super viewDidLoad];
     self.title = @"Emotes 7TV";
     S7TVStyleTableView(self.tableView);
+    [self.tableView registerClass:[S7TVSizeSliderCell class]
+            forCellReuseIdentifier:@"S7TVSizeSliderCell"];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    return s == 0 ? 1 : 2; // section 1 : animées + picker (favoris déplacés vers Statistiques)
+    switch (s) {
+        case 0: return 1; // Général
+        case 1: return 2; // Affichage : animées + picker
+        case 2: return 5; // Tailles : 7TV, Twitch, badge, pseudo, message
+        default: return 0;
+    }
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
@@ -534,7 +736,8 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
-    return S7TVSectionHeader(s == 0 ? @"Général" : @"Affichage", NO);
+    NSString *title = (s == 0) ? @"Général" : (s == 1) ? @"Affichage" : @"Tailles";
+    return S7TVSectionHeader(title, NO);
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
@@ -547,6 +750,10 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     return v;
 }
 
+- (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
+    return (ip.section == 2) ? 84 : UITableViewAutomaticDimension;
+}
+
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     if (ip.section == 0) {
@@ -556,19 +763,62 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
                               mgr.isEnabled,
                               self, @selector(toggleEnabled:));
     }
-    switch (ip.row) {
-        case 0: return S7TVSwitchCell(@"Emotes animées dans le chat",
-                    @"wand.and.stars",
-                    [UIColor colorWithWhite:0.75 alpha:1.0],
-                    mgr.showAnimated,
-                    self, @selector(toggleAnimated:));
-        case 1: return S7TVSwitchCell(@"Animations dans le picker",
-                    @"photo.stack",
-                    [UIColor colorWithWhite:0.75 alpha:1.0],
-                    mgr.showPickerAnimations,
-                    self, @selector(togglePickerAnimations:));
-        default: return [[UITableViewCell alloc] init];
+    if (ip.section == 1) {
+        switch (ip.row) {
+            case 0: return S7TVSwitchCell(@"Emotes animées dans le chat",
+                        @"wand.and.stars",
+                        [UIColor colorWithWhite:0.75 alpha:1.0],
+                        mgr.showAnimated,
+                        self, @selector(toggleAnimated:));
+            case 1: return S7TVSwitchCell(@"Animations dans le picker",
+                        @"photo.stack",
+                        [UIColor colorWithWhite:0.75 alpha:1.0],
+                        mgr.showPickerAnimations,
+                        self, @selector(togglePickerAnimations:));
+            default: return [[UITableViewCell alloc] init];
+        }
     }
+
+    // Section 2 : Tailles — piloté par SevenTVChatAppearanceConfig, preview
+    // live intégrée à la cellule (voir S7TVSizeSliderCell). Plage min/max
+    // choisie assez large pour couvrir un usage réel sans avoir à re-régler
+    // les bornes plus tard (2x le défaut environ).
+    S7TVSizeSliderCell *cell = [tv dequeueReusableCellWithIdentifier:@"S7TVSizeSliderCell"
+                                                          forIndexPath:ip];
+    switch (ip.row) {
+        case 0:
+            [cell configureWithTitle:@"Taille emotes 7TV" sfName:@"face.smiling"
+                             iconTint:S7TVAccent() configKey:@"emote7TVSize"
+                               minVal:12 maxVal:56
+                        previewIsText:NO previewText:nil];
+            break;
+        case 1:
+            [cell configureWithTitle:@"Taille emotes Twitch" sfName:@"face.smiling.inverse"
+                             iconTint:[UIColor colorWithWhite:0.75 alpha:1.0] configKey:@"emoteTwitchSize"
+                               minVal:12 maxVal:56
+                        previewIsText:NO previewText:nil];
+            break;
+        case 2:
+            [cell configureWithTitle:@"Taille badges" sfName:@"star.circle.fill"
+                             iconTint:S7TVAccent() configKey:@"badgeSize"
+                               minVal:8 maxVal:34
+                        previewIsText:NO previewText:nil];
+            break;
+        case 3:
+            [cell configureWithTitle:@"Taille texte pseudo" sfName:@"person.fill"
+                             iconTint:[UIColor colorWithWhite:0.75 alpha:1.0] configKey:@"usernameFontSize"
+                               minVal:8 maxVal:28
+                        previewIsText:YES previewText:@"Pseudo"];
+            break;
+        case 4:
+            [cell configureWithTitle:@"Taille texte message" sfName:@"text.bubble.fill"
+                             iconTint:[UIColor colorWithWhite:0.75 alpha:1.0] configKey:@"messageFontSize"
+                               minVal:8 maxVal:28
+                        previewIsText:YES previewText:@"Message"];
+            break;
+        default: break;
+    }
+    return cell;
 }
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {

@@ -2130,6 +2130,17 @@ static void TwitchSevenTVInit(void) {
                     usingBlock:^(NSNotification *note) {
             s7tv_reloadActiveChatCustomView();
         }];
+        // Preview live du futur écran de réglages (tailles emotes/badges/
+        // texte, Phase 6) : chaque changement de valeur redessine le chat
+        // en direct immédiatement, sans attendre un nouveau message —
+        // même mécanisme que le reload badges ci-dessus.
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:S7TVChatAppearanceConfigDidChangeNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *note) {
+            s7tv_reloadActiveChatCustomView();
+        }];
         [[SevenTVManager sharedManager] log:@"✅ SevenTVManager prêt"];
 
         // Démarrer le local proxy si activé

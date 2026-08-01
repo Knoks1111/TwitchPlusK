@@ -19,6 +19,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Postée sur le main thread à chaque changement de valeur (via un setter
+// custom ou après resetKeyToDefault:/resetAllToDefaults). Le chat custom en
+// live (SevenTVChatCustomView) observe cette notification pour se
+// redessiner immédiatement — utile pour la preview live du futur écran de
+// réglages (Phase 6).
+extern NSString *const S7TVChatAppearanceConfigDidChangeNotification;
+
 @interface SevenTVChatAppearanceConfig : NSObject
 
 + (instancetype)sharedConfig;
@@ -60,6 +67,11 @@ NS_ASSUME_NONNULL_BEGIN
 // cette classe plus tard).
 - (void)resetKeyToDefault:(NSString *)key;
 - (void)resetAllToDefaults;
+
+// Valeur par défaut (mesurée ou estimée) pour une clé donnée — utilisé par
+// l'UI de réglages (Phase 6) pour afficher "valeur par défaut Twitch: Xpt"
+// à côté du contrôle, sans dupliquer les constantes ailleurs.
+- (CGFloat)defaultValueForKey:(NSString *)key;
 
 @end
 

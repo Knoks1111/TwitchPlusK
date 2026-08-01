@@ -257,14 +257,21 @@
         // Largeur FIXE (pas juste "largeur du contenu") : sans ça, la
         // pilule change de taille à chaque fois que le nombre change (ex:
         // "1" → "11" → "111"), ce qui donne un effet de rebond visuel
-        // disgracieux. Le contenu (icône + texte) est centré DANS cette
-        // largeur fixe via un UIStackView, plutôt que collé à gauche —
-        // sinon un texte court laisserait un vide à droite au lieu de
-        // rester visuellement centré.
+        // disgracieux.
+        //
+        // Flèche et texte positionnés INDÉPENDAMMENT (pas un stack view
+        // groupé) : la flèche reste collée près du bord gauche, le texte
+        // reste centré sur la largeur totale de la pilule quel que soit le
+        // nombre de chiffres — sinon un stack groupé centré déplacerait la
+        // flèche avec le texte à chaque changement de compteur.
         _unseenMessagesBanner = [[UIView alloc] init];
         _unseenMessagesBanner.translatesAutoresizingMaskIntoConstraints = NO;
         _unseenMessagesBanner.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
         _unseenMessagesBanner.layer.cornerRadius = 18;
+        _unseenMessagesBanner.layer.borderWidth = 1.0;
+        // Violet Twitch (#9147FF).
+        _unseenMessagesBanner.layer.borderColor =
+            [UIColor colorWithRed:0.569 green:0.278 blue:1.0 alpha:1.0].CGColor;
         _unseenMessagesBanner.clipsToBounds = YES;
         _unseenMessagesBanner.hidden = YES;
         _unseenMessagesBanner.userInteractionEnabled = YES;
@@ -277,22 +284,15 @@
         arrowIcon.tintColor = [UIColor whiteColor];
         arrowIcon.contentMode = UIViewContentModeScaleAspectFit;
         arrowIcon.translatesAutoresizingMaskIntoConstraints = NO;
-        [arrowIcon.widthAnchor constraintEqualToConstant:14].active = YES;
-        [arrowIcon.heightAnchor constraintEqualToConstant:14].active = YES;
 
         _unseenMessagesBannerLabel = [[UILabel alloc] init];
+        _unseenMessagesBannerLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _unseenMessagesBannerLabel.textColor = [UIColor whiteColor];
         _unseenMessagesBannerLabel.font = [UIFont boldSystemFontOfSize:13];
         _unseenMessagesBannerLabel.textAlignment = NSTextAlignmentCenter;
 
-        UIStackView *bannerStack = [[UIStackView alloc]
-            initWithArrangedSubviews:@[arrowIcon, _unseenMessagesBannerLabel]];
-        bannerStack.axis = UILayoutConstraintAxisHorizontal;
-        bannerStack.alignment = UIStackViewAlignmentCenter;
-        bannerStack.spacing = 6;
-        bannerStack.translatesAutoresizingMaskIntoConstraints = NO;
-
-        [_unseenMessagesBanner addSubview:bannerStack];
+        [_unseenMessagesBanner addSubview:arrowIcon];
+        [_unseenMessagesBanner addSubview:_unseenMessagesBannerLabel];
         [self addSubview:_unseenMessagesBanner];
 
         [NSLayoutConstraint activateConstraints:@[
@@ -303,12 +303,17 @@
             // jamais avoir besoin de s'élargir davantage en usage normal.
             [_unseenMessagesBanner.widthAnchor constraintEqualToConstant:230],
 
-            [bannerStack.centerXAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerXAnchor],
-            [bannerStack.centerYAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerYAnchor],
-            // Marge de sécurité : le stack ne dépasse jamais la pilule même
-            // si le texte est exceptionnellement long (compteur illimité).
-            [bannerStack.leadingAnchor constraintGreaterThanOrEqualToAnchor:_unseenMessagesBanner.leadingAnchor constant:12],
-            [bannerStack.trailingAnchor constraintLessThanOrEqualToAnchor:_unseenMessagesBanner.trailingAnchor constant:-12],
+            // Flèche : collée près du bord gauche, indépendante du texte.
+            [arrowIcon.leadingAnchor constraintEqualToAnchor:_unseenMessagesBanner.leadingAnchor constant:12],
+            [arrowIcon.centerYAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerYAnchor],
+            [arrowIcon.widthAnchor constraintEqualToConstant:14],
+            [arrowIcon.heightAnchor constraintEqualToConstant:14],
+
+            // Texte : centré sur la pilule ENTIÈRE, pas relatif à la flèche.
+            [_unseenMessagesBannerLabel.centerXAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerXAnchor],
+            [_unseenMessagesBannerLabel.centerYAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerYAnchor],
+            [_unseenMessagesBannerLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:arrowIcon.trailingAnchor constant:6],
+            [_unseenMessagesBannerLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_unseenMessagesBanner.trailingAnchor constant:-12],
         ]];
     }
     return self;

@@ -37,6 +37,7 @@
 #import "SevenTVURLProtocol.h"
 #import "SevenTVLogo.h"
 #import "SevenTVBadgeProvider.h"
+#import "SevenTVChatAppearanceConfig.h"
 #import <objc/runtime.h>
 
 // ============================================================
@@ -1733,7 +1734,11 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [sliderContent addSubview:backBtn];
 
     // Label valeur actuelle (au-dessus du thumb, style Twitch pill)
-    NSInteger savedSize = [[NSUserDefaults standardUserDefaults] integerForKey:@"s7tv_emote_size"];
+    // Valeur initiale lue depuis SevenTVChatAppearanceConfig — même source
+    // que le nouveau menu de réglages (plus l'ancienne clé orpheline
+    // "s7tv_emote_size"), pour que ce slider reflète toujours la taille
+    // réellement appliquée au chat custom.
+    NSInteger savedSize = (NSInteger)round([SevenTVChatAppearanceConfig sharedConfig].emote7TVSize);
     if (savedSize < 18 || savedSize > 56) savedSize = 30;
 
     UILabel *valueLabel = [[UILabel alloc] init];
@@ -2064,14 +2069,15 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // Mettre à jour le label valeur
     [self _updateSliderValueLabel:slider];
 
-    // Sauvegarder
-    [[NSUserDefaults standardUserDefaults] setInteger:val forKey:@"s7tv_emote_size"];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-
-    // Notifier TweakSevenTV.m pour reloadData
-    [[NSNotificationCenter defaultCenter]
-        postNotificationName:@"S7TVEmoteSizeDidChangeNotification"
-                      object:nil];
+    // Branché sur la vraie config du chat custom (SevenTVChatAppearanceConfig)
+    // — auparavant ce slider écrivait dans une clé NSUserDefaults orpheline
+    // ("s7tv_emote_size") et postait S7TVEmoteSizeDidChangeNotification, que
+    // plus personne n'écoutait depuis la bascule vers le chat custom. Ce
+    // setValue:forSizeKey: sauvegarde ET notifie automatiquement le chat en
+    // direct (même mécanisme que les sliders de l'écran de réglages) — ce
+    // slider du picker et celui du menu "Emotes 7TV" pilotent maintenant
+    // la même valeur, une seule source de vérité.
+    [[SevenTVChatAppearanceConfig sharedConfig] setValue:(CGFloat)val forSizeKey:@"emote7TVSize"];
 }
 
 - (void)_updateSliderValueLabel:(UISlider *)slider {

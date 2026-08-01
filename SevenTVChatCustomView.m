@@ -253,14 +253,18 @@
         // flèche vers le bas, ajoutée APRÈS la table view pour rester
         // au-dessus en z-order. Cachée par défaut, affichée uniquement via
         // s7tv_showNewMessagesBanner (voir reloadMessages).
+        //
+        // Largeur FIXE (pas juste "largeur du contenu") : sans ça, la
+        // pilule change de taille à chaque fois que le nombre change (ex:
+        // "1" → "11" → "111"), ce qui donne un effet de rebond visuel
+        // disgracieux. Le contenu (icône + texte) est centré DANS cette
+        // largeur fixe via un UIStackView, plutôt que collé à gauche —
+        // sinon un texte court laisserait un vide à droite au lieu de
+        // rester visuellement centré.
         _unseenMessagesBanner = [[UIView alloc] init];
         _unseenMessagesBanner.translatesAutoresizingMaskIntoConstraints = NO;
-        _unseenMessagesBanner.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
-        _unseenMessagesBanner.layer.cornerRadius = 16;
-        _unseenMessagesBanner.layer.borderWidth = 1.0;
-        // Violet Twitch (#9147FF) — même teinte que leurs propres accents UI.
-        _unseenMessagesBanner.layer.borderColor =
-            [UIColor colorWithRed:0.569 green:0.278 blue:1.0 alpha:1.0].CGColor;
+        _unseenMessagesBanner.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+        _unseenMessagesBanner.layer.cornerRadius = 18;
         _unseenMessagesBanner.clipsToBounds = YES;
         _unseenMessagesBanner.hidden = YES;
         _unseenMessagesBanner.userInteractionEnabled = YES;
@@ -273,29 +277,38 @@
         arrowIcon.tintColor = [UIColor whiteColor];
         arrowIcon.contentMode = UIViewContentModeScaleAspectFit;
         arrowIcon.translatesAutoresizingMaskIntoConstraints = NO;
+        [arrowIcon.widthAnchor constraintEqualToConstant:14].active = YES;
+        [arrowIcon.heightAnchor constraintEqualToConstant:14].active = YES;
 
         _unseenMessagesBannerLabel = [[UILabel alloc] init];
-        _unseenMessagesBannerLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _unseenMessagesBannerLabel.textColor = [UIColor whiteColor];
         _unseenMessagesBannerLabel.font = [UIFont boldSystemFontOfSize:13];
+        _unseenMessagesBannerLabel.textAlignment = NSTextAlignmentCenter;
 
-        [_unseenMessagesBanner addSubview:arrowIcon];
-        [_unseenMessagesBanner addSubview:_unseenMessagesBannerLabel];
+        UIStackView *bannerStack = [[UIStackView alloc]
+            initWithArrangedSubviews:@[arrowIcon, _unseenMessagesBannerLabel]];
+        bannerStack.axis = UILayoutConstraintAxisHorizontal;
+        bannerStack.alignment = UIStackViewAlignmentCenter;
+        bannerStack.spacing = 6;
+        bannerStack.translatesAutoresizingMaskIntoConstraints = NO;
+
+        [_unseenMessagesBanner addSubview:bannerStack];
         [self addSubview:_unseenMessagesBanner];
 
         [NSLayoutConstraint activateConstraints:@[
             [_unseenMessagesBanner.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
             [_unseenMessagesBanner.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
-            [_unseenMessagesBanner.heightAnchor constraintEqualToConstant:32],
+            [_unseenMessagesBanner.heightAnchor constraintEqualToConstant:36],
+            // Largeur fixe, assez large pour "999+ nouveaux messages" sans
+            // jamais avoir besoin de s'élargir davantage en usage normal.
+            [_unseenMessagesBanner.widthAnchor constraintEqualToConstant:230],
 
-            [arrowIcon.leadingAnchor constraintEqualToAnchor:_unseenMessagesBanner.leadingAnchor constant:12],
-            [arrowIcon.centerYAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerYAnchor],
-            [arrowIcon.widthAnchor constraintEqualToConstant:14],
-            [arrowIcon.heightAnchor constraintEqualToConstant:14],
-
-            [_unseenMessagesBannerLabel.leadingAnchor constraintEqualToAnchor:arrowIcon.trailingAnchor constant:6],
-            [_unseenMessagesBannerLabel.trailingAnchor constraintEqualToAnchor:_unseenMessagesBanner.trailingAnchor constant:-12],
-            [_unseenMessagesBannerLabel.centerYAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerYAnchor],
+            [bannerStack.centerXAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerXAnchor],
+            [bannerStack.centerYAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerYAnchor],
+            // Marge de sécurité : le stack ne dépasse jamais la pilule même
+            // si le texte est exceptionnellement long (compteur illimité).
+            [bannerStack.leadingAnchor constraintGreaterThanOrEqualToAnchor:_unseenMessagesBanner.leadingAnchor constant:12],
+            [bannerStack.trailingAnchor constraintLessThanOrEqualToAnchor:_unseenMessagesBanner.trailingAnchor constant:-12],
         ]];
     }
     return self;

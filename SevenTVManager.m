@@ -1129,10 +1129,23 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
 - (void)saveTwitchToken:(NSString *)token clientID:(NSString *)clientID {
     if (!token.length || !clientID.length) return;
-    if ([token isEqualToString:self.twitchToken]) return; // déjà à jour
-    self.twitchToken   = token;
+
+    // Twitch pose son Authorization en GQL au format "OAuth <token>", mais
+    // l'API Helix (utilisée pour les badges) exige le format "Bearer <token>"
+    // — même token sous-jacent, juste un préfixe de schéma différent. Sans
+    // cette conversion, Helix rejette silencieusement la requête (pas
+    // d'erreur réseau, juste un JSON sans "data" → parsé comme 0 sets).
+    NSString *normalizedToken = token;
+    if ([token hasPrefix:@"OAuth "]) {
+        normalizedToken = [@"Bearer " stringByAppendingString:[token substringFromIndex:6]];
+    } else if (![token hasPrefix:@"Bearer "]) {
+        normalizedToken = [@"Bearer " stringByAppendingString:token];
+    }
+
+    if ([normalizedToken isEqualToString:self.twitchToken]) return; // déjà à jour
+    self.twitchToken   = normalizedToken;
     self.twitchClientID = clientID;
-    [self log:@"[Badges] ✅ Token Twitch intercepté"];
+    [self log:@"[ChatCustom] 🏗 Badges: token normalisé OAuth→Bearer et sauvegardé"];
     // Déclencher le chargement des badges maintenant qu'on a le token
     [[SevenTVBadgeProvider sharedProvider] loadGlobalBadges];
     if (self.currentChannelTwitchID.length) {

@@ -212,7 +212,18 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
 
     // Helix retourne { "data": [ ... ] } — tableau à la racine
     NSArray *dataArray = [(NSDictionary *)root objectForKey:@"data"];
-    if (![dataArray isKindOfClass:[NSArray class]]) return @{};
+    if (![dataArray isKindOfClass:[NSArray class]]) {
+        // Diagnostic : si "data" est absent, c'est très probablement une
+        // erreur Helix (401/403) plutôt qu'un catalogue vide — on dump le
+        // JSON brut (tronqué) pour voir le message exact au lieu de
+        // silencieusement retourner 0 sets sans explication.
+        NSString *rawPreview = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (rawPreview.length > 300) rawPreview = [rawPreview substringToIndex:300];
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] 🏗 Badges: pas de clé \"data\" dans la réponse Helix — contenu brut: %@",
+            rawPreview ?: @"(illisible)"];
+        return @{};
+    }
 
     NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *result =
         [NSMutableDictionary dictionaryWithCapacity:dataArray.count];

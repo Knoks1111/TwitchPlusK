@@ -257,6 +257,10 @@
         _unseenMessagesBanner.translatesAutoresizingMaskIntoConstraints = NO;
         _unseenMessagesBanner.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
         _unseenMessagesBanner.layer.cornerRadius = 16;
+        _unseenMessagesBanner.layer.borderWidth = 1.0;
+        // Violet Twitch (#9147FF) — même teinte que leurs propres accents UI.
+        _unseenMessagesBanner.layer.borderColor =
+            [UIColor colorWithRed:0.569 green:0.278 blue:1.0 alpha:1.0].CGColor;
         _unseenMessagesBanner.clipsToBounds = YES;
         _unseenMessagesBanner.hidden = YES;
         _unseenMessagesBanner.userInteractionEnabled = YES;
@@ -347,16 +351,17 @@
     self.displayedMessages = newMessages;
     self.messagesByID       = byID;
 
-    // Bannière "X nouveaux messages" : épinglé en bas → jamais affichée
+    // Bannière "nouveaux messages" : épinglé en bas → jamais affichée
     // (l'auto-scroll s'en charge, voir s7tv_scrollToBottomIfNeeded: plus
-    // bas). Pas épinglé + nouveaux messages détectés → compteur cumulé et
-    // bannière affichée, jusqu'au tap ou au retour manuel en bas (voir
-    // scrollViewDidScroll:).
+    // bas). Pas épinglé → bannière affichée en permanence (même sans
+    // nouveau message, voir scrollViewDidScroll: qui l'affiche déjà dès la
+    // sortie du bas) ; le compteur s'incrémente juste si des messages sont
+    // réellement arrivés depuis.
     if (wasNearBottom) {
         self.pendingNewMessagesCount = 0;
         [self s7tv_hideNewMessagesBanner];
-    } else if (newlyAddedCount > 0) {
-        self.pendingNewMessagesCount += newlyAddedCount;
+    } else {
+        if (newlyAddedCount > 0) self.pendingNewMessagesCount += newlyAddedCount;
         [self s7tv_updateNewMessagesBannerText];
         [self s7tv_showNewMessagesBanner];
     }
@@ -552,21 +557,35 @@
     CGFloat distanceFromBottom = scrollView.contentSize.height
         - (scrollView.contentOffset.y + scrollView.bounds.size.height);
     BOOL nowPinned = (distanceFromBottom < 80);
+
     if (nowPinned && !self.isPinnedToBottom) {
         // Retour manuel en bas (scroll, pas tap sur la bannière) — même
         // nettoyage que le tap : plus besoin du compteur/de la bannière.
         self.pendingNewMessagesCount = 0;
         [self s7tv_hideNewMessagesBanner];
+    } else if (!nowPinned && self.isPinnedToBottom) {
+        // On vient de quitter le bas (scroll manuel vers le haut) — la
+        // bannière apparaît tout de suite, même sans nouveau message
+        // encore reçu (texte "nouveaux messages" sans chiffre tant que
+        // pendingNewMessagesCount == 0, voir s7tv_updateNewMessagesBannerText).
+        [self s7tv_updateNewMessagesBannerText];
+        [self s7tv_showNewMessagesBanner];
     }
+
     self.isPinnedToBottom = nowPinned;
 }
 
 #pragma mark - Bannière "nouveaux messages" (Phase 4)
 
 - (void)s7tv_updateNewMessagesBannerText {
-    self.unseenMessagesBannerLabel.text = (self.pendingNewMessagesCount == 1)
-        ? @"1 nouveau message"
-        : [NSString stringWithFormat:@"%lu nouveaux messages", (unsigned long)self.pendingNewMessagesCount];
+    if (self.pendingNewMessagesCount == 0) {
+        self.unseenMessagesBannerLabel.text = @"nouveaux messages";
+    } else if (self.pendingNewMessagesCount == 1) {
+        self.unseenMessagesBannerLabel.text = @"1 nouveau message";
+    } else {
+        self.unseenMessagesBannerLabel.text =
+            [NSString stringWithFormat:@"%lu nouveaux messages", (unsigned long)self.pendingNewMessagesCount];
+    }
 }
 
 - (void)s7tv_showNewMessagesBanner {

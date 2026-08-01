@@ -68,6 +68,12 @@ extern NSString *const S7TVChatAppearanceConfigDidChangeNotification;
 - (void)resetKeyToDefault:(NSString *)key;
 - (void)resetAllToDefaults;
 
+// Écriture d'une valeur de taille par sa clé (KVC) — sauvegarde et notifie
+// automatiquement (voir S7TVChatAppearanceConfigDidChangeNotification). Point
+// d'entrée unique utilisé par les sliders de réglages (Phase 6) plutôt que
+// d'exposer un setter dédié par propriété.
+- (void)setValue:(CGFloat)value forSizeKey:(NSString *)key;
+
 // Valeur par défaut (mesurée ou estimée) pour une clé donnée — utilisé par
 // l'UI de réglages (Phase 6) pour afficher "valeur par défaut Twitch: Xpt"
 // à côté du contrôle, sans dupliquer les constantes ailleurs.

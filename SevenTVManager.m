@@ -2505,15 +2505,27 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // catégorie pendant une recherche (ex: rester bloqué sur Channel alors
     // que le meilleur résultat est dans Global).
     if (q.length > 0 && autoSelectTab) {
-        // Toujours dans cet ordre, quel que soit l'onglet où l'utilisateur se
-        // trouvait avant de taper : Favoris d'abord, puis Channel, puis
-        // Globales — on s'arrête au premier groupe non vide.
-        if (self.emotePickerFavoriteEmotes.count > 0) {
+        // Le choix de l'onglet doit se baser sur la QUALITÉ du meilleur match
+        // de chaque groupe (rang 0=exact, 1=commence par, 2=contient), pas
+        // juste sur "y a-t-il au moins un résultat". Sans ça, une simple
+        // correspondance faible dans Channel (ex: "quelqueChoseEZ", rang 2)
+        // gagnait à tort contre une correspondance exacte dans Global
+        // (ex: "EZ", rang 0) — d'où le blocage sur Channel avec des
+        // résultats hors-sujet pendant qu'un meilleur match existait ailleurs.
+        // Les 3 arrays sont déjà triés par pertinence juste au-dessus, donc
+        // leur firstObject est déjà le meilleur match de chaque groupe.
+        NSInteger favsRank    = favs.count    > 0 ? [self _s7tv_relevanceRankForEmoteName:favs.firstObject.emoteName    query:lower] : NSIntegerMax;
+        NSInteger channelRank = channel.count > 0 ? [self _s7tv_relevanceRankForEmoteName:channel.firstObject.emoteName query:lower] : NSIntegerMax;
+        NSInteger globalRank  = global.count  > 0 ? [self _s7tv_relevanceRankForEmoteName:global.firstObject.emoteName  query:lower] : NSIntegerMax;
+
+        // Priorité Favoris > Channel > Global à qualité de match égale
+        // (ex-aequo) — sinon c'est le meilleur rang qui gagne.
+        if (favs.count > 0 && favsRank <= channelRank && favsRank <= globalRank) {
             self.pickerActiveTab = S7TVPickerTabFavorites;
-        } else if (self.emotePickerChannelEmotes.count > 0) {
+        } else if (channel.count > 0 && channelRank <= globalRank) {
             self.pickerActiveTab = S7TVPickerTabSevenTV;
             self.pickerSevenTVShowingChannel = YES;
-        } else if (self.emotePickerGlobalEmotes.count > 0) {
+        } else if (global.count > 0) {
             self.pickerActiveTab = S7TVPickerTabSevenTV;
             self.pickerSevenTVShowingChannel = NO;
         }

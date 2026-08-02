@@ -137,13 +137,13 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 // temps, chacune avec son slider + une preview live à droite.
 @property (nonatomic, weak) UIView   *pickerHeaderView;
 @property (nonatomic, weak) UIView   *pickerHeaderNormalContent; // logo+titre+search
+@property (nonatomic, weak) UILabel  *pickerHeaderTitleLabel;    // "Emotes" ↔ "Tailles"
 @property (nonatomic, weak) UIButton *pickerSizesToggleBtn;      // bouton ⚙️ (change de couleur selon l'état)
 @property (nonatomic, weak) UIView   *pickerSizesPanelView;      // scrollview des 5 lignes
 @property (nonatomic, assign) BOOL   pickerSizesPanelVisible;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UISlider *> *pickerSizeSliders;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *>  *pickerSizeValueLabels;   // label "Nom — XX pt"
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UIView *>   *pickerSizePreviewViews;  // contenu de chaque preview
-@property (nonatomic, strong) UIImage *pickerPreviewEmoteImage; // emote 7TV globale (EZ) chargée une fois pour la preview
 
 
 @end
@@ -1680,6 +1680,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     titleLbl.text = @"Emotes";
     titleLbl.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
     titleLbl.textColor = textColor;
+    self.pickerHeaderTitleLabel = titleLbl;
     [normalContent addSubview:titleLbl];
 
     // Champ de recherche
@@ -1804,8 +1805,8 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.pickerSizeValueLabels  = [NSMutableDictionary dictionary];
     self.pickerSizePreviewViews = [NSMutableDictionary dictionary];
 
-    CGFloat rowH = 68.0, rowY = 4.0;
-    CGFloat previewW = 60.0, previewH = 44.0;
+    CGFloat rowH = 72.0, rowY = 4.0;
+    CGFloat previewW = 64.0, previewH = 48.0;
     for (NSArray *entry in self._emotePickerSizeOptionsTable) {
         NSString *key = entry[0], *label = entry[1];
         CGFloat minVal = [entry[2] doubleValue], maxVal = [entry[3] doubleValue];
@@ -1820,18 +1821,29 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         rowSep.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         [row addSubview:rowSep];
 
-        // Nom + valeur en live ("Emotes 7TV — 24 pt")
-        UILabel *nameLbl = [[UILabel alloc] initWithFrame:CGRectMake(12, 4, frame.size.width - 12 - 36, 16)];
-        nameLbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+        // Nom de la propriété (juste le nom, la valeur va dans la pill à côté)
+        UILabel *nameLbl = [[UILabel alloc] initWithFrame:CGRectMake(12, 9, 130, 16)];
+        nameLbl.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
         nameLbl.textColor = textColor;
-        nameLbl.text = [NSString stringWithFormat:@"%@ — %ld pt", label, (long)llround(current)];
-        nameLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        nameLbl.text = label;
         [row addSubview:nameLbl];
-        self.pickerSizeValueLabels[key] = nameLbl;
+
+        // Pill de valeur — même langage visuel que le pill "au-dessus du
+        // thumb" de l'ancien slider unique (violet Twitch, texte blanc bold).
+        UILabel *valuePill = [[UILabel alloc] initWithFrame:CGRectMake(12 + 130 + 6, 7, 44, 20)];
+        valuePill.font = [UIFont boldSystemFontOfSize:11];
+        valuePill.textColor = [UIColor whiteColor];
+        valuePill.textAlignment = NSTextAlignmentCenter;
+        valuePill.backgroundColor = [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0];
+        valuePill.layer.cornerRadius = 6;
+        valuePill.layer.masksToBounds = YES;
+        valuePill.text = [NSString stringWithFormat:@"%ld pt", (long)llround(current)];
+        [row addSubview:valuePill];
+        self.pickerSizeValueLabels[key] = valuePill;
 
         // Reset (valeur par défaut de cette ligne uniquement)
         UIButton *resetBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        resetBtn.frame = CGRectMake(frame.size.width - 32, 0, 32, 24);
+        resetBtn.frame = CGRectMake(frame.size.width - 32, 4, 28, 24);
         resetBtn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
         UIImageSymbolConfiguration *rCfg = [UIImageSymbolConfiguration
             configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
@@ -1843,11 +1855,15 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
             forControlEvents:UIControlEventTouchUpInside];
         [row addSubview:resetBtn];
 
-        // Preview à droite — box fixe, contenu qui grandit/rétrécit avec la valeur
+        // Preview à droite — même traitement visuel que les cellules de la
+        // grille (fond bgColor + bordure 1px sepColor) pour rester cohérent
+        // avec le reste du picker.
         CGFloat previewX = frame.size.width - previewW - 8;
-        UIView *previewBox = [[UIView alloc] initWithFrame:CGRectMake(previewX, rowH - previewH - 4, previewW, previewH)];
-        previewBox.backgroundColor = headerColor;
-        previewBox.layer.cornerRadius = 6;
+        UIView *previewBox = [[UIView alloc] initWithFrame:CGRectMake(previewX, (rowH - previewH) / 2.0, previewW, previewH)];
+        previewBox.backgroundColor = bgColor;
+        previewBox.layer.cornerRadius = 8;
+        previewBox.layer.borderWidth = 1.0 / [UIScreen mainScreen].scale;
+        previewBox.layer.borderColor = sepColor.CGColor;
         previewBox.clipsToBounds = YES;
         previewBox.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
         [row addSubview:previewBox];
@@ -1855,7 +1871,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
         // Slider — occupe le reste de la largeur à gauche de la preview
         CGFloat sliderX = 12, sliderW = previewX - 8 - sliderX;
-        UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(sliderX, 26, sliderW, 22)];
+        UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(sliderX, 36, sliderW, 22)];
         slider.minimumValue = minVal;
         slider.maximumValue = maxVal;
         slider.value = (float)current;
@@ -2104,10 +2120,11 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.pickerSizesPanelView.hidden = !show;
     self.emoteCollectionView.hidden  = show;
     self.emoteSearchField.hidden     = show;
+    self.pickerHeaderTitleLabel.text = show ? @"Tailles" : @"Emotes";
     self.pickerSizesToggleBtn.tintColor = show
         ? [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0]
         : [UIColor colorWithWhite:0.55 alpha:1.0];
-    if (show) [self _emotePickerLoadPreviewGlobalEmote];
+    if (show) [self _emotePickerLoadRealPreviewAssetsIfNeeded];
 }
 
 - (void)_emotePickerRowSliderChanged:(UISlider *)slider {
@@ -2132,23 +2149,18 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [self _emotePickerRefreshRowDisplayForKey:key value:val];
 }
 
-// Met à jour le label "Nom — XX pt" + la preview d'une ligne donnée
+// Met à jour la pill "XX pt" + la preview d'une ligne donnée
 - (void)_emotePickerRefreshRowDisplayForKey:(NSString *)key value:(CGFloat)val {
-    NSString *label = key;
-    for (NSArray *entry in self._emotePickerSizeOptionsTable) {
-        if ([entry[0] isEqualToString:key]) { label = entry[1]; break; }
-    }
-    self.pickerSizeValueLabels[key].text = [NSString stringWithFormat:@"%@ — %ld pt", label, (long)llround(val)];
+    self.pickerSizeValueLabels[key].text = [NSString stringWithFormat:@"%ld pt", (long)llround(val)];
     [self _emotePickerUpdatePreviewForKey:key value:val];
 }
 
-// "image" = emote 7TV réelle (aspect ratio d'origine) ; "icon" = SF Symbol
-// (Twitch emote / badge — pas d'accès simple aux vrais assets Twitch) ;
-// "text" = mot d'exemple rendu à la taille réglée (pseudo / message).
+// "image" = vraie image (aspect ratio d'origine) : emote 7TV globale, vraie
+// emote Twitch (Kappa, CDN officiel), vrai badge Twitch (Modérateur, CDN
+// officiel). "text" = mot d'exemple rendu à la taille réglée (pseudo / message).
 - (NSString *)_emotePickerPreviewKindForKey:(NSString *)key {
-    if ([key isEqualToString:@"emote7TVSize"]) return @"image";
     if ([key isEqualToString:@"usernameFontSize"] || [key isEqualToString:@"messageFontSize"]) return @"text";
-    return @"icon";
+    return @"image";
 }
 
 - (void)_emotePickerBuildPreviewContentForKey:(NSString *)key inBox:(UIView *)box value:(CGFloat)value {
@@ -2163,12 +2175,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
             : [UIColor whiteColor];
         content = lbl;
     } else {
+        // Image réelle chargée async par _emotePickerLoadRealPreviewAssetsIfNeeded
+        // (ou déjà en cache si le panneau a déjà été ouvert une fois).
         UIImageView *iv = [[UIImageView alloc] init];
         iv.contentMode = UIViewContentModeScaleAspectFit;
-        iv.tintColor = [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0];
-        if ([kind isEqualToString:@"image"] && self.pickerPreviewEmoteImage) {
-            iv.image = self.pickerPreviewEmoteImage;
-        }
         content = iv;
     }
     [box addSubview:content];
@@ -2180,10 +2190,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     UIView *content = self.pickerSizePreviewViews[key];
     UIView *box = content.superview;
     if (!content || !box) return;
-    NSString *kind = [self _emotePickerPreviewKindForKey:key];
     CGFloat boxW = box.bounds.size.width, boxH = box.bounds.size.height;
 
-    if ([kind isEqualToString:@"text"]) {
+    if ([[self _emotePickerPreviewKindForKey:key] isEqualToString:@"text"]) {
         UILabel *lbl = (UILabel *)content;
         BOOL isUsername = [key isEqualToString:@"usernameFontSize"];
         lbl.font = isUsername ? [UIFont boldSystemFontOfSize:value] : [UIFont systemFontOfSize:value];
@@ -2192,15 +2201,8 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
             CGRect f = lbl.frame; f.size.width = boxW - 8; lbl.frame = f;
         }
         lbl.center = CGPointMake(boxW / 2.0, boxH / 2.0);
-    } else if ([kind isEqualToString:@"icon"]) {
-        UIImageView *iv = (UIImageView *)content;
-        NSString *symbolName = [key isEqualToString:@"badgeSize"] ? @"seal.fill" : @"face.smiling.fill";
-        CGFloat sz = MIN(value, MIN(boxW, boxH) - 6);
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:sz weight:UIImageSymbolWeightRegular];
-        iv.image = [UIImage systemImageNamed:symbolName withConfiguration:cfg];
-        [iv sizeToFit];
-        iv.center = CGPointMake(boxW / 2.0, boxH / 2.0);
-    } else { // "image" — emote 7TV, aspect ratio réel
+    } else {
+        // Image réelle — aspect ratio d'origine, grandit/rétrécit avec la valeur
         UIImageView *iv = (UIImageView *)content;
         UIImage *img = iv.image;
         CGFloat ratio = (img && img.size.height > 0) ? (img.size.width / img.size.height) : 1.0;
@@ -2212,19 +2214,42 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     }
 }
 
-// Charge une fois l'emote globale "EZ" pour la preview de la ligne
-// "Emotes 7TV" — réutilise le même pipeline réseau/décodage que les
-// cellules de la grille (cdnURLForEmote:/_pickerImageSession/_decodePickerImageData:).
-- (void)_emotePickerLoadPreviewGlobalEmote {
-    if (self.pickerPreviewEmoteImage) return;
-    SevenTVEmote *ez = nil;
-    for (SevenTVEmote *e in self.emotePickerAllEmotes) {
-        if ([e.emoteName isEqualToString:@"EZ"]) { ez = e; break; }
+// Charge les 3 vraies images utilisées comme previews (une seule fois, mises
+// en cache dans les UIImageView elles-mêmes — pas de refetch aux toggles
+// suivants) :
+//  - "Emotes 7TV"    → l'emote globale EZ, même pipeline que la grille
+//  - "Emotes Twitch" → Kappa (emote globale Twitch, ID stable et public)
+//  - "Badges"        → le badge Modérateur Twitch (asset public du CDN officiel)
+- (void)_emotePickerLoadRealPreviewAssetsIfNeeded {
+    UIImageView *ivEZ = (UIImageView *)self.pickerSizePreviewViews[@"emote7TVSize"];
+    if ([ivEZ isKindOfClass:[UIImageView class]] && !ivEZ.image) {
+        SevenTVEmote *ez = nil;
+        for (SevenTVEmote *e in self.emotePickerAllEmotes) {
+            if ([e.emoteName isEqualToString:@"EZ"]) { ez = e; break; }
+        }
+        if (!ez) ez = self.emotePickerGlobalEmotes.firstObject ?: self.emotePickerAllEmotes.firstObject;
+        if (ez) [self _emotePickerLoadPreviewImageFromURL:[self cdnURLForEmote:ez] forKey:@"emote7TVSize"];
     }
-    if (!ez) ez = self.emotePickerGlobalEmotes.firstObject ?: self.emotePickerAllEmotes.firstObject;
-    if (!ez) return;
 
-    NSURL *url = [self cdnURLForEmote:ez];
+    UIImageView *ivKappa = (UIImageView *)self.pickerSizePreviewViews[@"emoteTwitchSize"];
+    if ([ivKappa isKindOfClass:[UIImageView class]] && !ivKappa.image) {
+        NSURL *kappaURL = [NSURL URLWithString:@"https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/3.0"];
+        [self _emotePickerLoadPreviewImageFromURL:kappaURL forKey:@"emoteTwitchSize"];
+    }
+
+    UIImageView *ivBadge = (UIImageView *)self.pickerSizePreviewViews[@"badgeSize"];
+    if ([ivBadge isKindOfClass:[UIImageView class]] && !ivBadge.image) {
+        NSURL *badgeURL = [NSURL URLWithString:
+            @"https://static-cdn.jtvnw.net/badges/v1/3267646d-33f0-4b17-b3df-f923a41db1d0/3"];
+        [self _emotePickerLoadPreviewImageFromURL:badgeURL forKey:@"badgeSize"];
+    }
+}
+
+// Fetch + décodage générique (même pipeline réseau que la grille :
+// cdnURLForEmote:/_pickerImageSession/_decodePickerImageData:) réutilisé
+// pour les 3 previews, quelle que soit leur source.
+- (void)_emotePickerLoadPreviewImageFromURL:(NSURL *)url forKey:(NSString *)key {
+    if (!url) return;
     __weak typeof(self) weakSelf = self;
     NSURLSessionDataTask *task = [[self _pickerImageSession] dataTaskWithURL:url
         completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
@@ -2234,13 +2259,11 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
-            strongSelf.pickerPreviewEmoteImage = img;
-            UIImageView *iv = (UIImageView *)strongSelf.pickerSizePreviewViews[@"emote7TVSize"];
-            if ([iv isKindOfClass:[UIImageView class]]) {
-                iv.image = img;
-                CGFloat val = strongSelf.pickerSizeSliders[@"emote7TVSize"].value;
-                [strongSelf _emotePickerUpdatePreviewForKey:@"emote7TVSize" value:val];
-            }
+            UIImageView *iv = (UIImageView *)strongSelf.pickerSizePreviewViews[key];
+            if (![iv isKindOfClass:[UIImageView class]]) return;
+            iv.image = img;
+            CGFloat val = strongSelf.pickerSizeSliders[key].value;
+            [strongSelf _emotePickerUpdatePreviewForKey:key value:val];
         });
     }];
     [task resume];

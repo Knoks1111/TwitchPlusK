@@ -132,11 +132,18 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 // Protégé par @synchronized(self).
 @property (nonatomic, strong) NSMutableSet<NSString *> *activePrefetchKeys;
 
-// Slider de taille des emotes dans le header du picker
+// Slider de taille des emotes dans le header du picker — généralisé pour
+// piloter les 5 tailles de SevenTVChatAppearanceConfig (pas seulement
+// emote7TVSize) : la personne choisit la propriété via un menu, le slider
+// s'adapte (bornes, valeur initiale, label) à la propriété sélectionnée.
 @property (nonatomic, weak) UIView   *pickerHeaderView;
 @property (nonatomic, weak) UIView   *pickerHeaderNormalContent; // logo+titre+search
 @property (nonatomic, weak) UIView   *pickerHeaderSliderContent; // slider + label valeur
 @property (nonatomic, weak) UILabel  *pickerSizeValueLabel;
+@property (nonatomic, weak) UILabel  *pickerSizePropertyLabel;   // nom de la propriété en cours (tappable pour changer)
+@property (nonatomic, weak) UIButton *pickerSizeResetBtn;
+@property (nonatomic, weak) UISlider *pickerSizeSlider;
+@property (nonatomic, copy) NSString *pickerActiveSizeConfigKey; // clé SevenTVChatAppearanceConfig en cours de réglage
 
 
 @end
@@ -1715,7 +1722,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
     [headerView addSubview:normalContent];
 
-    // ── Conteneur "slider" : ← + label valeur + UISlider ──────────────────
+    // ── Conteneur "slider" : ← + propriété + valeur + UISlider + reset ────
     UIView *sliderContent = [[UIView alloc] initWithFrame:CGRectMake(0, 0, frame.size.width, headerH)];
     sliderContent.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     sliderContent.hidden = YES;
@@ -1723,7 +1730,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
     // Bouton retour ←
     UIButton *backBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    backBtn.frame = CGRectMake(0, 0, 44, headerH);
+    backBtn.frame = CGRectMake(0, 0, 36, headerH);
     UIImageSymbolConfiguration *backCfg = [UIImageSymbolConfiguration
         configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
     [backBtn setImage:[UIImage systemImageNamed:@"chevron.left" withConfiguration:backCfg]
@@ -1733,49 +1740,74 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
       forControlEvents:UIControlEventTouchUpInside];
     [sliderContent addSubview:backBtn];
 
-    // Label valeur actuelle (au-dessus du thumb, style Twitch pill)
-    // Valeur initiale lue depuis SevenTVChatAppearanceConfig — même source
-    // que le nouveau menu de réglages (plus l'ancienne clé orpheline
-    // "s7tv_emote_size"), pour que ce slider reflète toujours la taille
-    // réellement appliquée au chat custom.
-    NSInteger savedSize = (NSInteger)round([SevenTVChatAppearanceConfig sharedConfig].emote7TVSize);
-    if (savedSize < 18 || savedSize > 56) savedSize = 30;
+    // Label du nom de la propriété en cours de réglage — tappable pour
+    // changer de propriété sans repasser par le bouton normal (ouvre le
+    // même menu que sliderBtn, voir _emotePickerPropertyLabelTapped).
+    UILabel *propertyLabel = [[UILabel alloc] initWithFrame:CGRectMake(36, 0, 84, headerH)];
+    propertyLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    propertyLabel.textColor = subColor;
+    propertyLabel.numberOfLines = 2;
+    propertyLabel.adjustsFontSizeToFitWidth = YES;
+    propertyLabel.userInteractionEnabled = YES;
+    [propertyLabel addGestureRecognizer:
+        [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                  action:@selector(_emotePickerSliderBtnTapped)]];
+    self.pickerSizePropertyLabel = propertyLabel;
+    [sliderContent addSubview:propertyLabel];
 
+    // Bouton reset (valeur par défaut de la propriété en cours)
+    UIButton *resetBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    resetBtn.frame = CGRectMake(frame.size.width - 36, 0, 36, headerH);
+    resetBtn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    UIImageSymbolConfiguration *resetCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+    [resetBtn setImage:[UIImage systemImageNamed:@"arrow.counterclockwise" withConfiguration:resetCfg]
+              forState:UIControlStateNormal];
+    resetBtn.tintColor = subColor;
+    [resetBtn addTarget:self action:@selector(_emotePickerSliderResetTapped)
+       forControlEvents:UIControlEventTouchUpInside];
+    self.pickerSizeResetBtn = resetBtn;
+    [sliderContent addSubview:resetBtn];
+
+    // Label valeur actuelle (au-dessus du thumb, style Twitch pill) —
+    // position recalculée via _updateSliderValueLabel:.
     UILabel *valueLabel = [[UILabel alloc] init];
-    valueLabel.text = [NSString stringWithFormat:@"%ld pt", (long)savedSize];
     valueLabel.font = [UIFont boldSystemFontOfSize:11];
     valueLabel.textColor = [UIColor whiteColor];
     valueLabel.textAlignment = NSTextAlignmentCenter;
     valueLabel.backgroundColor = [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0]; // violet Twitch
     valueLabel.layer.cornerRadius = 4;
     valueLabel.layer.masksToBounds = YES;
-    valueLabel.frame = CGRectMake(0, 0, 36, 18); // position recalculée via _updateSliderValueLabel:
+    valueLabel.frame = CGRectMake(0, 0, 36, 18);
     self.pickerSizeValueLabel = valueLabel;
     [sliderContent addSubview:valueLabel];
 
-    // UISlider — positionné dans la moitié supérieure pour laisser place au label dessous
-    CGFloat sliderX = 44 + 8;
-    CGFloat sliderW = frame.size.width - sliderX - 12;
+    // UISlider — bornes/valeur/label repositionnés dynamiquement par
+    // _emotePickerOpenSizeSliderForConfigKey: selon la propriété choisie,
+    // pas figés à la construction (contrairement à avant, où seul
+    // emote7TVSize était géré).
+    CGFloat sliderX = 36 + 88;
+    CGFloat sliderW = (frame.size.width - 36) - sliderX - 8;
     UISlider *sizeSlider = [[UISlider alloc] initWithFrame:
         CGRectMake(sliderX, 8, sliderW, 22)];
-    sizeSlider.minimumValue = 18;
-    sizeSlider.maximumValue = 56;
-    sizeSlider.value = (float)savedSize;
     sizeSlider.continuous = YES;
-    // Couleurs style Twitch
     sizeSlider.minimumTrackTintColor = [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0];
     sizeSlider.maximumTrackTintColor = [UIColor colorWithRed:0.25 green:0.25 blue:0.28 alpha:1.0];
     sizeSlider.thumbTintColor        = [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0];
     sizeSlider.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [sizeSlider addTarget:self action:@selector(_emotePickerSliderChanged:)
          forControlEvents:UIControlEventValueChanged];
+    self.pickerSizeSlider = sizeSlider;
     [sliderContent addSubview:sizeSlider];
 
     [headerView addSubview:sliderContent];
 
-    // Positionner le label valeur au-dessus du thumb initial
+    // Propriété par défaut si jamais le slider est affiché sans passer par
+    // le menu de sélection (garde-fou) — le vrai positionnement se fait à
+    // l'ouverture réelle via _emotePickerOpenSizeSliderForConfigKey:.
+    self.pickerActiveSizeConfigKey = @"emote7TVSize";
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self _updateSliderValueLabel:sizeSlider];
+        [self _emotePickerConfigureSliderDisplayForCurrentKey];
     });
 
     self.pickerHeaderView = headerView;
@@ -2052,9 +2084,85 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
 // ── Slider taille des emotes ───────────────────────────────────────────────
 
+// Table nom-de-clé → (nom affiché, min, max) — une seule source pour le menu
+// de sélection, l'ouverture du slider et le label de propriété. Bornes
+// choisies pour couvrir large sans avoir à les retoucher plus tard (~2x le
+// défaut mesuré pour chaque élément, voir SevenTVChatAppearanceConfig.m).
+- (NSArray<NSArray *> *)_emotePickerSizeOptionsTable {
+    return @[
+        @[@"emote7TVSize",     @"Emotes 7TV",     @12, @56],
+        @[@"emoteTwitchSize",  @"Emotes Twitch",  @12, @56],
+        @[@"badgeSize",        @"Badges",         @8,  @34],
+        @[@"usernameFontSize", @"Texte pseudo",   @8,  @28],
+        @[@"messageFontSize",  @"Texte message",  @8,  @28],
+    ];
+}
+
 - (void)_emotePickerSliderBtnTapped {
+    // Menu de sélection : quelle taille régler. Remplace le simple
+    // toggle normal↔slider d'avant — maintenant qu'il y a 5 propriétés
+    // possibles au lieu d'une seule, il faut demander laquelle.
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:@"Régler une taille"
+                          message:nil
+                   preferredStyle:UIAlertControllerStyleActionSheet];
+
+    for (NSArray *entry in self._emotePickerSizeOptionsTable) {
+        NSString *key = entry[0];
+        NSString *label = entry[1];
+        [sheet addAction:[UIAlertAction actionWithTitle:label
+                                                    style:UIAlertActionStyleDefault
+                                                  handler:^(UIAlertAction *action) {
+            [self _emotePickerOpenSizeSliderForConfigKey:key];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Annuler" style:UIAlertActionStyleCancel handler:nil]];
+
+    // iPad : le action sheet a besoin d'un sourceView/sourceRect, sinon crash.
+    sheet.popoverPresentationController.sourceView = self.pickerHeaderView;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(
+        self.pickerHeaderView.bounds.size.width - 44, 0, 44, 44);
+
+    UIViewController *presenter = [self topViewController];
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)_emotePickerOpenSizeSliderForConfigKey:(NSString *)key {
+    self.pickerActiveSizeConfigKey = key;
+    [self _emotePickerConfigureSliderDisplayForCurrentKey];
     self.pickerHeaderNormalContent.hidden = YES;
     self.pickerHeaderSliderContent.hidden = NO;
+}
+
+// Applique min/max/valeur/label de la propriété actuellement sélectionnée
+// (self.pickerActiveSizeConfigKey) au slider — appelé à l'ouverture ET après
+// un reset (la valeur affichée doit suivre le défaut fraîchement appliqué).
+- (void)_emotePickerConfigureSliderDisplayForCurrentKey {
+    NSString *key = self.pickerActiveSizeConfigKey ?: @"emote7TVSize";
+    NSArray *match = nil;
+    for (NSArray *entry in self._emotePickerSizeOptionsTable) {
+        if ([entry[0] isEqualToString:key]) { match = entry; break; }
+    }
+    if (!match) return;
+
+    NSString *label = match[1];
+    CGFloat minVal = [match[2] doubleValue];
+    CGFloat maxVal = [match[3] doubleValue];
+    CGFloat current = [[[SevenTVChatAppearanceConfig sharedConfig] valueForKey:key] doubleValue];
+    if (current < minVal || current > maxVal) current = minVal;
+
+    self.pickerSizePropertyLabel.text = label;
+    self.pickerSizeSlider.minimumValue = minVal;
+    self.pickerSizeSlider.maximumValue = maxVal;
+    self.pickerSizeSlider.value = (float)current;
+    [self _updateSliderValueLabel:self.pickerSizeSlider];
+}
+
+- (void)_emotePickerSliderResetTapped {
+    NSString *key = self.pickerActiveSizeConfigKey;
+    if (!key) return;
+    [[SevenTVChatAppearanceConfig sharedConfig] resetKeyToDefault:key];
+    [self _emotePickerConfigureSliderDisplayForCurrentKey];
 }
 
 - (void)_emotePickerSliderBackTapped {
@@ -2072,12 +2180,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // Branché sur la vraie config du chat custom (SevenTVChatAppearanceConfig)
     // — auparavant ce slider écrivait dans une clé NSUserDefaults orpheline
     // ("s7tv_emote_size") et postait S7TVEmoteSizeDidChangeNotification, que
-    // plus personne n'écoutait depuis la bascule vers le chat custom. Ce
+    // plus personne n'écoutait depuis la bascule vers le chat custom.
     // setValue:forSizeKey: sauvegarde ET notifie automatiquement le chat en
-    // direct (même mécanisme que les sliders de l'écran de réglages) — ce
-    // slider du picker et celui du menu "Emotes 7TV" pilotent maintenant
-    // la même valeur, une seule source de vérité.
-    [[SevenTVChatAppearanceConfig sharedConfig] setValue:(CGFloat)val forSizeKey:@"emote7TVSize"];
+    // direct — écrit sur la propriété actuellement sélectionnée, pas figé
+    // sur emote7TVSize comme avant.
+    NSString *key = self.pickerActiveSizeConfigKey ?: @"emote7TVSize";
+    [[SevenTVChatAppearanceConfig sharedConfig] setValue:(CGFloat)val forSizeKey:key];
 }
 
 - (void)_updateSliderValueLabel:(UISlider *)slider {

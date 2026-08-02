@@ -38,6 +38,8 @@
 #import "SevenTVLogo.h"
 #import "SevenTVBadgeProvider.h"
 #import "SevenTVChatAppearanceConfig.h"
+#import "SevenTVEmoteImageCache.h"
+#import "SevenTVEmoteAnimationEngine.h"
 #import <objc/runtime.h>
 
 // ============================================================
@@ -313,6 +315,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         _isEnabled             = YES;
         _showAnimated          = YES;
         _showPickerAnimations  = NO;   // Désactivé par défaut (perf)
+        _showPickerAnimationsFavoritesOnly = NO;
         _debugLogging          = (S7TV_DEBUG == 1);
 
         // Système de logs par catégorie — valeurs par défaut avant chargement
@@ -578,6 +581,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if ([prefs objectForKey:@"s7tv_enabled"]           != nil) _isEnabled            = [prefs boolForKey:@"s7tv_enabled"];
     if ([prefs objectForKey:@"s7tv_animated"]          != nil) _showAnimated          = [prefs boolForKey:@"s7tv_animated"];
     if ([prefs objectForKey:@"s7tv_picker_anim"]       != nil) _showPickerAnimations  = [prefs boolForKey:@"s7tv_picker_anim"];
+    if ([prefs objectForKey:@"s7tv_picker_anim_favs"]  != nil) _showPickerAnimationsFavoritesOnly = [prefs boolForKey:@"s7tv_picker_anim_favs"];
     if ([prefs objectForKey:@"s7tv_debug"]             != nil) _debugLogging          = [prefs boolForKey:@"s7tv_debug"];
     if ([prefs objectForKey:@"s7tv_floating_btn"]      != nil) _showFloatingButton     = [prefs boolForKey:@"s7tv_floating_btn"];
     else _showFloatingButton = YES; // activé par défaut
@@ -611,6 +615,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     [prefs setBool:self.isEnabled            forKey:@"s7tv_enabled"];
     [prefs setBool:self.showAnimated         forKey:@"s7tv_animated"];
     [prefs setBool:self.showPickerAnimations forKey:@"s7tv_picker_anim"];
+    [prefs setBool:self.showPickerAnimationsFavoritesOnly forKey:@"s7tv_picker_anim_favs"];
     [prefs setBool:self.debugLogging         forKey:@"s7tv_debug"];
     [prefs setBool:self.showFloatingButton   forKey:@"s7tv_floating_btn"];
     [prefs setBool:self.chatCustomTestEnabled forKey:@"s7tv_chat_custom_test"];
@@ -641,6 +646,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 - (void)setIsEnabled:(BOOL)v              { _isEnabled            = v; [self savePreferences]; }
 - (void)setShowAnimated:(BOOL)v           { _showAnimated          = v; [self savePreferences]; }
 - (void)setShowPickerAnimations:(BOOL)v   { _showPickerAnimations  = v; [self savePreferences]; }
+- (void)setShowPickerAnimationsFavoritesOnly:(BOOL)v { _showPickerAnimationsFavoritesOnly = v; [self savePreferences]; }
 - (void)setShowFloatingButton:(BOOL)v {
     _showFloatingButton = v;
     [self savePreferences];
@@ -1290,6 +1296,116 @@ static const CGFloat kCellSize = 40.0;
 static const char kS7TVTaskKey = 0;
 static const char kS7TVRowKeyTag = 0; // associe un UISlider/UIButton de ligne à sa clé SevenTVChatAppearanceConfig
 
+// ============================================================
+// MARK: - S7TVPickerResolvedEmote
+//
+// Adaptateur léger : fait correspondre une SevenTVEmote (modèle du picker)
+// au protocole S7TVResolvedEmote attendu par SevenTVEmoteImageCache /
+// SevenTVEmoteAnimationEngine (Phase 2, chat custom). Permet au picker de
+// PARTAGER ces deux caches avec le chat custom au lieu de dupliquer son
+// propre pipeline de décodage (une emote vue dans le chat est déjà décodée
+// pour le picker, et inversement). Ne modifie pas SevenTVEmote elle-même
+// (modèle utilisé ailleurs dans le code) : reste un wrapper local au picker.
+// ============================================================
+@interface S7TVPickerResolvedEmote : NSObject <S7TVResolvedEmote>
+- (instancetype)initWithEmote:(SevenTVEmote *)emote;
+@end
+
+@implementation S7TVPickerResolvedEmote {
+    SevenTVEmote *_sourceEmote;
+    NSURL        *_cachedImageURL;
+}
+
+- (instancetype)initWithEmote:(SevenTVEmote *)emote {
+    self = [super init];
+    if (self) _sourceEmote = emote;
+    return self;
+}
+
+- (NSURL *)imageURL {
+    if (!_cachedImageURL) {
+        _cachedImageURL = [[SevenTVManager sharedManager] cdnURLForEmote:_sourceEmote];
+    }
+    return _cachedImageURL;
+}
+
+- (BOOL)isAnimated {
+    return _sourceEmote.isAnimated;
+}
+
+@end
+
+
+// ============================================================
+// MARK: - S7TVEmotePickerCell
+//
+// Cellule dédiée du picker — remplace le UICollectionViewCell générique
+// utilisé jusqu'ici. L'UIImageView et l'étoile favoris sont créés UNE SEULE
+// FOIS ici (dans -initWithFrame:), jamais recréés à chaque dequeue : sur
+// l'ancienne version, cellForItemAtIndexPath: retirait puis reconstruisait
+// tous les subviews à chaque réapparition de cellule pendant le scroll,
+// ajoutant de l'alloc/dealloc pour rien. Ici, prepareForReuse: se contente
+// de vider l'image et de se désinscrire de l'engine d'animation.
+// ============================================================
+@interface S7TVEmotePickerCell : UICollectionViewCell
+@property (nonatomic, strong, readonly) UIImageView *emoteImageView;
+@property (nonatomic, strong, readonly) UIImageView *favoriteStarView;
+// Clé (URL absolue) de l'emote actuellement affichée par cette cellule.
+// Sert à valider qu'un callback asynchrone arrivant après un recyclage
+// concerne toujours la bonne emote avant d'appliquer une image/frame.
+@property (nonatomic, copy) NSString *currentEmoteKey;
+@end
+
+@implementation S7TVEmotePickerCell
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _emoteImageView = [[UIImageView alloc] initWithFrame:self.contentView.bounds];
+        _emoteImageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        _emoteImageView.contentMode = UIViewContentModeScaleAspectFit;
+        _emoteImageView.backgroundColor = [UIColor clearColor];
+        [self.contentView addSubview:_emoteImageView];
+
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration
+            configurationWithPointSize:6 weight:UIImageSymbolWeightMedium];
+        _favoriteStarView = [[UIImageView alloc] init];
+        _favoriteStarView.image = [UIImage systemImageNamed:@"star.fill" withConfiguration:cfg];
+        _favoriteStarView.tintColor = [[UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0]
+                                        colorWithAlphaComponent:0.7];
+        _favoriteStarView.hidden = YES;
+        [self.contentView addSubview:_favoriteStarView];
+
+        self.clipsToBounds = YES;
+        CGFloat onePixel = 1.0 / [UIScreen mainScreen].scale;
+        self.layer.borderWidth = onePixel;
+        self.layer.borderColor = [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0].CGColor; // #2A2A2E
+        self.backgroundColor = [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGSize cs = self.bounds.size;
+    self.favoriteStarView.frame = CGRectMake(cs.width - 9, 1, 8, 8);
+}
+
+- (void)prepareForReuse {
+    [super prepareForReuse];
+    self.emoteImageView.image = nil;
+    self.favoriteStarView.hidden = YES;
+    self.currentEmoteKey = nil;
+    // Se retire de l'engine d'animation : sans ça, une cellule recyclée pour
+    // une AUTRE emote continuerait de recevoir les redraws de l'ancienne
+    // (l'engine ne sait pas qu'elle a changé de contenu tant qu'on ne le lui
+    // dit pas explicitement).
+    [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:self];
+}
+
+@end
+
+
 // ── Session partagée pour le chargement des images du picker ─────────────────
 //
 // Une seule session persistante avec cache NSURLCache partagé.
@@ -1297,6 +1413,14 @@ static const char kS7TVRowKeyTag = 0; // associe un UISlider/UIButton de ligne �
 //   • Réutilisation des connexions TCP/TLS (HTTP keep-alive)
 //   • Pas de création/destruction de session à chaque cellule
 //   • requestCachePolicy = ReturnCacheDataElseLoad → zéro réseau si déjà en cache
+//
+// NOTE : la grille d'emotes elle-même (cellForItemAtIndexPath:) ne passe
+// PLUS par ce pipeline — elle utilise SevenTVEmoteImageCache /
+// SevenTVEmoteAnimationEngine (partagés avec le chat custom, voir
+// S7TVPickerResolvedEmote ci-dessus). Ce pipeline reste utilisé uniquement
+// pour les 3 previews du panneau "Tailles" (_emotePickerLoadPreviewImageFromURL:),
+// qui chargent aussi des URLs Twitch/badge ne correspondant à aucune
+// SevenTVEmote et ne peuvent donc pas passer par le protocole S7TVResolvedEmote.
 //
 - (NSURLSession *)_pickerImageSession {
     static NSURLSession *s = nil;
@@ -1805,7 +1929,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     cv.showsHorizontalScrollIndicator = NO;
     cv.showsVerticalScrollIndicator   = YES;
 
-    [cv registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:kEmoteCellID];
+    [cv registerClass:[S7TVEmotePickerCell class] forCellWithReuseIdentifier:kEmoteCellID];
     [cv registerClass:[UICollectionReusableView class]
    forSupplementaryViewOfKind:UICollectionElementKindSectionHeader
           withReuseIdentifier:@"S7TVSectionHeader"];
@@ -1957,6 +2081,42 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // Maintenir emotePickerOtherEmotes pour compatibilité
     self.emotePickerOtherEmotes    = self.emotePickerChannelEmotes;
     self.emotePickerEmotes         = self.emotePickerOtherEmotes;
+
+    // Préchauffage des favoris : décodage lancé dès que la liste est connue,
+    // avant même que la 1ère cellule ne les demande. La section Favoris est
+    // la plus consultée (toujours en haut, souvent rouverte) — ce préchauffage
+    // rend son affichage quasi instantané à l'ouverture du picker.
+    [self _s7tv_prewarmPickerImagesForEmotes:self.emotePickerFavoriteEmotes];
+}
+
+// Préchauffe le cache décodé (SevenTVEmoteImageCache) — et, si les animations
+// sont activées, l'engine d'animation — pour une liste d'emotes, sans bloquer
+// l'UI ni forcer d'affichage. Idempotent : une emote déjà en cache ou déjà en
+// cours de chargement (dédup gérée en interne par SevenTVEmoteImageCache)
+// n'est jamais retéléchargée/redécodée en double.
+- (void)_s7tv_prewarmPickerImagesForEmotes:(NSArray<SevenTVEmote *> *)emotes {
+    if (emotes.count == 0) return;
+    SevenTVEmoteImageCache *cache = [SevenTVEmoteImageCache sharedCache];
+    SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
+    BOOL wantsAnimated = self.showPickerAnimations;
+
+    for (SevenTVEmote *emote in emotes) {
+        S7TVPickerResolvedEmote *resolved = [[S7TVPickerResolvedEmote alloc] initWithEmote:emote];
+        NSString *key = resolved.imageURL.absoluteString;
+
+        if (emote.isAnimated && wantsAnimated) {
+            if (![cache cachedFramesForResolvedEmote:resolved]) {
+                [cache framesForResolvedEmote:resolved completion:^(S7TVEmoteAnimatedFrames * _Nullable frames) {
+                    if (frames) [engine registerFrames:frames forKey:key];
+                }];
+            }
+        } else if (![cache cachedImageForResolvedEmote:resolved]) {
+            [cache imageForResolvedEmote:resolved completion:^(UIImage * _Nullable image) {
+                // Rien à faire ici : le seul but est de peupler le cache
+                // avant que cellForItemAtIndexPath: en ait besoin.
+            }];
+        }
+    }
 }
 
 // ── UITextFieldDelegate — intercepte le focus du champ de recherche ────────
@@ -2476,85 +2636,116 @@ referenceSizeForHeaderInSection:(NSInteger)section {
 
 - (UICollectionViewCell *)collectionView:(UICollectionView *)cv
                   cellForItemAtIndexPath:(NSIndexPath *)indexPath {
-    UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:kEmoteCellID
-                                                                forIndexPath:indexPath];
-
-    UIColor *cellBg = [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10 — S7TVBg
-    cell.backgroundColor     = cellBg;
-    cell.clipsToBounds        = YES;
-    cell.layer.cornerRadius   = 0;
-
-    // ── Bordure 1 pixel physique séparateur Twitch autour de chaque cellule ──
-    CGFloat onePixel = 1.0 / [UIScreen mainScreen].scale;
-    cell.layer.borderWidth = onePixel;
-    cell.layer.borderColor = [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0].CGColor; // #2A2A2E
-
-    // ── Annuler la tâche réseau de la cellule recyclée ─────────────────────
-    // Sans ça, une cellule recyclée peut afficher une image obsolète
-    // si la task précédente se termine après le recyclage.
-    NSURLSessionDataTask *oldTask = objc_getAssociatedObject(cell, &kS7TVTaskKey);
-    [oldTask cancel];
-    objc_setAssociatedObject(cell, &kS7TVTaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    // Nettoyer la cellule recyclée
-    for (UIView *sub in cell.contentView.subviews) [sub removeFromSuperview];
+    S7TVEmotePickerCell *cell = (S7TVEmotePickerCell *)
+        [cv dequeueReusableCellWithReuseIdentifier:kEmoteCellID forIndexPath:indexPath];
 
     SevenTVEmote *emote = [self _emoteForIndexPath:indexPath];
     if (!emote) return cell;
 
-    // UIImageView qui remplit la cellule
-    UIImageView *iv = [[UIImageView alloc] initWithFrame:cell.contentView.bounds];
-    iv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    iv.contentMode = UIViewContentModeScaleAspectFit;
-    iv.backgroundColor = [UIColor clearColor];
-    [cell.contentView addSubview:iv];
+    // Étoile favoris (section 0 uniquement) — la vue existe déjà sur la
+    // cellule (créée une fois dans S7TVEmotePickerCell), on ne fait que
+    // l'afficher/masquer ici.
+    cell.favoriteStarView.hidden = (indexPath.section != 0);
 
-    // Étoile favoris (section 0) : petite étoile violette discrète
-    if (indexPath.section == 0) {
-        CGSize cs = cell.bounds.size;
-        UIImageView *star = [[UIImageView alloc] initWithFrame:CGRectMake(cs.width - 9, 1, 8, 8)];
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration
-            configurationWithPointSize:6 weight:UIImageSymbolWeightMedium];
-        star.image = [UIImage systemImageNamed:@"star.fill" withConfiguration:cfg];
-        star.tintColor = [[UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0]
-                          colorWithAlphaComponent:0.7];
-        [cell.contentView addSubview:star];
+    // Bug historique conservé corrigé : le réglage s'applique à tout le
+    // picker, pas seulement aux favoris — sauf si la nouvelle sous-option
+    // "Animations uniquement pour les favoris" est active, auquel cas seule
+    // la section 0 (Favoris) anime, le reste reste statique.
+    BOOL wantsAnimated = emote.isAnimated && self.showPickerAnimations &&
+        (!self.showPickerAnimationsFavoritesOnly || indexPath.section == 0);
+
+    S7TVPickerResolvedEmote *resolved = [[S7TVPickerResolvedEmote alloc] initWithEmote:emote];
+    NSString *key = resolved.imageURL.absoluteString;
+    cell.currentEmoteKey = key;
+
+    if (wantsAnimated) {
+        [self _s7tv_configureAnimatedPickerCell:cell resolvedEmote:resolved key:key];
+    } else {
+        [self _s7tv_configureStaticPickerCell:cell resolvedEmote:resolved key:key];
     }
 
-    NSURL *emoteURL = [self cdnURLForEmote:emote];
-    NSURLRequest *req = [NSURLRequest requestWithURL:emoteURL];
-    // Bug fixé : c'était restreint à `isFavoriteCell` (section 0 uniquement),
-    // donc le toggle "animations" des paramètres n'avait aucun effet sur les
-    // emotes de channel/globales. Le réglage s'applique maintenant à tout le picker.
-    BOOL wantsAnimated = emote.isAnimated && self.showPickerAnimations;
-
-    // ── Check NSURLCache + fetch réseau ──────────────────────────────────────
-    // sharedEmoteCache = même cache que le chat (prefetch au JOIN).
-    // Une emote déjà vue dans le chat est dispo immédiatement ici.
-    NSURLSessionDataTask *task = [[self _pickerImageSession]
-        dataTaskWithURL:emoteURL
-      completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
-        if (!data || e.code == NSURLErrorCancelled) return;
-        dispatch_queue_t decodeQ = wantsAnimated
-            ? [self _animationDecodeQueue]
-            : dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
-        dispatch_async(decodeQ, ^{
-            UIImage *img = [self _decodePickerImageData:data wantsAnimated:wantsAnimated];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSIndexPath *nowPath = [cv indexPathForCell:cell];
-                if (nowPath && nowPath.section == indexPath.section
-                            && nowPath.item   == indexPath.item) {
-                    iv.image = img;
-                }
-            });
-        });
-    }];
-
-    // Stocker la task dans la cellule pour pouvoir l'annuler au recyclage
-    objc_setAssociatedObject(cell, &kS7TVTaskKey, task, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [task resume];
-
     return cell;
+}
+
+// ── Chemin statique : sert l'image depuis SevenTVEmoteImageCache ──────────
+//
+// Cache hit (déjà décodée — par le picker OU par le chat custom, le cache
+// est partagé) → affichage synchrone immédiat, ZÉRO réseau, ZÉRO décodage.
+// C'est le principal gain de perf au scroll : avant, chaque réapparition de
+// cellule relançait un fetch + un décodage complet même pour une emote déjà
+// vue quelques cellules plus haut.
+- (void)_s7tv_configureStaticPickerCell:(S7TVEmotePickerCell *)cell
+                           resolvedEmote:(S7TVPickerResolvedEmote *)resolved
+                                     key:(NSString *)key {
+    SevenTVEmoteImageCache *cache = [SevenTVEmoteImageCache sharedCache];
+
+    UIImage *cachedImg = [cache cachedImageForResolvedEmote:resolved];
+    if (cachedImg) {
+        cell.emoteImageView.image = cachedImg;
+        return;
+    }
+
+    cell.emoteImageView.image = nil;
+    [cache imageForResolvedEmote:resolved completion:^(UIImage * _Nullable image) {
+        if (!image) return;
+        // La cellule peut avoir été recyclée pour une autre emote pendant le
+        // chargement async — on vérifie la clé avant d'appliquer l'image.
+        if ([cell.currentEmoteKey isEqualToString:key]) {
+            cell.emoteImageView.image = image;
+        }
+    }];
+}
+
+// ── Chemin animé : frames servies par le cache, lecture pilotée par
+// SevenTVEmoteAnimationEngine (même CADisplayLink centralisé que le chat
+// custom, déjà throttlé à maxSimultaneousAnimations) au lieu que chaque
+// cellule fasse tourner sa propre boucle d'animation UIImage indépendante.
+- (void)_s7tv_configureAnimatedPickerCell:(S7TVEmotePickerCell *)cell
+                             resolvedEmote:(S7TVPickerResolvedEmote *)resolved
+                                       key:(NSString *)key {
+    SevenTVEmoteImageCache *cache   = [SevenTVEmoteImageCache sharedCache];
+    SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
+
+    __weak S7TVEmotePickerCell *weakCell = cell;
+    void (^redraw)(void) = ^{
+        __strong S7TVEmotePickerCell *strongCell = weakCell;
+        if (!strongCell || ![strongCell.currentEmoteKey isEqualToString:key]) return;
+        UIImage *frame = [engine currentFrameForKey:key];
+        if (frame) strongCell.emoteImageView.image = frame;
+    };
+
+    // Frames déjà enregistrées auprès de l'engine (emote déjà vue animée,
+    // picker ou chat) → il ne reste qu'à s'abonner, pas de décodage à refaire.
+    if ([engine hasFramesForKey:key]) {
+        [engine addObserver:cell keys:[NSSet setWithObject:key] redraw:redraw];
+        redraw(); // pose la frame courante immédiatement, sans attendre le prochain tick
+        return;
+    }
+
+    // Frames décodées et en cache (ex: vues dans le chat) mais pas encore
+    // enregistrées auprès de l'engine → enregistrement direct, toujours pas
+    // de redécodage.
+    S7TVEmoteAnimatedFrames *cachedFrames = [cache cachedFramesForResolvedEmote:resolved];
+    if (cachedFrames) {
+        [engine registerFrames:cachedFrames forKey:key];
+        [engine addObserver:cell keys:[NSSet setWithObject:key] redraw:redraw];
+        redraw();
+        return;
+    }
+
+    // Rien en cache : afficher au moins la frame statique déjà connue (si
+    // elle existe) pendant que les frames animées se décodent en arrière-plan,
+    // plutôt qu'une cellule vide.
+    UIImage *staticCached = [cache cachedImageForResolvedEmote:resolved];
+    if (staticCached) cell.emoteImageView.image = staticCached;
+
+    [cache framesForResolvedEmote:resolved completion:^(S7TVEmoteAnimatedFrames * _Nullable frames) {
+        if (!frames) return;
+        if (![cell.currentEmoteKey isEqualToString:key]) return; // cellule recyclée entre-temps
+        [engine registerFrames:frames forKey:key];
+        [engine addObserver:cell keys:[NSSet setWithObject:key] redraw:redraw];
+        redraw();
+    }];
 }
 
 // ── UICollectionViewDelegate ───────────────────────────────────────────────

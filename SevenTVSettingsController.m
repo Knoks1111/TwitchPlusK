@@ -527,7 +527,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    return s == 0 ? 1 : 2; // section 1 : animées + picker (favoris déplacés vers Statistiques)
+    return s == 0 ? 1 : 3; // section 1 : animées + picker + animations favoris uniquement (sous-option)
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
@@ -568,6 +568,15 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
                     [UIColor colorWithWhite:0.75 alpha:1.0],
                     mgr.showPickerAnimations,
                     self, @selector(togglePickerAnimations:));
+        case 2: {
+            UITableViewCell *cell = S7TVSwitchCell(@"Animations uniquement pour les favoris",
+                        @"star.circle",
+                        [UIColor colorWithWhite:0.75 alpha:1.0],
+                        mgr.showPickerAnimationsFavoritesOnly,
+                        self, @selector(togglePickerAnimationsFavoritesOnly:));
+            [self s7tv_applyPickerAnimSubOptionEnabledState:cell];
+            return cell;
+        }
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -578,7 +587,32 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (void)toggleEnabled:(UISwitch *)sw          { [SevenTVManager sharedManager].isEnabled           = sw.isOn; }
 - (void)toggleAnimated:(UISwitch *)sw         { [SevenTVManager sharedManager].showAnimated         = sw.isOn; }
-- (void)togglePickerAnimations:(UISwitch *)sw { [SevenTVManager sharedManager].showPickerAnimations = sw.isOn; }
+- (void)togglePickerAnimations:(UISwitch *)sw {
+    [SevenTVManager sharedManager].showPickerAnimations = sw.isOn;
+    // Reload pour griser/dégriser la sous-option "Favoris uniquement", qui
+    // dépend de ce réglage.
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+                   withRowAnimation:UITableViewRowAnimationNone];
+}
+- (void)togglePickerAnimationsFavoritesOnly:(UISwitch *)sw {
+    [SevenTVManager sharedManager].showPickerAnimationsFavoritesOnly = sw.isOn;
+}
+
+// Grise visuellement la sous-option quand "Animations dans le picker" est
+// désactivé, sans jamais modifier sa valeur stockée en NSUserDefaults —
+// même pattern que s7tv_applyEnabledState: dans SevenTVDebugPageController,
+// mais dépendant ici de showPickerAnimations plutôt que de logsEnabled.
+- (void)s7tv_applyPickerAnimSubOptionEnabledState:(UITableViewCell *)cell {
+    BOOL enabled = [SevenTVManager sharedManager].showPickerAnimations;
+    cell.userInteractionEnabled = enabled;
+    cell.contentView.alpha = enabled ? 1.0 : 0.4;
+    for (UIView *v in cell.contentView.subviews) {
+        if ([v isKindOfClass:[UISwitch class]]) {
+            ((UISwitch *)v).enabled = enabled;
+            break;
+        }
+    }
+}
 
 @end
 

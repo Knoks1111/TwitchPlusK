@@ -1337,11 +1337,37 @@ static const char kS7TVRowKeyTag = 0; // associe un UISlider/UIButton de ligne �
 // wantsAnimated=YES ET showPickerAnimations=YES → UIImage animée (toutes frames)
 // sinon → frame 0 uniquement (rapide, économe en RAM)
 //
+// ── Force-decode hors thread principal ─────────────────────────────────────
+//
+// CGImageSourceCreateImageAtIndex crée une image "lazy" : les octets
+// compressés (PNG/WebP/GIF) ne sont réellement décompressés qu'au premier
+// rendu — c'est-à-dire quand UIKit assigne l'image à un CALayer, sur le
+// MAIN THREAD. Résultat : même si tout ce qui précède tourne déjà en
+// arrière-plan (decodeQ), UIKit refait un vrai travail de décodage
+// synchrone au moment de l'affichage → micro-freeze/saccade au scroll.
+//
+// Fix : redessiner l'image dans un contexte bitmap ICI (donc toujours en
+// arrière-plan, cette méthode n'est jamais appelée depuis le main thread)
+// force la décompression complète immédiatement. Le UIImage renvoyé est
+// déjà "prêt à afficher" — assigner .image sur le main thread ne coûte
+// plus qu'un memcpy.
+- (UIImage *)_forceDecodedImage:(UIImage *)img {
+    if (!img || img.size.width < 1 || img.size.height < 1) return img;
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
+    fmt.opaque = NO;
+    fmt.scale  = img.scale;
+    UIGraphicsImageRenderer *renderer =
+        [[UIGraphicsImageRenderer alloc] initWithSize:img.size format:fmt];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [img drawAtPoint:CGPointZero];
+    }];
+}
+
 - (UIImage *)_decodePickerImageData:(NSData *)data wantsAnimated:(BOOL)wantsAnimated {
     if (!data) return nil;
 
     CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
-    if (!src) return [UIImage imageWithData:data];
+    if (!src) return [self _forceDecodedImage:[UIImage imageWithData:data]];
 
     // ── Animé : décoder toutes les frames ──────────────────────────────────
     if (wantsAnimated) {
@@ -1360,8 +1386,9 @@ static const char kS7TVRowKeyTag = 0; // associe un UISlider/UIButton de ligne �
                     CGImageRef cgImg = CGImageSourceCreateImageAtIndex(src, i, NULL);
                     if (!cgImg) continue;
 
-                    [frames addObject:[UIImage imageWithCGImage:cgImg]];
+                    UIImage *frame = [UIImage imageWithCGImage:cgImg];
                     CGImageRelease(cgImg);
+                    [frames addObject:[self _forceDecodedImage:frame]];
 
                     NSDictionary *props = CFBridgingRelease(
                         CGImageSourceCopyPropertiesAtIndex(src, i, NULL));
@@ -1390,7 +1417,8 @@ static const char kS7TVRowKeyTag = 0; // associe un UISlider/UIButton de ligne �
     UIImage *img = nil;
     if (cgImg) { img = [UIImage imageWithCGImage:cgImg]; CGImageRelease(cgImg); }
     CFRelease(src);
-    return img ?: [UIImage imageWithData:data];
+    img = img ?: [UIImage imageWithData:data];
+    return [self _forceDecodedImage:img];
 }
 
 - (void)toggleEmotePickerForChatInputView:(UIView *)chatInputView {
@@ -1805,8 +1833,8 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.pickerSizeValueLabels  = [NSMutableDictionary dictionary];
     self.pickerSizePreviewViews = [NSMutableDictionary dictionary];
 
-    CGFloat rowH = 72.0, rowY = 4.0;
-    CGFloat previewW = 64.0, previewH = 48.0;
+    CGFloat rowH = 84.0, rowY = 4.0;
+    CGFloat previewW = 64.0, previewH = 44.0;
     for (NSArray *entry in self._emotePickerSizeOptionsTable) {
         NSString *key = entry[0], *label = entry[1];
         CGFloat minVal = [entry[2] doubleValue], maxVal = [entry[3] doubleValue];
@@ -1855,11 +1883,11 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
             forControlEvents:UIControlEventTouchUpInside];
         [row addSubview:resetBtn];
 
-        // Preview à droite — même traitement visuel que les cellules de la
-        // grille (fond bgColor + bordure 1px sepColor) pour rester cohérent
-        // avec le reste du picker.
+        // Preview à droite — placée SOUS la zone nom/pill/reset (y=34) pour
+        // ne jamais passer devant le bouton reset. Même traitement visuel
+        // que les cellules de la grille (fond bgColor + bordure 1px sepColor).
         CGFloat previewX = frame.size.width - previewW - 8;
-        UIView *previewBox = [[UIView alloc] initWithFrame:CGRectMake(previewX, (rowH - previewH) / 2.0, previewW, previewH)];
+        UIView *previewBox = [[UIView alloc] initWithFrame:CGRectMake(previewX, 34, previewW, previewH)];
         previewBox.backgroundColor = bgColor;
         previewBox.layer.cornerRadius = 8;
         previewBox.layer.borderWidth = 1.0 / [UIScreen mainScreen].scale;
@@ -2495,8 +2523,10 @@ referenceSizeForHeaderInSection:(NSInteger)section {
 
     NSURL *emoteURL = [self cdnURLForEmote:emote];
     NSURLRequest *req = [NSURLRequest requestWithURL:emoteURL];
-    BOOL isFavoriteCell = (indexPath.section == 0);
-    BOOL wantsAnimated = emote.isAnimated && self.showPickerAnimations && isFavoriteCell;
+    // Bug fixé : c'était restreint à `isFavoriteCell` (section 0 uniquement),
+    // donc le toggle "animations" des paramètres n'avait aucun effet sur les
+    // emotes de channel/globales. Le réglage s'applique maintenant à tout le picker.
+    BOOL wantsAnimated = emote.isAnimated && self.showPickerAnimations;
 
     // ── Check NSURLCache + fetch réseau ──────────────────────────────────────
     // sharedEmoteCache = même cache que le chat (prefetch au JOIN).

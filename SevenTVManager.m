@@ -1827,6 +1827,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [self _s7tv_updateSearchClearVisibility];
     [self _updatePickerArraysForSearch:@""];
     [self.emoteCollectionView reloadData];
+    // À ce stade la collection view n'est pas encore présentée (inputView pas
+    // encore assigné/becomeFirstResponder pas encore appelé plus bas) → son
+    // contentSize n'est pas garanti calculé, donc un setContentOffset ici peut
+    // être un no-op silencieux. On force le layout pour rendre l'appel fiable.
+    [self.emoteCollectionView.collectionViewLayout invalidateLayout];
+    [self.emoteCollectionView layoutIfNeeded];
     [self.emoteCollectionView setContentOffset:CGPointZero animated:NO];
 
     // ── inputView = picker (keyboard-replacement mode) ──────────────────────
@@ -1854,6 +1860,17 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         // Étape 3 : recharger pour appliquer le nouvel inputView
         [tv reloadInputViews];
         [self log:@"✅ picker en dessous de la chat bar (inputView) sur %@", NSStringFromClass([tv class])];
+        // Étape 4 (Point 1) : ré-imposer l'offset en haut APRÈS la présentation
+        // réelle. reloadInputViews déclenche la mise en fenêtre de l'inputView
+        // et son propre passage de layout (safe area / adjustedContentInset),
+        // qui peut annuler le setContentOffset fait plus haut avant que la vue
+        // ne soit dans la fenêtre. On le refait une fois la présentation faite.
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf.emoteCollectionView) return;
+            [strongSelf.emoteCollectionView setContentOffset:CGPointZero animated:NO];
+        });
     } else {
         [self log:@"⚠️ TextEntryView nil — fallback fenêtre flottante"];
         UIWindow *keyWindow = nil;
@@ -2392,6 +2409,15 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 // ── Méthode centrale de filtrage : met à jour les 2 sections ──────────────
 
 - (void)_updatePickerArraysForSearch:(NSString *)query {
+    // Wrapper de compat : appelé partout où on ne veut PAS que l'onglet actif
+    // soit ré-imposé automatiquement (ouverture du picker, tap manuel sur un
+    // onglet/sous-choix, toggle favori). Seul _applySearchQuery: (déclenché
+    // par une vraie frappe dans le champ de recherche) doit pouvoir changer
+    // l'onglet tout seul → voir _updatePickerArraysForSearch:autoSelectTab:.
+    [self _updatePickerArraysForSearch:query autoSelectTab:NO];
+}
+
+- (void)_updatePickerArraysForSearch:(NSString *)query autoSelectTab:(BOOL)autoSelectTab {
     NSString *q = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     NSString *lower = q.lowercaseString;
 
@@ -2456,7 +2482,15 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         self.pickerActiveTab = self.pickerPreSearchTab;
         self.pickerSevenTVShowingChannel = self.pickerPreSearchShowingChannel;
     }
-    if (q.length > 0) {
+    // ── Auto-sélection du meilleur onglet — UNIQUEMENT quand la recherche
+    // vient de démarrer (1ère lettre tapée), jamais quand l'utilisateur a
+    // manuellement changé d'onglet/sous-choix pendant qu'une recherche est
+    // déjà en cours. Sans ce garde-fou, _pickerTabTapped:/_pickerSubChoiceIconTapped:
+    // qui appellent cette méthode juste après avoir choisi l'onglet voyaient
+    // leur choix immédiatement écrasé ci-dessous → impossible de changer de
+    // catégorie pendant une recherche (ex: rester bloqué sur Channel alors
+    // que le meilleur résultat est dans Global).
+    if (q.length > 0 && autoSelectTab) {
         // Toujours dans cet ordre, quel que soit l'onglet où l'utilisateur se
         // trouvait avant de taper : Favoris d'abord, puis Channel, puis
         // Globales — on s'arrête au premier groupe non vide.
@@ -2606,7 +2640,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 }
 
 - (void)_applySearchQuery:(NSString *)query {
-    [self _updatePickerArraysForSearch:query];
+    // Seul point d'entrée où l'onglet peut être choisi automatiquement
+    // (nouvelle frappe = nouveaux résultats à faire découvrir).
+    [self _updatePickerArraysForSearch:query autoSelectTab:YES];
     [self.emoteCollectionView reloadData];
     [self.emoteCollectionView setContentOffset:CGPointZero animated:NO];
     [self _s7tv_updateSearchClearVisibility];
@@ -2725,7 +2761,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     for (UIButton *btn in self.pickerTabButtons) btn.hidden = show;
     // Le sous-choix ne doit de toute façon être visible que hors onglet Favoris
     self.pickerSubChoiceCapsuleView.hidden = show || (self.pickerActiveTab == S7TVPickerTabFavorites);
-    self.pickerCloseFloatBtn.hidden        = show; // la croix reste sur la grille, pas sur le panneau des tailles
+    // Point 3 : la croix reste visible même dans le panneau des tailles, pour
+    // pouvoir fermer le picker directement sans devoir d'abord revenir à la
+    // grille via le bouton ⚙️ (qui, lui, sert de retour vers la grille).
+    self.pickerCloseFloatBtn.hidden = NO;
     self.pickerSizesToggleBtn.tintColor = show
         ? [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0]
         : [UIColor colorWithWhite:0.55 alpha:1.0];

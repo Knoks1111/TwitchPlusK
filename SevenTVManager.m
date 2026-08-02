@@ -98,6 +98,7 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 @property (nonatomic, weak)   UITextView          *emotePickerTextEntryView;
 @property (nonatomic, strong) UICollectionView    *emoteCollectionView;
 @property (nonatomic, strong) UITextField         *emoteSearchField;
+@property (nonatomic, weak)   UIButton            *emoteSearchClearBtn; // croix à droite du champ, visible seulement si texte non-vide
 @property (nonatomic, strong) NSArray<SevenTVEmote *> *emotePickerEmotes;
 @property (nonatomic, strong) NSArray<SevenTVEmote *> *emotePickerAllEmotes;
 
@@ -140,6 +141,7 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 @property (nonatomic, weak) UIButton *pickerSizesToggleBtn;      // bouton ⚙️ (change de couleur selon l'état)
 @property (nonatomic, weak) UIView   *pickerSizesPanelView;      // scrollview des 5 lignes
 @property (nonatomic, assign) BOOL   pickerSizesPanelVisible;
+@property (nonatomic, assign) CGFloat pickerSizesPanelContentHeight; // hauteur réelle du contenu (lignes empilées), calculée une fois à la création
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UISlider *> *pickerSizeSliders;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *>  *pickerSizeValueLabels;   // label "Nom — XX pt"
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UIView *>   *pickerSizePreviewViews;  // contenu de chaque preview
@@ -1463,6 +1465,7 @@ static const CGFloat kS7TVPickerDockH        = 94.0; // kS7TVPickerDockTabH + kS
 static const CGFloat kS7TVPickerDockRadius   = 18.0;
 static const CGFloat kS7TVPickerFloatSize    = 30.0; // diamètre des pastilles flottantes
 static const CGFloat kS7TVPickerFloatMargin  = 8.0;
+static const CGFloat kS7TVPickerGridHeight   = 280.0; // hauteur du picker en mode grille (référence commune)
 
 // Clé pour stocker la NSURLSessionDataTask courante dans chaque cellule
 // (annulation lors du recyclage)
@@ -1775,10 +1778,24 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.emotePickerEmotes    = self.emotePickerAllEmotes;
     [self _updatePickerArraysForSearch:@""];
 
+    // ── Onglet Favoris vide sur cette chaîne → basculer sur un autre onglet ──
+    // emotePickerFavoriteEmotes ne contient que les favoris présents dans le
+    // set channel+global de LA CHAÎNE COURANTE (voir _updatePickerArraysForSearch),
+    // donc ce count reflète bien "0 favori sur cette chaîne", pas "0 favori
+    // au total". Revérifié à CHAQUE ouverture (pas juste au 1er lancement)
+    // puisque le résultat dépend du channel courant, qui peut avoir changé
+    // depuis la dernière ouverture du picker.
+    if (self.pickerActiveTab == S7TVPickerTabFavorites && self.emotePickerFavoriteEmotes.count == 0) {
+        self.pickerActiveTab = S7TVPickerTabSevenTV;
+        self.pickerSevenTVShowingChannel = self.emotePickerChannelEmotes.count > 0
+            || self.emotePickerGlobalEmotes.count == 0;
+        self.emotePickerEmotes = [self _s7tv_currentTabEmotes];
+    }
+
     // ── Créer le picker si besoin ─────────────────────────────────────
     // Recalcule la taille à chaque ouverture pour s'adapter à l'orientation courante.
     CGSize screenSz = UIScreen.mainScreen.bounds.size;
-    CGFloat pickerH = 280.0;
+    CGFloat pickerH = kS7TVPickerGridHeight;
     CGRect pickerFrame = CGRectMake(0, 0, screenSz.width, pickerH);
     if (!self.emotePickerView) {
         [self _createEmotePickerViewWithFrame:pickerFrame];
@@ -1792,7 +1809,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.emoteSearchField.text = @"";
     [self _updatePickerArraysForSearch:@""];
     [self.emoteCollectionView reloadData];
+    [self.emoteCollectionView layoutIfNeeded]; // force le layout AVANT l'offset pour que contentSize soit à jour (sinon 1ères cellules sous les pastilles jusqu'au 1er scroll)
     [self.emoteCollectionView setContentOffset:CGPointMake(0, -self.emoteCollectionView.contentInset.top) animated:NO];
+    [self _s7tv_updateSearchClearButtonVisibility];
 
     // ── inputView = picker (keyboard-replacement mode) ──────────────────────
     // STRATÉGIE "clavier remplacé" :
@@ -1891,6 +1910,14 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // Laisse un peu de place en haut pour ne pas passer sous les pastilles
     // flottantes dès la 1ère rangée.
     cv.contentInset = UIEdgeInsetsMake(kS7TVPickerFloatSize + kS7TVPickerFloatMargin * 2, 0, 0, 0);
+    // Sans ça, UIKit combine notre contentInset manuel avec le safeAreaInset
+    // du moment (0 tant que la vue n'est pas encore dans une fenêtre) puis le
+    // recalcule une fois attachée → l'offset "-contentInset.top" posé à
+    // l'ouverture devient obsolète et les 1ères cellules passent sous les
+    // pastilles flottantes jusqu'au 1er scroll (qui force un nouveau layout).
+    // adjustmentBehavior = Never rend notre inset manuel seul responsable,
+    // stable dès la création.
+    cv.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
 
     [cv registerClass:[S7TVEmotePickerCell class] forCellWithReuseIdentifier:kEmoteCellID];
     self.emoteCollectionView = cv;
@@ -2075,7 +2102,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     search.placeholder     = @"Rechercher une emote…";
     search.font            = [UIFont systemFontOfSize:13];
     search.returnKeyType   = UIReturnKeyDone;
-    search.clearButtonMode = UITextFieldViewModeWhileEditing;
+    // Le clearButton natif (WhileEditing) ne sert à rien ici : le champ visible
+    // n'entre jamais réellement en édition (textFieldShouldBeginEditing:
+    // bloque becomeFirstResponder et ouvre une UIAlertController à la place),
+    // donc le mode "WhileEditing" ne se déclenche jamais → on utilise une
+    // croix custom toujours visible dès qu'il y a du texte (voir plus bas).
+    search.clearButtonMode = UITextFieldViewModeNever;
     search.backgroundColor = fieldColor;
     search.textColor       = textColor;
     search.layer.cornerRadius = (kS7TVPickerDockSearchH - 12) / 2.0;
@@ -2098,6 +2130,27 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [searchLeftView addSubview:searchIcon];
     search.leftView = searchLeftView;
     search.leftViewMode = UITextFieldViewModeAlways;
+
+    // ── Croix d'effacement custom, à droite ─────────────────────────────────
+    // Remplace le clearButton natif inutilisable (voir commentaire au-dessus) :
+    // efface directement la query et réapplique la recherche vide, sans passer
+    // par la UIAlertController (donc sans clavier ni confirmation manuelle).
+    UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    clearBtn.frame = CGRectMake(0, 0, 28, 20);
+    UIImageSymbolConfiguration *clearCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+    [clearBtn setImage:[UIImage systemImageNamed:@"xmark.circle.fill" withConfiguration:clearCfg]
+              forState:UIControlStateNormal];
+    clearBtn.tintColor = subColor;
+    clearBtn.hidden = YES; // masquée tant que le champ est vide
+    [clearBtn addTarget:self action:@selector(_emotePickerClearSearchTapped)
+       forControlEvents:UIControlEventTouchUpInside];
+    UIView *searchRightView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 30, 20)];
+    clearBtn.frame = CGRectMake(2, 0, 20, 20);
+    [searchRightView addSubview:clearBtn];
+    search.rightView = searchRightView;
+    search.rightViewMode = UITextFieldViewModeAlways;
+    self.emoteSearchClearBtn = clearBtn;
 
     // Déléguer à self pour intercepter le focus et éviter que le picker se ferme
     search.delegate = (id<UITextFieldDelegate>)self;
@@ -2202,6 +2255,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         rowY += rowH;
     }
     sizesPanel.contentSize = CGSizeMake(frame.size.width, rowY);
+    self.pickerSizesPanelContentHeight = rowY; // réutilisé pour dimensionner le picker au contenu réel quand le panneau est affiché
     [picker addSubview:sizesPanel];
 
     // NOTE: pas d'addSubview ici — la vue est attachée via inputView (remplace le clavier)
@@ -2272,6 +2326,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 - (void)_s7tv_relayoutPickerForSize:(CGSize)size {
     if (!self.emotePickerView) return;
 
+    // Rafraîchit la mise en avant de l'onglet actif — nécessaire car
+    // pickerActiveTab peut avoir changé entre 2 ouvertures (ex : bascule
+    // automatique hors de Favoris si 0 favori sur la chaîne courante)
+    // sans passer par _pickerTabTapped:.
+    [self _s7tv_updateTabButtonHighlight];
+
     BOOL subChoiceVisible = (self.pickerActiveTab != S7TVPickerTabFavorites);
     self.pickerSubChoiceCapsuleView.hidden = !subChoiceVisible;
 
@@ -2311,6 +2371,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     NSString *q = self.emoteSearchField.text ?: @"";
     [self _updatePickerArraysForSearch:q];
     [self.emoteCollectionView reloadData];
+    [self.emoteCollectionView layoutIfNeeded]; // force le layout AVANT l'offset pour que contentSize soit à jour (sinon 1ères cellules sous les pastilles jusqu'au 1er scroll)
     [self.emoteCollectionView setContentOffset:CGPointMake(0, -self.emoteCollectionView.contentInset.top) animated:NO];
 }
 
@@ -2331,6 +2392,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     NSString *q = self.emoteSearchField.text ?: @"";
     [self _updatePickerArraysForSearch:q];
     [self.emoteCollectionView reloadData];
+    [self.emoteCollectionView layoutIfNeeded]; // force le layout AVANT l'offset pour que contentSize soit à jour (sinon 1ères cellules sous les pastilles jusqu'au 1er scroll)
     [self.emoteCollectionView setContentOffset:CGPointMake(0, -self.emoteCollectionView.contentInset.top) animated:NO];
 }
 
@@ -2504,10 +2566,58 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     return NO;
 }
 
+// Choisit automatiquement l'onglet le plus pertinent pour une recherche
+// NON-VIDE, par ordre de priorité Favoris → Chaîne (7TV) → Globales (7TV).
+// emotePickerFavoriteEmotes/ChannelEmotes/GlobalEmotes doivent déjà avoir
+// été recalculés pour la query courante (voir _updatePickerArraysForSearch:)
+// avant l'appel. Ne touche à rien si la query est vide (pas de recherche en
+// cours → on laisse l'onglet choisi par l'utilisateur tel quel).
+- (void)_s7tv_autoSelectTabForSearchQuery:(NSString *)query {
+    NSString *q = [(query ?: @"") stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (q.length == 0) return;
+
+    if (self.emotePickerFavoriteEmotes.count > 0) {
+        self.pickerActiveTab = S7TVPickerTabFavorites;
+    } else if (self.emotePickerChannelEmotes.count > 0) {
+        self.pickerActiveTab = S7TVPickerTabSevenTV;
+        self.pickerSevenTVShowingChannel = YES;
+    } else if (self.emotePickerGlobalEmotes.count > 0) {
+        self.pickerActiveTab = S7TVPickerTabSevenTV;
+        self.pickerSevenTVShowingChannel = NO;
+    }
+    // Si aucun des 3 groupes n'a de résultat, on ne change pas d'onglet —
+    // la grille affichera "aucun résultat" sur l'onglet courant.
+
+    [self _s7tv_updateTabButtonHighlight];
+    BOOL subChoiceVisible = (self.pickerActiveTab != S7TVPickerTabFavorites);
+    self.pickerSubChoiceCapsuleView.hidden = !subChoiceVisible;
+    [self _s7tv_updateSubChoiceHighlightAnimated:YES];
+    self.emotePickerEmotes = [self _s7tv_currentTabEmotes];
+}
+
 - (void)_applySearchQuery:(NSString *)query {
     [self _updatePickerArraysForSearch:query];
+    [self _s7tv_autoSelectTabForSearchQuery:query];
     [self.emoteCollectionView reloadData];
+    [self.emoteCollectionView layoutIfNeeded]; // force le layout AVANT l'offset pour que contentSize soit à jour (sinon 1ères cellules sous les pastilles jusqu'au 1er scroll)
     [self.emoteCollectionView setContentOffset:CGPointMake(0, -self.emoteCollectionView.contentInset.top) animated:NO];
+    [self _s7tv_updateSearchClearButtonVisibility];
+}
+
+// Affiche la croix custom uniquement si le champ contient du texte.
+- (void)_s7tv_updateSearchClearButtonVisibility {
+    self.emoteSearchClearBtn.hidden = (self.emoteSearchField.text.length == 0);
+}
+
+// Tap sur la croix custom à droite du champ de recherche — efface directement,
+// sans passer par la UIAlertController (pas besoin de clavier pour vider).
+- (void)_emotePickerClearSearchTapped {
+    self.emoteSearchField.text = @"";
+    UIColor *subColor = [UIColor colorWithWhite:0.55 alpha:1.0];
+    self.emoteSearchField.attributedPlaceholder = [[NSAttributedString alloc]
+        initWithString:@"Rechercher…"
+            attributes:@{NSForegroundColorAttributeName: subColor}];
+    [self _applySearchQuery:@""];
 }
 
 // Restaure le picker après fermeture de l'UIAlertController.
@@ -2622,6 +2732,29 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         ? [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0]
         : [UIColor colorWithWhite:0.55 alpha:1.0];
     if (show) [self _emotePickerLoadRealPreviewAssetsIfNeeded];
+
+    // ── Adapter la hauteur totale du picker au contenu du panneau affiché ──
+    // Le panneau des tailles ne fait que ~5 lignes (bien moins que la hauteur
+    // fixe "grille"), ce qui laissait un grand vide sous la dernière ligne.
+    // On redimensionne maintenant le picker à la hauteur réelle du contenu
+    // quand on affiche le panneau, borné à [hauteur grille, 55% de l'écran]
+    // pour rester utilisable ; retour à la hauteur grille standard en le
+    // refermant. pickerSizesPanelContentHeight est calculé une seule fois
+    // à la création du panneau (voir _createEmotePickerViewWithFrame:).
+    CGFloat screenH = UIScreen.mainScreen.bounds.size.height;
+    CGFloat maxH    = screenH * 0.55;
+    CGFloat targetH = show
+        ? MIN(MAX(self.pickerSizesPanelContentHeight + kS7TVPickerDockH, kS7TVPickerGridHeight), maxH)
+        : kS7TVPickerGridHeight;
+    CGRect newFrame = self.emotePickerView.frame;
+    if (fabs(newFrame.size.height - targetH) > 0.5) {
+        newFrame.size.height = targetH;
+        self.emotePickerView.frame = newFrame;
+        [self _s7tv_relayoutPickerForSize:newFrame.size];
+        // Applique la nouvelle hauteur d'inputView (sinon UIKit garde l'ancienne
+        // taille tant qu'on ne force pas un rechargement).
+        [self.emotePickerTextEntryView reloadInputViews];
+    }
 }
 
 - (void)_emotePickerRowSliderChanged:(UISlider *)slider {

@@ -86,7 +86,12 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // --- Configuration ---
 @property (nonatomic, assign) BOOL isEnabled;             // 7TV activé/désactivé
 @property (nonatomic, assign) BOOL showAnimated;          // Afficher les emotes animées dans le chat
-@property (nonatomic, assign) BOOL showPickerAnimations;  // Animer les emotes dans le picker (favoris seulement)
+@property (nonatomic, assign) BOOL showPickerAnimations;  // Animer les emotes dans le picker
+// Sous-option de showPickerAnimations : quand YES, seules les emotes de la
+// section Favoris du picker sont animées (le reste reste statique). Sans
+// effet si showPickerAnimations == NO (les deux réglages dépendent l'un de
+// l'autre — voir SevenTVSettingsController pour le grisage correspondant).
+@property (nonatomic, assign) BOOL showPickerAnimationsFavoritesOnly;
 @property (nonatomic, assign) BOOL showFloatingButton;    // Afficher/masquer le bouton flottant 7TV
 // Kill switch Phase 0 (plan chat custom) : quand ON, cache la vraie
 // ChatTranscriptView et pose une vue flashy à sa place dans son UIStackView

@@ -2253,6 +2253,15 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.pickerSizesContentH = rowY + 8; // + petite marge basse, utilisé pour adapter la hauteur du picker
     [picker addSubview:sizesPanel];
 
+    // Point 3 — VRAIE CAUSE du bug "pas de bouton pour fermer/revenir" :
+    // sizesPanel est un UIScrollView OPAQUE plein cadre ajouté APRÈS closeBtn
+    // et gearBtn ci-dessus → il les recouvre visuellement ET intercepte leurs
+    // taps, même avec hidden=NO sur les deux boutons. On les repasse au
+    // premier plan explicitement pour qu'ils restent visibles et cliquables
+    // par-dessus le panneau des tailles.
+    [picker bringSubviewToFront:closeBtn];
+    [picker bringSubviewToFront:gearBtn];
+
     // NOTE: pas d'addSubview ici — la vue est attachée via inputView (remplace le clavier)
 }
 

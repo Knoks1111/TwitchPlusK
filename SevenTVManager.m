@@ -1918,7 +1918,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // sous les pastilles flottantes (fiable dès la 1ère ouverture, contrairement
     // à un contentInset + contentOffset manuel qui peut être ignoré tant que
     // le 1er layout de la collection view n'a pas eu lieu).
-    CGFloat topInset = kS7TVPickerFloatMargin * 2 + kS7TVPickerFloatSize; // dégage fermer + sous-choix
+    CGFloat topInset = kS7TVPickerFloatMargin; // marge minimale seulement — la
+    // 1ère ligne démarre quasiment au ras du haut du picker, sous les
+    // pastilles flottantes qui sont ajoutées PAR-DESSUS (z-order) juste après :
+    // effet recherché = la grille défile VISUELLEMENT DERRIÈRE ces pastilles
+    // (comme sur 7TV PC), au lieu de laisser un bandeau vide réservé qui ne
+    // fait qu'espacer la grille en dessous d'elles.
     UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
     layout.scrollDirection         = UICollectionViewScrollDirectionVertical;
     layout.minimumInteritemSpacing = 3;
@@ -2768,6 +2773,14 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.pickerSizesToggleBtn.tintColor = show
         ? [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0]
         : [UIColor colorWithWhite:0.55 alpha:1.0];
+    // Point 3 : icône explicite de "retour" (plutôt que la seule couleur) —
+    // sans ambiguïté possible sur le fait que ce bouton ramène à la grille.
+    UIImageSymbolConfiguration *backCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+    [self.pickerSizesToggleBtn setImage:
+        [UIImage systemImageNamed:(show ? @"chevron.left" : @"slider.horizontal.3")
+                withConfiguration:backCfg]
+                                forState:UIControlStateNormal];
 
     // ── Point 5 : adapter la hauteur du picker au panneau où on se trouve ──
     // Le panneau des tailles n'a que 5 lignes courtes : pas besoin de garder

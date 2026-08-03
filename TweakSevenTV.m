@@ -1696,6 +1696,136 @@ static void s7tv_dumpObjectIvars(id obj, NSString *label, NSInteger maxIvars, NS
 }
 
 
+// ────────────────────────────────────────────────────────────
+// MARK: - Sondage de méthodes 0-argument par mot-clé
+// ────────────────────────────────────────────────────────────
+//
+// Constat sur les deux essais précédents : ni les @objc properties, ni les
+// ivars objets de la vue elle-même n'exposent le vrai modèle de sections
+// (juste du bruit UIView/CALayer standard). Piste suivante : les MÉTHODES.
+// Contrairement à un swizzle sur un sélecteur inconnu (qui exigerait de
+// deviner le nombre/type exact des arguments pour construire un
+// trampoline compatible), NSInvocation utilise la signature EXACTE que le
+// runtime connaît déjà pour cette méthode — donc aucun risque de mismatch
+// d'ABI, quel que soit le type réel de retour.
+//
+// Restriction volontaire aux méthodes à 0 argument (self + _cmd
+// seulement) : ce sont typiquement les "computed properties" Swift
+// exposées à ObjC (ex. la traduction d'un `var sections: [X] { get }`),
+// donc rien à fournir en paramètre et peu de risque d'effet de bord — on
+// exclut en plus tout sélecteur qui ressemble à une action plutôt qu'à un
+// accesseur (voir s7tv_selectorLooksLikeSideEffect). Lecture seule : la
+// valeur de retour est uniquement observée/logguée, jamais réutilisée ni
+// modifiée, et rien n'est renvoyé à l'appelant d'origine (ce n'est pas un
+// hook, juste un appel direct qu'on fait nous-mêmes en plus).
+static BOOL s7tv_selectorLooksLikeSideEffect(NSString *selName) {
+    static NSArray<NSString *> *badPrefixes = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        badPrefixes = @[@"set", @"init", @"dealloc", @"reload", @"update", @"refresh",
+                         @"remove", @"delete", @"reset", @"dismiss", @"close", @"cancel",
+                         @"toggle", @"invalidate", @"clear", @"did", @"will", @"prepare",
+                         @"perform", @"handle", @"add", @"insert", @"apply", @"configure",
+                         @"layout", @"draw", @"send", @"post", @"fire", @"start", @"stop",
+                         @"pause", @"resume", @"open", @"present", @"animate", @"scroll",
+                         @"select", @"deselect", @"highlight", @"unhighlight", @"copy",
+                         @"mutableCopy", @"encode", @"forward"];
+    });
+    NSString *lower = selName.lowercaseString;
+    for (NSString *prefix in badPrefixes) {
+        if ([lower hasPrefix:prefix]) return YES;
+    }
+    return NO;
+}
+
+static NSArray<NSString *> *s7tv_interestingKeywords(void) {
+    return @[@"section", @"categor", @"channel", @"model", @"emote", @"group",
+              @"tab", @"sticker", @"palette", @"unlock", @"owner", @"broadcaster",
+              @"state", @"snapshot", @"item", @"identifier"];
+}
+
+static void s7tv_probeKeywordMethods(id obj, NSString *label, NSInteger maxHits, NSInteger depth) {
+    if (!obj || depth < 0) return;
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    NSArray<NSString *> *keywords = s7tv_interestingKeywords();
+
+    [mgr log:@"[NetDump] 🛰️ ── Sondage méthodes 0-arg de %@ (%@) ──────────────", label, NSStringFromClass([obj class])];
+
+    NSMutableSet<NSString *> *seenSelectors = [NSMutableSet set];
+    NSMutableArray<NSArray *> *toRecurse = [NSMutableArray array]; // [[label, valeur], ...]
+    Class cls = [obj class];
+    NSInteger hits = 0;
+    while (cls && cls != [NSObject class] && hits < maxHits) {
+        unsigned int count = 0;
+        Method *methods = class_copyMethodList(cls, &count);
+        for (unsigned int i = 0; i < count && hits < maxHits; i++) {
+            SEL sel = method_getName(methods[i]);
+            NSString *selName = NSStringFromSelector(sel);
+            if ([seenSelectors containsObject:selName]) continue;
+            [seenSelectors addObject:selName];
+
+            // 0 argument uniquement : self + _cmd = 2 arguments totaux au
+            // sens ObjC (donc pas de paramètre réel à fournir).
+            if (method_getNumberOfArguments(methods[i]) != 2) continue;
+            if (s7tv_selectorLooksLikeSideEffect(selName)) continue;
+
+            NSString *lowerSel = selName.lowercaseString;
+            BOOL matches = NO;
+            for (NSString *kw in keywords) {
+                if ([lowerSel rangeOfString:kw].location != NSNotFound) { matches = YES; break; }
+            }
+            if (!matches) continue;
+
+            NSMethodSignature *sig = nil;
+            @try { sig = [obj methodSignatureForSelector:sel]; } @catch (__unused NSException *ex) {}
+            if (!sig) continue;
+
+            @try {
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                inv.selector = sel;
+                [inv invokeWithTarget:obj];
+
+                const char *retType = sig.methodReturnType;
+                if (retType[0] == '@') {
+                    __unsafe_unretained id result = nil;
+                    [inv getReturnValue:&result];
+                    [mgr log:@"[NetDump] 🛰️   -[%@ %@] → %@", NSStringFromClass(cls), selName, s7tv_briefDescribe(result)];
+                    if (depth > 0 && s7tv_looksLikeInterestingModel(result)) {
+                        [toRecurse addObject:@[selName, result]];
+                    }
+                } else if (retType[0] == 'q' || retType[0] == 'Q' || retType[0] == 'l' ||
+                           retType[0] == 'L' || retType[0] == 'i' || retType[0] == 'I' ||
+                           retType[0] == 's' || retType[0] == 'S') {
+                    NSInteger result = 0;
+                    [inv getReturnValue:&result];
+                    [mgr log:@"[NetDump] 🛰️   -[%@ %@] → %ld (entier)", NSStringFromClass(cls), selName, (long)result];
+                } else if (retType[0] == 'B' || retType[0] == 'c') {
+                    BOOL result = NO;
+                    [inv getReturnValue:&result];
+                    [mgr log:@"[NetDump] 🛰️   -[%@ %@] → %@ (bool)", NSStringFromClass(cls), selName, result ? @"YES" : @"NO"];
+                } else {
+                    [mgr log:@"[NetDump] 🛰️   -[%@ %@] → (type retour '%s' non affiché)", NSStringFromClass(cls), selName, retType];
+                }
+                hits++;
+            } @catch (NSException *ex) {
+                [mgr log:@"[NetDump] 🛰️   -[%@ %@] → ⚠️ exception à l'appel (%@)", NSStringFromClass(cls), selName, ex.reason];
+            }
+        }
+        if (methods) free(methods);
+        cls = class_getSuperclass(cls);
+    }
+
+    if (hits == 0) {
+        [mgr log:@"[NetDump] 🛰️   (aucune méthode candidate trouvée)"];
+    }
+    [mgr log:@"[NetDump] 🛰️ ── fin sondage %@ ──────────────", label];
+
+    for (NSArray *pair in toRecurse) {
+        NSString *subLabel = [NSString stringWithFormat:@"%@ -[%@]", label, pair[0]];
+        s7tv_probeKeywordMethods(pair[1], subLabel, maxHits, depth - 1);
+    }
+}
+
 // chaque scroll (qui redéclenche un dump écran complet) republierait le
 // même bloc de logs en boucle. Remis à NO dès que le picker disparaît de sa
 // fenêtre hôte (voir s7tv_pickerCheckWindow).
@@ -1708,6 +1838,7 @@ static void s7tv_dumpObjectIvars(id obj, NSString *label, NSInteger maxIvars, NS
 // (Twitch.ModernEmoticonPaletteStateManager). La fonction reste disponible
 // plus bas dans ce fichier si besoin de la rappeler manuellement plus tard.
 static BOOL s_pickerIvarsDataSourceDumped = NO;
+static BOOL s_pickerMethodsProbedDataSourceDumped = NO;
 
 // Dump complet écran (parcours de TOUTES les vues, frames, images...) —
 // coûteux en volume de logs. On ne le déclenche plus qu'UNE FOIS par
@@ -1759,12 +1890,20 @@ static void s7tv_performFullScreenDump(UIWindow *window, NSString *reason) {
                     cn, NSStringFromClass([ds class]), (long)sections,
                     [perSection componentsJoinedByString:@" | "]];
 
-                // Seule piste encore active : le state manager privé,
-                // invisible aux @objc properties (voir commentaire plus
-                // haut), potentiellement retrouvable en ivar brut.
+                // Piste ivars : n'a rien donné (que du bruit UIView/CALayer
+                // standard) — gardée quand même, coût négligeable.
                 if (!s_pickerIvarsDataSourceDumped) {
                     s7tv_dumpObjectIvars(ds, [NSString stringWithFormat:@"%@.dataSource", cn], 40, 1);
                     s_pickerIvarsDataSourceDumped = YES;
+                }
+                // Nouvelle piste : sondage des méthodes 0-argument dont le
+                // nom contient un mot-clé pertinent (section, channel,
+                // model, emote...), invoquées via NSInvocation avec la
+                // signature exacte connue du runtime — pas un swizzle,
+                // juste un appel direct en plus, en lecture seule.
+                if (!s_pickerMethodsProbedDataSourceDumped) {
+                    s7tv_probeKeywordMethods(ds, [NSString stringWithFormat:@"%@.dataSource", cn], 30, 1);
+                    s_pickerMethodsProbedDataSourceDumped = YES;
                 }
             }
         }
@@ -1914,6 +2053,7 @@ static void s7tv_pickerCheckWindow(UIWindow *window, NSString *triggerReason) {
         // reverrait plus jamais les logs 🧬/dump complet après la toute
         // première fois.
         s_pickerIvarsDataSourceDumped = NO;
+        s_pickerMethodsProbedDataSourceDumped = NO;
         s_pickerAutoFullDumpDoneThisSession = NO;
         return;
     }

@@ -1199,6 +1199,14 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     NSMutableArray<SevenTVEmote *> *favs    = [NSMutableArray array];
     NSMutableArray<SevenTVEmote *> *channel = [NSMutableArray array];
     NSMutableArray<SevenTVEmote *> *global  = [NSMutableArray array];
+    // Anti-doublon Favoris : une chaîne peut ajouter une emote globale à son
+    // propre emote-set sous un nom différent (alias/renommage) — le
+    // dédoublonnage channel/global en amont (par NOM) ne fusionne alors pas
+    // les deux objets, qui partagent pourtant le même emoteID 7TV. Comme le
+    // favori est stocké par ID, les deux passeraient isEmoteFavorited: et
+    // l'emote apparaîtrait 2x dans l'onglet Favoris. On ne garde donc que la
+    // première occurrence de chaque ID favori.
+    NSMutableSet<NSString *> *seenFavoriteIDs = [NSMutableSet set];
 
     // Snapshot des dicts pour distinguer channel vs global
     __block NSDictionary *channelDict;
@@ -1213,7 +1221,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         // (channel/globales) avec l'étoile affichée — elle apparaît aussi
         // dans l'onglet Favoris. C'est l'onglet actif qui choisit quel array
         // afficher, pas une appartenance à une section unique comme avant.
-        if ([[SevenTVManager sharedManager] isEmoteFavorited:e.emoteID]) [favs addObject:e];
+        if ([[SevenTVManager sharedManager] isEmoteFavorited:e.emoteID]
+            && e.emoteID.length > 0
+            && ![seenFavoriteIDs containsObject:e.emoteID]) {
+            [seenFavoriteIDs addObject:e.emoteID];
+            [favs addObject:e];
+        }
         if (channelDict[e.emoteName] != nil) {
             [channel addObject:e];
         } else {

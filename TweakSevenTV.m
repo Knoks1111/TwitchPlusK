@@ -1839,6 +1839,8 @@ static void s7tv_probeKeywordMethods(id obj, NSString *label, NSInteger maxHits,
 // plus bas dans ce fichier si besoin de la rappeler manuellement plus tard.
 static BOOL s_pickerIvarsDataSourceDumped = NO;
 static BOOL s_pickerMethodsProbedDataSourceDumped = NO;
+static BOOL s_pickerDelegateProbed = NO;
+static BOOL s_pickerOwnerVCProbed = NO;
 
 // Dump complet écran (parcours de TOUTES les vues, frames, images...) —
 // coûteux en volume de logs. On ne le déclenche plus qu'UNE FOIS par
@@ -1890,20 +1892,54 @@ static void s7tv_performFullScreenDump(UIWindow *window, NSString *reason) {
                     cn, NSStringFromClass([ds class]), (long)sections,
                     [perSection componentsJoinedByString:@" | "]];
 
-                // Piste ivars : n'a rien donné (que du bruit UIView/CALayer
-                // standard) — gardée quand même, coût négligeable.
-                if (!s_pickerIvarsDataSourceDumped) {
-                    s7tv_dumpObjectIvars(ds, [NSString stringWithFormat:@"%@.dataSource", cn], 40, 1);
-                    s_pickerIvarsDataSourceDumped = YES;
+                // Pistes ivars + méthodes 0-arg sur le dataSource (la vue
+                // elle-même) DÉSACTIVÉES — confirmées sans info exploitable
+                // sur 2 essais complets (que du bruit UIView/CALayer et des
+                // catégories tierces). On concentre l'effort sur le
+                // delegate et la chaîne nextResponder ci-dessous, plus
+                // prometteurs. Pour réactiver au besoin :
+                //   s7tv_dumpObjectIvars(ds, ..., 40, 1);
+                //   s7tv_probeKeywordMethods(ds, ..., 30, 1);
+                (void)s_pickerIvarsDataSourceDumped;    // silence "unused" — variable gardée pour compat
+                (void)s_pickerMethodsProbedDataSourceDumped;
+
+
+                // Le delegate peut être un objet DIFFÉRENT du dataSource
+                // selon l'architecture — s'il l'est, il vaut le coup de le
+                // sonder aussi avec les mêmes techniques.
+                id<UICollectionViewDelegate> delegate = cv.delegate;
+                if (delegate && (id)delegate != (id)ds && !s_pickerDelegateProbed) {
+                    NSString *delegateLabel = [NSString stringWithFormat:@"%@.delegate", cn];
+                    [mgr log:@"[NetDump] 🧭 delegate différent du dataSource : %@ (%@)", delegateLabel, NSStringFromClass([delegate class])];
+                    s7tv_dumpObjectIvars(delegate, delegateLabel, 40, 1);
+                    s7tv_probeKeywordMethods(delegate, delegateLabel, 30, 1);
+                    s_pickerDelegateProbed = YES;
                 }
-                // Nouvelle piste : sondage des méthodes 0-argument dont le
-                // nom contient un mot-clé pertinent (section, channel,
-                // model, emote...), invoquées via NSInvocation avec la
-                // signature exacte connue du runtime — pas un swizzle,
-                // juste un appel direct en plus, en lecture seule.
-                if (!s_pickerMethodsProbedDataSourceDumped) {
-                    s7tv_probeKeywordMethods(ds, [NSString stringWithFormat:@"%@.dataSource", cn], 30, 1);
-                    s_pickerMethodsProbedDataSourceDumped = YES;
+
+                // Remonte la chaîne nextResponder depuis la collection view
+                // jusqu'à trouver un UIViewController — constat des 3
+                // essais précédents : la vue elle-même ne détient rien
+                // d'exploitable, elle est probablement un simple renderer.
+                // Son propriétaire (contrôleur/coordinateur) est un
+                // meilleur candidat pour détenir le vrai state manager.
+                if (!s_pickerOwnerVCProbed) {
+                    UIResponder *r = cv.nextResponder;
+                    NSInteger hops = 0;
+                    UIViewController *ownerVC = nil;
+                    while (r && hops < 20) {
+                        if ([r isKindOfClass:[UIViewController class]]) { ownerVC = (UIViewController *)r; break; }
+                        r = r.nextResponder;
+                        hops++;
+                    }
+                    if (ownerVC) {
+                        NSString *vcLabel = [NSString stringWithFormat:@"%@ (owner VC, +%ld hop(s))", NSStringFromClass([ownerVC class]), (long)hops];
+                        [mgr log:@"[NetDump] 🧭 UIViewController trouvé via nextResponder depuis %@ : %@", cn, vcLabel];
+                        s7tv_dumpObjectIvars(ownerVC, vcLabel, 40, 1);
+                        s7tv_probeKeywordMethods(ownerVC, vcLabel, 30, 1);
+                    } else {
+                        [mgr log:@"[NetDump] 🧭 Aucun UIViewController trouvé via nextResponder depuis %@ (chaîne interrompue après %ld hop(s))", cn, (long)hops];
+                    }
+                    s_pickerOwnerVCProbed = YES;
                 }
             }
         }
@@ -2054,6 +2090,8 @@ static void s7tv_pickerCheckWindow(UIWindow *window, NSString *triggerReason) {
         // première fois.
         s_pickerIvarsDataSourceDumped = NO;
         s_pickerMethodsProbedDataSourceDumped = NO;
+        s_pickerDelegateProbed = NO;
+        s_pickerOwnerVCProbed = NO;
         s_pickerAutoFullDumpDoneThisSession = NO;
         return;
     }

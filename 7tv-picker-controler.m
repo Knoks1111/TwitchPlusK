@@ -297,19 +297,29 @@ static const CGFloat kS7TVPickerGridDefaultH =
 - (void)_s7tv_channelJoinedNotification:(NSNotification *)note {
     NSString *channelID = note.userInfo[@"channelID"];
     if (!channelID.length) return;
-    // Le bouton n'existe que si le picker a déjà été construit une première fois.
-    if (!self.pickerSubChoiceChannelBtn) return;
 
-    UIImage *cached = self.pickerChannelAvatarCache[channelID];
-    if (cached) {
-        [self _s7tv_applyChannelAvatarImage:cached];
-    } else {
-        // Nouvelle chaîne pas encore en cache → on repasse immédiatement au
-        // placeholder générique le temps du fetch, pour ne jamais laisser
-        // affiché l'avatar de l'ancienne chaîne par erreur.
-        [self _s7tv_resetChannelButtonToPlaceholder];
-        [self _s7tv_loadChannelAvatarForChannelID:channelID];
-    }
+    // CRITIQUE : S7TVChannelJoined est postée depuis s7tv_handleRoomState
+    // pendant le traitement des messages IRC (WebSocket), donc HORS main
+    // thread. NSNotificationCenter exécute les observers de façon SYNCHRONE
+    // sur le thread qui poste — sans ce dispatch, tout ce qui suit (UIButton
+    // setImage:) s'exécute hors main thread : ça ne crashe pas forcément,
+    // mais ça ne se rend pas de façon fiable (c'était la cause du bug "l'avatar
+    // ne change pas au changement de chaîne").
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Le bouton n'existe que si le picker a déjà été construit une première fois.
+        if (!self.pickerSubChoiceChannelBtn) return;
+
+        UIImage *cached = self.pickerChannelAvatarCache[channelID];
+        if (cached) {
+            [self _s7tv_applyChannelAvatarImage:cached];
+        } else {
+            // Nouvelle chaîne pas encore en cache → on repasse immédiatement au
+            // placeholder générique le temps du fetch, pour ne jamais laisser
+            // affiché l'avatar de l'ancienne chaîne par erreur.
+            [self _s7tv_resetChannelButtonToPlaceholder];
+            [self _s7tv_loadChannelAvatarForChannelID:channelID];
+        }
+    });
 }
 
 // Appelé juste après la création de channelBtn (voir
@@ -434,10 +444,17 @@ static const CGFloat kS7TVPickerGridDefaultH =
     }];
 }
 
+// Diamètre réel de l'avatar dessiné — volontairement plus petit que
+// kS7TVPickerFloatSize (30pt, taille du bouton) pour laisser une marge
+// cohérente avec le placeholder SF Symbol (14pt) et le logo 7TV du bouton
+// voisin (insets 9pt) ; un cercle plein cadre 30pt collait aux bords et
+// paraissait trop imposant dans la capsule.
+static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
+
 - (void)_s7tv_applyChannelAvatarImage:(UIImage *)image {
     UIButton *btn = self.pickerSubChoiceChannelBtn;
     if (!btn || !image) return;
-    UIImage *circular = [self _s7tv_circularAvatarFromImage:image diameter:kS7TVPickerFloatSize];
+    UIImage *circular = [self _s7tv_circularAvatarFromImage:image diameter:kS7TVPickerAvatarDiameter];
     if (!circular) return;
     btn.imageEdgeInsets = UIEdgeInsetsZero;
     [btn setImage:[circular imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal]

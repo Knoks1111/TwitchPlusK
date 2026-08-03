@@ -600,11 +600,16 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
     [picker addSubview:cv];
 
-    // ── Pastille fermer (flottante, haut gauche) ────────────────────────────
+    // ── Pastille fermer (flottante, haut droite) ────────────────────────────
+    // Inversée avec la capsule sous-choix ci-dessous (qui passe à gauche) —
+    // la position réelle est de toute façon recalculée à chaque ouverture et
+    // à chaque rotation par -_s7tv_relayoutPickerForSize:, ces valeurs ne
+    // servent qu'au tout premier affichage.
     UIButton *closeBtn = [self _s7tv_makeFloatingPillWithFrame:
-        CGRectMake(kS7TVPickerFloatMargin, kS7TVPickerFloatMargin, kS7TVPickerFloatSize, kS7TVPickerFloatSize)
+        CGRectMake(frame.size.width - kS7TVPickerFloatMargin - kS7TVPickerFloatSize,
+                   kS7TVPickerFloatMargin, kS7TVPickerFloatSize, kS7TVPickerFloatSize)
                                                       cardColor:cardColor];
-    closeBtn.autoresizingMask = UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleBottomMargin;
+    closeBtn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
     UIImageSymbolConfiguration *xCfg = [UIImageSymbolConfiguration
         configurationWithPointSize:12 weight:UIImageSymbolWeightSemibold];
     [closeBtn setImage:[UIImage systemImageNamed:@"xmark" withConfiguration:xCfg]
@@ -615,18 +620,17 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.pickerCloseFloatBtn = closeBtn;
     [picker addSubview:closeBtn];
 
-    // ── Capsule sous-choix Chaîne/Globales (flottante, haut droite) ─────────
+    // ── Capsule sous-choix Chaîne/Globales (flottante, haut gauche) ─────────
     // Équivalent des 2 petites icônes en haut à droite sur 7TV PC. Masquée
     // pour l'onglet Favoris. Pas d'avatar de chaîne branché → symbole
     // générique en placeholder (comme l'onglet Natif Twitch, chantier séparé).
     CGFloat capsuleW = kS7TVPickerFloatSize * 2.0;
     UIView *capsule = [[UIView alloc] initWithFrame:
-        CGRectMake(frame.size.width - kS7TVPickerFloatMargin - capsuleW, kS7TVPickerFloatMargin,
-                   capsuleW, kS7TVPickerFloatSize)];
+        CGRectMake(kS7TVPickerFloatMargin, kS7TVPickerFloatMargin, capsuleW, kS7TVPickerFloatSize)];
     capsule.backgroundColor = [cardColor colorWithAlphaComponent:0.92];
     capsule.layer.cornerRadius = kS7TVPickerFloatSize / 2.0;
     capsule.clipsToBounds = YES;
-    capsule.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
+    capsule.autoresizingMask = UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleBottomMargin;
     capsule.hidden = (self.pickerActiveTab == S7TVPickerTabFavorites);
 
     UIView *subChoiceIndicator = [[UIView alloc] initWithFrame:CGRectMake(0, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize)];
@@ -895,15 +899,28 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 - (void)_s7tv_relayoutPickerForSize:(CGSize)size {
     if (!self.emotePickerView) return;
 
-    BOOL subChoiceVisible = (self.pickerActiveTab != S7TVPickerTabFavorites);
+    // Panneau des tailles affiché → la capsule sous-choix (Chaîne/Globales)
+    // n'a pas de sens ici, elle reste cachée quel que soit l'onglet.
+    BOOL subChoiceVisible = (self.pickerActiveTab != S7TVPickerTabFavorites) && !self.pickerSizesPanelVisible;
     self.pickerSubChoiceCapsuleView.hidden = !subChoiceVisible;
 
     self.emoteCollectionView.frame = CGRectMake(0, 0, size.width, size.height);
 
     CGFloat capsuleW = kS7TVPickerFloatSize * 2.0;
-    self.pickerCloseFloatBtn.frame = CGRectMake(kS7TVPickerFloatMargin, kS7TVPickerFloatMargin,
+    // ── Croix fermer : à droite dans la grille, à gauche dans le panneau des
+    // tailles — repositionnée ici à CHAQUE ouverture/rotation, donc jamais
+    // laissée du mauvais côté même si le picker a été fermé pendant qu'il
+    // était sur le panneau des tailles (voir le "reset grille" plus haut
+    // dans -_buildAndShowEmotePickerForView:, qui appelle cette méthode).
+    CGFloat closeX = self.pickerSizesPanelVisible
+        ? kS7TVPickerFloatMargin
+        : (size.width - kS7TVPickerFloatMargin - kS7TVPickerFloatSize);
+    self.pickerCloseFloatBtn.frame = CGRectMake(closeX, kS7TVPickerFloatMargin,
                                                  kS7TVPickerFloatSize, kS7TVPickerFloatSize);
-    self.pickerSubChoiceCapsuleView.frame = CGRectMake(size.width - kS7TVPickerFloatMargin - capsuleW,
+    // La capsule sous-choix reste à gauche en permanence (miroir de la croix,
+    // qui elle est à droite en mode grille) — sa position n'a pas d'importance
+    // quand elle est masquée (Favoris / panneau des tailles).
+    self.pickerSubChoiceCapsuleView.frame = CGRectMake(kS7TVPickerFloatMargin,
                                                          kS7TVPickerFloatMargin, capsuleW, kS7TVPickerFloatSize);
     [self _s7tv_updateSubChoiceHighlightAnimated:NO];
 
@@ -911,8 +928,14 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
                           - kS7TVPickerFloatGap - kS7TVPickerFloatSize;
     CGFloat tabCapsuleW = kS7TVPickerFloatSize * 3.0;
     self.pickerTabCapsuleView.frame = CGRectMake(kS7TVPickerFloatMargin, bottomRowY, tabCapsuleW, kS7TVPickerFloatSize);
-    self.pickerSizesToggleBtn.frame = CGRectMake(size.width - kS7TVPickerFloatMargin - kS7TVPickerFloatSize,
-                                                  bottomRowY, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
+    // ── Bouton ⚙️ / retour : à droite dans la grille (aligné sous la croix,
+    // elle aussi à droite), à gauche dans le panneau des tailles (aligné sous
+    // la croix, elle aussi à gauche) — les 2 boutons restent alignés verticalement
+    // des deux côtés, quel que soit le panneau affiché.
+    CGFloat gearX = self.pickerSizesPanelVisible
+        ? kS7TVPickerFloatMargin
+        : (size.width - kS7TVPickerFloatMargin - kS7TVPickerFloatSize);
+    self.pickerSizesToggleBtn.frame = CGRectMake(gearX, bottomRowY, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
     [self _s7tv_updateTabButtonHighlight];
 
     CGFloat searchY = size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH;
@@ -1362,22 +1385,25 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // la hauteur de la grille (qui laissait un grand vide en dessous) si le
     // contenu réel est plus court. On ne dépasse jamais la hauteur "grille"
     // pour rester dans une zone confortable à l'écran.
+    // Toujours ré-appeler le relayout (pas seulement si la hauteur change) :
+    // c'est lui qui replace la croix et le bouton ⚙️/retour du bon côté selon
+    // pickerSizesPanelVisible (à droite en grille, à gauche dans le panneau
+    // des tailles) — sans ça, sur un contenu de hauteur identique par
+    // coïncidence, les boutons resteraient du mauvais côté.
     CGRect f = self.emotePickerView.frame;
     CGFloat targetH = show
         ? MIN(MAX(self.sizesPanel.contentHeight, 160.0), kS7TVPickerGridDefaultH)
         : kS7TVPickerGridDefaultH;
-    if (fabs(f.size.height - targetH) > 0.5) {
-        f.size.height = targetH;
-        __weak typeof(self) weakSelf = self;
-        [UIView animateWithDuration:0.2 animations:^{
-            weakSelf.emotePickerView.frame = f;
-            [weakSelf _s7tv_relayoutPickerForSize:f.size];
-        } completion:^(BOOL finished) {
-            // Force UIKit à relire la nouvelle taille de l'inputView (sinon la
-            // zone réservée au clavier peut rester figée à l'ancienne hauteur).
-            [weakSelf.emotePickerTextEntryView reloadInputViews];
-        }];
-    }
+    f.size.height = targetH;
+    __weak typeof(self) weakSelf = self;
+    [UIView animateWithDuration:0.2 animations:^{
+        weakSelf.emotePickerView.frame = f;
+        [weakSelf _s7tv_relayoutPickerForSize:f.size];
+    } completion:^(BOOL finished) {
+        // Force UIKit à relire la nouvelle taille de l'inputView (sinon la
+        // zone réservée au clavier peut rester figée à l'ancienne hauteur).
+        [weakSelf.emotePickerTextEntryView reloadInputViews];
+    }];
 
     if (show) [self.sizesPanel loadRealPreviewAssetsIfNeeded];
 }

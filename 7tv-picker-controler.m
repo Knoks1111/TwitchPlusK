@@ -442,13 +442,18 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.emotePickerEmotes    = self.emotePickerAllEmotes;
     [self _updatePickerArraysForSearch:@""];
 
-    // ── Point 1 : ne pas rester par défaut sur l'onglet Favoris si la chaîne
-    // courante n'a aucun favori — revérifié à CHAQUE ouverture (peut changer
-    // si on a changé de chaîne entre deux ouvertures du picker).
-    if (self.pickerActiveTab == S7TVPickerTabFavorites && self.emotePickerFavoriteEmotes.count == 0) {
+    // ── Choix de l'onglet de départ : Favoris s'il y a au moins un favori
+    // (sur la chaîne courante), sinon 7TV/Channel. Revérifié à CHAQUE
+    // ouverture — pas seulement quand on était déjà sur Favoris — pour
+    // refléter les favoris ajoutés/retirés ou un changement de chaîne
+    // depuis la dernière ouverture du picker.
+    if (self.emotePickerFavoriteEmotes.count > 0) {
+        self.pickerActiveTab = S7TVPickerTabFavorites;
+    } else {
         self.pickerActiveTab = S7TVPickerTabSevenTV;
-        [self _updatePickerArraysForSearch:@""]; // recalcule emotePickerEmotes pour le nouvel onglet
+        self.pickerSevenTVShowingChannel = YES;
     }
+    [self _updatePickerArraysForSearch:@""]; // recalcule emotePickerEmotes pour l'onglet choisi
 
     // ── Créer le picker si besoin ─────────────────────────────────────
     // Recalcule la taille à chaque ouverture pour s'adapter à l'orientation courante.
@@ -1374,15 +1379,14 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     for (UIButton *btn in self.pickerTabButtons) btn.hidden = show;
     // Le sous-choix ne doit de toute façon être visible que hors onglet Favoris
     self.pickerSubChoiceCapsuleView.hidden = show || (self.pickerActiveTab == S7TVPickerTabFavorites);
-    self.pickerSizesToggleBtn.tintColor = show
-        ? [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0]
-        : [UIColor colorWithWhite:0.55 alpha:1.0];
-    // Point 3 : icône explicite de "retour" (plutôt que la seule couleur) —
-    // sans ambiguïté possible sur le fait que ce bouton ramène à la grille.
+    self.pickerSizesToggleBtn.tintColor = [UIColor colorWithWhite:0.55 alpha:1.0];
+    // Icône explicite pour indiquer où mène le bouton : un émoticône (retour
+    // à la grille d'emotes) plutôt qu'un chevron générique ou une couleur —
+    // pas de teinte accent ici, contrairement à avant.
     UIImageSymbolConfiguration *backCfg = [UIImageSymbolConfiguration
         configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
     [self.pickerSizesToggleBtn setImage:
-        [UIImage systemImageNamed:(show ? @"chevron.left" : @"textformat.size")
+        [UIImage systemImageNamed:(show ? @"face.smiling" : @"textformat.size")
                 withConfiguration:backCfg]
                                 forState:UIControlStateNormal];
 

@@ -1584,6 +1584,61 @@ static UIWindow *s7tv_frontmostWindow(void) {
 }
 
 // ────────────────────────────────────────────────────────────
+// MARK: - Énumération générique de TOUTES les fenêtres connues
+// ────────────────────────────────────────────────────────────
+//
+// s7tv_frontmostWindow() (ci-dessus) ne retourne qu'UNE fenêtre — c'était la
+// cause racine du bug "picker_trouvé=non" : si le picker natif vit dans une
+// fenêtre qui n'est ni key ni first, le watcher ne la scannait tout
+// simplement jamais, quel que soit son nom de classe. Ici on récupère TOUTES
+// les fenêtres, depuis deux sources complémentaires, sans jamais nommer une
+// classe de fenêtre précise :
+//   1) [UIApplication sharedApplication].windows — couvre encore la plupart
+//      des fenêtres attachées au process, y compris certaines fenêtres
+//      "système" hébergées côté app (clavier, effets de texte, etc.).
+//   2) chaque UIWindowScene connectée → sa propre liste .windows — utile
+//      sur les configurations multi-fenêtres/multi-scène (iPad, Stage
+//      Manager) où (1) seul peut être incomplet.
+// Dédoublonnage par identité de pointeur (comportement par défaut de
+// NSMutableOrderedSet pour un UIWindow qui ne surcharge pas isEqual:).
+static NSArray<UIWindow *> *s7tv_allKnownWindows(void) {
+    NSMutableOrderedSet<UIWindow *> *set = [NSMutableOrderedSet orderedSet];
+
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w) [set addObject:w];
+    }
+
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *ws = (UIWindowScene *)scene;
+        for (UIWindow *w in ws.windows) {
+            if (w) [set addObject:w];
+        }
+    }
+
+    return set.array;
+}
+
+// Recherche générique d'une vue dont le nom de classe contient
+// "EmoticonPalette" (constat empirique du dump manuel — c'est la seule
+// signature qu'on utilise, jamais une classe de fenêtre). BFS plafonné pour
+// borner le coût même sur une hiérarchie profonde.
+static UIView *s7tv_findPaletteRoot(UIView *root, NSInteger nodeCap) {
+    if (!root) return nil;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
+    NSInteger count = 0;
+    while (queue.count > 0 && count < nodeCap) {
+        UIView *sv = queue.firstObject; [queue removeObjectAtIndex:0];
+        count++;
+        [queue addObjectsFromArray:sv.subviews];
+        if ([NSStringFromClass([sv class]) rangeOfString:@"EmoticonPalette"].location != NSNotFound) {
+            return sv;
+        }
+    }
+    return nil;
+}
+
+// ────────────────────────────────────────────────────────────
 // MARK: - Watcher automatique du picker natif (diagnostic TEMPORAIRE)
 // ────────────────────────────────────────────────────────────
 //
@@ -1596,6 +1651,14 @@ static UIWindow *s7tv_frontmostWindow(void) {
 // du picker (pas de scroll forcé, pas d'appel à ses méthodes internes), donc
 // pas une "injection" : on lit ce que l'utilisateur fait défiler lui-même.
 static NSString *s_pickerWatchLastFingerprint = nil;
+
+// Fenêtre hôte du picker, confirmée soit par le scan périodique, soit (de
+// façon plus fiable et plus rapide) par le hook événementiel sur
+// sendEvent: ci-dessous. weak : on ne veut surtout pas prolonger la vie
+// d'une fenêtre système par accident — si elle est libérée, la variable
+// redevient nil naturellement et le prochain check retombe sur le scan
+// complet.
+static __weak UIWindow *s_pickerConfirmedHostWindow = nil;
 
 static NSString *s7tv_pickerVisibleFingerprint(UIView *root) {
     NSMutableArray<NSString *> *titles = [NSMutableArray array];
@@ -1617,6 +1680,33 @@ static NSString *s7tv_pickerVisibleFingerprint(UIView *root) {
 
 static NSInteger s_pickerWatchTickCount = 0;
 
+// Vérifie UNE fenêtre donnée : si elle contient toujours le picker, compare
+// le fingerprint (titres de sections visibles) à la dernière valeur connue
+// et ne redéclenche un dump complet QUE si quelque chose a changé (nouveau
+// scroll, changement d'onglet...). Partagée entre le tick périodique et le
+// déclenchement événementiel (sendEvent:) pour ne pas dupliquer la logique.
+static void s7tv_pickerCheckWindow(UIWindow *window, NSString *triggerReason) {
+    if (!window) return;
+
+    UIView *paletteRoot = s7tv_findPaletteRoot(window, 4000);
+    if (!paletteRoot) {
+        // Picker plus présent dans cette fenêtre : si c'était notre fenêtre
+        // hôte confirmée, on la relâche pour retomber sur le scan complet
+        // au prochain tick/événement (couvre le cas où le picker change de
+        // fenêtre porteuse d'une ouverture à l'autre).
+        if (s_pickerConfirmedHostWindow == window) s_pickerConfirmedHostWindow = nil;
+        if (s_pickerWatchLastFingerprint) s_pickerWatchLastFingerprint = nil;
+        return;
+    }
+
+    NSString *fingerprint = s7tv_pickerVisibleFingerprint(paletteRoot);
+    if ([fingerprint isEqualToString:s_pickerWatchLastFingerprint]) return; // rien de nouveau visible
+
+    s_pickerWatchLastFingerprint = fingerprint;
+    s7tv_performFullScreenDump(window,
+        [NSString stringWithFormat:@"%@, sections visibles=[%@]", triggerReason, fingerprint]);
+}
+
 static void s7tv_pickerAutoWatchTick(void) {
     // Aucune dépendance au Tap Logger — ce watcher est indépendant. Par
     // contre, pas de raison de scanner la hiérarchie de vues toutes les
@@ -1632,34 +1722,48 @@ static void s7tv_pickerAutoWatchTick(void) {
     // fois le diagnostic terminé.
     BOOL shouldHeartbeat = (s_pickerWatchTickCount % 3 == 0);
 
-    UIWindow *window = s7tv_frontmostWindow();
-    if (!window) {
-        if (shouldHeartbeat) [earlyCheckMgr log:@"[NetDump] 💓 tick #%ld — AUCUNE fenêtre trouvée", (long)s_pickerWatchTickCount];
-        return;
-    }
-
-    // Détection légère : présence d'une vue "EmoticonPalette" quelque part.
+    // Raccourci : si le hook événementiel (sendEvent:, voir plus bas) a déjà
+    // confirmé une fenêtre hôte et qu'elle contient toujours le picker, on
+    // l'utilise directement — évite de rescanner TOUTES les fenêtres à
+    // chaque tick une fois le picker localisé.
+    UIWindow *hostWindow = s_pickerConfirmedHostWindow;
     BOOL foundPicker = NO;
-    UIView *paletteRoot = nil;
-    {
-        NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:window];
-        NSInteger count = 0;
-        while (queue.count > 0 && count < 3000) {
-            UIView *sv = queue.firstObject; [queue removeObjectAtIndex:0];
-            count++;
-            [queue addObjectsFromArray:sv.subviews];
-            NSString *cn = NSStringFromClass([sv class]);
-            if ([cn rangeOfString:@"EmoticonPalette"].location != NSNotFound) {
+    NSArray<UIWindow *> *allWindows = nil;
+
+    if (hostWindow && s7tv_findPaletteRoot(hostWindow, 4000)) {
+        foundPicker = YES;
+    } else {
+        hostWindow = nil;
+        s_pickerConfirmedHostWindow = nil;
+
+        // Scan complet et générique : TOUTES les fenêtres connues (voir
+        // s7tv_allKnownWindows), pas seulement une "frontmost" — c'était le
+        // bug initial. Le picker peut très bien vivre dans une fenêtre qui
+        // n'est ni key ni first (clavier, overlay, PiP, etc.), quelle que
+        // soit sa classe : on ne filtre jamais par NSStringFromClass sur la
+        // fenêtre elle-même, uniquement sur la vue du picker qu'elle
+        // contient.
+        allWindows = s7tv_allKnownWindows();
+        for (UIWindow *w in allWindows) {
+            if (s7tv_findPaletteRoot(w, 4000)) {
                 foundPicker = YES;
-                paletteRoot = sv;
+                hostWindow = w;
+                s_pickerConfirmedHostWindow = w;
                 break;
             }
         }
     }
 
     if (shouldHeartbeat) {
-        [earlyCheckMgr log:@"[NetDump] 💓 tick #%ld — fenêtre=%@ picker_trouvé=%@",
-            (long)s_pickerWatchTickCount, NSStringFromClass([window class]), foundPicker ? @"OUI" : @"non"];
+        NSArray<UIWindow *> *listForLog = allWindows ?: s7tv_allKnownWindows();
+        NSMutableArray<NSString *> *classNames = [NSMutableArray array];
+        for (UIWindow *w in listForLog) [classNames addObject:NSStringFromClass([w class])];
+        [earlyCheckMgr log:@"[NetDump] 💓 tick #%ld — %ld fenêtre(s)=[%@] picker_trouvé=%@ host=%@",
+            (long)s_pickerWatchTickCount,
+            (long)listForLog.count,
+            [classNames componentsJoinedByString:@", "],
+            foundPicker ? @"OUI" : @"non",
+            hostWindow ? NSStringFromClass([hostWindow class]) : @"—"];
     }
 
     if (!foundPicker) {
@@ -1669,11 +1773,7 @@ static void s7tv_pickerAutoWatchTick(void) {
         return;
     }
 
-    NSString *fingerprint = s7tv_pickerVisibleFingerprint(paletteRoot);
-    if ([fingerprint isEqualToString:s_pickerWatchLastFingerprint]) return; // rien de nouveau visible
-
-    s_pickerWatchLastFingerprint = fingerprint;
-    s7tv_performFullScreenDump(window, [NSString stringWithFormat:@"auto-watch, sections visibles=[%@]", fingerprint]);
+    s7tv_pickerCheckWindow(hostWindow, @"auto-watch (timer)");
 }
 
 static void s7tv_startPickerAutoWatch(void) {
@@ -1696,10 +1796,76 @@ static void s7tv_startPickerAutoWatch(void) {
 
 
 
+// ────────────────────────────────────────────────────────────
+// MARK: - Détection événementielle générique du picker natif
+// ────────────────────────────────────────────────────────────
+//
+// C'est l'approche privilégiée par rapport au polling pur : sendEvent: est
+// déjà swizzlé sur UIWindow (méthode d'instance), donc CETTE fonction se
+// déclenche sur n'importe quelle instance de fenêtre qui reçoit un touch —
+// key window, PiP, overlay, clavier, etc. — sans qu'on ait jamais besoin de
+// connaître ou nommer sa classe à l'avance. On se contente de vérifier si la
+// vue effectivement touchée (ou un de ses ancêtres) appartient au picker
+// natif ("EmoticonPalette" dans le nom de classe, seule signature stable
+// identifiée par le dump manuel). Si oui, "self" — la fenêtre qui a
+// réellement reçu l'event — devient la fenêtre hôte confirmée.
+//
+// Lecture seule : on ne fait qu'observer hitTest:/la hiérarchie déjà
+// produite par le système pour ce touch, aucun appel n'altère la gestion de
+// l'event ni son acheminement au picker natif.
+static void s7tv_pickerDetectFromEvent(UIWindow *window, UIEvent *event) {
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    if (!mgr.logsEnabled || !mgr.logDump) return; // même garde que le watcher — pas de coût si diagnostic désactivé
+    if (event.type != UIEventTypeTouches) return;
+
+    UITouch *touch = event.allTouches.anyObject;
+    if (!touch) return;
+    // Began pour détecter une nouvelle ouverture / un nouveau tap, Moved
+    // pour suivre un scroll en quasi temps réel sans multiplier les checks
+    // à chaque micro-mouvement (Moved seul suffit, pas besoin de Stationary).
+    if (touch.phase != UITouchPhaseBegan && touch.phase != UITouchPhaseMoved) return;
+
+    CGPoint pt = [touch locationInView:window];
+    UIView *hit = [window hitTest:pt withEvent:nil];
+    if (!hit) return;
+
+    BOOL isPalette = NO;
+    UIView *v = hit;
+    for (int d = 0; d < 25 && v; d++, v = v.superview) {
+        if ([NSStringFromClass([v class]) rangeOfString:@"EmoticonPalette"].location != NSNotFound) {
+            isPalette = YES;
+            break;
+        }
+    }
+    if (!isPalette) return;
+
+    if (s_pickerConfirmedHostWindow != window) {
+        s_pickerConfirmedHostWindow = window;
+        [mgr log:@"[NetDump] 🎯 Picker natif confirmé par événement — fenêtre hôte = %@ (classe détectée dynamiquement, jamais hardcodée)",
+            NSStringFromClass([window class])];
+    }
+
+    // Redéclenche un check immédiat (fingerprint + dump si changement) au
+    // lieu d'attendre le prochain tick du timer (jusqu'à 1.2s de latence) —
+    // capture les scrolls/changements d'onglet en quasi temps réel.
+    __weak UIWindow *weakWindow = window;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *strongWindow = weakWindow;
+        if (!strongWindow) return;
+        s7tv_pickerCheckWindow(strongWindow, @"événement (touch sur le picker)");
+    });
+}
+
 @implementation UIWindow (S7TVTapLogger)
 
 - (void)s7tv_sendEvent:(UIEvent *)event {
     [self s7tv_sendEvent:event];
+
+    // Détection événementielle du picker — volontairement AVANT le early
+    // return sur s_tapLogEnabled ci-dessous : elle doit rester active même
+    // si le diagnostic "Tap Logger" (verbeux, un dump complet par tap) est
+    // désactivé. C'est un mécanisme indépendant.
+    s7tv_pickerDetectFromEvent(self, event);
 
     if (!s_tapLogEnabled) return;
     if (event.type != UIEventTypeTouches) return;

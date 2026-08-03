@@ -1663,11 +1663,17 @@ static void s7tv_pickerAutoWatchTick(void) {
 static void s7tv_startPickerAutoWatch(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        [NSTimer scheduledTimerWithTimeInterval:1.2
-                                         repeats:YES
-                                           block:^(NSTimer * _Nonnull timer) {
+        // NSRunLoopCommonModes plutôt que scheduledTimerWithTimeInterval:
+        // (qui utilise NSDefaultRunLoopMode) — sinon ce timer serait
+        // silencieusement suspendu pendant tout scroll/tracking tactile
+        // (UIKit bascule alors sur UITrackingRunLoopMode), c'est-à-dire
+        // précisément pendant qu'on fait défiler le picker natif.
+        NSTimer *watchTimer = [NSTimer timerWithTimeInterval:1.2
+                                                       repeats:YES
+                                                         block:^(NSTimer * _Nonnull timer) {
             s7tv_pickerAutoWatchTick();
         }];
+        [[NSRunLoop mainRunLoop] addTimer:watchTimer forMode:NSRunLoopCommonModes];
         [[SevenTVManager sharedManager] log:@"[NetDump] Watcher automatique du picker natif démarré (1.2s)"];
     });
 }

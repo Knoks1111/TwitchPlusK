@@ -1510,8 +1510,128 @@ static UIViewController *s7tv_vcForView(UIView *v) {
     return nil;
 }
 
-// Dump COMPLET de tout ce qui est affiché à l'écran, réutilisable (appelé
-// aussi bien par le tap manuel que par le watcher automatique ci-dessous).
+// ────────────────────────────────────────────────────────────
+// MARK: - Introspection générique des propriétés Objective-C
+// ────────────────────────────────────────────────────────────
+//
+// Objectif : au lieu de deviner à l'avance un nom de propriété (ce qui
+// reviendrait à hardcoder), on énumère TOUT ce que le runtime expose comme
+// @objc property sur un objet donné (dataSource, cellule, header...) et on
+// logge nom + classe + valeur (tronquée). Strictement read-only :
+// valueForKey: est un accesseur standard, aucun setter n'est appelé, aucun
+// état n'est modifié.
+//
+// Limite connue : ne voit QUE les propriétés exposées à Objective-C
+// (@objc / @objcMembers côté Swift). Une classe Swift "pure" sans pont ObjC
+// n'aura aucune property_list — dans ce cas le nom de classe seul (déjà
+// loggé ailleurs dans le dump) reste la seule info disponible.
+static NSString *s7tv_briefDescribe(id value) {
+    if (value == nil) return @"nil";
+    if ([value isKindOfClass:[NSString class]] || [value isKindOfClass:[NSNumber class]]) {
+        NSString *s = [value description];
+        if (s.length > 120) s = [[s substringToIndex:120] stringByAppendingString:@"…"];
+        return s;
+    }
+    if ([value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSSet class]] || [value isKindOfClass:[NSOrderedSet class]]) {
+        NSArray *arr = [value isKindOfClass:[NSArray class]] ? value : [value allObjects];
+        NSString *firstClass = arr.count > 0 ? NSStringFromClass([arr.firstObject class]) : @"—";
+        return [NSString stringWithFormat:@"<%@, %lu élément(s), type élément=%@>",
+                NSStringFromClass([value class]), (unsigned long)arr.count, firstClass];
+    }
+    NSString *desc = @"";
+    @try { desc = [value description] ?: @""; } @catch (__unused NSException *ex) {}
+    if (desc.length > 150) desc = [[desc substringToIndex:150] stringByAppendingString:@"…"];
+    return [NSString stringWithFormat:@"<%@> %@", NSStringFromClass([value class]), desc];
+}
+
+// Heuristique pour décider si une valeur "mérite" d'être creusée un niveau
+// de plus (modèle métier custom type "TwitchEmoticonSectionModel") plutôt
+// que d'être un simple type Apple générique (vue, couleur, image...) qui
+// n'apporte rien de plus en le creusant. Profondeur toujours plafonnée par
+// l'appelant, donc pas de risque de boucle infinie même sur un graphe
+// d'objets cyclique.
+static BOOL s7tv_looksLikeInterestingModel(id value) {
+    if (value == nil) return NO;
+    if ([value isKindOfClass:[NSString class]] || [value isKindOfClass:[NSNumber class]] ||
+        [value isKindOfClass:[NSValue class]] || [value isKindOfClass:[NSNull class]] ||
+        [value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSSet class]] ||
+        [value isKindOfClass:[NSOrderedSet class]] || [value isKindOfClass:[NSDictionary class]] ||
+        [value isKindOfClass:[UIView class]] || [value isKindOfClass:[UIViewController class]] ||
+        [value isKindOfClass:[UIImage class]] || [value isKindOfClass:[UIColor class]] ||
+        [value isKindOfClass:[UIFont class]]) {
+        return NO;
+    }
+    return YES;
+}
+
+static void s7tv_dumpObjectProperties(id obj, NSString *label, NSInteger maxProps, NSInteger depth) {
+    if (!obj || depth < 0) return;
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+
+    [mgr log:@"[NetDump] 🔬 ── Propriétés de %@ (%@) ──────────────", label, NSStringFromClass([obj class])];
+
+    // On remonte toute la hiérarchie de classes pour capter aussi les
+    // propriétés héritées (une classe Swift bridgée hérite souvent de
+    // NSObject via une classe intermédiaire).
+    NSMutableArray<NSString *> *seenNames = [NSMutableArray array];
+    NSMutableArray<NSArray *> *toRecurse = [NSMutableArray array]; // [[nom, valeur], ...]
+    Class cls = [obj class];
+    NSInteger totalLogged = 0;
+    while (cls && cls != [NSObject class] && totalLogged < maxProps) {
+        unsigned int count = 0;
+        objc_property_t *props = class_copyPropertyList(cls, &count);
+        for (unsigned int i = 0; i < count && totalLogged < maxProps; i++) {
+            const char *cName = property_getName(props[i]);
+            NSString *name = [NSString stringWithUTF8String:cName];
+            if ([seenNames containsObject:name]) continue; // déjà vu sur une sous-classe
+            [seenNames addObject:name];
+
+            id value = nil;
+            BOOL ok = YES;
+            @try {
+                value = [obj valueForKey:name];
+            } @catch (__unused NSException *ex) {
+                ok = NO;
+            }
+
+            if (ok) {
+                [mgr log:@"[NetDump] 🔬   .%@ = %@", name, s7tv_briefDescribe(value)];
+                if (depth > 0 && s7tv_looksLikeInterestingModel(value)) {
+                    [toRecurse addObject:@[name, value]];
+                }
+            } else {
+                [mgr log:@"[NetDump] 🔬   .%@ = <illisible via KVC>", name];
+            }
+            totalLogged++;
+        }
+        if (props) free(props);
+        cls = class_getSuperclass(cls);
+    }
+
+    if (totalLogged == 0) {
+        [mgr log:@"[NetDump] 🔬   (aucune @objc property exposée — classe Swift pure côté runtime ?)"];
+    }
+    [mgr log:@"[NetDump] 🔬 ── fin propriétés %@ ──────────────", label];
+
+    // Creuse un niveau de plus dans les propriétés qui ressemblent à des
+    // modèles métier custom — c'est typiquement là que vivrait un id de
+    // chaîne, un type de section, etc., plutôt que dans le dataSource
+    // lui-même qui n'expose souvent qu'un tableau de modèles.
+    for (NSArray *pair in toRecurse) {
+        NSString *subLabel = [NSString stringWithFormat:@"%@.%@", label, pair[0]];
+        s7tv_dumpObjectProperties(pair[1], subLabel, maxProps, depth - 1);
+    }
+}
+
+// Un seul dump de propriétés par session d'ouverture du picker — sinon
+// chaque scroll (qui redéclenche un dump écran complet) republierait le
+// même bloc de logs en boucle. Remis à NO dès que le picker disparaît de sa
+// fenêtre hôte (voir s7tv_pickerCheckWindow).
+static BOOL s_pickerPropsDataSourceDumped = NO;
+static BOOL s_pickerPropsHeaderDumped = NO;
+static BOOL s_pickerPropsCellDumped = NO;
+
+
 // Filtre sur le CONTENU (texte/image/accessibilité présents), pas sur un nom
 // de classe deviné à l'avance.
 static void s7tv_performFullScreenDump(UIWindow *window, NSString *reason) {
@@ -1552,6 +1672,30 @@ static void s7tv_performFullScreenDump(UIWindow *window, NSString *reason) {
                 [mgr log:@"[NetDump] 📊 %@ dataSource=%@ → %ld section(s) : %@",
                     cn, NSStringFromClass([ds class]), (long)sections,
                     [perSection componentsJoinedByString:@" | "]];
+
+                if (!s_pickerPropsDataSourceDumped) {
+                    s7tv_dumpObjectProperties(ds, [NSString stringWithFormat:@"%@.dataSource", cn], 40, 1);
+                    s_pickerPropsDataSourceDumped = YES;
+                }
+            }
+        }
+
+        // Même logique pour UN header de section et UNE cellule d'emote
+        // représentatifs — capturés au passage pendant le parcours normal
+        // de la hiérarchie, sans requête supplémentaire. Le nom de classe
+        // n'est jamais hardcodé en dur ailleurs que dans cette vérification
+        // ponctuelle (substring déjà utilisée partout dans ce fichier pour
+        // repérer le picker natif).
+        if ([cn rangeOfString:@"EmoticonPaletteView"].location != NSNotFound &&
+            [cn rangeOfString:@"HeaderView"].location != NSNotFound) {
+            if (!s_pickerPropsHeaderDumped) {
+                s7tv_dumpObjectProperties(sv, [NSString stringWithFormat:@"%@ (header)", cn], 40, 1);
+                s_pickerPropsHeaderDumped = YES;
+            }
+        } else if ([cn rangeOfString:@"EmoteCollectionViewCell"].location != NSNotFound) {
+            if (!s_pickerPropsCellDumped) {
+                s7tv_dumpObjectProperties(sv, [NSString stringWithFormat:@"%@ (cellule)", cn], 40, 1);
+                s_pickerPropsCellDumped = YES;
             }
         }
 
@@ -1696,6 +1840,11 @@ static void s7tv_pickerCheckWindow(UIWindow *window, NSString *triggerReason) {
         // fenêtre porteuse d'une ouverture à l'autre).
         if (s_pickerConfirmedHostWindow == window) s_pickerConfirmedHostWindow = nil;
         if (s_pickerWatchLastFingerprint) s_pickerWatchLastFingerprint = nil;
+        // Réarme les dumps de propriétés pour la prochaine ouverture — sinon
+        // on ne verrait jamais les logs 🔬 après la toute première fois.
+        s_pickerPropsDataSourceDumped = NO;
+        s_pickerPropsHeaderDumped = NO;
+        s_pickerPropsCellDumped = NO;
         return;
     }
 

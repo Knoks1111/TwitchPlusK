@@ -561,7 +561,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // Twitch utilise #0E0E10 pour le fond de la chatbox (confirmé par
     // color picker directement sur l'app Twitch) — ce n'est PAS un gris pur,
     // il y a un léger biais bleu, contrairement à ce qu'on avait supposé.
-    UIColor *bgColor    = [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10
+    UIColor *bgColor    = [UIColor colorWithDisplayP3Red:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10 (interprété en Display P3, pas sRGB)
     UIColor *cardColor  = [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:1.0]; // #19191C
     UIColor *sepColor   = [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
     UIColor *textColor  = [UIColor whiteColor];

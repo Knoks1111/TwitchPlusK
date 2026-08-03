@@ -1021,6 +1021,120 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
 
 
 // ────────────────────────────────────────────────────────────
+// MARK: - Diagnostic TEMPORAIRE v2 : sniffer réseau bas niveau (NSURLProtocol)
+// ────────────────────────────────────────────────────────────
+//
+// Le dump v1 (hook sur dataTaskWithRequest:completionHandler:, ci-dessous)
+// n'a rien capté DU TOUT, même sans filtre — signe que le picker natif Twitch
+// ne passe probablement pas par ce chemin précis (variante delegate-based
+// -dataTaskWithRequest: sans completion handler, session/protocole
+// différent, ou données déjà en cache au lancement avant l'installation du
+// swizzle). Plutôt que de parier sur une méthode Obj-C précise, on
+// s'enregistre au niveau du système de chargement d'URL lui-même
+// (NSURLProtocol) : ça capte le trafic quel que soit le pattern interne
+// utilisé côté Twitch (completion handler OU delegate), tant que ça passe
+// par le URL Loading System standard — ce qui est le cas de l'immense
+// majorité du code réseau iOS, contrairement au hook v1 qui suppose UNE
+// implémentation précise.
+//
+// Restreint volontairement à gql.twitch.tv + api.twitch.tv (Helix) — PAS aux
+// CDN vidéo/images (usher, jtvnw.net...) : on ne veut surtout pas relayer de
+// gros segments vidéo à travers ce sniffer (risque de latence/stall sur la
+// lecture du stream). Le trafic vidéo continue son chemin normal, non touché.
+//
+// Désactiver (retirer l'appel à +registerClass: dans TwitchSevenTVInit) une
+// fois l'opération identifiée — un sniffer réseau qui reste actif en
+// permanence n'a pas sa place dans une version "propre" du tweak.
+
+// Déclarée ici, définie plus bas (section "dump des opérations GQL") — le
+// sniffer NSURLProtocol l'utilise avant sa définition textuelle dans le fichier.
+static void s7tv_dumpGQLOperation(NSURLRequest *request, NSData *responseData);
+
+@interface S7TVGQLSnifferProtocol : NSURLProtocol <NSURLSessionDataDelegate>
+@property (nonatomic, strong) NSURLSessionDataTask *relayTask;
+@property (nonatomic, strong) NSMutableData *collectedData;
+@end
+
+static NSString *const kS7TVGQLSnifferHandledKey = @"S7TVGQLSnifferHandled";
+
+@implementation S7TVGQLSnifferProtocol
+
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+    // Marqueur anti-boucle : la requête relayée par -startLoading passe elle
+    // aussi par le URL Loading System — sans ce garde-fou, on s'intercepterait
+    // nous-même indéfiniment.
+    if ([NSURLProtocol propertyForKey:kS7TVGQLSnifferHandledKey inRequest:request]) return NO;
+    NSString *host = request.URL.host.lowercaseString;
+    return [host isEqualToString:@"gql.twitch.tv"] || [host isEqualToString:@"api.twitch.tv"];
+}
+
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
+    return request;
+}
+
+- (void)startLoading {
+    NSMutableURLRequest *marked = [self.request mutableCopy];
+    [NSURLProtocol setProperty:@YES forKey:kS7TVGQLSnifferHandledKey inRequest:marked];
+    self.collectedData = [NSMutableData data];
+
+    // Session dédiée éphémère, PAS la session swizzlée v1 — on utilise la
+    // variante delegate-based (pas de completion handler) volontairement,
+    // pour ne pas dépendre du même mécanisme que celui qui vient d'échouer.
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    NSURLSession *relaySession = [NSURLSession sessionWithConfiguration:cfg
+                                                                 delegate:self
+                                                            delegateQueue:nil];
+    self.relayTask = [relaySession dataTaskWithRequest:marked];
+    [self.relayTask resume];
+}
+
+- (void)stopLoading {
+    [self.relayTask cancel];
+}
+
+// Relaie intégralement la réponse au vrai client — sans ça, TOUTE requête
+// vers gql.twitch.tv/api.twitch.tv cesserait de fonctionner silencieusement
+// (on ne veut PAS casser l'app, juste observer son trafic en passant).
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask
+    didReceiveResponse:(NSURLResponse *)response
+     completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
+    [self.client URLProtocol:self didReceiveResponse:response
+             cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+    completionHandler(NSURLSessionResponseAllow);
+}
+
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask
+    didReceiveData:(NSData *)data {
+    [self.collectedData appendData:data];
+    [self.client URLProtocol:self didLoadData:data];
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
+    didCompleteWithError:(NSError *)error {
+    if (error) {
+        [self.client URLProtocol:self didFailWithError:error];
+        return;
+    }
+
+    NSString *host = self.request.URL.host.lowercaseString ?: @"";
+    if ([host isEqualToString:@"gql.twitch.tv"]) {
+        s7tv_dumpGQLOperation(self.request, self.collectedData);
+    } else {
+        // api.twitch.tv (Helix) — pas de operationName GQL, mais le path +
+        // les clés top-level de la réponse suffisent à repérer un éventuel
+        // endpoint "emotes" (ex: /helix/chat/emotes/...).
+        [[SevenTVManager sharedManager]
+            log:@"[GQLDump] 🌍 (Helix) %@ (%lu bytes)",
+            self.request.URL.absoluteString, (unsigned long)self.collectedData.length];
+    }
+
+    [self.client URLProtocolDidFinishLoading:self];
+}
+
+@end
+
+
+// ────────────────────────────────────────────────────────────
 // MARK: - Hook NSURLSession (réponses API GraphQL Twitch)
 // ────────────────────────────────────────────────────────────
 
@@ -2185,6 +2299,13 @@ static void TwitchSevenTVInit(void) {
     // Interception réponses GQL Twitch
     s7tv_swizzle_token_capture();
     s7tv_swizzle_session();
+
+    // Diagnostic TEMPORAIRE v2 — sniffer bas niveau, indépendant de la
+    // méthode NSURLSession utilisée en interne par Twitch (voir
+    // S7TVGQLSnifferProtocol ci-dessus). Retirer cette ligne une fois
+    // l'opération du picker natif identifiée.
+    [NSURLProtocol registerClass:[S7TVGQLSnifferProtocol class]];
+    [[SevenTVManager sharedManager] log:@"🔍 Sniffer GQL v2 (NSURLProtocol) enregistré"];
 
     // Interception IRC WebSocket
     s7tv_swizzle_websocket();

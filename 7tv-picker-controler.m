@@ -51,7 +51,7 @@
 @property (nonatomic, weak) UIButton *pickerSettingsBtn;
 // Capsule commune qui regroupe pickerSettingsBtn + pickerSizesToggleBtn dans
 // un seul fond pilule partagé (même langage visuel que pickerTabCapsuleView /
-// pickerSubChoiceCapsuleView, où plusieurs icônes flottent ensemble sur un
+// pickerTabCapsuleView, où plusieurs icônes flottent ensemble sur un
 // seul fond) — les 2 boutons sont ainsi visuellement collés au lieu d'être
 // 2 pastilles séparées avec un espace entre elles.
 @property (nonatomic, weak) UIView   *pickerToolsCapsuleView;
@@ -60,24 +60,21 @@
 // ── Refonte tabbed + refonte visuelle du picker (style 7TV PC) ──────────
 // Onglet actif : 0 = Favoris, 1 = 7TV (voir S7TVPickerTab*)
 @property (nonatomic, assign) NSInteger pickerActiveTab;
-// Sous-choix Channel/Globales de l'onglet 7TV (YES = Channel)
-@property (nonatomic, assign) BOOL      pickerSevenTVShowingChannel;
-// Mémorise l'onglet/sous-choix actifs juste avant qu'une recherche démarre,
-// pour les restaurer quand le champ de recherche redevient vide (la recherche
+// Mémorise l'onglet actif juste avant qu'une recherche démarre, pour le
+// restaurer quand le champ de recherche redevient vide (la recherche
 // bascule automatiquement Favoris → Channel → Globales, voir point 3).
 @property (nonatomic, assign) BOOL      pickerIsSearching;
 @property (nonatomic, assign) NSInteger pickerPreSearchTab;
-@property (nonatomic, assign) BOOL      pickerPreSearchShowingChannel;
 // Plus de header, plus de dock plein fond : TOUT est flottant par-dessus la
-// grille (comme les pastilles fermer/sous-choix), même langage visuel partout
-// → aucun bandeau opaque ne mange de la place, on voit plus d'emotes.
-@property (nonatomic, weak) UIView    *pickerSubChoiceCapsuleView;   // haut droite (Chaîne/Globales)
-@property (nonatomic, weak) UIButton  *pickerSubChoiceChannelBtn;
-@property (nonatomic, weak) UIButton  *pickerSubChoiceGlobalBtn;
-@property (nonatomic, weak) UIView    *pickerSubChoiceIndicatorView; // pastille violette qui glisse entre les 2 icônes
-@property (nonatomic, weak) UIView    *pickerTabCapsuleView;         // bas gauche (Favoris/7TV)
+// grille (comme la pastille fermer), même langage visuel partout → aucun
+// bandeau opaque ne mange de la place, on voit plus d'emotes.
+// Capsule unique bas-gauche à 3 boutons (Favoris / Channel / Globales) —
+// fusion de l'ancienne capsule d'onglets (Favoris/7TV) et de l'ancienne
+// capsule sous-choix (Chaîne/Globales, haut-gauche, supprimée).
+@property (nonatomic, weak) UIButton  *pickerSubChoiceChannelBtn;    // bouton "Channel" de la capsule unique (avatar de chaîne)
+@property (nonatomic, weak) UIView    *pickerTabCapsuleView;         // bas gauche (Favoris/Channel/Globales)
 @property (nonatomic, strong) NSMutableArray<UIButton *> *pickerTabButtons;
-@property (nonatomic, weak) UIView    *pickerTabIndicatorView;       // pastille violette qui glisse entre les 2 onglets
+@property (nonatomic, weak) UIView    *pickerTabIndicatorView;       // pastille violette qui glisse entre les 3 boutons
 @property (nonatomic, weak) UIView    *pickerSearchCapsuleView;      // bas, pleine largeur (recherche)
 @property (nonatomic, weak) UIButton  *pickerSearchClearBtn;         // petite croix à droite du champ, visible si texte non vide
 
@@ -103,7 +100,6 @@
     self = [super init];
     if (self) {
         _pickerActiveTab                  = 0; // S7TVPickerTabFavorites
-        _pickerSevenTVShowingChannel      = YES;
         _pickerTabButtons                 = [NSMutableArray array];
         _emotePickerFavoriteEmotes = @[];
         _emotePickerChannelEmotes  = @[];
@@ -142,9 +138,12 @@ static NSString *const kEmoteCellID = @"S7TVEmoteCell";
 static const CGFloat kCellSize = 40.0;
 
 // ── Onglets du picker refondu (style 7TV PC) ──────────────────────────────
+// 3 valeurs : Favoris / Channel / Globales, fusion de l'ancien tab
+// (Favoris/7TV) et de l'ancien sous-choix (Chaîne/Globales).
 typedef NS_ENUM(NSInteger, S7TVPickerTab) {
     S7TVPickerTabFavorites = 0,
-    S7TVPickerTabSevenTV   = 1,
+    S7TVPickerTabChannel   = 1,
+    S7TVPickerTabGlobal    = 2,
 };
 
 // ── Dimensions du picker refondu ────────────────────────────────────────
@@ -681,8 +680,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     if (self.emotePickerFavoriteEmotes.count > 0) {
         self.pickerActiveTab = S7TVPickerTabFavorites;
     } else {
-        self.pickerActiveTab = S7TVPickerTabSevenTV;
-        self.pickerSevenTVShowingChannel = YES;
+        self.pickerActiveTab = S7TVPickerTabChannel;
     }
     [self _updatePickerArraysForSearch:@""]; // recalcule emotePickerEmotes pour l'onglet choisi
 
@@ -860,66 +858,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
     [picker addSubview:cv];
 
-    // ── Capsule sous-choix Chaîne/Globales (flottante, haut gauche) ─────────
-    // Équivalent des 2 petites icônes en haut à droite sur 7TV PC. Masquée
-    // pour l'onglet Favoris. Pas d'avatar de chaîne branché → symbole
-    // générique en placeholder.
-    CGFloat capsuleW = kS7TVPickerFloatSize * 2.0;
-    UIView *capsule = [[UIView alloc] initWithFrame:
-        CGRectMake(kS7TVPickerFloatMargin, kS7TVPickerFloatMargin, capsuleW, kS7TVPickerFloatSize)];
-    capsule.backgroundColor = [cardColor colorWithAlphaComponent:0.92];
-    capsule.layer.cornerRadius = kS7TVPickerFloatSize / 2.0;
-    capsule.clipsToBounds = YES;
-    capsule.autoresizingMask = UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleBottomMargin;
-    capsule.hidden = (self.pickerActiveTab == S7TVPickerTabFavorites);
-
-    UIView *subChoiceIndicator = [[UIView alloc] initWithFrame:CGRectMake(0, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize)];
-    subChoiceIndicator.backgroundColor = accent;
-    subChoiceIndicator.layer.cornerRadius = kS7TVPickerFloatSize / 2.0;
-    [capsule addSubview:subChoiceIndicator];
-    self.pickerSubChoiceIndicatorView = subChoiceIndicator;
-
-    UIButton *channelBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    channelBtn.frame = CGRectMake(0, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
-    channelBtn.tag = 0; // 0 = Chaîne
-    UIImageSymbolConfiguration *avCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
-    [channelBtn setImage:[UIImage systemImageNamed:@"person.crop.circle.fill" withConfiguration:avCfg]
-                 forState:UIControlStateNormal];
-    [channelBtn addTarget:self action:@selector(_pickerSubChoiceIconTapped:)
-          forControlEvents:UIControlEventTouchUpInside];
-    [capsule addSubview:channelBtn];
-    self.pickerSubChoiceChannelBtn = channelBtn;
-
-    NSData *_capsuleLogoData = [[NSData alloc]
-        initWithBase64EncodedString:kS7TVLogoBase64 options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    UIImage *_capsuleLogoImg = [[UIImage imageWithData:_capsuleLogoData scale:3.0]
-        imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    UIButton *globalBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    globalBtn.frame = CGRectMake(kS7TVPickerFloatSize, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
-    globalBtn.tag = 1; // 1 = Globales
-    [globalBtn setImage:_capsuleLogoImg forState:UIControlStateNormal];
-    globalBtn.imageView.contentMode = UIViewContentModeScaleAspectFit;
-    // Insets calculés pour que le logo occupe kS7TVPickerAvatarDiameter (24pt)
-    // dans le bouton 30pt — même taille visible que l'avatar de chaîne
-    // (auparavant 9pt d'inset de chaque côté → logo à 12pt, sensiblement
-    // plus petit que l'avatar rond).
-    CGFloat globalBtnInset = (kS7TVPickerFloatSize - kS7TVPickerAvatarDiameter) / 2.0;
-    globalBtn.imageEdgeInsets = UIEdgeInsetsMake(globalBtnInset, globalBtnInset, globalBtnInset, globalBtnInset);
-    [globalBtn addTarget:self action:@selector(_pickerSubChoiceIconTapped:)
-         forControlEvents:UIControlEventTouchUpInside];
-    [capsule addSubview:globalBtn];
-    self.pickerSubChoiceGlobalBtn = globalBtn;
-
-    self.pickerSubChoiceCapsuleView = capsule;
-    [picker addSubview:capsule];
-    [self _s7tv_updateSubChoiceHighlightAnimated:NO];
-
-    // ── Capsule d'onglets (flottante, bas gauche) — Favoris / 7TV ──────────
-    // Même style et même mécanisme (pastille qui glisse) que la capsule de
-    // sous-choix ci-dessus : plus de bandeau opaque, juste 2 icônes qui
-    // flottent au-dessus de la grille.
-    CGFloat tabCapsuleW = kS7TVPickerFloatSize * 2.0;
+    // ── Capsule unique d'onglets (flottante, bas gauche) — Favoris / Channel /
+    // Globales ───────────────────────────────────────────────────────────
+    // Fusion de l'ancienne capsule d'onglets (Favoris/7TV) et de l'ancienne
+    // capsule sous-choix (Chaîne/Globales, haut-gauche) : 3 boutons sur un
+    // seul fond pilule, pastille qui glisse entre les 3.
+    CGFloat tabCapsuleW = kS7TVPickerFloatSize * 3.0;
     CGFloat bottomRowY = frame.size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH
                           - kS7TVPickerFloatGap - kS7TVPickerFloatSize;
     UIView *tabCapsule = [[UIView alloc] initWithFrame:
@@ -944,6 +888,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
     [self.pickerTabButtons removeAllObjects];
 
+    // Bouton 1 — Favoris
     UIImageSymbolConfiguration *starCfg = [UIImageSymbolConfiguration
         configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
     UIButton *favBtn = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -954,15 +899,38 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [tabCapsule addSubview:favBtn];
     [self.pickerTabButtons addObject:favBtn];
 
-    UIButton *sevenTVBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    sevenTVBtn.frame = CGRectMake(kS7TVPickerFloatSize, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
-    sevenTVBtn.tag = S7TVPickerTabSevenTV;
-    [sevenTVBtn setImage:_tabLogoImg forState:UIControlStateNormal];
-    sevenTVBtn.imageView.contentMode = UIViewContentModeScaleAspectFit;
-    sevenTVBtn.imageEdgeInsets = UIEdgeInsetsMake(8, 8, 8, 8);
-    [sevenTVBtn addTarget:self action:@selector(_pickerTabTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [tabCapsule addSubview:sevenTVBtn];
-    [self.pickerTabButtons addObject:sevenTVBtn];
+    // Bouton 2 — Channel (avatar de la chaîne courante, placeholder générique
+    // en attendant le fetch — voir _s7tv_applyChannelAvatarImage:/
+    // _s7tv_resetChannelButtonToPlaceholder, inchangés).
+    UIImageSymbolConfiguration *avCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+    UIButton *channelBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    channelBtn.frame = CGRectMake(kS7TVPickerFloatSize, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
+    channelBtn.tag = S7TVPickerTabChannel;
+    [channelBtn setImage:[UIImage systemImageNamed:@"person.crop.circle.fill" withConfiguration:avCfg]
+                 forState:UIControlStateNormal];
+    [channelBtn addTarget:self action:@selector(_pickerTabTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [tabCapsule addSubview:channelBtn];
+    [self.pickerTabButtons addObject:channelBtn];
+    self.pickerSubChoiceChannelBtn = channelBtn;
+
+    // Bouton 3 — Globales (logo 7TV)
+    NSData *_capsuleLogoData = [[NSData alloc]
+        initWithBase64EncodedString:kS7TVLogoBase64 options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    UIImage *_capsuleLogoImg = [[UIImage imageWithData:_capsuleLogoData scale:3.0]
+        imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    UIButton *globalBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    globalBtn.frame = CGRectMake(kS7TVPickerFloatSize * 2.0, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
+    globalBtn.tag = S7TVPickerTabGlobal;
+    [globalBtn setImage:_capsuleLogoImg forState:UIControlStateNormal];
+    globalBtn.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    // Insets calculés pour que le logo occupe kS7TVPickerAvatarDiameter (24pt)
+    // dans le bouton 30pt — même taille visible que l'avatar de chaîne.
+    CGFloat globalBtnInset = (kS7TVPickerFloatSize - kS7TVPickerAvatarDiameter) / 2.0;
+    globalBtn.imageEdgeInsets = UIEdgeInsetsMake(globalBtnInset, globalBtnInset, globalBtnInset, globalBtnInset);
+    [globalBtn addTarget:self action:@selector(_pickerTabTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [tabCapsule addSubview:globalBtn];
+    [self.pickerTabButtons addObject:globalBtn];
 
     [self _s7tv_updateTabButtonHighlight];
 
@@ -1118,17 +1086,19 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
 // ── Barre d'onglets — helpers ────────────────────────────────────────────
 
-// Met à jour la teinte de chaque icône + déplace la pastille violette
-// derrière l'onglet actif, dans la capsule flottante bas-gauche (même
-// mécanisme que _s7tv_updateSubChoiceHighlightAnimated: pour la capsule
-// Chaîne/Globales — les deux partagent désormais le même langage visuel).
+// Met à jour la teinte/opacité de chaque icône + déplace la pastille
+// violette derrière l'onglet actif, dans la capsule flottante bas-gauche à
+// 3 boutons (Favoris / Channel / Globales).
 - (void)_s7tv_updateTabButtonHighlight {
     UIColor *activeTint   = [UIColor whiteColor];
     UIColor *inactiveTint = [UIColor colorWithWhite:0.55 alpha:1.0];
     for (UIButton *btn in self.pickerTabButtons) {
         BOOL isActive = (btn.tag == self.pickerActiveTab);
-        if (btn.tag == S7TVPickerTabSevenTV) {
-            btn.alpha = isActive ? 1.0 : 0.55; // logo PNG non-template → opacité plutôt que teinte
+        if (btn.tag == S7TVPickerTabGlobal || btn.tag == S7TVPickerTabChannel) {
+            // Logo 7TV PNG et avatar de chaîne = images non-template (AlwaysOriginal)
+            // → opacité plutôt que teinte (le placeholder SF Symbol du bouton
+            // Channel avant fetch réagit aussi bien à l'opacité).
+            btn.alpha = isActive ? 1.0 : 0.55;
         } else {
             btn.tintColor = isActive ? activeTint : inactiveTint;
         }
@@ -1141,22 +1111,6 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     }
 }
 
-// Déplace la pastille violette (indicateur) derrière l'icône Chaîne ou
-// Globales sélectionnée, dans la capsule flottante haut-droite. Seul
-// l'onglet 7TV a un sous-choix (la capsule reste cachée pour Favoris).
-- (void)_s7tv_updateSubChoiceHighlightAnimated:(BOOL)animated {
-    BOOL showingChannel = self.pickerSevenTVShowingChannel;
-    CGRect target = showingChannel ? self.pickerSubChoiceChannelBtn.frame : self.pickerSubChoiceGlobalBtn.frame;
-    void (^move)(void) = ^{
-        self.pickerSubChoiceIndicatorView.frame = target;
-    };
-    if (animated) {
-        [UIView animateWithDuration:0.2 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:move completion:nil];
-    } else {
-        move();
-    }
-}
-
 // Recalcule et applique les frames de toutes les zones du picker (grille /
 // pastilles flottantes / panneau des tailles) — appelé à chaque ouverture,
 // changement d'orientation, et changement d'onglet. Plus de dock : tout est
@@ -1165,24 +1119,11 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 - (void)_s7tv_relayoutPickerForSize:(CGSize)size {
     if (!self.emotePickerView) return;
 
-    // Panneau des tailles affiché → la capsule sous-choix (Chaîne/Globales)
-    // n'a pas de sens ici, elle reste cachée quel que soit l'onglet.
-    BOOL subChoiceVisible = (self.pickerActiveTab != S7TVPickerTabFavorites) && !self.pickerSizesPanelVisible;
-    self.pickerSubChoiceCapsuleView.hidden = !subChoiceVisible;
-
     self.emoteCollectionView.frame = CGRectMake(0, 0, size.width, size.height);
-
-    CGFloat capsuleW = kS7TVPickerFloatSize * 2.0;
-    // La capsule sous-choix reste à gauche en permanence, quel que soit le
-    // panneau affiché — sa position n'a pas d'importance quand elle est
-    // masquée (Favoris / panneau des tailles).
-    self.pickerSubChoiceCapsuleView.frame = CGRectMake(kS7TVPickerFloatMargin,
-                                                         kS7TVPickerFloatMargin, capsuleW, kS7TVPickerFloatSize);
-    [self _s7tv_updateSubChoiceHighlightAnimated:NO];
 
     CGFloat bottomRowY = size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH
                           - kS7TVPickerFloatGap - kS7TVPickerFloatSize;
-    CGFloat tabCapsuleW = kS7TVPickerFloatSize * 2.0;
+    CGFloat tabCapsuleW = kS7TVPickerFloatSize * 3.0;
     self.pickerTabCapsuleView.frame = CGRectMake(kS7TVPickerFloatMargin, bottomRowY, tabCapsuleW, kS7TVPickerFloatSize);
     // ── Capsule tailles/réglages : à droite dans la grille, à gauche dans le
     // panneau des tailles (elle sert alors aussi de retour vers la grille,
@@ -1211,25 +1152,6 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.pickerActiveTab = sender.tag;
     [self _s7tv_updateTabButtonHighlight];
 
-    BOOL subChoiceVisible = (self.pickerActiveTab != S7TVPickerTabFavorites);
-    self.pickerSubChoiceCapsuleView.hidden = !subChoiceVisible;
-    [self _s7tv_updateSubChoiceHighlightAnimated:NO];
-
-    NSString *q = self.emoteSearchField.text ?: @"";
-    [self _updatePickerArraysForSearch:q];
-    [self.emoteCollectionView reloadData];
-    [self.emoteCollectionView setContentOffset:CGPointZero animated:NO];
-}
-
-// Tap sur une des 2 pastilles Chaîne/Globales de la capsule flottante.
-// Seul l'onglet 7TV a un sous-choix (voir _s7tv_updateSubChoiceHighlightAnimated:).
-- (void)_pickerSubChoiceIconTapped:(UIButton *)sender {
-    if (self.pickerActiveTab != S7TVPickerTabSevenTV) return;
-    BOOL showingChannel = (sender.tag == 0);
-    if (self.pickerSevenTVShowingChannel == showingChannel) return;
-    self.pickerSevenTVShowingChannel = showingChannel;
-    [self _s7tv_updateSubChoiceHighlightAnimated:YES];
-
     NSString *q = self.emoteSearchField.text ?: @"";
     [self _updatePickerArraysForSearch:q];
     [self.emoteCollectionView reloadData];
@@ -1244,13 +1166,13 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [self _applySearchQuery:@""];
 }
 
-// Retourne l'array d'emotes correspondant à l'onglet + sous-choix actifs.
+// Retourne l'array d'emotes correspondant à l'onglet actif.
 - (NSArray<SevenTVEmote *> *)_s7tv_currentTabEmotes {
     switch (self.pickerActiveTab) {
-        case S7TVPickerTabSevenTV:
-            return self.pickerSevenTVShowingChannel
-                ? self.emotePickerChannelEmotes
-                : self.emotePickerGlobalEmotes;
+        case S7TVPickerTabChannel:
+            return self.emotePickerChannelEmotes;
+        case S7TVPickerTabGlobal:
+            return self.emotePickerGlobalEmotes;
         case S7TVPickerTabFavorites:
         default:
             return self.emotePickerFavoriteEmotes;
@@ -1324,25 +1246,23 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.emotePickerOtherEmotes    = self.emotePickerChannelEmotes;
 
     // ── Bascule automatique Favoris → Channel → Globales pendant la recherche ──
-    // On mémorise l'onglet/sous-choix d'avant recherche pour les restaurer
-    // dès que le champ redevient vide (point 3).
+    // On mémorise l'onglet d'avant recherche pour le restaurer dès que le
+    // champ redevient vide (point 3).
     if (q.length > 0 && !self.pickerIsSearching) {
         self.pickerIsSearching = YES;
         self.pickerPreSearchTab = self.pickerActiveTab;
-        self.pickerPreSearchShowingChannel = self.pickerSevenTVShowingChannel;
     } else if (q.length == 0 && self.pickerIsSearching) {
         self.pickerIsSearching = NO;
         self.pickerActiveTab = self.pickerPreSearchTab;
-        self.pickerSevenTVShowingChannel = self.pickerPreSearchShowingChannel;
     }
     // ── Auto-sélection du meilleur onglet — UNIQUEMENT quand la recherche
     // vient de démarrer (1ère lettre tapée), jamais quand l'utilisateur a
-    // manuellement changé d'onglet/sous-choix pendant qu'une recherche est
-    // déjà en cours. Sans ce garde-fou, _pickerTabTapped:/_pickerSubChoiceIconTapped:
-    // qui appellent cette méthode juste après avoir choisi l'onglet voyaient
-    // leur choix immédiatement écrasé ci-dessous → impossible de changer de
-    // catégorie pendant une recherche (ex: rester bloqué sur Channel alors
-    // que le meilleur résultat est dans Global).
+    // manuellement changé d'onglet pendant qu'une recherche est déjà en
+    // cours. Sans ce garde-fou, _pickerTabTapped: qui appelle cette méthode
+    // juste après avoir choisi l'onglet voyait son choix immédiatement
+    // écrasé ci-dessous → impossible de changer de catégorie pendant une
+    // recherche (ex: rester bloqué sur Channel alors que le meilleur
+    // résultat est dans Global).
     if (q.length > 0 && autoSelectTab) {
         // Le choix de l'onglet doit se baser sur la QUALITÉ du meilleur match
         // de chaque groupe (rang 0=exact, 1=commence par, 2=contient), pas
@@ -1362,24 +1282,20 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         if (favs.count > 0 && favsRank <= channelRank && favsRank <= globalRank) {
             self.pickerActiveTab = S7TVPickerTabFavorites;
         } else if (channel.count > 0 && channelRank <= globalRank) {
-            self.pickerActiveTab = S7TVPickerTabSevenTV;
-            self.pickerSevenTVShowingChannel = YES;
+            self.pickerActiveTab = S7TVPickerTabChannel;
         } else if (global.count > 0) {
-            self.pickerActiveTab = S7TVPickerTabSevenTV;
-            self.pickerSevenTVShowingChannel = NO;
+            self.pickerActiveTab = S7TVPickerTabGlobal;
         }
         // Sinon : aucun résultat nulle part, on ne change pas d'onglet (la
         // grille affichera simplement 0 résultat pour l'onglet courant).
     }
 
-    // Array réellement affiché dans la grille = celui de l'onglet + sous-choix actifs
+    // Array réellement affiché dans la grille = celui de l'onglet actif
     self.emotePickerEmotes = [self _s7tv_currentTabEmotes];
 
-    // Synchroniser la capsule d'onglets + la capsule sous-choix avec le
-    // nouvel état (peut avoir changé automatiquement ci-dessus).
+    // Synchroniser la capsule d'onglets avec le nouvel état (peut avoir
+    // changé automatiquement ci-dessus).
     [self _s7tv_updateTabButtonHighlight];
-    self.pickerSubChoiceCapsuleView.hidden = (self.pickerActiveTab == S7TVPickerTabFavorites);
-    [self _s7tv_updateSubChoiceHighlightAnimated:YES];
 
     // Préchauffage des favoris : décodage lancé dès que la liste est connue,
     // avant même que la 1ère cellule ne les demande. La section Favoris est
@@ -1618,8 +1534,6 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // passe à gauche dans le panneau des tailles.
     self.pickerTabCapsuleView.hidden = show;
     for (UIButton *btn in self.pickerTabButtons) btn.hidden = show;
-    // Le sous-choix ne doit de toute façon être visible que hors onglet Favoris
-    self.pickerSubChoiceCapsuleView.hidden = show || (self.pickerActiveTab == S7TVPickerTabFavorites);
     self.pickerSizesToggleBtn.tintColor = [UIColor colorWithWhite:0.55 alpha:1.0];
     // Icône explicite pour indiquer où mène le bouton : un émoticône (retour
     // à la grille d'emotes) plutôt qu'un chevron générique ou une couleur —

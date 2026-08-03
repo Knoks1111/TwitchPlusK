@@ -1623,14 +1623,100 @@ static void s7tv_dumpObjectProperties(id obj, NSString *label, NSInteger maxProp
     }
 }
 
-// Un seul dump de propriétés par session d'ouverture du picker — sinon
+// ────────────────────────────────────────────────────────────
+// MARK: - Introspection des ivars objets (fallback quand les @objc
+// properties ne suffisent pas)
+// ────────────────────────────────────────────────────────────
+//
+// Constat sur le premier essai (s7tv_dumpObjectProperties) : class_copyPropertyList
+// ne voit QUE ce qui est exposé en @objc. Une stored property Swift privée
+// (typiquement le state manager d'une vue générique du type
+// ObservingThemeableView<ModernEmoticonPaletteStateManager>, repéré dans le
+// nom de la superclasse lors du premier dump) n'apparaît JAMAIS dans cette
+// liste. Elle existe quand même physiquement comme ivar dans le layout
+// mémoire de l'objet — une classe Swift qui hérite de NSObject/UIView garde
+// un layout compatible ObjC — donc on peut la lire via le runtime bas
+// niveau, même sans @objc.
+//
+// Sécurité : on ne touche JAMAIS un ivar dont l'encodage ne commence pas
+// par "@" (pointeur objet) — tout le reste (structs, entiers, etc.) est
+// ignoré pour éviter une lecture incohérente. object_getIvar est un pur
+// ACCESSEUR, jamais d'object_setIvar : rien n'est modifié sur l'objet.
+static void s7tv_dumpObjectIvars(id obj, NSString *label, NSInteger maxIvars, NSInteger depth) {
+    if (!obj || depth < 0) return;
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+
+    [mgr log:@"[NetDump] 🧬 ── Ivars (objets) de %@ (%@) ──────────────", label, NSStringFromClass([obj class])];
+
+    NSMutableArray<NSString *> *seenNames = [NSMutableArray array];
+    NSMutableArray<NSArray *> *toRecurse = [NSMutableArray array]; // [[nom, valeur], ...]
+    Class cls = [obj class];
+    NSInteger totalLogged = 0;
+    while (cls && cls != [NSObject class] && totalLogged < maxIvars) {
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList(cls, &count);
+        for (unsigned int i = 0; i < count && totalLogged < maxIvars; i++) {
+            Ivar iv = ivars[i];
+            const char *cName = ivar_getName(iv);
+            if (!cName) continue;
+            NSString *name = [NSString stringWithUTF8String:cName];
+            if ([seenNames containsObject:name]) continue;
+            [seenNames addObject:name];
+
+            const char *typeEnc = ivar_getTypeEncoding(iv);
+            if (!typeEnc || typeEnc[0] != '@') continue; // uniquement pointeurs objet, jamais autre chose
+
+            id value = nil;
+            @try {
+                value = object_getIvar(obj, iv);
+            } @catch (__unused NSException *ex) {
+                continue;
+            }
+
+            [mgr log:@"[NetDump] 🧬   %@ (%s) = %@", name, typeEnc, s7tv_briefDescribe(value)];
+            totalLogged++;
+
+            if (depth > 0 && s7tv_looksLikeInterestingModel(value)) {
+                [toRecurse addObject:@[name, value]];
+            }
+        }
+        if (ivars) free(ivars);
+        cls = class_getSuperclass(cls);
+    }
+
+    if (totalLogged == 0) {
+        [mgr log:@"[NetDump] 🧬   (aucun ivar objet trouvé)"];
+    }
+    [mgr log:@"[NetDump] 🧬 ── fin ivars %@ ──────────────", label];
+
+    for (NSArray *pair in toRecurse) {
+        NSString *subLabel = [NSString stringWithFormat:@"%@.%@ (ivar)", label, pair[0]];
+        s7tv_dumpObjectIvars(pair[1], subLabel, maxIvars, depth - 1);
+    }
+}
+
+
 // chaque scroll (qui redéclenche un dump écran complet) republierait le
 // même bloc de logs en boucle. Remis à NO dès que le picker disparaît de sa
 // fenêtre hôte (voir s7tv_pickerCheckWindow).
-static BOOL s_pickerPropsDataSourceDumped = NO;
-static BOOL s_pickerPropsHeaderDumped = NO;
-static BOOL s_pickerPropsCellDumped = NO;
+//
+// Note : les dumps de PROPRIÉTÉS (@objc, via s7tv_dumpObjectProperties) sur
+// le dataSource/header/cellule ont été retirés des appels ci-dessous — le
+// premier essai a confirmé qu'ils ne remontent que du bruit UIView/CALayer
+// injecté par des catégories tierces (itk_, mdc_, ck_, _cnui_...), sans
+// aucune info exploitable au-delà du nom de la superclasse déjà noté
+// (Twitch.ModernEmoticonPaletteStateManager). La fonction reste disponible
+// plus bas dans ce fichier si besoin de la rappeler manuellement plus tard.
+static BOOL s_pickerIvarsDataSourceDumped = NO;
 
+// Dump complet écran (parcours de TOUTES les vues, frames, images...) —
+// coûteux en volume de logs. On ne le déclenche plus qu'UNE FOIS par
+// session d'ouverture du picker côté watcher automatique (scroll/event) :
+// l'architecture visuelle (cellules, header, footer) est déjà entièrement
+// documentée, pas besoin de la re-logguer identique à chaque scroll. Le tap
+// manuel (Tap Logger) n'est PAS concerné par ce flag — il reste disponible
+// à la demande pour forcer un dump frais à tout moment.
+static BOOL s_pickerAutoFullDumpDoneThisSession = NO;
 
 // Filtre sur le CONTENU (texte/image/accessibilité présents), pas sur un nom
 // de classe deviné à l'avance.
@@ -1673,29 +1759,13 @@ static void s7tv_performFullScreenDump(UIWindow *window, NSString *reason) {
                     cn, NSStringFromClass([ds class]), (long)sections,
                     [perSection componentsJoinedByString:@" | "]];
 
-                if (!s_pickerPropsDataSourceDumped) {
-                    s7tv_dumpObjectProperties(ds, [NSString stringWithFormat:@"%@.dataSource", cn], 40, 1);
-                    s_pickerPropsDataSourceDumped = YES;
+                // Seule piste encore active : le state manager privé,
+                // invisible aux @objc properties (voir commentaire plus
+                // haut), potentiellement retrouvable en ivar brut.
+                if (!s_pickerIvarsDataSourceDumped) {
+                    s7tv_dumpObjectIvars(ds, [NSString stringWithFormat:@"%@.dataSource", cn], 40, 1);
+                    s_pickerIvarsDataSourceDumped = YES;
                 }
-            }
-        }
-
-        // Même logique pour UN header de section et UNE cellule d'emote
-        // représentatifs — capturés au passage pendant le parcours normal
-        // de la hiérarchie, sans requête supplémentaire. Le nom de classe
-        // n'est jamais hardcodé en dur ailleurs que dans cette vérification
-        // ponctuelle (substring déjà utilisée partout dans ce fichier pour
-        // repérer le picker natif).
-        if ([cn rangeOfString:@"EmoticonPaletteView"].location != NSNotFound &&
-            [cn rangeOfString:@"HeaderView"].location != NSNotFound) {
-            if (!s_pickerPropsHeaderDumped) {
-                s7tv_dumpObjectProperties(sv, [NSString stringWithFormat:@"%@ (header)", cn], 40, 1);
-                s_pickerPropsHeaderDumped = YES;
-            }
-        } else if ([cn rangeOfString:@"EmoteCollectionViewCell"].location != NSNotFound) {
-            if (!s_pickerPropsCellDumped) {
-                s7tv_dumpObjectProperties(sv, [NSString stringWithFormat:@"%@ (cellule)", cn], 40, 1);
-                s_pickerPropsCellDumped = YES;
             }
         }
 
@@ -1840,11 +1910,11 @@ static void s7tv_pickerCheckWindow(UIWindow *window, NSString *triggerReason) {
         // fenêtre porteuse d'une ouverture à l'autre).
         if (s_pickerConfirmedHostWindow == window) s_pickerConfirmedHostWindow = nil;
         if (s_pickerWatchLastFingerprint) s_pickerWatchLastFingerprint = nil;
-        // Réarme les dumps de propriétés pour la prochaine ouverture — sinon
-        // on ne verrait jamais les logs 🔬 après la toute première fois.
-        s_pickerPropsDataSourceDumped = NO;
-        s_pickerPropsHeaderDumped = NO;
-        s_pickerPropsCellDumped = NO;
+        // Réarme les dumps pour la prochaine ouverture — sinon on ne
+        // reverrait plus jamais les logs 🧬/dump complet après la toute
+        // première fois.
+        s_pickerIvarsDataSourceDumped = NO;
+        s_pickerAutoFullDumpDoneThisSession = NO;
         return;
     }
 
@@ -1852,8 +1922,20 @@ static void s7tv_pickerCheckWindow(UIWindow *window, NSString *triggerReason) {
     if ([fingerprint isEqualToString:s_pickerWatchLastFingerprint]) return; // rien de nouveau visible
 
     s_pickerWatchLastFingerprint = fingerprint;
-    s7tv_performFullScreenDump(window,
-        [NSString stringWithFormat:@"%@, sections visibles=[%@]", triggerReason, fingerprint]);
+
+    if (!s_pickerAutoFullDumpDoneThisSession) {
+        // Un seul dump complet (parcours de toutes les vues) par session —
+        // l'architecture visuelle est déjà entièrement documentée, inutile
+        // de la re-logguer identique à chaque scroll.
+        s7tv_performFullScreenDump(window,
+            [NSString stringWithFormat:@"%@, sections visibles=[%@]", triggerReason, fingerprint]);
+        s_pickerAutoFullDumpDoneThisSession = YES;
+    } else {
+        // Scrolls suivants : juste une ligne légère confirmant le
+        // changement, sans re-parcourir/re-logguer toute la hiérarchie.
+        [[SevenTVManager sharedManager] log:@"[NetDump] 🔁 contenu changé (%@) — sections visibles=[%@] (dump complet déjà fait cette session)",
+            triggerReason, fingerprint];
+    }
 }
 
 static void s7tv_pickerAutoWatchTick(void) {

@@ -163,6 +163,12 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // --- Extraction depuis réponses Twitch GQL ---
 - (void)extractAndLoadEmotesFromGQLResponse:(NSData *)responseData;
 
+// --- Favoris (IDs 7TV, persistés dans NSUserDefaults) ---
+// Utilisé par SevenTVEmotePickerController — la donnée reste dans le manager,
+// seule l'UI qui l'affiche/la modifie vit dans le picker.
+- (BOOL)isEmoteFavorited:(NSString *)emoteID;
+- (void)setEmote:(NSString *)emoteID favorited:(BOOL)favorited;
+
 // --- Accès aux emotes ---
 // Retourne l'emote 7TV correspondant au nom, ou nil si pas trouvée
 - (SevenTVEmote *)emoteForName:(NSString *)name;

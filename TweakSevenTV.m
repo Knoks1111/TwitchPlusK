@@ -1124,7 +1124,7 @@ static NSString *const kS7TVGQLSnifferHandledKey = @"S7TVGQLSnifferHandled";
         // les clés top-level de la réponse suffisent à repérer un éventuel
         // endpoint "emotes" (ex: /helix/chat/emotes/...).
         [[SevenTVManager sharedManager]
-            log:@"[GQLDump] 🌍 (Helix) %@ (%lu bytes)",
+            log:@"[NetDump] (Helix) %@ (%lu bytes)",
             self.request.URL.absoluteString, (unsigned long)self.collectedData.length];
     }
 
@@ -1225,7 +1225,7 @@ static void s7tv_dumpGQLOperation(NSURLRequest *request, NSData *responseData) {
     }
 
     [[SevenTVManager sharedManager]
-        log:@"[GQLDump] 🌍 op=[%@] → data.{%@} (%lu bytes) — url=%@",
+        log:@"[NetDump] op=[%@] clés=%@ (%lu bytes) — %@",
         opsJoined,
         [dataKeysPerOp componentsJoinedByString:@" | "],
         (unsigned long)responseData.length,
@@ -2305,7 +2305,7 @@ static void TwitchSevenTVInit(void) {
     // S7TVGQLSnifferProtocol ci-dessus). Retirer cette ligne une fois
     // l'opération du picker natif identifiée.
     [NSURLProtocol registerClass:[S7TVGQLSnifferProtocol class]];
-    [[SevenTVManager sharedManager] log:@"🔍 Sniffer GQL v2 (NSURLProtocol) enregistré"];
+    [[SevenTVManager sharedManager] log:@"[NetDump] Sonde réseau active pour capturer les catégories du menu emote natif"];
 
     // Interception IRC WebSocket
     s7tv_swizzle_websocket();

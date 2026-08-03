@@ -322,11 +322,11 @@ static const CGFloat kS7TVPickerGridDefaultH =
     });
 }
 
-// Appelé juste après la création de channelBtn (voir
-// -_createEmotePickerViewWithFrame:) : couvre le cas où le picker est
-// construit APRÈS que S7TVChannelJoined ait déjà été postée pour la chaîne
-// courante (le picker est créé paresseusement, potentiellement bien après
-// le join IRC).
+// Appelé à CHAQUE ouverture du picker (voir -_buildAndShowEmotePickerForView:) :
+// applique l'avatar déjà en cache pour la chaîne courante, ou lance le fetch
+// sinon. C'est le filet de sécurité qui ne dépend pas du timing de la notif
+// S7TVChannelJoined — utile si la chaîne a changé pendant que le picker
+// était fermé (aucune autre occasion de revérifier dans ce cas).
 - (void)_s7tv_refreshChannelAvatarIfNeeded {
     NSString *channelID = [SevenTVManager sharedManager].currentChannelTwitchID;
     if (!channelID.length) return; // pas encore de chaîne connue → fallback reste affiché
@@ -358,8 +358,18 @@ static const CGFloat kS7TVPickerGridDefaultH =
 
     self.pickerChannelAvatarFetchingID = channelID;
 
-    NSString *urlStr = [NSString stringWithFormat:@"https://api.twitch.tv/helix/users?id=%@",
-        [channelID stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet]];
+    NSString *encodedID = [channelID stringByAddingPercentEncodingWithAllowedCharacters:
+        NSCharacterSet.URLQueryAllowedCharacterSet];
+    if (!encodedID.length) {
+        // Ne devrait jamais arriver (channelID est numérique), mais un id=
+        // vide/absent ferait tomber Helix sur son fallback "token owner"
+        // (retourne notre propre compte) — mieux vaut ne pas envoyer la
+        // requête du tout que risquer d'afficher notre propre avatar.
+        self.pickerChannelAvatarFetchingID = nil;
+        [mgr log:@"❌ Avatar chaîne: échec encodage id=%@, requête annulée", channelID];
+        return;
+    }
+    NSString *urlStr = [NSString stringWithFormat:@"https://api.twitch.tv/helix/users?id=%@", encodedID];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlStr]];
     [req setValue:token    forHTTPHeaderField:@"Authorization"];
     [req setValue:clientID forHTTPHeaderField:@"Client-Id"];
@@ -375,8 +385,23 @@ static const CGFloat kS7TVPickerGridDefaultH =
             if ([users isKindOfClass:[NSArray class]] && users.count > 0) {
                 NSDictionary *user = users.firstObject;
                 if ([user isKindOfClass:[NSDictionary class]]) {
-                    id urlVal = user[@"profile_image_url"];
-                    if ([urlVal isKindOfClass:[NSString class]]) avatarURLString = urlVal;
+                    // Garde-fou : Helix "Get Users" retourne le token owner si
+                    // le paramètre id= est absent/vide (comportement documenté
+                    // de l'API). On vérifie explicitement que l'id retourné
+                    // correspond bien à celui demandé — sans ça, un id= mal
+                    // formé pourrait faire afficher NOTRE PROPRE avatar au lieu
+                    // de celui de la chaîne, sans erreur réseau détectable.
+                    id returnedID = user[@"id"];
+                    BOOL idMatches = [returnedID isKindOfClass:[NSString class]]
+                        && [returnedID isEqualToString:channelID];
+                    if (idMatches) {
+                        id urlVal = user[@"profile_image_url"];
+                        if ([urlVal isKindOfClass:[NSString class]]) avatarURLString = urlVal;
+                    } else {
+                        [[SevenTVManager sharedManager] log:
+                            @"❌ Avatar chaîne: id retourné (%@) ≠ id demandé (%@) — réponse ignorée",
+                            returnedID, channelID];
+                    }
                 }
             }
         }
@@ -689,6 +714,11 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
                                     forState:UIControlStateNormal];
     }
     self.emotePickerView.frame = pickerFrame;
+    // Revérifie l'avatar de chaîne à CHAQUE ouverture (pas seulement à la
+    // création du picker) : si la chaîne a changé pendant que le picker
+    // était fermé, c'est le seul filet de sécurité qui ne dépend pas du
+    // timing de la notif S7TVChannelJoined. No-op si déjà à jour (cache hit).
+    [self _s7tv_refreshChannelAvatarIfNeeded];
     // Repositionne toutes les zones (grille / pastilles flottantes / panneau
     // des tailles) — s'adapte à l'orientation courante et à l'onglet actif,
     // et resynchronise au passage le surlignage des onglets + la capsule
@@ -860,10 +890,6 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
           forControlEvents:UIControlEventTouchUpInside];
     [capsule addSubview:channelBtn];
     self.pickerSubChoiceChannelBtn = channelBtn;
-    // Applique l'avatar déjà en cache, ou lance le fetch pour la chaîne
-    // actuellement rejointe — couvre le cas où le picker est construit après
-    // que S7TVChannelJoined ait déjà été postée pour cette chaîne.
-    [self _s7tv_refreshChannelAvatarIfNeeded];
 
     NSData *_capsuleLogoData = [[NSData alloc]
         initWithBase64EncodedString:kS7TVLogoBase64 options:NSDataBase64DecodingIgnoreUnknownCharacters];

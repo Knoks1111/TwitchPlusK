@@ -69,7 +69,6 @@
 // Plus de header, plus de dock plein fond : TOUT est flottant par-dessus la
 // grille (comme les pastilles fermer/sous-choix), même langage visuel partout
 // → aucun bandeau opaque ne mange de la place, on voit plus d'emotes.
-@property (nonatomic, weak) UIButton  *pickerCloseFloatBtn;          // haut gauche
 @property (nonatomic, weak) UIView    *pickerSubChoiceCapsuleView;   // haut droite (Chaîne/Globales)
 @property (nonatomic, weak) UIButton  *pickerSubChoiceChannelBtn;
 @property (nonatomic, weak) UIButton  *pickerSubChoiceGlobalBtn;
@@ -468,7 +467,6 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         self.pickerSearchCapsuleView.hidden = NO;
         self.pickerTabCapsuleView.hidden = NO;
         for (UIButton *btn in self.pickerTabButtons) btn.hidden = NO;
-        self.pickerCloseFloatBtn.hidden = NO;
         self.pickerSizesToggleBtn.tintColor = [UIColor colorWithWhite:0.55 alpha:1.0];
         // Remettre l'icône ⚙️ (pas juste la couleur) — sans ça le bouton
         // gardait visuellement la flèche "retour" du panneau des tailles
@@ -617,26 +615,6 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [cv addGestureRecognizer:lp];
 
     [picker addSubview:cv];
-
-    // ── Pastille fermer (flottante, haut droite) ────────────────────────────
-    // Inversée avec la capsule sous-choix ci-dessous (qui passe à gauche) —
-    // la position réelle est de toute façon recalculée à chaque ouverture et
-    // à chaque rotation par -_s7tv_relayoutPickerForSize:, ces valeurs ne
-    // servent qu'au tout premier affichage.
-    UIButton *closeBtn = [self _s7tv_makeFloatingPillWithFrame:
-        CGRectMake(frame.size.width - kS7TVPickerFloatMargin - kS7TVPickerFloatSize,
-                   kS7TVPickerFloatMargin, kS7TVPickerFloatSize, kS7TVPickerFloatSize)
-                                                      cardColor:cardColor];
-    closeBtn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
-    UIImageSymbolConfiguration *xCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:12 weight:UIImageSymbolWeightSemibold];
-    [closeBtn setImage:[UIImage systemImageNamed:@"xmark" withConfiguration:xCfg]
-              forState:UIControlStateNormal];
-    closeBtn.tintColor = subColor;
-    [closeBtn addTarget:self action:@selector(_emotePickerCloseTapped)
-       forControlEvents:UIControlEventTouchUpInside];
-    self.pickerCloseFloatBtn = closeBtn;
-    [picker addSubview:closeBtn];
 
     // ── Capsule sous-choix Chaîne/Globales (flottante, haut gauche) ─────────
     // Équivalent des 2 petites icônes en haut à droite sur 7TV PC. Masquée
@@ -876,13 +854,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
                         cardColor:cardColor];
 
     // Point 3 — VRAIE CAUSE du bug "pas de bouton pour fermer/revenir" :
-    // sizesPanel est un UIScrollView OPAQUE plein cadre ajouté APRÈS closeBtn
-    // et toolsCapsule ci-dessus → il les recouvre visuellement ET intercepte
-    // leurs taps, même avec hidden=NO. On les repasse au premier plan
-    // explicitement pour qu'ils restent visibles et cliquables par-dessus le
-    // panneau des tailles (bringSubviewToFront sur la capsule suffit pour les
-    // 2 boutons qu'elle contient).
-    [picker bringSubviewToFront:closeBtn];
+    // sizesPanel est un UIScrollView OPAQUE plein cadre ajouté APRÈS
+    // toolsCapsule ci-dessus → il la recouvre visuellement ET intercepte ses
+    // taps, même avec hidden=NO. On la repasse au premier plan explicitement
+    // pour qu'elle reste visible et cliquable par-dessus le panneau des
+    // tailles (bringSubviewToFront sur la capsule suffit pour les 2 boutons
+    // qu'elle contient).
     [picker bringSubviewToFront:toolsCapsule];
 
     // NOTE: pas d'addSubview ici — la vue est attachée via inputView (remplace le clavier)
@@ -958,19 +935,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.emoteCollectionView.frame = CGRectMake(0, 0, size.width, size.height);
 
     CGFloat capsuleW = kS7TVPickerFloatSize * 2.0;
-    // ── Croix fermer : à droite dans la grille, à gauche dans le panneau des
-    // tailles — repositionnée ici à CHAQUE ouverture/rotation, donc jamais
-    // laissée du mauvais côté même si le picker a été fermé pendant qu'il
-    // était sur le panneau des tailles (voir le "reset grille" plus haut
-    // dans -_buildAndShowEmotePickerForView:, qui appelle cette méthode).
-    CGFloat closeX = self.pickerSizesPanelVisible
-        ? kS7TVPickerFloatMargin
-        : (size.width - kS7TVPickerFloatMargin - kS7TVPickerFloatSize);
-    self.pickerCloseFloatBtn.frame = CGRectMake(closeX, kS7TVPickerFloatMargin,
-                                                 kS7TVPickerFloatSize, kS7TVPickerFloatSize);
-    // La capsule sous-choix reste à gauche en permanence (miroir de la croix,
-    // qui elle est à droite en mode grille) — sa position n'a pas d'importance
-    // quand elle est masquée (Favoris / panneau des tailles).
+    // La capsule sous-choix reste à gauche en permanence, quel que soit le
+    // panneau affiché — sa position n'a pas d'importance quand elle est
+    // masquée (Favoris / panneau des tailles).
     self.pickerSubChoiceCapsuleView.frame = CGRectMake(kS7TVPickerFloatMargin,
                                                          kS7TVPickerFloatMargin, capsuleW, kS7TVPickerFloatSize);
     [self _s7tv_updateSubChoiceHighlightAnimated:NO];
@@ -979,10 +946,11 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
                           - kS7TVPickerFloatGap - kS7TVPickerFloatSize;
     CGFloat tabCapsuleW = kS7TVPickerFloatSize * 3.0;
     self.pickerTabCapsuleView.frame = CGRectMake(kS7TVPickerFloatMargin, bottomRowY, tabCapsuleW, kS7TVPickerFloatSize);
-    // ── Capsule tailles/réglages : à droite dans la grille (alignée sous la
-    // croix, elle aussi à droite), à gauche dans le panneau des tailles
-    // (alignée sous la croix, elle aussi à gauche) — les 2 boutons qu'elle
-    // contient voyagent ensemble d'un bloc, toujours collés l'un à l'autre.
+    // ── Capsule tailles/réglages : à droite dans la grille, à gauche dans le
+    // panneau des tailles (elle sert alors aussi de retour vers la grille,
+    // via le bouton tailles — voir -emotePickerSizesToggleTapped) — les 2
+    // boutons qu'elle contient voyagent ensemble d'un bloc, toujours collés
+    // l'un à l'autre, repositionnés ici à CHAQUE ouverture/rotation.
     CGFloat toolsCapsuleW = kS7TVPickerFloatSize * 2.0;
     CGFloat toolsX = self.pickerSizesPanelVisible
         ? kS7TVPickerFloatMargin
@@ -1418,10 +1386,6 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     for (UIButton *btn in self.pickerTabButtons) btn.hidden = show;
     // Le sous-choix ne doit de toute façon être visible que hors onglet Favoris
     self.pickerSubChoiceCapsuleView.hidden = show || (self.pickerActiveTab == S7TVPickerTabFavorites);
-    // Point 3 : la croix reste visible même dans le panneau des tailles, pour
-    // pouvoir fermer le picker directement sans devoir d'abord revenir à la
-    // grille via le bouton ⚙️ (qui, lui, sert de retour vers la grille).
-    self.pickerCloseFloatBtn.hidden = NO;
     self.pickerSizesToggleBtn.tintColor = show
         ? [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0]
         : [UIColor colorWithWhite:0.55 alpha:1.0];
@@ -1440,11 +1404,11 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // contenu réel est plus court. On ne dépasse jamais la hauteur "grille"
     // pour rester dans une zone confortable à l'écran.
     // Toujours ré-appeler le relayout (pas seulement si la hauteur change) :
-    // c'est lui qui replace la croix et le bouton ⚙️/retour du bon côté selon
+    // c'est lui qui replace la capsule tailles/réglages du bon côté selon
     // pickerSizesPanelVisible (à droite en grille, à gauche dans le panneau
     // des tailles) — sans ça, sur un contenu de hauteur identique par
     // coïncidence, les boutons resteraient du mauvais côté.
-    // Instantané (pas d'animation) : le déplacement croix/gear d'un côté à
+    // Instantané (pas d'animation) : le déplacement de la capsule d'un côté à
     // l'autre doit être immédiat, pas un glissement visible.
     CGRect f = self.emotePickerView.frame;
     CGFloat targetH = show
@@ -1458,9 +1422,6 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [self.emotePickerTextEntryView reloadInputViews];
 
     if (show) [self.sizesPanel loadRealPreviewAssetsIfNeeded];
-}
-- (void)_emotePickerCloseTapped {
-    [self _hideEmotePicker];
 }
 
 // Ouvre l'écran de réglages complet depuis le picker (même écran que le

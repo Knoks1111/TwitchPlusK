@@ -2,9 +2,12 @@
  * 7tv-picker-controler.m
  * Extrait de SevenTVManager.m (nettoyage picker).
  *
- * Picker d'emotes 7TV — grille + onglets + recherche + panneau des tailles
- * (délégué à SevenTVPickerSizesPanel, composant enfant instancié
- * paresseusement, voir -sizesPanel ci-dessous).
+ * Picker d'emotes 7TV — grille + onglets (Favoris / 7TV) + recherche +
+ * panneau des tailles (délégué à SevenTVPickerSizesPanel, composant enfant
+ * instancié paresseusement, voir -sizesPanel ci-dessous).
+ *
+ * Entièrement indépendant du picker natif de Twitch : aucune donnée, aucun
+ * onglet, aucune logique ne dépend des emotes natives Twitch.
  */
 
 #import "7tv-picker-controler.h"
@@ -55,11 +58,10 @@
 @property (nonatomic, assign) BOOL   pickerSizesPanelVisible;
 
 // ── Refonte tabbed + refonte visuelle du picker (style 7TV PC) ──────────
-// Onglet actif : 0 = Favoris, 1 = 7TV, 2 = Natif Twitch (voir S7TVPickerTab*)
+// Onglet actif : 0 = Favoris, 1 = 7TV (voir S7TVPickerTab*)
 @property (nonatomic, assign) NSInteger pickerActiveTab;
-// Sous-choix Channel/Globales, indépendant par onglet concerné (YES = Channel)
+// Sous-choix Channel/Globales de l'onglet 7TV (YES = Channel)
 @property (nonatomic, assign) BOOL      pickerSevenTVShowingChannel;
-@property (nonatomic, assign) BOOL      pickerTwitchNativeShowingChannel;
 // Mémorise l'onglet/sous-choix actifs juste avant qu'une recherche démarre,
 // pour les restaurer quand le champ de recherche redevient vide (la recherche
 // bascule automatiquement Favoris → Channel → Globales, voir point 3).
@@ -73,9 +75,9 @@
 @property (nonatomic, weak) UIButton  *pickerSubChoiceChannelBtn;
 @property (nonatomic, weak) UIButton  *pickerSubChoiceGlobalBtn;
 @property (nonatomic, weak) UIView    *pickerSubChoiceIndicatorView; // pastille violette qui glisse entre les 2 icônes
-@property (nonatomic, weak) UIView    *pickerTabCapsuleView;         // bas gauche (Favoris/7TV/Natif)
+@property (nonatomic, weak) UIView    *pickerTabCapsuleView;         // bas gauche (Favoris/7TV)
 @property (nonatomic, strong) NSMutableArray<UIButton *> *pickerTabButtons;
-@property (nonatomic, weak) UIView    *pickerTabIndicatorView;       // pastille violette qui glisse entre les 3 onglets
+@property (nonatomic, weak) UIView    *pickerTabIndicatorView;       // pastille violette qui glisse entre les 2 onglets
 @property (nonatomic, weak) UIView    *pickerSearchCapsuleView;      // bas, pleine largeur (recherche)
 @property (nonatomic, weak) UIButton  *pickerSearchClearBtn;         // petite croix à droite du champ, visible si texte non vide
 
@@ -85,14 +87,13 @@
 
 // Valeurs par défaut reprises telles quelles de l'ancien -[SevenTVManager setup]
 // (avant l'extraction du picker dans ce fichier) : onglet Favoris au départ,
-// sous-choix Channel pour les deux autres onglets, tableau des boutons
-// d'onglets prêt à être rempli par -_createEmotePickerViewWithFrame:.
+// sous-choix Channel pour l'onglet 7TV, tableau des boutons d'onglets prêt
+// à être rempli par -_createEmotePickerViewWithFrame:.
 - (instancetype)init {
     self = [super init];
     if (self) {
         _pickerActiveTab                  = 0; // S7TVPickerTabFavorites
         _pickerSevenTVShowingChannel      = YES;
-        _pickerTwitchNativeShowingChannel = YES;
         _pickerTabButtons                 = [NSMutableArray array];
         _emotePickerFavoriteEmotes = @[];
         _emotePickerChannelEmotes  = @[];
@@ -120,9 +121,8 @@ static const CGFloat kCellSize = 40.0;
 
 // ── Onglets du picker refondu (style 7TV PC) ──────────────────────────────
 typedef NS_ENUM(NSInteger, S7TVPickerTab) {
-    S7TVPickerTabFavorites   = 0,
-    S7TVPickerTabSevenTV     = 1,
-    S7TVPickerTabTwitchNative = 2,
+    S7TVPickerTabFavorites = 0,
+    S7TVPickerTabSevenTV   = 1,
 };
 
 // ── Dimensions du picker refondu ────────────────────────────────────────
@@ -622,7 +622,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // ── Capsule sous-choix Chaîne/Globales (flottante, haut gauche) ─────────
     // Équivalent des 2 petites icônes en haut à droite sur 7TV PC. Masquée
     // pour l'onglet Favoris. Pas d'avatar de chaîne branché → symbole
-    // générique en placeholder (comme l'onglet Natif Twitch, chantier séparé).
+    // générique en placeholder.
     CGFloat capsuleW = kS7TVPickerFloatSize * 2.0;
     UIView *capsule = [[UIView alloc] initWithFrame:
         CGRectMake(kS7TVPickerFloatMargin, kS7TVPickerFloatMargin, capsuleW, kS7TVPickerFloatSize)];
@@ -669,11 +669,11 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [picker addSubview:capsule];
     [self _s7tv_updateSubChoiceHighlightAnimated:NO];
 
-    // ── Capsule d'onglets (flottante, bas gauche) — Favoris / 7TV / Natif ──
+    // ── Capsule d'onglets (flottante, bas gauche) — Favoris / 7TV ──────────
     // Même style et même mécanisme (pastille qui glisse) que la capsule de
-    // sous-choix ci-dessus : plus de bandeau opaque, juste 3 icônes qui
+    // sous-choix ci-dessus : plus de bandeau opaque, juste 2 icônes qui
     // flottent au-dessus de la grille.
-    CGFloat tabCapsuleW = kS7TVPickerFloatSize * 3.0;
+    CGFloat tabCapsuleW = kS7TVPickerFloatSize * 2.0;
     CGFloat bottomRowY = frame.size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH
                           - kS7TVPickerFloatGap - kS7TVPickerFloatSize;
     UIView *tabCapsule = [[UIView alloc] initWithFrame:
@@ -718,16 +718,6 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [tabCapsule addSubview:sevenTVBtn];
     [self.pickerTabButtons addObject:sevenTVBtn];
 
-    UIImageSymbolConfiguration *smileCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
-    UIButton *nativeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    nativeBtn.frame = CGRectMake(kS7TVPickerFloatSize * 2.0, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
-    nativeBtn.tag = S7TVPickerTabTwitchNative;
-    [nativeBtn setImage:[UIImage systemImageNamed:@"face.smiling" withConfiguration:smileCfg] forState:UIControlStateNormal];
-    [nativeBtn addTarget:self action:@selector(_pickerTabTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [tabCapsule addSubview:nativeBtn];
-    [self.pickerTabButtons addObject:nativeBtn];
-
     [self _s7tv_updateTabButtonHighlight];
 
     // ── Capsule tailles/réglages (flottante, bas droite) ────────────────────
@@ -735,7 +725,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // sous-choix : un seul fond pilule partagé pour les 2 boutons (au lieu de
     // 2 pastilles séparées avec un espace entre elles), pour qu'ils restent
     // toujours visuellement collés — même taille/forme que les boutons de
-    // catégories (Favoris/7TV/Natif), qui utilisent déjà ce mécanisme.
+    // catégories (Favoris/7TV), qui utilisent déjà ce mécanisme.
     CGFloat toolsCapsuleW = kS7TVPickerFloatSize * 2.0;
     UIView *toolsCapsule = [[UIView alloc] initWithFrame:
         CGRectMake(frame.size.width - kS7TVPickerFloatMargin - toolsCapsuleW, bottomRowY,
@@ -906,11 +896,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 }
 
 // Déplace la pastille violette (indicateur) derrière l'icône Chaîne ou
-// Globales sélectionnée, dans la capsule flottante haut-droite.
+// Globales sélectionnée, dans la capsule flottante haut-droite. Seul
+// l'onglet 7TV a un sous-choix (la capsule reste cachée pour Favoris).
 - (void)_s7tv_updateSubChoiceHighlightAnimated:(BOOL)animated {
-    BOOL showingChannel = (self.pickerActiveTab == S7TVPickerTabSevenTV)
-        ? self.pickerSevenTVShowingChannel
-        : self.pickerTwitchNativeShowingChannel;
+    BOOL showingChannel = self.pickerSevenTVShowingChannel;
     CGRect target = showingChannel ? self.pickerSubChoiceChannelBtn.frame : self.pickerSubChoiceGlobalBtn.frame;
     void (^move)(void) = ^{
         self.pickerSubChoiceIndicatorView.frame = target;
@@ -947,7 +936,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
     CGFloat bottomRowY = size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH
                           - kS7TVPickerFloatGap - kS7TVPickerFloatSize;
-    CGFloat tabCapsuleW = kS7TVPickerFloatSize * 3.0;
+    CGFloat tabCapsuleW = kS7TVPickerFloatSize * 2.0;
     self.pickerTabCapsuleView.frame = CGRectMake(kS7TVPickerFloatMargin, bottomRowY, tabCapsuleW, kS7TVPickerFloatSize);
     // ── Capsule tailles/réglages : à droite dans la grille, à gauche dans le
     // panneau des tailles (elle sert alors aussi de retour vers la grille,
@@ -987,17 +976,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 }
 
 // Tap sur une des 2 pastilles Chaîne/Globales de la capsule flottante.
+// Seul l'onglet 7TV a un sous-choix (voir _s7tv_updateSubChoiceHighlightAnimated:).
 - (void)_pickerSubChoiceIconTapped:(UIButton *)sender {
+    if (self.pickerActiveTab != S7TVPickerTabSevenTV) return;
     BOOL showingChannel = (sender.tag == 0);
-    if (self.pickerActiveTab == S7TVPickerTabSevenTV) {
-        if (self.pickerSevenTVShowingChannel == showingChannel) return;
-        self.pickerSevenTVShowingChannel = showingChannel;
-    } else if (self.pickerActiveTab == S7TVPickerTabTwitchNative) {
-        if (self.pickerTwitchNativeShowingChannel == showingChannel) return;
-        self.pickerTwitchNativeShowingChannel = showingChannel;
-    } else {
-        return;
-    }
+    if (self.pickerSevenTVShowingChannel == showingChannel) return;
+    self.pickerSevenTVShowingChannel = showingChannel;
     [self _s7tv_updateSubChoiceHighlightAnimated:YES];
 
     NSString *q = self.emoteSearchField.text ?: @"";
@@ -1015,17 +999,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 }
 
 // Retourne l'array d'emotes correspondant à l'onglet + sous-choix actifs.
-
-// Natif Twitch : squelette UI uniquement pour l'instant — pas de source de
-// données Twitch natives branchée (chantier séparé) → toujours vide.
 - (NSArray<SevenTVEmote *> *)_s7tv_currentTabEmotes {
     switch (self.pickerActiveTab) {
         case S7TVPickerTabSevenTV:
             return self.pickerSevenTVShowingChannel
                 ? self.emotePickerChannelEmotes
                 : self.emotePickerGlobalEmotes;
-        case S7TVPickerTabTwitchNative:
-            return @[]; // squelette — pas encore de données Twitch natives
         case S7TVPickerTabFavorites:
         default:
             return self.emotePickerFavoriteEmotes;

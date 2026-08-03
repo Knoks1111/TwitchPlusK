@@ -1587,6 +1587,58 @@ static UIViewController *s7tv_vcForView(UIView *v) {
                    dispatch_get_main_queue(), ^{
         UIWindow *strongWindow = weakWindow;
         if (!strongWindow) return;
+
+        // Cherche, parmi les ancêtres du HIT, la plus haute vue dont le nom de
+        // classe évoque le picker d'emoticônes natif ("Emoticon"/"Picker") —
+        // si trouvée, on scanne TOUT son sous-arbre sans limite de distance
+        // (le picker peut couvrir tout l'écran), au lieu du scan habituel
+        // limité à 80pt autour du point de tap.
+        UIView *pickerRoot = nil;
+        {
+            UIView *v = hit;
+            while (v) {
+                NSString *cn = NSStringFromClass([v class]);
+                if ([cn rangeOfString:@"Emoticon" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                    [cn rangeOfString:@"Picker" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                    pickerRoot = v; // garde la PLUS HAUTE trouvée (continue de remonter)
+                }
+                v = v.superview;
+            }
+        }
+
+        if (pickerRoot) {
+            [mgr log:@"[NetDump] ── DUMP PICKER NATIF (%@) ──────────────", NSStringFromClass([pickerRoot class])];
+            NSMutableArray<UIView *> *pqueue = [NSMutableArray arrayWithObject:pickerRoot];
+            NSInteger pcount = 0;
+            while (pqueue.count > 0 && pcount < 4000) {
+                UIView *sv = pqueue.firstObject; [pqueue removeObjectAtIndex:0];
+                pcount++;
+                [pqueue addObjectsFromArray:sv.subviews];
+                CGRect frameInWindow = [sv convertRect:sv.bounds toView:nil];
+                NSString *cn = NSStringFromClass([sv class]);
+                NSString *extra = s7tv_viewExtra(sv);
+                // Ne logue que les vues porteuses d'info utile (texte, image,
+                // accessibilité) — les simples UIView de layout sans contenu
+                // n'apportent rien et noient le dump.
+                BOOL hasImage = [sv isKindOfClass:[UIImageView class]] && ((UIImageView *)sv).image != nil;
+                BOOL hasExtra = extra.length > 0;
+                if (!hasImage && !hasExtra) continue;
+                NSString *imgInfo = @"";
+                if (hasImage) {
+                    UIImage *img = ((UIImageView *)sv).image;
+                    imgInfo = [NSString stringWithFormat:@" imgSize=(%.0f×%.0f) imgDesc=%@",
+                        img.size.width, img.size.height, img.description];
+                }
+                [mgr log:@"[NetDump] %@ frame=(%.0f,%.0f,%.0f,%.0f)%@%@",
+                    cn,
+                    frameInWindow.origin.x, frameInWindow.origin.y,
+                    frameInWindow.size.width, frameInWindow.size.height,
+                    imgInfo, extra];
+            }
+            [mgr log:@"[NetDump] ── FIN DUMP PICKER (%ld vues inspectées) ──────────────", (long)pcount];
+            return; // pas besoin du scan générique ci-dessous dans ce cas
+        }
+
         [mgr log:@"  🔍 SCAN CHAT @ (%.0f,%.0f) ──────────────", pt.x, pt.y];
         NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:strongWindow];
         NSInteger scanCount = 0;

@@ -977,9 +977,27 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
     // Toujours rendus (y compris message .deletedCollapsed) : même logique
     // que le pseudo juste en dessous, qui reste affiché dans ce cas.
     SevenTVBadgeProvider *badgeProvider = [SevenTVBadgeProvider sharedProvider];
+    // TEMP DEBUG — diagnostic badges (étoile en trop / badge manquant selon
+    // les pseudos, voir échange avec l'utilisateur) : imprime la liste brute
+    // reçue de Twitch (tag IRC badges=) pour CE message, puis pour chaque
+    // identifiant, s'il résout ou non et vers quelle URL. À retirer une fois
+    // le diagnostic terminé.
+    if (msg.badgeIdentifiers.count > 0) {
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] 🏗 DEBUG badges bruts — %@ : %@",
+            displayName, msg.badgeIdentifiers];
+    }
     for (NSString *badgeIdentifier in msg.badgeIdentifiers) {
         id<S7TVResolvedEmote> badge = [badgeProvider resolvedBadgeForIdentifier:badgeIdentifier];
-        if (!badge) continue; // catalogue pas encore chargé, ou set/version inconnu — on saute, pas de glyphe vide
+        if (!badge) {
+            [[SevenTVManager sharedManager]
+                log:@"[ChatCustom] 🏗 DEBUG badge NON résolu — %@ : identifiant='%@'",
+                displayName, badgeIdentifier];
+            continue; // catalogue pas encore chargé, ou set/version inconnu — on saute, pas de glyphe vide
+        }
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] 🏗 DEBUG badge résolu — %@ : identifiant='%@' url=%@",
+            displayName, badgeIdentifier, badge.imageURL.absoluteString];
 
         UIImage *cachedBadgeImage = [imageCache cachedImageForResolvedEmote:badge];
         if (!cachedBadgeImage) {

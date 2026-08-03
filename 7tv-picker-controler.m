@@ -558,10 +558,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // doit se détacher légèrement du fond (cellules + TOUTES les pastilles
     // flottantes, qui partagent maintenant exactement le même style — plus
     // aucun bandeau opaque qui mange de la place). accent = violet Twitch.
-    // Twitch utilise un gris neutre pur pour le fond de la chatbox (#0E0E0E),
-    // pas de très léger biais bleu comme l'ancienne valeur #0E0E10 — la
-    // différence est infime mais visible en superposition directe.
-    UIColor *bgColor    = [UIColor colorWithRed:0.055 green:0.055 blue:0.055 alpha:1.0]; // #0E0E0E
+    // Twitch utilise #0E0E10 pour le fond de la chatbox (confirmé par
+    // color picker directement sur l'app Twitch) — ce n'est PAS un gris pur,
+    // il y a un léger biais bleu, contrairement à ce qu'on avait supposé.
+    UIColor *bgColor    = [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10
     UIColor *cardColor  = [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:1.0]; // #19191C
     UIColor *sepColor   = [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
     UIColor *textColor  = [UIColor whiteColor];
@@ -1254,12 +1254,16 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
                     attributes:@{NSForegroundColorAttributeName: subColor}];
         }
         [self _applySearchQuery:query];
-        // Restaurer le picker une fois l'alerte VRAIMENT fermée (completion
-        // du dismiss), pas après un délai estimé : un délai devine un temps
-        // d'animation, alors que le completion tombe exactement au bon
-        // moment — plus de clavier natif qui flashe une fraction de seconde
-        // avant que le picker ne reprenne sa place.
-        [alert dismissViewControllerAnimated:YES completion:^{
+        // Reste du clignotement : même en callant _restorePickerFocus pile au
+        // bon moment, il y avait ENCORE 2 animations qui s'enchaînaient l'une
+        // après l'autre — la fermeture de l'alerte (+ son clavier natif qui
+        // se replie), PUIS la réapparition du picker une fois celle-ci finie.
+        // iOS ne permet pas de vraiment les superposer (un seul firstResponder
+        // à la fois pendant une transition modale). En désactivant l'animation
+        // de fermeture de l'alerte (dismiss instantané), il ne reste plus que
+        // l'animation de réapparition du picker — un seul mouvement au lieu
+        // de deux qui se suivent.
+        [alert dismissViewControllerAnimated:NO completion:^{
             [self _restorePickerFocus];
         }];
     }];
@@ -1268,9 +1272,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         actionWithTitle:@"Annuler"
                   style:UIAlertActionStyleCancel
                 handler:^(UIAlertAction *action) {
-        // Même chose à l'annulation : restaurer le picker au vrai moment
-        // de fermeture de l'alerte (voir searchAction ci-dessus).
-        [alert dismissViewControllerAnimated:YES completion:^{
+        // Même chose à l'annulation (voir searchAction ci-dessus) : dismiss
+        // sans animation pour ne garder qu'une seule transition visible.
+        [alert dismissViewControllerAnimated:NO completion:^{
             [self _restorePickerFocus];
         }];
     }];

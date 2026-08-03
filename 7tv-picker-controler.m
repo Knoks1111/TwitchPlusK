@@ -900,7 +900,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     globalBtn.tag = 1; // 1 = Globales
     [globalBtn setImage:_capsuleLogoImg forState:UIControlStateNormal];
     globalBtn.imageView.contentMode = UIViewContentModeScaleAspectFit;
-    globalBtn.imageEdgeInsets = UIEdgeInsetsMake(9, 9, 9, 9);
+    // Insets calculés pour que le logo occupe kS7TVPickerAvatarDiameter (24pt)
+    // dans le bouton 30pt — même taille visible que l'avatar de chaîne
+    // (auparavant 9pt d'inset de chaque côté → logo à 12pt, sensiblement
+    // plus petit que l'avatar rond).
+    CGFloat globalBtnInset = (kS7TVPickerFloatSize - kS7TVPickerAvatarDiameter) / 2.0;
+    globalBtn.imageEdgeInsets = UIEdgeInsetsMake(globalBtnInset, globalBtnInset, globalBtnInset, globalBtnInset);
     [globalBtn addTarget:self action:@selector(_pickerSubChoiceIconTapped:)
          forControlEvents:UIControlEventTouchUpInside];
     [capsule addSubview:globalBtn];

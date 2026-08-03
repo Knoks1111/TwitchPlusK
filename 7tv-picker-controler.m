@@ -81,6 +81,16 @@
 @property (nonatomic, weak) UIView    *pickerSearchCapsuleView;      // bas, pleine largeur (recherche)
 @property (nonatomic, weak) UIButton  *pickerSearchClearBtn;         // petite croix à droite du champ, visible si texte non vide
 
+// ── Avatar de chaîne (bouton "Chaîne" de la capsule sous-choix) ────────────
+// Cache mémoire simple par channelID — le controller vit toute la durée de
+// l'app (jamais désalloué), donc pas besoin d'éviction : peu de chaînes
+// visitées par session.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, UIImage *> *pickerChannelAvatarCache;
+// ID de la chaîne dont l'avatar est actuellement en cours de fetch — évite
+// de déclencher un 2e appel Helix si le picker est rouvert (ou la notif
+// reçue à nouveau) pendant qu'une requête est déjà en vol pour cette chaîne.
+@property (nonatomic, copy) NSString *pickerChannelAvatarFetchingID;
+
 @end
 
 @implementation SevenTVEmotePickerController
@@ -99,6 +109,18 @@
         _emotePickerChannelEmotes  = @[];
         _emotePickerGlobalEmotes   = @[];
         _emotePickerOtherEmotes    = @[];
+        _pickerChannelAvatarCache  = [NSMutableDictionary dictionary];
+
+        // Abonnement permanent à S7TVChannelJoined (postée depuis
+        // s7tv_handleRoomState dans TweakSevenTV.m) — même logique que
+        // SevenTVBadgeProvider : ce controller n'est jamais désalloué en
+        // cours de vie de l'app (cleanupPickerForStreamClose masque juste la
+        // vue, ne détruit pas l'objet), donc pas de -dealloc pour se
+        // désabonner.
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(_s7tv_channelJoinedNotification:)
+                                                      name:@"S7TVChannelJoined"
+                                                    object:nil];
     }
     return self;
 }
@@ -265,6 +287,173 @@ static const CGFloat kS7TVPickerGridDefaultH =
     CFRelease(src);
     img = img ?: [UIImage imageWithData:data];
     return [self _forceDecodedImage:img];
+}
+
+// ── Avatar de la chaîne (bouton "Chaîne" de la capsule sous-choix) ─────────
+//
+// Point d'entrée notif : S7TVChannelJoined n'est postée que pour un VRAI
+// changement de broadcaster ID (voir s7tv_handleRoomState), jamais pour un
+// simple re-join du même channel — pas de refetch inutile.
+- (void)_s7tv_channelJoinedNotification:(NSNotification *)note {
+    NSString *channelID = note.userInfo[@"channelID"];
+    if (!channelID.length) return;
+    // Le bouton n'existe que si le picker a déjà été construit une première fois.
+    if (!self.pickerSubChoiceChannelBtn) return;
+
+    UIImage *cached = self.pickerChannelAvatarCache[channelID];
+    if (cached) {
+        [self _s7tv_applyChannelAvatarImage:cached];
+    } else {
+        // Nouvelle chaîne pas encore en cache → on repasse immédiatement au
+        // placeholder générique le temps du fetch, pour ne jamais laisser
+        // affiché l'avatar de l'ancienne chaîne par erreur.
+        [self _s7tv_resetChannelButtonToPlaceholder];
+        [self _s7tv_loadChannelAvatarForChannelID:channelID];
+    }
+}
+
+// Appelé juste après la création de channelBtn (voir
+// -_createEmotePickerViewWithFrame:) : couvre le cas où le picker est
+// construit APRÈS que S7TVChannelJoined ait déjà été postée pour la chaîne
+// courante (le picker est créé paresseusement, potentiellement bien après
+// le join IRC).
+- (void)_s7tv_refreshChannelAvatarIfNeeded {
+    NSString *channelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+    if (!channelID.length) return; // pas encore de chaîne connue → fallback reste affiché
+
+    UIImage *cached = self.pickerChannelAvatarCache[channelID];
+    if (cached) {
+        [self _s7tv_applyChannelAvatarImage:cached];
+    } else {
+        [self _s7tv_loadChannelAvatarForChannelID:channelID];
+    }
+}
+
+// Fetch Helix Get Users (avatar) puis téléchargement/décodage de l'image via
+// le pipeline partagé du picker (pickerImageSession / decodePickerImageData:),
+// même pattern que les previews de SevenTVPickerSizesPanel. Échec silencieux
+// à toutes les étapes : le placeholder SF Symbol reste affiché, jamais de
+// bouton vide/crashé.
+- (void)_s7tv_loadChannelAvatarForChannelID:(NSString *)channelID {
+    if (!channelID.length) return;
+    if ([self.pickerChannelAvatarFetchingID isEqualToString:channelID]) return; // déjà en vol
+
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    NSString *token    = mgr.twitchToken;    // déjà normalisé "Bearer <token>"
+    NSString *clientID = mgr.twitchClientID;
+    if (!token.length || !clientID.length) {
+        [mgr log:@"⚠️ Avatar chaîne: token/Client-ID Twitch pas encore capturés — fallback conservé"];
+        return;
+    }
+
+    self.pickerChannelAvatarFetchingID = channelID;
+
+    NSString *urlStr = [NSString stringWithFormat:@"https://api.twitch.tv/helix/users?id=%@",
+        [channelID stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet]];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlStr]];
+    [req setValue:token    forHTTPHeaderField:@"Authorization"];
+    [req setValue:clientID forHTTPHeaderField:@"Client-Id"];
+
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+
+        NSString *avatarURLString = nil;
+        if (data && !error) {
+            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            NSArray *users = [json isKindOfClass:[NSDictionary class]] ? json[@"data"] : nil;
+            if ([users isKindOfClass:[NSArray class]] && users.count > 0) {
+                NSDictionary *user = users.firstObject;
+                if ([user isKindOfClass:[NSDictionary class]]) {
+                    id urlVal = user[@"profile_image_url"];
+                    if ([urlVal isKindOfClass:[NSString class]]) avatarURLString = urlVal;
+                }
+            }
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (strongSelf && [strongSelf.pickerChannelAvatarFetchingID isEqualToString:channelID]) {
+                strongSelf.pickerChannelAvatarFetchingID = nil;
+            }
+        });
+
+        if (!avatarURLString.length) {
+            [[SevenTVManager sharedManager] log:@"⚠️ Avatar chaîne: échec Helix Get Users (id=%@)", channelID];
+            return;
+        }
+        NSURL *avatarURL = [NSURL URLWithString:avatarURLString];
+        if (!avatarURL) return;
+
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        NSURLSessionDataTask *imgTask = [[strongSelf pickerImageSession] dataTaskWithURL:avatarURL
+            completionHandler:^(NSData *imgData, NSURLResponse *r, NSError *e) {
+            if (!imgData) return;
+            UIImage *decoded = [strongSelf decodePickerImageData:imgData wantsAnimated:NO];
+            if (!decoded) return;
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf2 = weakSelf;
+                if (!strongSelf2) return;
+                strongSelf2.pickerChannelAvatarCache[channelID] = decoded;
+                // Garde-fou anti-course : la chaîne a pu changer pendant le
+                // fetch (changement rapide) → n'appliquer que si toujours
+                // d'actualité, jamais l'avatar d'une chaîne déjà quittée.
+                if ([[SevenTVManager sharedManager].currentChannelTwitchID isEqualToString:channelID]) {
+                    [strongSelf2 _s7tv_applyChannelAvatarImage:decoded];
+                }
+            });
+        }];
+        [imgTask resume];
+    }];
+    [task resume];
+}
+
+// Redécoupe/redimensionne l'avatar en un cercle plein cadre de `diameter`
+// points, prêt à poser tel quel sur channelBtn. Nécessaire car channelBtn
+// est en layout frame-based (pas d'autolayout) : UIButton ne redimensionne
+// PAS automatiquement une image à la taille du bouton dans ce mode — sans ce
+// pré-traitement, un avatar Twitch (souvent 300x300) s'afficherait à sa
+// taille native et détonnerait la capsule.
+- (UIImage *)_s7tv_circularAvatarFromImage:(UIImage *)source diameter:(CGFloat)diameter {
+    if (!source || source.size.width <= 0 || source.size.height <= 0) return nil;
+    CGSize targetSize = CGSizeMake(diameter, diameter);
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
+    fmt.opaque = NO;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:targetSize format:fmt];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, diameter, diameter)] addClip];
+        // Aspect-fill : centre le plus petit côté de la source sur le cadre cible.
+        CGFloat scale = MAX(diameter / source.size.width, diameter / source.size.height);
+        CGFloat drawW = source.size.width  * scale;
+        CGFloat drawH = source.size.height * scale;
+        CGRect drawRect = CGRectMake((diameter - drawW) / 2.0, (diameter - drawH) / 2.0, drawW, drawH);
+        [source drawInRect:drawRect];
+    }];
+}
+
+- (void)_s7tv_applyChannelAvatarImage:(UIImage *)image {
+    UIButton *btn = self.pickerSubChoiceChannelBtn;
+    if (!btn || !image) return;
+    UIImage *circular = [self _s7tv_circularAvatarFromImage:image diameter:kS7TVPickerFloatSize];
+    if (!circular) return;
+    btn.imageEdgeInsets = UIEdgeInsetsZero;
+    [btn setImage:[circular imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal]
+          forState:UIControlStateNormal];
+}
+
+// Fallback propre — remet le symbole générique d'origine (mêmes réglages
+// qu'à la création de channelBtn).
+- (void)_s7tv_resetChannelButtonToPlaceholder {
+    UIButton *btn = self.pickerSubChoiceChannelBtn;
+    if (!btn) return;
+    UIImageSymbolConfiguration *avCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+    btn.imageEdgeInsets = UIEdgeInsetsZero;
+    [btn setImage:[UIImage systemImageNamed:@"person.crop.circle.fill" withConfiguration:avCfg]
+          forState:UIControlStateNormal];
 }
 
 - (void)toggleEmotePickerForChatInputView:(UIView *)chatInputView {
@@ -654,6 +843,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
           forControlEvents:UIControlEventTouchUpInside];
     [capsule addSubview:channelBtn];
     self.pickerSubChoiceChannelBtn = channelBtn;
+    // Applique l'avatar déjà en cache, ou lance le fetch pour la chaîne
+    // actuellement rejointe — couvre le cas où le picker est construit après
+    // que S7TVChannelJoined ait déjà été postée pour cette chaîne.
+    [self _s7tv_refreshChannelAvatarIfNeeded];
 
     NSData *_capsuleLogoData = [[NSData alloc]
         initWithBase64EncodedString:kS7TVLogoBase64 options:NSDataBase64DecodingIgnoreUnknownCharacters];

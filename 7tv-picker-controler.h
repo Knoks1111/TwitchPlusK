@@ -3,8 +3,11 @@
  *
  * Picker d'emotes 7TV affiché au-dessus de la barre de saisie Twitch quand
  * l'utilisateur tape sur le bouton 7TV intégré dans la barre. Grille de
- * cellules (3 onglets : Favoris / 7TV / Natif Twitch) + barre de recherche +
- * panneau des tailles (voir SevenTVPickerSizesPanel, composant enfant).
+ * cellules (2 onglets : Favoris / 7TV) + barre de recherche + panneau des
+ * tailles (voir SevenTVPickerSizesPanel, composant enfant).
+ *
+ * Entièrement indépendant du picker natif de Twitch : aucune catégorie,
+ * aucune donnée, aucune logique de navigation liée aux emotes natives Twitch.
  *
  * Composant de SevenTVManager : lit les données d'emotes/favoris via
  * [SevenTVManager sharedManager] mais gère lui-même toute son UI. Instancié

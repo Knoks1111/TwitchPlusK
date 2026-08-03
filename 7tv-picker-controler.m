@@ -558,7 +558,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // doit se détacher légèrement du fond (cellules + TOUTES les pastilles
     // flottantes, qui partagent maintenant exactement le même style — plus
     // aucun bandeau opaque qui mange de la place). accent = violet Twitch.
-    UIColor *bgColor    = [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10
+    // Twitch utilise un gris neutre pur pour le fond de la chatbox (#0E0E0E),
+    // pas de très léger biais bleu comme l'ancienne valeur #0E0E10 — la
+    // différence est infime mais visible en superposition directe.
+    UIColor *bgColor    = [UIColor colorWithRed:0.055 green:0.055 blue:0.055 alpha:1.0]; // #0E0E0E
     UIColor *cardColor  = [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:1.0]; // #19191C
     UIColor *sepColor   = [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
     UIColor *textColor  = [UIColor whiteColor];
@@ -1251,18 +1254,25 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
                     attributes:@{NSForegroundColorAttributeName: subColor}];
         }
         [self _applySearchQuery:query];
-        // Restaurer le picker : l'alerte a pris le focus → le clavier natif
-        // est apparu. On force le TextEntryView à redevenir firstResponder
-        // avec son inputView = picker, ce qui efface le clavier et réaffiche le picker.
-        [self _restorePickerFocus];
+        // Restaurer le picker une fois l'alerte VRAIMENT fermée (completion
+        // du dismiss), pas après un délai estimé : un délai devine un temps
+        // d'animation, alors que le completion tombe exactement au bon
+        // moment — plus de clavier natif qui flashe une fraction de seconde
+        // avant que le picker ne reprenne sa place.
+        [alert dismissViewControllerAnimated:YES completion:^{
+            [self _restorePickerFocus];
+        }];
     }];
 
     UIAlertAction *cancelAction = [UIAlertAction
         actionWithTitle:@"Annuler"
                   style:UIAlertActionStyleCancel
                 handler:^(UIAlertAction *action) {
-        // Même chose à l'annulation : restaurer le picker
-        [self _restorePickerFocus];
+        // Même chose à l'annulation : restaurer le picker au vrai moment
+        // de fermeture de l'alerte (voir searchAction ci-dessus).
+        [alert dismissViewControllerAnimated:YES completion:^{
+            [self _restorePickerFocus];
+        }];
     }];
 
     [alert addAction:searchAction];
@@ -1291,31 +1301,26 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.pickerSearchClearBtn.hidden = (self.emoteSearchField.text.length == 0);
 }
 
-// Restaure le picker après fermeture de l'UIAlertController.
-// La fermeture de l'alerte déclenche parfois un resign/become du firstResponder
-// sur le TextEntryView, ce qui efface son inputView et affiche le clavier natif.
-// On attend la fin de l'animation de fermeture (~0.35s) puis on réassigne
-// inputView = picker et on force reloadInputViews.
+// Restaure le picker après fermeture de l'UIAlertController — appelée depuis
+// le completion du dismiss (voir searchAction/cancelAction ci-dessus), donc
+// exactement quand l'alerte a fini de disparaître. La fermeture de l'alerte
+// déclenche parfois un resign/become du firstResponder sur le TextEntryView,
+// ce qui efface son inputView et affiche le clavier natif un court instant :
+// on réassigne inputView = picker et on force reloadInputViews pour reprendre
+// la main immédiatement.
 - (void)_restorePickerFocus {
-    __weak UITextView *weakTV = self.emotePickerTextEntryView;
-    __weak UIView *weakPicker = self.emotePickerView;
-    if (!weakTV || !weakPicker) return;
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UITextView *tv = weakTV;
-        UIView *pickerView = weakPicker;
-        // Guard : si le stream a été fermé entre temps, tv.window == nil
-        if (!tv || !tv.window || !pickerView) return;
-        // Réassigner l'inputView au cas où il aurait été effacé
-        tv.inputView = pickerView;
-        tv.inputAccessoryView = nil;
-        pickerView.hidden = NO;
-        if (!tv.isFirstResponder) {
-            [tv becomeFirstResponder];
-        }
-        [tv reloadInputViews];
-    });
+    UITextView *tv = self.emotePickerTextEntryView;
+    UIView *pickerView = self.emotePickerView;
+    // Guard : si le stream a été fermé entre temps, tv.window == nil
+    if (!tv || !tv.window || !pickerView) return;
+    // Réassigner l'inputView au cas où il aurait été effacé
+    tv.inputView = pickerView;
+    tv.inputAccessoryView = nil;
+    pickerView.hidden = NO;
+    if (!tv.isFirstResponder) {
+        [tv becomeFirstResponder];
+    }
+    [tv reloadInputViews];
 }
 
 // Appelé par UIControlEventEditingChanged (cas où le champ est modifié

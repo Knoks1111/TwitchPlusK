@@ -1510,9 +1510,169 @@ static UIViewController *s7tv_vcForView(UIView *v) {
     return nil;
 }
 
-@interface UIWindow (S7TVTapLogger)
-- (void)s7tv_sendEvent:(UIEvent *)event;
-@end
+// Dump COMPLET de tout ce qui est affiché à l'écran, réutilisable (appelé
+// aussi bien par le tap manuel que par le watcher automatique ci-dessous).
+// Filtre sur le CONTENU (texte/image/accessibilité présents), pas sur un nom
+// de classe deviné à l'avance.
+static void s7tv_performFullScreenDump(UIWindow *window, NSString *reason) {
+    if (!window) return;
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+
+    [mgr log:@"[NetDump] ── DUMP ÉCRAN COMPLET (%@) ──────────────", reason];
+    NSMutableArray<UIView *> *pqueue = [NSMutableArray arrayWithObject:window];
+    NSInteger pcount = 0;
+    while (pqueue.count > 0 && pcount < 6000) {
+        UIView *sv = pqueue.firstObject; [pqueue removeObjectAtIndex:0];
+        pcount++;
+        [pqueue addObjectsFromArray:sv.subviews];
+        CGRect frameInWindow = [sv convertRect:sv.bounds toView:nil];
+        NSString *cn = NSStringFromClass([sv class]);
+
+        // Comptage structurel des UICollectionView (grille d'emotes) via
+        // l'API PUBLIQUE de UICollectionViewDataSource — numberOfSections/
+        // numberOfItemsInSection donne la structure COMPLÈTE (y compris les
+        // sections pas encore scrollées à l'écran), en lecture seule, sans
+        // toucher à aucun ivar privé ni manipuler la vue.
+        if ([sv isKindOfClass:[UICollectionView class]]) {
+            UICollectionView *cv = (UICollectionView *)sv;
+            id<UICollectionViewDataSource> ds = cv.dataSource;
+            if (ds) {
+                NSInteger sections = 1;
+                if ([ds respondsToSelector:@selector(numberOfSectionsInCollectionView:)]) {
+                    sections = [ds numberOfSectionsInCollectionView:cv];
+                }
+                NSMutableArray<NSString *> *perSection = [NSMutableArray array];
+                for (NSInteger s = 0; s < sections; s++) {
+                    NSInteger items = 0;
+                    @try {
+                        items = [ds collectionView:cv numberOfItemsInSection:s];
+                    } @catch (__unused NSException *ex) {}
+                    [perSection addObject:[NSString stringWithFormat:@"section%ld=%ld items", (long)s, (long)items]];
+                }
+                [mgr log:@"[NetDump] 📊 %@ dataSource=%@ → %ld section(s) : %@",
+                    cn, NSStringFromClass([ds class]), (long)sections,
+                    [perSection componentsJoinedByString:@" | "]];
+            }
+        }
+
+        NSString *extra = s7tv_viewExtra(sv);
+        BOOL hasImage = [sv isKindOfClass:[UIImageView class]] && ((UIImageView *)sv).image != nil;
+        BOOL hasExtra = extra.length > 0;
+        if (!hasImage && !hasExtra) continue;
+        NSString *imgInfo = @"";
+        if (hasImage) {
+            UIImage *img = ((UIImageView *)sv).image;
+            imgInfo = [NSString stringWithFormat:@" imgSize=(%.0f×%.0f) imgDesc=%@",
+                img.size.width, img.size.height, img.description];
+        }
+        [mgr log:@"[NetDump] %@ frame=(%.0f,%.0f,%.0f,%.0f)%@%@",
+            cn,
+            frameInWindow.origin.x, frameInWindow.origin.y,
+            frameInWindow.size.width, frameInWindow.size.height,
+            imgInfo, extra];
+    }
+    [mgr log:@"[NetDump] ── FIN DUMP ÉCRAN (%ld vues inspectées) ──────────────", (long)pcount];
+}
+
+static UIWindow *s7tv_frontmostWindow(void) {
+    UIWindow *found = nil;
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.isKeyWindow) { found = w; break; }
+    }
+    if (!found) found = [UIApplication sharedApplication].windows.firstObject;
+    return found;
+}
+
+// ────────────────────────────────────────────────────────────
+// MARK: - Watcher automatique du picker natif (diagnostic TEMPORAIRE)
+// ────────────────────────────────────────────────────────────
+//
+// Plutôt que de dépendre d'un tap manuel à chaque fois qu'on veut capturer
+// un nouvel état (après un scroll, un changement d'onglet), ce timer scanne
+// périodiquement l'écran, détecte si le picker natif ("EmoticonPalette" dans
+// le nom de classe) est présent, et redéclenche un dump COMPLET
+// automatiquement dès que ce qui est visible a changé (fingerprint = titres
+// des sections actuellement visibles). Purement passif — aucune manipulation
+// du picker (pas de scroll forcé, pas d'appel à ses méthodes internes), donc
+// pas une "injection" : on lit ce que l'utilisateur fait défiler lui-même.
+static NSString *s_pickerWatchLastFingerprint = nil;
+
+static NSString *s7tv_pickerVisibleFingerprint(UIView *root) {
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
+    NSInteger count = 0;
+    while (queue.count > 0 && count < 3000) {
+        UIView *sv = queue.firstObject; [queue removeObjectAtIndex:0];
+        count++;
+        [queue addObjectsFromArray:sv.subviews];
+        if ([sv isKindOfClass:[UILabel class]] &&
+            [sv.accessibilityIdentifier isEqualToString:@"emoticon_palette_header_view_title_label"]) {
+            NSString *txt = ((UILabel *)sv).text;
+            if (txt.length) [titles addObject:txt];
+        }
+    }
+    [titles sortUsingSelector:@selector(compare:)];
+    return [titles componentsJoinedByString:@"|"];
+}
+
+static void s7tv_pickerAutoWatchTick(void) {
+    // Aucune dépendance au Tap Logger — ce watcher est indépendant. Par
+    // contre, pas de raison de scanner la hiérarchie de vues toutes les
+    // 1.2s si le résultat serait de toute façon jeté silencieusement par
+    // -[SevenTVManager log:] faute de catégorie activée — on vérifie donc
+    // ici en amont, avant même de commencer le scan.
+    SevenTVManager *earlyCheckMgr = [SevenTVManager sharedManager];
+    if (!earlyCheckMgr.logsEnabled || !earlyCheckMgr.logDump) return;
+
+    UIWindow *window = s7tv_frontmostWindow();
+    if (!window) return;
+
+    // Détection légère : présence d'une vue "EmoticonPalette" quelque part.
+    BOOL foundPicker = NO;
+    UIView *paletteRoot = nil;
+    {
+        NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:window];
+        NSInteger count = 0;
+        while (queue.count > 0 && count < 3000) {
+            UIView *sv = queue.firstObject; [queue removeObjectAtIndex:0];
+            count++;
+            [queue addObjectsFromArray:sv.subviews];
+            NSString *cn = NSStringFromClass([sv class]);
+            if ([cn rangeOfString:@"EmoticonPalette"].location != NSNotFound) {
+                foundPicker = YES;
+                paletteRoot = sv;
+                break;
+            }
+        }
+    }
+
+    if (!foundPicker) {
+        if (s_pickerWatchLastFingerprint) {
+            s_pickerWatchLastFingerprint = nil; // picker fermé — reset pour la prochaine ouverture
+        }
+        return;
+    }
+
+    NSString *fingerprint = s7tv_pickerVisibleFingerprint(paletteRoot);
+    if ([fingerprint isEqualToString:s_pickerWatchLastFingerprint]) return; // rien de nouveau visible
+
+    s_pickerWatchLastFingerprint = fingerprint;
+    s7tv_performFullScreenDump(window, [NSString stringWithFormat:@"auto-watch, sections visibles=[%@]", fingerprint]);
+}
+
+static void s7tv_startPickerAutoWatch(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        [NSTimer scheduledTimerWithTimeInterval:1.2
+                                         repeats:YES
+                                           block:^(NSTimer * _Nonnull timer) {
+            s7tv_pickerAutoWatchTick();
+        }];
+        [[SevenTVManager sharedManager] log:@"[NetDump] Watcher automatique du picker natif démarré (1.2s)"];
+    });
+}
+
+
 
 @implementation UIWindow (S7TVTapLogger)
 
@@ -1587,42 +1747,8 @@ static UIViewController *s7tv_vcForView(UIView *v) {
                    dispatch_get_main_queue(), ^{
         UIWindow *strongWindow = weakWindow;
         if (!strongWindow) return;
-
-        // Dump COMPLET de tout ce qui est affiché à l'écran au moment du tap
-        // (plus de filtre par distance, plus de pari sur un nom de classe
-        // deviné à l'avance — on ne sait pas comment Twitch a nommé le
-        // conteneur du picker, donc on prend tout et on trie au filtrage
-        // "contenu utile" seulement, pas par nom).
-        [mgr log:@"[NetDump] ── DUMP ÉCRAN COMPLET @ (%.0f,%.0f) ──────────────", pt.x, pt.y];
-        NSMutableArray<UIView *> *pqueue = [NSMutableArray arrayWithObject:strongWindow];
-        NSInteger pcount = 0;
-        while (pqueue.count > 0 && pcount < 6000) {
-            UIView *sv = pqueue.firstObject; [pqueue removeObjectAtIndex:0];
-            pcount++;
-            [pqueue addObjectsFromArray:sv.subviews];
-            CGRect frameInWindow = [sv convertRect:sv.bounds toView:nil];
-            NSString *cn = NSStringFromClass([sv class]);
-            NSString *extra = s7tv_viewExtra(sv);
-            // Ne logue que les vues porteuses d'info utile (texte, image,
-            // accessibilité) — les simples UIView de layout sans contenu
-            // n'apportent rien et noient le dump. Ce filtre est sur le
-            // CONTENU, pas sur le nom de la classe — rien deviné à l'avance.
-            BOOL hasImage = [sv isKindOfClass:[UIImageView class]] && ((UIImageView *)sv).image != nil;
-            BOOL hasExtra = extra.length > 0;
-            if (!hasImage && !hasExtra) continue;
-            NSString *imgInfo = @"";
-            if (hasImage) {
-                UIImage *img = ((UIImageView *)sv).image;
-                imgInfo = [NSString stringWithFormat:@" imgSize=(%.0f×%.0f) imgDesc=%@",
-                    img.size.width, img.size.height, img.description];
-            }
-            [mgr log:@"[NetDump] %@ frame=(%.0f,%.0f,%.0f,%.0f)%@%@",
-                cn,
-                frameInWindow.origin.x, frameInWindow.origin.y,
-                frameInWindow.size.width, frameInWindow.size.height,
-                imgInfo, extra];
-        }
-        [mgr log:@"[NetDump] ── FIN DUMP ÉCRAN (%ld vues inspectées) ──────────────", (long)pcount];
+        s7tv_performFullScreenDump(strongWindow,
+            [NSString stringWithFormat:@"tap manuel @ (%.0f,%.0f)", pt.x, pt.y]);
     });
 }
 
@@ -2333,6 +2459,10 @@ static void TwitchSevenTVInit(void) {
     // l'opération du picker natif identifiée.
     [NSURLProtocol registerClass:[S7TVGQLSnifferProtocol class]];
     [[SevenTVManager sharedManager] log:@"[NetDump] Sonde réseau active pour capturer les catégories du menu emote natif"];
+
+    // Watcher automatique du picker natif — voir s7tv_startPickerAutoWatch
+    // (diagnostic temporaire, indépendant du sniffer réseau ci-dessus).
+    s7tv_startPickerAutoWatch();
 
     // Interception IRC WebSocket
     s7tv_swizzle_websocket();

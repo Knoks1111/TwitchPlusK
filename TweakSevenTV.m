@@ -1043,7 +1043,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
 // évite de noyer les logs avec les dizaines d'opérations GQL sans rapport
 // qui partent en permanence (Whispers, Follows, Ads, etc.). Passe à NO pour
 // tout voir sans filtre si le nom de l'opération recherchée est inconnu.
-#define S7TV_DUMP_GQL_FILTER_KEYWORDS YES
+#define S7TV_DUMP_GQL_FILTER_KEYWORDS NO
 
 static BOOL s7tv_dumpNameLooksRelevant(NSString *name) {
     if (!name.length) return NO;

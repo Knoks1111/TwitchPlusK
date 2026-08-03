@@ -782,6 +782,23 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         });
         self.currentChannelTwitchID = cachedTwitchID;
         [self loadEmotesForChannelTwitchID:cachedTwitchID];
+        // Fix bug badges channel manquants : sans cet appel, le catalogue
+        // channel de SevenTVBadgeProvider ne se charge JAMAIS pour une
+        // chaîne déjà visitée. Raison : le ROOMSTATE qui arrive juste après
+        // trouvera roomID == currentChannelTwitchID (déjà fixé juste
+        // au-dessus) et ne postera donc PAS S7TVChannelJoined (voir
+        // s7tv_handleRoomState dans TweakSevenTV.m) — seul déclencheur dont
+        // dépendait jusqu'ici le chargement des badges channel. Contrairement
+        // au mapping channelID (persisté en NSUserDefaults), channelBadges
+        // est tenu uniquement en mémoire (voir SevenTVBadgeProvider.h) : il
+        // repart donc vide à chaque lancement du process, et sans cet appel
+        // symétrique à celui des emotes, restait vide toute la session pour
+        // toute chaîne déjà connue (c.-à-d. quasiment toujours, sauf la
+        // toute première visite jamais faite d'une chaîne). loadBadgesForChannelID:
+        // gère déjà ses propres garde-fous (token pas encore là, déjà
+        // chargé) donc cet appel est sûr même en redondance avec un futur
+        // ROOMSTATE.
+        [[SevenTVBadgeProvider sharedProvider] loadBadgesForChannelID:cachedTwitchID];
         // Pas de dispatch_after nécessaire : le ROOMSTATE confirmera (ou corrigera)
         // l'ID quelques ms plus tard via s7tv_handleRoomState.
         return;

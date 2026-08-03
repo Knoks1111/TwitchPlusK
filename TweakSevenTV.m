@@ -693,11 +693,6 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
                                                green:((rgb >> 8)  & 0xFF) / 255.0
                                                 blue:(rgb         & 0xFF) / 255.0
                                                alpha:1.0];
-            // TEMP DEBUG — calibration couleurs lisibles : pseudo + hex brut,
-            // pour comparer avec le rendu PC (option "couleurs lisibles").
-            // À retirer une fois calibré.
-            [[SevenTVManager sharedManager]
-                log:@"[ChatCustom] 🏗 Couleur brute — %@ = %@", displayName, colorHex];
         }
     }
 

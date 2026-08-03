@@ -15,6 +15,10 @@ LIBRARY_NAME = TwitchSevenTV
 TwitchSevenTV_FILES = \
     TweakSevenTV.m \
     SevenTVManager.m \
+    7tv-picker-controler.m \
+    7tv-picker-sizes.m \
+    7tv-picker-cell.m \
+    7tv-picker-resolved-emote.m \
     SevenTVURLProtocol.m \
     SevenTVSettingsController.m \
     SevenTVLogsController.m \

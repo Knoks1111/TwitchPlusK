@@ -1486,6 +1486,15 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
         return [msg rangeOfString:needle].location != NSNotFound;
     };
 
+    // 0. Diagnostic réseau TEMPORAIRE (dump picker natif Twitch) — priorité
+    // ABSOLUE, vérifiée avant toute autre règle. Le contenu de ces lignes
+    // inclut des données Twitch imprévisibles (noms d'opérations GQL, URLs)
+    // qui pourraient sinon matcher n'importe quel mot-clé ci-dessous selon
+    // ce que Twitch renvoie — un seul tag fixe garantit une catégorie stable
+    // quel que soit le contenu. Retirer cette règle en même temps que le
+    // reste du diagnostic (voir TweakSevenTV.m, S7TVGQLSnifferProtocol).
+    if (has(@"[NetDump]")) return S7TVLogCategoryDump;
+
     // 1. Erreurs / Avertissements — priorité absolue
     if (has(@"❌") || has(@"⚠️")) return S7TVLogCategoryError;
 

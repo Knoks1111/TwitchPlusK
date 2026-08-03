@@ -58,6 +58,14 @@ static const char kS7TVShareHijacked   = 8;   // verrou orientation
 
 // État global verrou d'orientation
 static BOOL s_orientationLocked             = NO;
+
+// Variable de compat : le Tap Logger (diagnostic de reverse-engineering du
+// picker natif Twitch) a été retiré de ce fichier, mais SevenTVManager.m
+// lit/écrit encore s_tapLogEnabled en le synchronisant avec le réglage
+// logTap des paramètres — linkage externe (pas de mot-clé static), gardée
+// ici pour ne pas casser ce pont. N'a plus aucun effet côté tweak : plus
+// aucun code de ce fichier ne la consulte.
+BOOL s_tapLogEnabled = NO;
 static UIInterfaceOrientationMask s_lockedOrientationMask = UIInterfaceOrientationMaskAll;
 
 

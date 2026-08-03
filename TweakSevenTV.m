@@ -1615,6 +1615,8 @@ static NSString *s7tv_pickerVisibleFingerprint(UIView *root) {
     return [titles componentsJoinedByString:@"|"];
 }
 
+static NSInteger s_pickerWatchTickCount = 0;
+
 static void s7tv_pickerAutoWatchTick(void) {
     // Aucune dépendance au Tap Logger — ce watcher est indépendant. Par
     // contre, pas de raison de scanner la hiérarchie de vues toutes les
@@ -1624,8 +1626,17 @@ static void s7tv_pickerAutoWatchTick(void) {
     SevenTVManager *earlyCheckMgr = [SevenTVManager sharedManager];
     if (!earlyCheckMgr.logsEnabled || !earlyCheckMgr.logDump) return;
 
+    s_pickerWatchTickCount++;
+    // Heartbeat INCONDITIONNEL (une ligne toutes les ~3.6s) — sert
+    // uniquement à vérifier que le timer se déclenche bien. À retirer une
+    // fois le diagnostic terminé.
+    BOOL shouldHeartbeat = (s_pickerWatchTickCount % 3 == 0);
+
     UIWindow *window = s7tv_frontmostWindow();
-    if (!window) return;
+    if (!window) {
+        if (shouldHeartbeat) [earlyCheckMgr log:@"[NetDump] 💓 tick #%ld — AUCUNE fenêtre trouvée", (long)s_pickerWatchTickCount];
+        return;
+    }
 
     // Détection légère : présence d'une vue "EmoticonPalette" quelque part.
     BOOL foundPicker = NO;
@@ -1644,6 +1655,11 @@ static void s7tv_pickerAutoWatchTick(void) {
                 break;
             }
         }
+    }
+
+    if (shouldHeartbeat) {
+        [earlyCheckMgr log:@"[NetDump] 💓 tick #%ld — fenêtre=%@ picker_trouvé=%@",
+            (long)s_pickerWatchTickCount, NSStringFromClass([window class]), foundPicker ? @"OUI" : @"non"];
     }
 
     if (!foundPicker) {

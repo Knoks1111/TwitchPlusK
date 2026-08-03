@@ -43,6 +43,9 @@
 // Bouton ⚙️ du panneau des tailles (chrome du picker — voir SevenTVPickerSizesPanel
 // pour la logique/les données du panneau lui-même)
 @property (nonatomic, weak) UIButton *pickerSizesToggleBtn;
+// Bouton réglages, collé au bouton des tailles — ouvre le même écran que le
+// bouton flottant 7TV (voir -[SevenTVManager presentSettingsMenu]).
+@property (nonatomic, weak) UIButton *pickerSettingsBtn;
 @property (nonatomic, assign) BOOL   pickerSizesPanelVisible;
 
 // ── Refonte tabbed + refonte visuelle du picker (style 7TV PC) ──────────
@@ -457,6 +460,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         self.sizesPanel.panelView.hidden = YES;
         self.emoteCollectionView.hidden = NO;
         self.pickerSearchCapsuleView.hidden = NO;
+        self.pickerTabCapsuleView.hidden = NO;
         for (UIButton *btn in self.pickerTabButtons) btn.hidden = NO;
         self.pickerCloseFloatBtn.hidden = NO;
         self.pickerSizesToggleBtn.tintColor = [UIColor colorWithWhite:0.55 alpha:1.0];
@@ -465,7 +469,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         // alors qu'on vient de revenir en mode grille.
         UIImageSymbolConfiguration *resetCfg = [UIImageSymbolConfiguration
             configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
-        [self.pickerSizesToggleBtn setImage:[UIImage systemImageNamed:@"slider.horizontal.3"
+        [self.pickerSizesToggleBtn setImage:[UIImage systemImageNamed:@"textformat.size"
                                                       withConfiguration:resetCfg]
                                     forState:UIControlStateNormal];
     }
@@ -739,7 +743,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
     [self _s7tv_updateTabButtonHighlight];
 
-    // ── Bouton ⚙️ (flottant, bas droite) — même style que fermer ────────────
+    // ── Bouton tailles (flottant, bas droite) — icône "taille de texte" ────
+    // Remplace l'ancien engrenage générique par un symbole qui représente
+    // vraiment ce que fait ce bouton (régler des tailles).
     UIButton *gearBtn = [self _s7tv_makeFloatingPillWithFrame:
         CGRectMake(frame.size.width - kS7TVPickerFloatMargin - kS7TVPickerFloatSize, bottomRowY,
                    kS7TVPickerFloatSize, kS7TVPickerFloatSize)
@@ -747,13 +753,30 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     gearBtn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin;
     UIImageSymbolConfiguration *gearCfg = [UIImageSymbolConfiguration
         configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
-    [gearBtn setImage:[UIImage systemImageNamed:@"slider.horizontal.3" withConfiguration:gearCfg]
+    [gearBtn setImage:[UIImage systemImageNamed:@"textformat.size" withConfiguration:gearCfg]
              forState:UIControlStateNormal];
     gearBtn.tintColor = subColor;
     [gearBtn addTarget:self action:@selector(emotePickerSizesToggleTapped)
       forControlEvents:UIControlEventTouchUpInside];
     self.pickerSizesToggleBtn = gearBtn;
     [picker addSubview:gearBtn];
+
+    // ── Bouton réglages (flottant, collé au bouton tailles) ─────────────────
+    // Ouvre le même écran que le bouton flottant 7TV (voir
+    // -[SevenTVManager presentSettingsMenu]) — pensé pour pouvoir à terme
+    // remplacer complètement ce bouton flottant séparé.
+    UIButton *settingsBtn = [self _s7tv_makeFloatingPillWithFrame:
+        CGRectMake(0, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize) cardColor:cardColor];
+    settingsBtn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin;
+    UIImageSymbolConfiguration *settingsCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+    [settingsBtn setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:settingsCfg]
+                 forState:UIControlStateNormal];
+    settingsBtn.tintColor = subColor;
+    [settingsBtn addTarget:self action:@selector(_pickerSettingsTapped)
+          forControlEvents:UIControlEventTouchUpInside];
+    self.pickerSettingsBtn = settingsBtn;
+    [picker addSubview:settingsBtn];
 
     // ── Capsule de recherche (flottante, tout en bas, pleine largeur) ──────
     CGFloat searchY = frame.size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH;
@@ -936,14 +959,20 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
                           - kS7TVPickerFloatGap - kS7TVPickerFloatSize;
     CGFloat tabCapsuleW = kS7TVPickerFloatSize * 3.0;
     self.pickerTabCapsuleView.frame = CGRectMake(kS7TVPickerFloatMargin, bottomRowY, tabCapsuleW, kS7TVPickerFloatSize);
-    // ── Bouton ⚙️ / retour : à droite dans la grille (aligné sous la croix,
-    // elle aussi à droite), à gauche dans le panneau des tailles (aligné sous
-    // la croix, elle aussi à gauche) — les 2 boutons restent alignés verticalement
-    // des deux côtés, quel que soit le panneau affiché.
+    // ── Bouton tailles / retour : à droite dans la grille (aligné sous la
+    // croix, elle aussi à droite), à gauche dans le panneau des tailles
+    // (aligné sous la croix, elle aussi à gauche) — les 2 boutons restent
+    // alignés verticalement des deux côtés, quel que soit le panneau affiché.
+    // Le bouton réglages est collé juste à côté, toujours du côté "intérieur"
+    // (vers le centre) du bouton tailles, pour que la paire voyage ensemble.
     CGFloat gearX = self.pickerSizesPanelVisible
         ? kS7TVPickerFloatMargin
         : (size.width - kS7TVPickerFloatMargin - kS7TVPickerFloatSize);
     self.pickerSizesToggleBtn.frame = CGRectMake(gearX, bottomRowY, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
+    CGFloat settingsX = self.pickerSizesPanelVisible
+        ? gearX + kS7TVPickerFloatSize + kS7TVPickerFloatGap
+        : gearX - kS7TVPickerFloatSize - kS7TVPickerFloatGap;
+    self.pickerSettingsBtn.frame = CGRectMake(settingsX, bottomRowY, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
     [self _s7tv_updateTabButtonHighlight];
 
     CGFloat searchY = size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH;
@@ -1367,8 +1396,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.sizesPanel.panelView.hidden = !show;
     self.emoteCollectionView.hidden  = show;
     self.pickerSearchCapsuleView.hidden = show;
-    // On ne masque que les icônes Favoris/7TV/Natif — le bouton ⚙️ reste
-    // visible et cliquable pour pouvoir refermer le panneau des tailles.
+    // Masque le conteneur ET les icônes (pas juste les icônes) : la capsule
+    // vide se retrouverait sinon sous la paire tailles/réglages quand elle
+    // passe à gauche dans le panneau des tailles.
+    self.pickerTabCapsuleView.hidden = show;
     for (UIButton *btn in self.pickerTabButtons) btn.hidden = show;
     // Le sous-choix ne doit de toute façon être visible que hors onglet Favoris
     self.pickerSubChoiceCapsuleView.hidden = show || (self.pickerActiveTab == S7TVPickerTabFavorites);
@@ -1384,7 +1415,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     UIImageSymbolConfiguration *backCfg = [UIImageSymbolConfiguration
         configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
     [self.pickerSizesToggleBtn setImage:
-        [UIImage systemImageNamed:(show ? @"chevron.left" : @"slider.horizontal.3")
+        [UIImage systemImageNamed:(show ? @"chevron.left" : @"textformat.size")
                 withConfiguration:backCfg]
                                 forState:UIControlStateNormal];
 
@@ -1415,6 +1446,13 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 }
 - (void)_emotePickerCloseTapped {
     [self _hideEmotePicker];
+}
+
+// Ouvre l'écran de réglages complet depuis le picker (même écran que le
+// bouton flottant 7TV) — on ne ferme pas le picker au passage, il reste tel
+// quel derrière le menu de réglages.
+- (void)_pickerSettingsTapped {
+    [[SevenTVManager sharedManager] presentSettingsMenu];
 }
 
 // ── UICollectionViewDataSource ─────────────────────────────────────────────

@@ -179,6 +179,12 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // --- UI ---
 - (void)addSettingsButton;
 
+// Ouvre l'écran de réglages (menu modal centré) — utilisé par le bouton
+// flottant 7TV ET par le bouton réglages du picker d'emotes (voir
+// 7tv-picker-controler.m), qui donne le même accès sans passer par le
+// bouton flottant.
+- (void)presentSettingsMenu;
+
 // Affiche/masque le picker d'emotes 7TV au-dessus de la barre de saisie.
 // chatInputView: la Twitch.ChatInputView (pour positionner le picker et insérer le nom).
 - (void)toggleEmotePickerForChatInputView:(UIView *)chatInputView;

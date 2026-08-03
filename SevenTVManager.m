@@ -1386,6 +1386,10 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 }
 
 - (void)settingsButtonTapped:(UIButton *)sender {
+    [self presentSettingsMenu];
+}
+
+- (void)presentSettingsMenu {
     dispatch_async(dispatch_get_main_queue(), ^{
         // ── Créer une UIWindow dédiée au menu ────────────────────────────────
         // On présente depuis NOTRE fenêtre (pas Twitch) → le containerView du

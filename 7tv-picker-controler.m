@@ -14,6 +14,8 @@
 #import "7tv-picker-cell.h"
 #import "SevenTVEmoteImageCache.h"
 #import "SevenTVEmoteAnimationEngine.h"
+#import "SevenTVURLProtocol.h"
+#import "SevenTVLogo.h"
 
 @interface SevenTVEmotePickerController ()
 

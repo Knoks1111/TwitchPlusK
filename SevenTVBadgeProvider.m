@@ -150,16 +150,29 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
     // même chaîne (ex: reconnexion WebSocket sans vrai changement de
     // channel) — pas une exigence stricte, juste évite du réseau superflu.
     if ([channelID isEqualToString:self.lastLoadedChannelID]) return;
-    self.lastLoadedChannelID = channelID;
 
     NSURL *url = [NSURL URLWithString:S7TVChannelBadgesURL(channelID)];
     if (!url) return;
 
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     if (!mgr.twitchToken.length) {
+        // CRITIQUE : ne PAS marquer lastLoadedChannelID ici. S7TVChannelJoined
+        // arrive souvent avant que le token (capturé depuis les headers GQL)
+        // ne soit disponible — si on marquait la chaîne comme "chargée"
+        // maintenant, le rattrapage fait par -[SevenTVManager saveTwitchToken:
+        // clientID:] (qui rappelle loadBadgesForChannelID: dès que le token
+        // arrive) serait bloqué par le garde-fou ci-dessus, alors qu'aucun
+        // fetch n'a jamais réellement eu lieu. C'était la cause des badges de
+        // sub (channel-only, pas de repli global côté Twitch pour ce set)
+        // manquants alors que les badges globaux (mod/VIP/turbo) s'affichaient.
         [mgr log:@"[ChatCustom] ⏳ Badges channel: token pas encore dispo, attente GQL..."];
         return;
     }
+
+    // On ne marque la chaîne comme "chargée" qu'une fois certain qu'un vrai
+    // fetch part — sinon un appel prématuré (token pas encore prêt) bloquerait
+    // silencieusement le rattrapage ultérieur (voir commentaire ci-dessus).
+    self.lastLoadedChannelID = channelID;
 
     [mgr log:@"[ChatCustom] 🏗 Badges: chargement catalogue channel %@", channelID];
 

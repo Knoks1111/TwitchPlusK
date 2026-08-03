@@ -1057,6 +1057,24 @@ static void s7tv_dumpGQLOperation(NSURLRequest *request, NSData *responseData);
 
 static NSString *const kS7TVGQLSnifferHandledKey = @"S7TVGQLSnifferHandled";
 
+// Hosts à ne JAMAIS intercepter : uniquement la VIDÉO (segments HLS) — un
+// relai via notre session à part peut introduire assez de latence pour faire
+// caler la lecture du stream. Les CDN images (emotes/badges, jtvnw.net) sont
+// volontairement INCLUS malgré leur volume : même sans le JSON du catalogue,
+// voir QUELLES URLs d'images sont demandées (et avec quel ID dans le
+// chemin) au moment où le picker natif s'ouvre est une info utile en soi.
+static BOOL s7tv_dumpShouldSkipHost(NSString *host) {
+    if (!host.length) return YES;
+    NSArray<NSString *> *skipSuffixes = @[
+        @"ttvnw.net",           // vidéo (usher, segments HLS) — risque de stall si relayé
+        @"7tv.app", @"7tv.io",  // notre propre trafic 7TV, pas Twitch
+    ];
+    for (NSString *suffix in skipSuffixes) {
+        if ([host hasSuffix:suffix]) return YES;
+    }
+    return NO;
+}
+
 @implementation S7TVGQLSnifferProtocol
 
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
@@ -1064,8 +1082,29 @@ static NSString *const kS7TVGQLSnifferHandledKey = @"S7TVGQLSnifferHandled";
     // aussi par le URL Loading System — sans ce garde-fou, on s'intercepterait
     // nous-même indéfiniment.
     if ([NSURLProtocol propertyForKey:kS7TVGQLSnifferHandledKey inRequest:request]) return NO;
+
+    NSString *scheme = request.URL.scheme.lowercaseString;
+    if (![scheme isEqualToString:@"https"] && ![scheme isEqualToString:@"http"]) return NO;
+
     NSString *host = request.URL.host.lowercaseString;
-    return [host isEqualToString:@"gql.twitch.tv"] || [host isEqualToString:@"api.twitch.tv"];
+    if (s7tv_dumpShouldSkipHost(host)) return NO;
+
+    NSString *path = request.URL.path.lowercaseString;
+    // Filet de sécurité supplémentaire par extension, au cas où un flux
+    // vidéo/segment passerait par un host non listé ci-dessus. Les extensions
+    // d'image (webp/png/jpg/gif) sont volontairement PAS filtrées ici — voir
+    // commentaire sur s7tv_dumpShouldSkipHost.
+    NSArray<NSString *> *skipExtensions = @[@".ts", @".m3u8", @".mp4"];
+    for (NSString *ext in skipExtensions) {
+        if ([path hasSuffix:ext]) return NO;
+    }
+
+    // Capture large et volontairement AGNOSTIQUE du host : on ne sait pas à
+    // l'avance quel domaine Twitch utilise pour peupler son picker natif
+    // (pas forcément gql.twitch.tv/api.twitch.tv — ça pourrait être un autre
+    // sous-domaine interne). Tout le reste du trafic "petit/texte probable"
+    // passe par ici, log générique ci-dessous.
+    return YES;
 }
 
 + (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
@@ -1092,9 +1131,9 @@ static NSString *const kS7TVGQLSnifferHandledKey = @"S7TVGQLSnifferHandled";
     [self.relayTask cancel];
 }
 
-// Relaie intégralement la réponse au vrai client — sans ça, TOUTE requête
-// vers gql.twitch.tv/api.twitch.tv cesserait de fonctionner silencieusement
-// (on ne veut PAS casser l'app, juste observer son trafic en passant).
+// Relaie intégralement la réponse au vrai client — sans ça, TOUT le trafic
+// intercepté cesserait de fonctionner silencieusement (on ne veut PAS casser
+// l'app, juste observer son trafic en passant).
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask
     didReceiveResponse:(NSURLResponse *)response
      completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
@@ -1115,23 +1154,14 @@ static NSString *const kS7TVGQLSnifferHandledKey = @"S7TVGQLSnifferHandled";
         [self.client URLProtocol:self didFailWithError:error];
         return;
     }
-
-    NSString *host = self.request.URL.host.lowercaseString ?: @"";
-    if ([host isEqualToString:@"gql.twitch.tv"]) {
-        s7tv_dumpGQLOperation(self.request, self.collectedData);
-    } else {
-        // api.twitch.tv (Helix) — pas de operationName GQL, mais le path +
-        // les clés top-level de la réponse suffisent à repérer un éventuel
-        // endpoint "emotes" (ex: /helix/chat/emotes/...).
-        [[SevenTVManager sharedManager]
-            log:@"[NetDump] (Helix) %@ (%lu bytes)",
-            self.request.URL.absoluteString, (unsigned long)self.collectedData.length];
-    }
-
+    // Log générique pour TOUT ce qui passe ici, quel que soit le host —
+    // on ne présuppose plus que c'est forcément du GQL sur gql.twitch.tv.
+    s7tv_dumpGQLOperation(self.request, self.collectedData);
     [self.client URLProtocolDidFinishLoading:self];
 }
 
 @end
+
 
 
 // ────────────────────────────────────────────────────────────

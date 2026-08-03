@@ -460,6 +460,14 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         for (UIButton *btn in self.pickerTabButtons) btn.hidden = NO;
         self.pickerCloseFloatBtn.hidden = NO;
         self.pickerSizesToggleBtn.tintColor = [UIColor colorWithWhite:0.55 alpha:1.0];
+        // Remettre l'icône ⚙️ (pas juste la couleur) — sans ça le bouton
+        // gardait visuellement la flèche "retour" du panneau des tailles
+        // alors qu'on vient de revenir en mode grille.
+        UIImageSymbolConfiguration *resetCfg = [UIImageSymbolConfiguration
+            configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+        [self.pickerSizesToggleBtn setImage:[UIImage systemImageNamed:@"slider.horizontal.3"
+                                                      withConfiguration:resetCfg]
+                                    forState:UIControlStateNormal];
     }
     self.emotePickerView.frame = pickerFrame;
     // Repositionne toutes les zones (grille / pastilles flottantes / panneau
@@ -1390,20 +1398,18 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // pickerSizesPanelVisible (à droite en grille, à gauche dans le panneau
     // des tailles) — sans ça, sur un contenu de hauteur identique par
     // coïncidence, les boutons resteraient du mauvais côté.
+    // Instantané (pas d'animation) : le déplacement croix/gear d'un côté à
+    // l'autre doit être immédiat, pas un glissement visible.
     CGRect f = self.emotePickerView.frame;
     CGFloat targetH = show
         ? MIN(MAX(self.sizesPanel.contentHeight, 160.0), kS7TVPickerGridDefaultH)
         : kS7TVPickerGridDefaultH;
     f.size.height = targetH;
-    __weak typeof(self) weakSelf = self;
-    [UIView animateWithDuration:0.2 animations:^{
-        weakSelf.emotePickerView.frame = f;
-        [weakSelf _s7tv_relayoutPickerForSize:f.size];
-    } completion:^(BOOL finished) {
-        // Force UIKit à relire la nouvelle taille de l'inputView (sinon la
-        // zone réservée au clavier peut rester figée à l'ancienne hauteur).
-        [weakSelf.emotePickerTextEntryView reloadInputViews];
-    }];
+    self.emotePickerView.frame = f;
+    [self _s7tv_relayoutPickerForSize:f.size];
+    // Force UIKit à relire la nouvelle taille de l'inputView (sinon la zone
+    // réservée au clavier peut rester figée à l'ancienne hauteur).
+    [self.emotePickerTextEntryView reloadInputViews];
 
     if (show) [self.sizesPanel loadRealPreviewAssetsIfNeeded];
 }

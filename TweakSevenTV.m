@@ -1024,6 +1024,101 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
 // MARK: - Hook NSURLSession (réponses API GraphQL Twitch)
 // ────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────────────────
+// MARK: - Diagnostic TEMPORAIRE : dump des opérations GQL (picker Twitch natif)
+// ────────────────────────────────────────────────────────────
+//
+// But : identifier quelle(s) opération(s) GQL Twitch utilise pour peupler
+// SON PROPRE picker d'emotes natif (sets par chaîne abonnée, follower
+// emotes, bits, global) — voir plan "picker 7TV = remplacement complet du
+// picker natif avec catégories dynamiques". Aucun hook réseau nouveau :
+// on se branche sur le hook GQL déjà en place plus bas (s7tv_dataTaskWithRequest:).
+//
+// Mettre à 0 une fois le dump terminé et l'opération identifiée — ce n'est
+// pas un feature à garder active en permanence (bruit de log + parsing JSON
+// sur CHAQUE requête GQL de l'app, pas juste celles du picker).
+#define S7TV_DUMP_GQL_OPERATIONS 1
+
+// Ne logue que si l'opération a un nom qui "sent" les emotes/le picker —
+// évite de noyer les logs avec les dizaines d'opérations GQL sans rapport
+// qui partent en permanence (Whispers, Follows, Ads, etc.). Passe à NO pour
+// tout voir sans filtre si le nom de l'opération recherchée est inconnu.
+#define S7TV_DUMP_GQL_FILTER_KEYWORDS YES
+
+static BOOL s7tv_dumpNameLooksRelevant(NSString *name) {
+    if (!name.length) return NO;
+    NSString *lower = name.lowercaseString;
+    NSArray<NSString *> *keywords = @[
+        @"emote", @"picker", @"availableemotes", @"emoteset", @"emotepicker",
+        @"channel", @"subscription", @"emoji"
+    ];
+    for (NSString *kw in keywords) {
+        if ([lower containsString:kw]) return YES;
+    }
+    return NO;
+}
+
+// Extrait le/les operationName d'un body de requête GQL Twitch — souvent un
+// objet unique, parfois un TABLEAU d'opérations batchées en un seul POST.
+static NSArray<NSString *> *s7tv_operationNamesFromRequestBody(NSData *body) {
+    if (!body.length) return @[];
+    id root = [NSJSONSerialization JSONObjectWithData:body options:0 error:nil];
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    if ([root isKindOfClass:[NSArray class]]) {
+        for (id item in (NSArray *)root) {
+            if ([item isKindOfClass:[NSDictionary class]]) {
+                NSString *n = ((NSDictionary *)item)[@"operationName"];
+                if ([n isKindOfClass:[NSString class]] && n.length) [names addObject:n];
+            }
+        }
+    } else if ([root isKindOfClass:[NSDictionary class]]) {
+        NSString *n = ((NSDictionary *)root)[@"operationName"];
+        if ([n isKindOfClass:[NSString class]] && n.length) [names addObject:n];
+    }
+    return names;
+}
+
+// Logue, pour une réponse GQL donnée : le(s) nom(s) d'opération de la
+// requête associée + les clés top-level de `data` dans la réponse (une
+// entrée par opération si batché) — suffisant pour repérer quelle opération
+// correspond aux emote sets sans reproduire tout le payload (potentiellement
+// volumineux) dans les logs.
+static void s7tv_dumpGQLOperation(NSURLRequest *request, NSData *responseData) {
+#if S7TV_DUMP_GQL_OPERATIONS
+    NSArray<NSString *> *opNames = s7tv_operationNamesFromRequestBody(request.HTTPBody);
+
+    if (S7TV_DUMP_GQL_FILTER_KEYWORDS) {
+        BOOL anyRelevant = NO;
+        for (NSString *n in opNames) {
+            if (s7tv_dumpNameLooksRelevant(n)) { anyRelevant = YES; break; }
+        }
+        if (opNames.count > 0 && !anyRelevant) return; // opération connue mais hors-sujet
+    }
+
+    NSString *opsJoined = opNames.count ? [opNames componentsJoinedByString:@", "] : @"(operationName introuvable — HTTPBody vide/stream ?)";
+
+    id respRoot = [NSJSONSerialization JSONObjectWithData:responseData options:0 error:nil];
+    NSMutableArray<NSString *> *dataKeysPerOp = [NSMutableArray array];
+    NSArray *respItems = [respRoot isKindOfClass:[NSArray class]] ? respRoot : @[respRoot ?: @{}];
+    for (id item in respItems) {
+        if (![item isKindOfClass:[NSDictionary class]]) { [dataKeysPerOp addObject:@"?"]; continue; }
+        id dataField = ((NSDictionary *)item)[@"data"];
+        if ([dataField isKindOfClass:[NSDictionary class]]) {
+            [dataKeysPerOp addObject:[[(NSDictionary *)dataField allKeys] componentsJoinedByString:@"+"]];
+        } else {
+            [dataKeysPerOp addObject:@"(pas de data)"];
+        }
+    }
+
+    [[SevenTVManager sharedManager]
+        log:@"[GQLDump] 🌍 op=[%@] → data.{%@} (%lu bytes) — url=%@",
+        opsJoined,
+        [dataKeysPerOp componentsJoinedByString:@" | "],
+        (unsigned long)responseData.length,
+        request.URL.absoluteString];
+#endif
+}
+
 @interface NSURLSession (SevenTV)
 - (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request
                                  completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
@@ -1050,6 +1145,9 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
             ^(NSData *data, NSURLResponse *response, NSError *error) {
                 if (data && !error) {
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
+                    // Diagnostic temporaire — voir S7TV_DUMP_GQL_OPERATIONS en
+                    // haut de ce bloc. N'affecte pas le comportement normal.
+                    s7tv_dumpGQLOperation(request, data);
                     // Détecter pub dans HLS
                     NSString *path = request.URL.path.lowercaseString;
                     if ([path hasSuffix:@".m3u8"] || [path containsString:@"m3u8"]) {

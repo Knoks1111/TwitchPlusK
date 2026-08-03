@@ -668,6 +668,38 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     NSRange textMarker = [rest rangeOfString:@" :" options:0 range:searchRange];
     if (textMarker.location == NSNotFound) return nil; // pas de texte exploitable
 
+    // Fix mélange de chaînes au changement de channel : le WebSocket IRC
+    // peut continuer à livrer des PRIVMSG de l'ANCIENNE chaîne juste après
+    // un switch (chevauchement JOIN/PART sur le même socket, reconnexion,
+    // etc.) — sans ce filtre, s7tv_parsePRIVMSG les acceptait tous sans
+    // distinction et le store se retrouvait avec un mélange des deux
+    // chaînes, même après le reset fait au ROOMSTATE (voir
+    // s7tv_handleRoomState) puisque de nouveaux messages de l'ancienne
+    // chaîne continuaient d'arriver ENSUITE. Le nom de chaîne ("#xxx") est
+    // toujours présent entre "PRIVMSG " et " :" — on l'extrait et on
+    // compare à la chaîne actuellement affichée (mgr.currentChannelName,
+    // déjà à jour de façon synchrone dès l'envoi de "JOIN #channel", voir
+    // s7tv_sendMessage:completionHandler: plus bas). Si ça ne correspond
+    // pas → message ignoré, jamais construit ni ajouté au store. Si
+    // currentChannelName n'est pas encore connu (tout premier message avant
+    // le tout premier JOIN observé), on laisse passer par sécurité plutôt
+    // que de risquer de perdre le tout début de l'historique.
+    NSUInteger channelTokenStart = privmsgRange.location + privmsgRange.length + 1; // +1 = espace après "PRIVMSG"
+    if (channelTokenStart <= textMarker.location) {
+        NSString *channelToken = [rest substringWithRange:
+            NSMakeRange(channelTokenStart, textMarker.location - channelTokenStart)];
+        channelToken = [channelToken stringByTrimmingCharactersInSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([channelToken hasPrefix:@"#"]) {
+            channelToken = [channelToken substringFromIndex:1];
+        }
+        NSString *activeChannel = [SevenTVManager sharedManager].currentChannelName;
+        if (channelToken.length && activeChannel.length &&
+            [channelToken caseInsensitiveCompare:activeChannel] != NSOrderedSame) {
+            return nil; // message d'une autre chaîne — jamais ajouté au store
+        }
+    }
+
     NSString *messageText = [rest substringFromIndex:textMarker.location + 2];
     if (!messageText.length) return nil;
 

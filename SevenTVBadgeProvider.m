@@ -265,6 +265,15 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
     return [result copy];
 }
 
+#pragma mark - Reset au changement de chaîne
+
+- (void)resetChannelBadges {
+    dispatch_barrier_async(self.badgeQueue, ^{
+        self.channelBadges = @{};
+    });
+    [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Badges channel réinitialisés (changement de chaîne)"];
+}
+
 #pragma mark - Résolution
 
 - (nullable id<S7TVResolvedEmote>)resolvedBadgeForIdentifier:(NSString *)identifier {

@@ -780,6 +780,9 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         dispatch_barrier_async(self.emoteQueue, ^{
             self.channelEmotes = @{};
         });
+        // Même raisonnement pour les badges channel — voir
+        // SevenTVBadgeProvider.resetChannelBadges.
+        [[SevenTVBadgeProvider sharedProvider] resetChannelBadges];
         self.currentChannelTwitchID = cachedTwitchID;
         [self loadEmotesForChannelTwitchID:cachedTwitchID];
         // Fix bug badges channel manquants : sans cet appel, le catalogue
@@ -1210,6 +1213,9 @@ static const CGFloat kS7TVMenuHeight = 520.0;
                 dispatch_barrier_async(self.emoteQueue, ^{
                     self.channelEmotes = @{};
                 });
+                // Même raisonnement pour les badges channel — voir
+                // SevenTVBadgeProvider.resetChannelBadges.
+                [[SevenTVBadgeProvider sharedProvider] resetChannelBadges];
                 @synchronized(self.fetchingChannelIDs) {
                     if (oldID) [self.fetchingChannelIDs removeObject:oldID];
                 }

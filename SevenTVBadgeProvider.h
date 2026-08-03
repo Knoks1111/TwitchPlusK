@@ -79,6 +79,21 @@ extern NSString *const S7TVBadgesCatalogUpdatedNotification;
 - (void)loadGlobalBadges;
 - (void)loadBadgesForChannelID:(NSString *)channelID;
 
+// Vide immédiatement le catalogue channel (channelBadges = {}) — à appeler
+// dès qu'un changement de chaîne est détecté, AVANT même que le nouveau
+// fetch ne parte. Sans ça, entre le moment du switch et la fin du fetch
+// pour la nouvelle chaîne, resolvedBadgeForIdentifier: pourrait encore
+// retourner un badge custom de l'ANCIENNE chaîne si un setID/version
+// coïncidait par hasard avec un identifiant envoyé par la nouvelle (cas
+// rare mais possible, ex: deux chaînes avec un même nom de set custom).
+// Même logique de reset immédiat que SevenTVManager.channelEmotes au
+// changement de chaîne — voir loadEmotesForChannelName:.
+// N'affecte PAS globalBadges (commun à toute la plateforme, jamais lié à
+// une chaîne précise) ni lastLoadedChannelID (le prochain
+// loadBadgesForChannelID: pour la nouvelle chaîne doit toujours pouvoir
+// partir normalement).
+- (void)resetChannelBadges;
+
 @end
 
 NS_ASSUME_NONNULL_END

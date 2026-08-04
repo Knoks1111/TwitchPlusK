@@ -58,87 +58,96 @@ jobs:
 
           echo "✅ Terminé — $DELETED artifact(s) supprimé(s), $FAILED échec(s)"
 
-      - name: 🗑️ Nettoyer les anciens runs de TOUS les workflows (auto-détectés)
+      - name: 🗑️ Nettoyer les anciens runs (workflows actifs ET supprimés)
         env:
           GH_TOKEN: ${{ github.token }}
           CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
-          echo "🔍 Récupération de la liste des workflows du repo..."
+          echo "🔍 Récupération de TOUS les runs du repo via /actions/runs (repo-wide)..."
+          echo "   → Cette méthode remonte aussi les runs des workflows dont le .yml a été supprimé."
           REPO="${{ github.repository }}"
 
-          WORKFLOW_IDS=$(curl --silent \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPO}/actions/workflows?per_page=100" | python3 -c "
-          import sys, json
-          data = json.load(sys.stdin)
-          for w in data.get('workflows', []):
-              print(w['id'], w['name'])
-          ")
+          PAGE=1
+          > /tmp/all_runs.txt
 
-          if [ -z "$WORKFLOW_IDS" ]; then
-            echo "❌ Aucun workflow trouvé dans le repo"
-            exit 1
-          fi
+          while true; do
+            LINES_BEFORE=$(wc -l < /tmp/all_runs.txt)
 
-          echo "📋 Workflows détectés :"
-          echo "$WORKFLOW_IDS" | sed 's/^/  - /'
-          echo ""
-
-          echo "$WORKFLOW_IDS" | while IFS=' ' read -r WORKFLOW_ID WORKFLOW_NAME; do
-            [ -z "$WORKFLOW_ID" ] && continue
-            echo "──────────────────────────────────────"
-            echo "🔧 Workflow: $WORKFLOW_NAME (ID: $WORKFLOW_ID)"
-
-            PAGE=1
-            FIRST=true
-            DELETED=0
-
-            while true; do
-              RUNS=$(curl --silent \
-                --header "Authorization: Bearer $GH_TOKEN" \
-                --header "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW_ID}/runs?per_page=100&page=${PAGE}" | python3 -c "
+            curl --silent \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/actions/runs?per_page=100&page=${PAGE}" | python3 -c "
           import sys, json
           data = json.load(sys.stdin)
           for r in data.get('workflow_runs', []):
-              print(r['id'])
-          ")
+              # id / workflow_id / nom (nom conservé pour les logs, workflow_id peut correspondre
+              # à un workflow supprimé — c'est justement ce qu'on veut capter)
+              print(f\"{r['id']}\t{r['workflow_id']}\t{r['name']}\")
+          " >> /tmp/all_runs.txt
 
-              if [ -z "$(echo "$RUNS" | tr -d '[:space:]')" ]; then break; fi
-              COUNT=$(echo "$RUNS" | wc -l | tr -d ' ')
+            LINES_AFTER=$(wc -l < /tmp/all_runs.txt)
+            ADDED=$((LINES_AFTER - LINES_BEFORE))
+            echo "  📄 Page ${PAGE}: ${ADDED} run(s) récupéré(s)"
 
-              for RUN_ID in $RUNS; do
-                # Toujours garder le run en cours (celui qui exécute ce cleanup)
-                if [ "$RUN_ID" = "$CURRENT_RUN_ID" ]; then
-                  echo "  ⭐ Conservé (run en cours): $RUN_ID"
-                  continue
-                fi
-                # Garder le run le plus récent de ce workflow (le 1er de la liste)
-                if [ "$FIRST" = "true" ]; then
-                  echo "  ⭐ Conservé (plus récent): $RUN_ID"
-                  FIRST=false
-                  continue
-                fi
-                HTTP=$(curl --silent --output /dev/null --write-out "%{http_code}" \
-                  --request DELETE \
-                  --header "Authorization: Bearer $GH_TOKEN" \
-                  --header "Accept: application/vnd.github+json" \
-                  "https://api.github.com/repos/${REPO}/actions/runs/${RUN_ID}")
-                if [ "$HTTP" = "204" ]; then
-                  DELETED=$((DELETED+1))
-                  echo "  ✅ Run supprimé: $RUN_ID"
-                else
-                  echo "  ⚠️  Échec ($HTTP): $RUN_ID"
-                fi
-              done
-
-              [ "$COUNT" -lt 100 ] && break
-              PAGE=$((PAGE+1))
-            done
-
-            echo "  → $DELETED run(s) supprimé(s) pour ce workflow"
+            [ "$ADDED" -lt 100 ] && break
+            PAGE=$((PAGE+1))
           done
 
+          TOTAL=$(wc -l < /tmp/all_runs.txt)
+          echo "📊 Total runs trouvés (tous workflows, actifs ou supprimés): ${TOTAL}"
+          echo ""
+          echo "🧮 Sélection des runs à conserver (le plus récent par workflow_id + le run en cours)..."
+
+          export CURRENT_RUN_ID
+          python3 << 'PYEOF' > /tmp/to_delete.txt
+          import os
+
+          current_run_id = os.environ["CURRENT_RUN_ID"]
+          seen_workflows = set()
+          to_delete = []
+
+          with open('/tmp/all_runs.txt') as f:
+              for line in f:
+                  line = line.rstrip('\n')
+                  if not line:
+                      continue
+                  run_id, workflow_id, name = line.split('\t', 2)
+
+                  if run_id == current_run_id:
+                      continue  # toujours garder le run en cours
+
+                  if workflow_id not in seen_workflows:
+                      seen_workflows.add(workflow_id)
+                      continue  # garder le run le plus récent de ce workflow_id
+
+                  to_delete.append(run_id)
+
+          for rid in to_delete:
+              print(rid)
+          PYEOF
+
+          TO_DELETE_COUNT=$(wc -l < /tmp/to_delete.txt | tr -d ' ')
+          echo "🗑️  ${TO_DELETE_COUNT} run(s) à supprimer"
+          echo ""
+
+          DELETED=0
+          FAILED=0
+
+          while IFS= read -r RUN_ID; do
+            [ -z "$RUN_ID" ] && continue
+            HTTP=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+              --request DELETE \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/actions/runs/${RUN_ID}")
+            if [ "$HTTP" = "204" ]; then
+              DELETED=$((DELETED+1))
+              echo "  ✅ Run supprimé: $RUN_ID"
+            else
+              FAILED=$((FAILED+1))
+              echo "  ⚠️  Échec ($HTTP): $RUN_ID"
+            fi
+          done < /tmp/to_delete.txt
+
           echo "──────────────────────────────────────"
-          echo "✅ Nettoyage des runs terminé pour tous les workflows"
+          echo "✅ Nettoyage des runs terminé — $DELETED supprimé(s), $FAILED échec(s)"

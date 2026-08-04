@@ -17,6 +17,7 @@
 #import "SevenTVURLProtocol.h"
 #import "SevenTVLogo.h"
 #import "SevenTVChatAppearanceConfig.h"
+#import "7tv-localization.h"
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -254,9 +255,10 @@ static void S7TVSetBool(NSString *key, BOOL val) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 typedef NS_ENUM(NSInteger, S7TVHomeSection) {
-    S7TVHomeSectionMain   = 0,
-    S7TVHomeSectionLive   = 1,
-    S7TVHomeSectionReload = 2,
+    S7TVHomeSectionMain     = 0,
+    S7TVHomeSectionLive     = 1,
+    S7TVHomeSectionReload   = 2,
+    S7TVHomeSectionLanguage = 3,
 };
 
 @implementation SevenTVSettingsController
@@ -271,6 +273,22 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     [super viewDidLoad];
     S7TVStyleTableView(self.tableView);
     [self buildNavBar];
+
+    // Rafraîchit immédiatement titres/headers/labels si la langue change
+    // pendant que cet écran est affiché (toggle juste en dessous, section
+    // Langue) — pas besoin de fermer/rouvrir l'écran pour voir l'effet.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(s7tv_languageDidChange)
+            name:S7TVLanguageDidChangeNotification object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)s7tv_languageDidChange {
+    [self buildNavBar];
+    [self.tableView reloadData];
 }
 
 - (void)buildNavBar {
@@ -287,7 +305,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
         iv.translatesAutoresizingMaskIntoConstraints = NO;
 
         UILabel *lbl = [[UILabel alloc] init];
-        lbl.text = @"7TV";
+        lbl.text = L(@"label_7tv_badge");
         lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
         lbl.textColor = S7TVAccent();
         lbl.translatesAutoresizingMaskIntoConstraints = NO;
@@ -308,7 +326,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
         tv.frame = CGRectMake(0, 0, w, 20);
         self.navigationItem.titleView = tv;
     } else {
-        self.title = @"7TV Settings";
+        self.title = L(@"title_7tv_settings");
     }
 
     if (self.openedAsModal) {
@@ -328,13 +346,14 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 // ── TableView ──
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     switch (s) {
-        case S7TVHomeSectionMain:   return 3;
-        case S7TVHomeSectionLive:   return 1;
-        case S7TVHomeSectionReload: return 1;
+        case S7TVHomeSectionMain:     return 3;
+        case S7TVHomeSectionLive:     return 1;
+        case S7TVHomeSectionReload:   return 1;
+        case S7TVHomeSectionLanguage: return 1;
         default: return 0;
     }
 }
@@ -349,9 +368,10 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     switch (s) {
-        case S7TVHomeSectionMain:   return S7TVSectionHeader(@"7TV Settings", YES);
-        case S7TVHomeSectionLive:   return S7TVSectionHeader(@"Live Stream Control", NO);
-        case S7TVHomeSectionReload: return [[UIView alloc] init];
+        case S7TVHomeSectionMain:     return S7TVSectionHeader(L(@"title_7tv_settings"), YES);
+        case S7TVHomeSectionLive:     return S7TVSectionHeader(L(@"title_live_stream_control"), NO);
+        case S7TVHomeSectionReload:   return [[UIView alloc] init];
+        case S7TVHomeSectionLanguage: return S7TVSectionHeader(L(@"section_langue"), NO);
         default: return [[UIView alloc] init];
     }
 }
@@ -381,7 +401,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
                                       [UIColor colorWithWhite:0.75 alpha:1.0]);
         [cell.contentView addSubview:icon];
         UILabel *lbl = [[UILabel alloc] init];
-        lbl.text = @"Recharger les emotes";
+        lbl.text = L(@"action_reload_emotes");
         lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
         lbl.textColor = [UIColor whiteColor];
         lbl.numberOfLines = 1;
@@ -403,9 +423,9 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
         NSString *sfName, *title, *subtitle;
         UIColor *iconTint = [UIColor colorWithWhite:0.75 alpha:1.0];
         switch (ip.row) {
-            case 0: sfName=@"face.smiling";   title=@"Emotes 7TV";   subtitle=@"Animées, picker"; iconTint=S7TVAccent(); break;
-            case 1: sfName=@"chart.bar.fill"; title=@"Statistiques"; subtitle=@"Emotes chargées, channel actif"; break;
-            case 2: sfName=@"ant.fill";       title=@"Débogage";     subtitle=@"Logs, tap logger, bouton flottant"; break;
+            case 0: sfName=@"face.smiling";   title=L(@"title_emotes_7tv");   subtitle=L(@"menu_emotes_subtitle"); iconTint=S7TVAccent(); break;
+            case 1: sfName=@"chart.bar.fill"; title=L(@"title_statistiques"); subtitle=L(@"menu_stats_subtitle"); break;
+            case 2: sfName=@"ant.fill";       title=L(@"title_debogage");     subtitle=L(@"menu_debug_subtitle"); break;
             default: return [[UITableViewCell alloc] init];
         }
         return S7TVNavCell(title, subtitle, sfName, iconTint);
@@ -413,11 +433,53 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
     // Section Live Stream Control
     if (ip.section == S7TVHomeSectionLive) {
-        return S7TVNavCell(@"Live Stream Control", @"Auto collect channel points",
+        return S7TVNavCell(L(@"title_live_stream_control"), L(@"subtitle_auto_collect"),
                            @"play.tv.fill", [UIColor colorWithWhite:0.75 alpha:1.0]);
     }
 
+    // Section Langue — segmented control FR/EN, pas un simple switch : il y a
+    // deux valeurs possibles (pas juste ON/OFF), un segmented rend l'état
+    // actuel immédiatement lisible sans avoir à lire un libellé à côté.
+    if (ip.section == S7TVHomeSectionLanguage) {
+        UITableViewCell *cell = [[UITableViewCell alloc]
+            initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        cell.selectionStyle  = UITableViewCellSelectionStyleNone;
+        cell.backgroundColor = S7TVCellBg();
+
+        UIImageView *icon = S7TVIcon(@"globe", [UIColor colorWithWhite:0.75 alpha:1.0]);
+        [cell.contentView addSubview:icon];
+
+        UISegmentedControl *seg = [[UISegmentedControl alloc]
+            initWithItems:@[@"Français", @"English"]];
+        seg.selectedSegmentIndex = ([S7TVLocalization shared].currentLanguage == S7TVLanguageEnglish) ? 1 : 0;
+        seg.selectedSegmentTintColor = S7TVAccent();
+        [seg setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]}
+                            forState:UIControlStateSelected];
+        [seg addTarget:self action:@selector(languageSegmentChanged:)
+              forControlEvents:UIControlEventValueChanged];
+        seg.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:seg];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [icon.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+            [icon.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [seg.leadingAnchor   constraintEqualToAnchor:icon.trailingAnchor constant:14],
+            [seg.trailingAnchor  constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+            [seg.centerYAnchor   constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        ]];
+        return cell;
+    }
+
     return [[UITableViewCell alloc] init];
+}
+
+// Bascule la langue globale de l'app — persistée immédiatement (voir
+// S7TVLocalization.setCurrentLanguage:) et notifiée à tous les écrans de
+// réglages actuellement ouverts via S7TVLanguageDidChangeNotification
+// (voir s7tv_languageDidChange ci-dessus). Pas de redémarrage nécessaire.
+- (void)languageSegmentChanged:(UISegmentedControl *)seg {
+    [S7TVLocalization shared].currentLanguage =
+        (seg.selectedSegmentIndex == 1) ? S7TVLanguageEnglish : S7TVLanguageFrench;
 }
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
@@ -445,10 +507,10 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
         [mgr loadEmotesForChannelTwitchID:mgr.currentChannelTwitchID];
 
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"Rechargement lancé"
-                         message:@"Les emotes seront disponibles dans quelques secondes."
+        alertControllerWithTitle:L(@"alert_reload_started_title")
+                         message:L(@"alert_reload_started_message")
                   preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
         style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -467,20 +529,20 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Live Stream Control";
+    self.title = L(@"title_live_stream_control");
     S7TVStyleTableView(self.tableView);
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 1; }
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return 1; }
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s { return 44; }
-- (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s { return S7TVSectionHeader(@"Live Stream Control", NO); }
+- (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s { return S7TVSectionHeader(L(@"title_live_stream_control"), NO); }
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s { return UITableViewAutomaticDimension; }
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
     UIView *container = [[UIView alloc] init];
     UILabel *lbl = [[UILabel alloc] init];
-    lbl.text = @"Automatically claims the live channel-points chest when it appears in chat.";
+    lbl.text = L(@"desc_auto_collect");
     lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
     lbl.textColor = S7TVGray();
     lbl.numberOfLines = 0;
@@ -496,7 +558,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
-    return S7TVSwitchCell(@"Auto Collect Channel Points",
+    return S7TVSwitchCell(L(@"switch_auto_collect_title"),
                 @"giftcard.fill", [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
                 S7TVBool(kTCLiveAutoCollectChannelPoints), self, @selector(toggleAutoCollect:));
 }
@@ -520,7 +582,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Emotes 7TV";
+    self.title = L(@"title_emotes_7tv");
     S7TVStyleTableView(self.tableView);
 }
 
@@ -535,7 +597,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
-    return S7TVSectionHeader(s == 0 ? @"Général" : @"Affichage", NO);
+    return S7TVSectionHeader(s == 0 ? L(@"section_general") : L(@"section_affichage"), NO);
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
@@ -551,25 +613,25 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     if (ip.section == 0) {
-        return S7TVSwitchCell(@"Activer les emotes 7TV",
+        return S7TVSwitchCell(L(@"switch_enable_7tv"),
                               @"checkmark.seal.fill",
                               S7TVAccent(),
                               mgr.isEnabled,
                               self, @selector(toggleEnabled:));
     }
     switch (ip.row) {
-        case 0: return S7TVSwitchCell(@"Emotes animées dans le chat",
+        case 0: return S7TVSwitchCell(L(@"switch_animated_chat"),
                     @"wand.and.stars",
                     [UIColor colorWithWhite:0.75 alpha:1.0],
                     mgr.showAnimated,
                     self, @selector(toggleAnimated:));
-        case 1: return S7TVSwitchCell(@"Animations dans le picker",
+        case 1: return S7TVSwitchCell(L(@"switch_animations_picker"),
                     @"photo.stack",
                     [UIColor colorWithWhite:0.75 alpha:1.0],
                     mgr.showPickerAnimations,
                     self, @selector(togglePickerAnimations:));
         case 2: {
-            UITableViewCell *cell = S7TVSwitchCell(@"Animations uniquement pour les favoris",
+            UITableViewCell *cell = S7TVSwitchCell(L(@"switch_animations_favorites_only"),
                         @"star.circle",
                         [UIColor colorWithWhite:0.75 alpha:1.0],
                         mgr.showPickerAnimationsFavoritesOnly,
@@ -634,7 +696,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Statistiques";
+    self.title = L(@"title_statistiques");
     S7TVStyleTableView(self.tableView);
 }
 
@@ -673,9 +735,9 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     switch (s) {
-        case 0: return S7TVSectionHeader(@"Channel actif",    NO);
-        case 1: return S7TVSectionHeader(@"Emotes chargées",  NO);
-        case 2: return S7TVSectionHeader(@"Favoris",          NO);
+        case 0: return S7TVSectionHeader(L(@"section_channel_actif"), NO);
+        case 1: return S7TVSectionHeader(L(@"section_emotes_chargees"), NO);
+        case 2: return S7TVSectionHeader(L(@"section_favoris"), NO);
         default: return [[UIView alloc] init];
     }
 }
@@ -757,7 +819,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
             [cell.contentView addSubview:icon];
 
             UILabel *lbl = [[UILabel alloc] init];
-            lbl.text = @"Emotes en favoris";
+            lbl.text = L(@"section_favoris");
             lbl.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
             lbl.textColor = [UIColor whiteColor];
             lbl.numberOfLines = 1;
@@ -793,13 +855,13 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
         [cell.contentView addSubview:importIcon];
 
         UILabel *importLbl = [[UILabel alloc] init];
-        importLbl.text = @"Importer depuis PC";
+        importLbl.text = L(@"action_import_from_pc");
         importLbl.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
         importLbl.textColor = [UIColor whiteColor];
         importLbl.translatesAutoresizingMaskIntoConstraints = NO;
 
         UILabel *importSub = [[UILabel alloc] init];
-        importSub.text = @"Export JSON 7TV (Settings → … → Export)";
+        importSub.text = L(@"subtitle_import_from_pc");
         importSub.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
         importSub.textColor = S7TVGray();
         importSub.translatesAutoresizingMaskIntoConstraints = NO;
@@ -907,14 +969,14 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSData *data = [NSData dataWithContentsOfURL:url options:0 error:&err];
     if (!data) {
         [self s7tv_showAlert:@"Erreur"
-                     message:@"Impossible de lire le fichier."];
+                     message:L(@"error_cant_read_file")];
         return;
     }
 
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
     if (!json) {
         [self s7tv_showAlert:@"Format invalide"
-                     message:@"Le fichier n'est pas un JSON valide."];
+                     message:L(@"error_invalid_json")];
         return;
     }
 
@@ -940,7 +1002,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
     if (!rawFavs) {
         [self s7tv_showAlert:@"Format inconnu"
-                     message:@"Clé « ui.emote_menu.favorites » introuvable.\nVérifie que c'est bien un export 7TV PC."];
+                     message:L(@"error_missing_favorites_key")];
         return;
     }
 
@@ -956,7 +1018,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
     if (newIDs.count == 0) {
         [self s7tv_showAlert:@"Aucun favori 7TV"
-                     message:@"Ce fichier ne contient pas d'emotes 7TV en favoris."];
+                     message:L(@"error_no_favorites_in_file")];
         return;
     }
 
@@ -987,7 +1049,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:title
                                                                message:msg
                                                         preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK"
+    [a addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
                                           style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:a animated:YES completion:nil];
 }
@@ -1012,13 +1074,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Mes favoris";
+    self.title = L(@"title_mes_favoris");
     S7TVStyleTableView(self.tableView);
     [self reloadFavs];
 
     // Bouton Vider
     UIBarButtonItem *clear = [[UIBarButtonItem alloc]
-        initWithTitle:@"Vider"
+        initWithTitle:L(@"common_empty_action")
                 style:UIBarButtonItemStylePlain
                target:self
                action:@selector(clearAllFavs)];
@@ -1083,7 +1145,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         cell.selectionStyle  = UITableViewCellSelectionStyleNone;
         cell.backgroundColor = S7TVCellBg();
-        cell.textLabel.text  = @"Aucun favori pour l'instant.";
+        cell.textLabel.text  = L(@"empty_no_favorites");
         cell.textLabel.textColor = S7TVGray();
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
         cell.textLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
@@ -1212,19 +1274,19 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 - (void)clearAllFavs {
     if (_favIDs.count == 0) return;
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"Vider les favoris"
-                         message:@"Supprimer les %lu emotes en favoris ?"
+        alertControllerWithTitle:L(@"alert_clear_favorites_title")
+                         message:L(@"alert_clear_favorites_message")
         preferredStyle:UIAlertControllerStyleActionSheet];
     alert.message = [NSString stringWithFormat:@"Supprimer les %lu emotes en favoris ?",
                      (unsigned long)_favIDs.count];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Vider"
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_empty_action")
         style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
             NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
             [prefs removeObjectForKey:@"s7tv_favorites"];
             [prefs synchronize];
             [self reloadFavs];
         }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Annuler"
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
         style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -1245,7 +1307,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Débogage";
+    self.title = L(@"title_debogage");
     S7TVStyleTableView(self.tableView);
 }
 
@@ -1271,9 +1333,9 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     switch (s) {
-        case 0: return S7TVSectionHeader(@"Options", NO);
-        case 1: return S7TVSectionHeader(@"Logs",    NO);
-        case 2: return S7TVSectionHeader(@"Danger",  NO);
+        case 0: return S7TVSectionHeader(L(@"section_options"), NO);
+        case 1: return S7TVSectionHeader(L(@"section_logs"), NO);
+        case 2: return S7TVSectionHeader(L(@"section_danger"), NO);
         default: return [[UIView alloc] init];
     }
 }
@@ -1294,7 +1356,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     if (ip.section == 0) {
         // Section Options : bouton flottant + test expérimental chat custom
         if (ip.row == 0) {
-            return S7TVSwitchCell(@"Bouton flottant 7TV",
+            return S7TVSwitchCell(L(@"switch_floating_button"),
                         @"circle.grid.2x1.fill",
                         [UIColor colorWithWhite:0.75 alpha:1.0],
                         mgr.showFloatingButton,
@@ -1303,7 +1365,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         // Kill switch Phase 0 : cache ChatTranscriptView et pose une vue
         // flashy à sa place dans le UIStackView parent — test de validation
         // du point d'insertion. OFF par défaut, à activer manuellement.
-        return S7TVSwitchCell(@"⚠️ Test chat custom (expérimental)",
+        return S7TVSwitchCell(L(@"switch_chat_custom_test"),
                     @"testtube.2",
                     [UIColor systemOrangeColor],
                     mgr.chatCustomTestEnabled,
@@ -1315,7 +1377,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
         // --- Activer les logs (interrupteur global) ---
         if (row == S7TV_LOGS_ROW_ENABLE) {
-            return S7TVSwitchCell(@"Activer les logs",
+            return S7TVSwitchCell(L(@"switch_enable_logs"),
                         @"bolt.fill",
                         [UIColor colorWithWhite:0.75 alpha:1.0],
                         mgr.logsEnabled,
@@ -1337,7 +1399,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
             [cell.contentView addSubview:icon];
 
             UILabel *nameLbl = [[UILabel alloc] init];
-            nameLbl.text = @"Voir les logs";
+            nameLbl.text = L(@"view_logs");
             nameLbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
             nameLbl.textColor = [UIColor whiteColor];
             nameLbl.numberOfLines = 1;
@@ -1367,7 +1429,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
         // --- Logs console (Console.app) — grisé si logsEnabled == NO ---
         if (row == S7TV_LOGS_ROW_CONSOLE) {
-            UITableViewCell *cell = S7TVSwitchCell(@"Logs console (Console.app)",
+            UITableViewCell *cell = S7TVSwitchCell(L(@"switch_logs_console"),
                         @"terminal.fill",
                         [UIColor colorWithWhite:0.75 alpha:1.0],
                         mgr.debugLogging,
@@ -1379,10 +1441,10 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         // --- Catégories de logs ---
         NSInteger catIdx = row - S7TV_LOGS_ROW_FIRST_CAT;
         NSArray<NSString *> *titles = @[
-            @"Erreurs / Avertissements", @"Tap Logger", @"Swizzle / Boot",
-            @"Cache / Réseau", @"Prefetch", @"API Emotes", @"IRC / Channel",
-            @"UI / Picker", @"Favoris",
-            @"Orientation Lock", @"CDN / Cache emotes", @"Chat Custom", @"Dump",
+            L(@"log_cat_errors"), L(@"log_cat_tap"), L(@"log_cat_swizzle"),
+            L(@"log_cat_cache"), L(@"log_cat_prefetch"), L(@"log_cat_api"), L(@"log_cat_irc"),
+            L(@"log_cat_ui_picker"), L(@"section_favoris"),
+            L(@"log_cat_orientation"), L(@"log_cat_cdn"), L(@"log_cat_chat_custom"), L(@"log_cat_dump"),
         ];
         NSArray<NSString *> *icons = @[
             @"exclamationmark.triangle.fill", @"hand.tap.fill", @"bolt.horizontal.circle.fill",
@@ -1424,7 +1486,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     [cell.contentView addSubview:icon];
 
     UILabel *lbl = [[UILabel alloc] init];
-    lbl.text = @"Effacer tous les logs";
+    lbl.text = L(@"action_clear_all_logs");
     lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
     lbl.textColor = [UIColor systemRedColor];
     lbl.numberOfLines = 1;
@@ -1453,15 +1515,15 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
     if (ip.section == 2 && ip.row == 0) {
         UIAlertController *alert = [UIAlertController
-            alertControllerWithTitle:@"Effacer les logs"
-                             message:@"Cette action est irréversible."
+            alertControllerWithTitle:L(@"alert_clear_logs_title")
+                             message:L(@"alert_irreversible")
                       preferredStyle:UIAlertControllerStyleActionSheet];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Effacer"
+        [alert addAction:[UIAlertAction actionWithTitle:L(@"common_clear")
             style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
                 [[SevenTVManager sharedManager] clearLogs];
                 [tv reloadData];
             }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Annuler"
+        [alert addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
             style:UIAlertActionStyleCancel handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
     }

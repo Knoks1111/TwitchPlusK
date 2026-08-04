@@ -13,6 +13,7 @@
 #import "7tv-picker-controler.h"
 #import "SevenTVManager.h"
 #import "7tv-picker-sizes.h"
+#import "7tv-localization.h"
 #import "7tv-picker-resolved-emote.h"
 #import "7tv-picker-cell.h"
 #import "SevenTVEmoteImageCache.h"
@@ -1377,7 +1378,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     NSString *currentQuery = textField.text ?: @"";
 
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"Rechercher une emote"
+        alertControllerWithTitle:L(@"alert_search_emote_title")
                          message:nil
                   preferredStyle:UIAlertControllerStyleAlert];
 
@@ -1395,7 +1396,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     }];
 
     UIAlertAction *searchAction = [UIAlertAction
-        actionWithTitle:@"Rechercher"
+        actionWithTitle:L(@"action_search")
                   style:UIAlertActionStyleDefault
                 handler:^(UIAlertAction *action) {
         NSString *query = alert.textFields.firstObject.text ?: @"";
@@ -1423,7 +1424,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     }];
 
     UIAlertAction *cancelAction = [UIAlertAction
-        actionWithTitle:@"Annuler"
+        actionWithTitle:L(@"common_cancel")
                   style:UIAlertActionStyleCancel
                 handler:^(UIAlertAction *action) {
         // Même chose à l'annulation (voir searchAction ci-dessus) : dismiss

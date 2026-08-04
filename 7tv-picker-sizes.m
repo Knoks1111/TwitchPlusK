@@ -7,6 +7,7 @@
 #import "7tv-picker-controler.h"
 #import "SevenTVManager.h"
 #import "SevenTVChatAppearanceConfig.h"
+#import "7tv-localization.h"
 #import <objc/runtime.h>
 
 // associe un UISlider/UIButton de ligne à sa clé SevenTVChatAppearanceConfig
@@ -24,11 +25,11 @@ static const char kS7TVRowKeyTag = 0;
 
 - (NSArray<NSArray *> *)_sizeOptionsTable {
     return @[
-        @[@"emote7TVSize",     @"Emotes 7TV",     @12, @56],
-        @[@"emoteTwitchSize",  @"Emotes Twitch",  @12, @56],
-        @[@"badgeSize",        @"Badges",         @8,  @34],
-        @[@"usernameFontSize", @"Texte pseudo",   @8,  @28],
-        @[@"messageFontSize",  @"Texte message",  @8,  @28],
+        @[@"emote7TVSize",     L(@"title_emotes_7tv"),      @12, @56],
+        @[@"emoteTwitchSize",  L(@"size_label_emote_twitch"), @12, @56],
+        @[@"badgeSize",        L(@"size_label_badges"),      @8,  @34],
+        @[@"usernameFontSize", L(@"size_label_username"),    @8,  @28],
+        @[@"messageFontSize",  L(@"size_label_message"),     @8,  @28],
     ];
 }
 
@@ -176,7 +177,7 @@ static const char kS7TVRowKeyTag = 0;
     if ([kind isEqualToString:@"text"]) {
         UILabel *lbl = [[UILabel alloc] init];
         BOOL isUsername = [key isEqualToString:@"usernameFontSize"];
-        lbl.text = isUsername ? @"Pseudo" : @"Salut !";
+        lbl.text = isUsername ? L(@"preview_username") : L(@"preview_greeting");
         lbl.textColor = isUsername
             ? [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0]
             : [UIColor whiteColor];

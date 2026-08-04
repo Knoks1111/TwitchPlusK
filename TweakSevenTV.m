@@ -40,6 +40,7 @@
 #import "SevenTVChatMessage.h"
 #import "SevenTVChatAppearanceConfig.h"
 #import "SevenTVChatCustomView.h"
+#import "7tv-localization.h"
 #import "SevenTVEmoteProvider.h"
 #import "SevenTVChatTokenizer.h"
 #import "SevenTVBadgeProvider.h"
@@ -996,7 +997,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
                 [btn setImage:icon forState:UIControlStateNormal];
                 btn.tintColor = purple;
             } else {
-                [btn setTitle:@"7TV" forState:UIControlStateNormal];
+                [btn setTitle:L(@"label_7tv_badge") forState:UIControlStateNormal];
                 [btn setTitleColor:purple forState:UIControlStateNormal];
                 btn.titleLabel.font = [UIFont boldSystemFontOfSize:10];
             }
@@ -1305,7 +1306,7 @@ static UIView *s7tv_imp_viewForHeader(id self, SEL _cmd, UITableView *tv, NSInte
     [container addSubview:logoView];
 
     UILabel *lbl = [[UILabel alloc] init];
-    lbl.text = @"7TV SETTINGS";
+    lbl.text = L(@"header_7tv_settings_caps");
     lbl.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
     lbl.textColor = [UIColor secondaryLabelColor];
     lbl.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1360,7 +1361,7 @@ static UITableViewCell *s7tv_imp_cellForRow(id self, SEL _cmd, UITableView *tv, 
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
 
-    cell.textLabel.text = @"7TV Settings";
+    cell.textLabel.text = L(@"title_7tv_settings");
     cell.textLabel.numberOfLines = 0;
 
     NSData *logoData = [[NSData alloc]

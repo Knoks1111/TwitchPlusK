@@ -19,6 +19,7 @@ TwitchPlusK_FILES = \
     7tv-picker-sizes.m \
     7tv-picker-cell.m \
     7tv-picker-resolved-emote.m \
+    7tv-localization.m \
     SevenTVURLProtocol.m \
     SevenTVSettingsController.m \
     SevenTVLogsController.m \

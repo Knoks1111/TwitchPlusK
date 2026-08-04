@@ -4,11 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       dylib_artifact_url:
-        description: "Dylib artifact link (copied from a 'Build Dylib' run's Artifacts page)"
+        description: "Dylib link — either an artifact link from a 'Build Dylib' run's Artifacts page, or any direct download link to a .dylib file"
         required: true
-      release_tag:
-        required: false
-        default: ''
       ipa_url:
         description: 'Direct Twitch IPA URL'
         required: false
@@ -38,7 +35,7 @@ jobs:
           pip3 install "lief==0.17.6" --quiet --break-system-packages
           python3 -c "import lief; print('✅ lief', lief.__version__)"
 
-      - name: 📥 Récupérer le .dylib depuis le lien d'artifact
+      - name: 📥 Récupérer le .dylib
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -47,33 +44,55 @@ jobs:
           RAW_URL="${{ github.event.inputs.dylib_artifact_url }}"
           echo "🔗 Lien fourni: $RAW_URL"
 
-          ARTIFACT_ID=$(echo "$RAW_URL" | grep -oE '[0-9]+$')
-          if [ -z "$ARTIFACT_ID" ]; then
-            echo "❌ Impossible d'extraire l'ID d'artifact depuis le lien fourni"
-            echo "   Le lien doit ressembler à: https://github.com/OWNER/REPO/actions/runs/RUN_ID/artifacts/ARTIFACT_ID"
-            exit 1
-          fi
-          echo "🆔 Artifact ID: $ARTIFACT_ID"
-
-          HTTP_CODE=$(curl --silent --location --output dylib_artifact.zip \
-            --write-out "%{http_code}" \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${ARTIFACT_ID}/zip")
-
-          echo "HTTP: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ] || [ ! -s "dylib_artifact.zip" ]; then
-            echo "❌ Téléchargement de l'artifact échoué (HTTP $HTTP_CODE)"
-            echo "   L'artifact a peut-être expiré (retention-days) ou l'ID est faux"
-            exit 1
-          fi
-
           mkdir -p dylib_extracted
-          unzip -q dylib_artifact.zip -d dylib_extracted
 
-          DYLIB_PATH=$(find dylib_extracted -name "*.dylib" | head -1)
+          if echo "$RAW_URL" | grep -qE '/actions/runs/[0-9]+/artifacts/[0-9]+'; then
+            echo "📦 Lien artifact GitHub Actions détecté"
+            ARTIFACT_ID=$(echo "$RAW_URL" | grep -oE '[0-9]+$')
+            echo "🆔 Artifact ID: $ARTIFACT_ID"
+
+            HTTP_CODE=$(curl --silent --location --output dylib_download \
+              --write-out "%{http_code}" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${ARTIFACT_ID}/zip")
+
+            echo "HTTP: $HTTP_CODE"
+            if [ "$HTTP_CODE" != "200" ] || [ ! -s "dylib_download" ]; then
+              echo "❌ Téléchargement de l'artifact échoué (HTTP $HTTP_CODE)"
+              echo "   L'artifact a peut-être expiré (retention-days) ou l'ID est faux"
+              exit 1
+            fi
+          else
+            echo "🔗 Lien direct détecté — téléchargement"
+            HTTP_CODE=$(curl --silent --location --output dylib_download \
+              --write-out "%{http_code}" "$RAW_URL" 2>/dev/null || echo "000")
+
+            echo "HTTP: $HTTP_CODE"
+            if [ "$HTTP_CODE" != "200" ] || [ ! -s "dylib_download" ]; then
+              echo "❌ Téléchargement échoué (HTTP $HTTP_CODE)"
+              exit 1
+            fi
+          fi
+
+          FILE_TYPE=$(file --brief dylib_download)
+          echo "Type détecté: $FILE_TYPE"
+
+          if echo "$FILE_TYPE" | grep -qiE "zip|archive"; then
+            echo "📂 Archive détectée — extraction"
+            unzip -q dylib_download -d dylib_extracted
+            DYLIB_PATH=$(find dylib_extracted -name "*.dylib" | head -1)
+          elif echo "$FILE_TYPE" | grep -qiE "mach-o"; then
+            echo "⚙️  Binaire Mach-O direct détecté (pas une archive)"
+            cp dylib_download dylib_extracted/TwitchSevenTV.dylib
+            DYLIB_PATH="dylib_extracted/TwitchSevenTV.dylib"
+          else
+            echo "❌ Fichier téléchargé non reconnu (ni archive, ni Mach-O)"
+            exit 1
+          fi
+
           if [ -z "$DYLIB_PATH" ]; then
-            echo "❌ Aucun .dylib trouvé dans l'artifact téléchargé"
+            echo "❌ Aucun .dylib trouvé"
             ls -R dylib_extracted
             exit 1
           fi
@@ -259,11 +278,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="${{ github.event.inputs.release_tag }}"
-          if [ -z "$TAG" ]; then
-            TAG="v${{ github.run_number }}"
-            echo "🔢 Aucun tag fourni — auto: $TAG"
-          fi
+          TAG="v${{ github.run_number }}"
           IPA_NAME="${{ env.IPA_NAME }}"
 
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then

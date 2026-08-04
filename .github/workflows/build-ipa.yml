@@ -250,7 +250,7 @@ jobs:
             exit 1
           fi
 
-          IPA_NAME="7tv-ios-v${{ github.run_number }}.ipa"
+          IPA_NAME="7tv-ios-${TWITCH_VERSION}.ipa"
           mv TwitchSevenTV_patched.ipa "$IPA_NAME"
           echo "✅ IPA finale: $IPA_NAME ($(du -sh "$IPA_NAME" | cut -f1))"
           echo "IPA_NAME=$IPA_NAME" >> $GITHUB_ENV
@@ -260,16 +260,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="7tv-ios-v${{ github.run_number }}"
+          TAG="7tv-ios-${{ env.TWITCH_VERSION }}"
           IPA_NAME="${{ env.IPA_NAME }}"
           TWITCH_VERSION="${{ env.TWITCH_VERSION }}"
-          TITLE="7TV iOS v${{ github.run_number }} — Twitch ${TWITCH_VERSION}"
+          TITLE="7TV iOS — Twitch ${TWITCH_VERSION}"
 
           NOTES_FILE="release_notes.md"
           cat > "$NOTES_FILE" << NOTESEOF
           ## 7TV iOS release info
           - **Twitch app version:** \`${TWITCH_VERSION}\`
-          - **7TV build:** #${{ github.run_number }}
           - **iOS 15+**
 
           ## Must read

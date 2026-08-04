@@ -771,7 +771,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
         [cell.contentView addSubview:icon];
 
         UILabel *titleLbl = [[UILabel alloc] init];
-        titleLbl.text = mgr.currentChannelName ?: @"Aucun channel";
+        titleLbl.text = mgr.currentChannelName ?: L(@"stats_no_channel");
         titleLbl.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
         titleLbl.textColor = [UIColor whiteColor];
         titleLbl.numberOfLines = 1;
@@ -780,7 +780,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
         UILabel *subLbl = [[UILabel alloc] init];
         subLbl.text = mgr.currentChannelTwitchID
             ? [NSString stringWithFormat:@"ID : %@", mgr.currentChannelTwitchID]
-            : @"Rejoins un stream pour charger les emotes";
+            : L(@"stats_join_stream_hint");
         subLbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
         subLbl.textColor = S7TVGray();
         subLbl.numberOfLines = 1;
@@ -892,9 +892,9 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     UIColor *valColor = [UIColor whiteColor];
 
     switch (ip.row) {
-        case 0: sfName = @"globe";         label = @"Emotes globales";   count = g; break;
-        case 1: sfName = @"person.2.fill"; label = @"Emotes du channel"; count = c; valColor = S7TVAccent(); break;
-        case 2: sfName = @"sum";           label = @"Total";              count = g + c; break;
+        case 0: sfName = @"globe";         label = L(@"stats_global_emotes");   count = g; break;
+        case 1: sfName = @"person.2.fill"; label = L(@"stats_channel_emotes"); count = c; valColor = S7TVAccent(); break;
+        case 2: sfName = @"sum";           label = L(@"stats_total");              count = g + c; break;
         default: return cell;
     }
 
@@ -968,14 +968,14 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSError *err = nil;
     NSData *data = [NSData dataWithContentsOfURL:url options:0 error:&err];
     if (!data) {
-        [self s7tv_showAlert:@"Erreur"
+        [self s7tv_showAlert:L(@"alert_error_title")
                      message:L(@"error_cant_read_file")];
         return;
     }
 
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
     if (!json) {
-        [self s7tv_showAlert:@"Format invalide"
+        [self s7tv_showAlert:L(@"alert_invalid_format_title")
                      message:L(@"error_invalid_json")];
         return;
     }
@@ -1001,7 +1001,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     }
 
     if (!rawFavs) {
-        [self s7tv_showAlert:@"Format inconnu"
+        [self s7tv_showAlert:L(@"alert_unknown_format_title")
                      message:L(@"error_missing_favorites_key")];
         return;
     }
@@ -1017,7 +1017,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     }
 
     if (newIDs.count == 0) {
-        [self s7tv_showAlert:@"Aucun favori 7TV"
+        [self s7tv_showAlert:L(@"alert_no_7tv_favorites_title")
                      message:L(@"error_no_favorites_in_file")];
         return;
     }
@@ -1034,9 +1034,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSUInteger added = merged.count - beforeCount;
     NSUInteger skipped = newIDs.count - added;
     [self.tableView reloadData];
-    [self s7tv_showAlert:[NSString stringWithFormat:@"%lu emote(s) ajoutée(s)", (unsigned long)added]
+    [self s7tv_showAlert:[NSString stringWithFormat:L(@"alert_import_success_title_format"), (unsigned long)added]
                  message:[NSString stringWithFormat:
-                          @"%lu nouvelle(s) importée(s), %lu déjà en favoris.",
+                          L(@"alert_import_success_message_format"),
                           (unsigned long)added,
                           (unsigned long)skipped]];
     [[SevenTVManager sharedManager] log:@"📥 Import favoris 7TV : %lu total, %lu ajoutés",

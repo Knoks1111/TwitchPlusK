@@ -36,6 +36,7 @@
 #import "SevenTVSettingsController.h"
 #import "SevenTVURLProtocol.h"
 #import "SevenTVLogo.h"
+#import "7tv-localization.h"
 #import "SevenTVBadgeProvider.h"
 #import "SevenTVChatAppearanceConfig.h"
 #import "SevenTVEmoteImageCache.h"
@@ -1392,7 +1393,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         btn.layer.shadowOffset  = CGSizeMake(0, 2);
         btn.layer.shadowRadius  = 4;
         btn.layer.shadowOpacity = 0.4;
-        [btn setTitle:@"7TV" forState:UIControlStateNormal];
+        [btn setTitle:L(@"label_7tv_badge") forState:UIControlStateNormal];
         btn.titleLabel.font = [UIFont boldSystemFontOfSize:11];
         [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
         [btn addTarget:self action:@selector(settingsButtonTapped:)

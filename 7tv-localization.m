@@ -53,9 +53,13 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 - (NSString *)stringForKey:(NSString *)key {
     if (!key.length) return @"";
     NSArray<NSString *> *pair = _table[key];
-    if (!pair) return key; // filet de sécurité — voir header
+    // Filet de sécurité VISIBLE (voir header) : [clé] plutôt que la clé nue
+    // ou une chaîne vide — repérable à l'œil pendant les tests sans avoir à
+    // grep le code pour savoir quelle traduction manque encore.
+    if (!pair) return [NSString stringWithFormat:@"[%@]", key];
     NSUInteger idx = (self.currentLanguage == S7TVLanguageEnglish) ? 1 : 0;
-    return pair[idx] ?: key;
+    NSString *value = pair[idx];
+    return value.length ? value : [NSString stringWithFormat:@"[%@]", key];
 }
 
 #pragma mark - Table des traductions
@@ -71,7 +75,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Titres de page ──────────────────────────────────────────────
         @"title_7tv_settings":              @[@"7TV Settings", @"7TV Settings"],
-        @"title_live_stream_control":       @[@"Live Stream Control", @"Live Stream Control"],
+        @"title_live_stream_control":       @[@"Contrôle du stream", @"Live Stream Control"],
         @"title_emotes_7tv":                @[@"Emotes 7TV", @"7TV Emotes"],
         @"title_statistiques":              @[@"Statistiques", @"Statistics"],
         @"title_mes_favoris":               @[@"Mes favoris", @"My Favorites"],
@@ -89,8 +93,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
                                                @"Emotes will be available in a few seconds."],
 
         // ── Live Stream Control ─────────────────────────────────────────
-        @"subtitle_auto_collect":           @[@"Auto collect channel points", @"Auto collect channel points"],
-        @"switch_auto_collect_title":       @[@"Auto Collect Channel Points", @"Auto Collect Channel Points"],
+        @"subtitle_auto_collect":           @[@"Récupération auto des points de chaîne", @"Auto collect channel points"],
+        @"switch_auto_collect_title":       @[@"Récupération auto des points de chaîne", @"Auto Collect Channel Points"],
         @"desc_auto_collect":               @[@"Réclame automatiquement le coffre de points de chaîne quand il apparaît dans le chat.",
                                                @"Automatically claims the live channel-points chest when it appears in chat."],
 
@@ -177,6 +181,28 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // ── Picker : recherche ────────────────────────────────────────────
         @"alert_search_emote_title":        @[@"Rechercher une emote", @"Search for an emote"],
         @"action_search":                   @[@"Rechercher", @"Search"],
+        @"placeholder_search_picker":       @[@"Rechercher…", @"Search…"],
+        @"placeholder_emote_name":          @[@"Nom de l'emote…", @"Emote name…"],
+
+        // ── Page Statistiques ────────────────────────────────────────────
+        @"stats_no_channel":                @[@"Aucun channel", @"No channel"],
+        @"stats_join_stream_hint":          @[@"Rejoins un stream pour charger les emotes",
+                                               @"Join a stream to load emotes"],
+        @"stats_global_emotes":             @[@"Emotes globales", @"Global emotes"],
+        @"stats_channel_emotes":            @[@"Emotes du channel", @"Channel emotes"],
+        @"stats_total":                     @[@"Total", @"Total"],
+        @"alert_error_title":               @[@"Erreur", @"Error"],
+        @"alert_invalid_format_title":      @[@"Format invalide", @"Invalid format"],
+        @"alert_unknown_format_title":      @[@"Format inconnu", @"Unknown format"],
+        @"alert_no_7tv_favorites_title":    @[@"Aucun favori 7TV", @"No 7TV favorites"],
+        @"alert_import_success_title_format":   @[@"%lu emote(s) ajoutée(s)", @"%lu emote(s) added"],
+        @"alert_import_success_message_format": @[@"%lu nouvelle(s) importée(s), %lu déjà en favoris.",
+                                                    @"%lu newly imported, %lu already favorited."],
+
+        // ── Bannière "nouveaux messages" (chat custom) ────────────────────
+        @"banner_new_messages_generic":     @[@"nouveaux messages", @"new messages"],
+        @"banner_new_messages_one":         @[@"1 nouveau message", @"1 new message"],
+        @"banner_new_messages_format":      @[@"%lu nouveaux messages", @"%lu new messages"],
     };
 }
 

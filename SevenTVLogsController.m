@@ -39,7 +39,7 @@ static const NSInteger kAutoScrollThreshold = 20;
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    self.title = @"Logs 7TV";
+    self.title = L(@"title_logs_7tv");
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     self.currentText = [NSMutableString string];
     self.displayedLineCount = 0;

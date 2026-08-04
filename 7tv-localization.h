@@ -34,8 +34,10 @@ typedef NS_ENUM(NSInteger, S7TVLanguage) {
 @property (nonatomic, assign) S7TVLanguage currentLanguage;
 
 // Traduction pour une clé donnée dans la langue actuelle. Si la clé est
-// inconnue, retourne la clé elle-même (filet de sécurité visuel — mieux
-// vaut afficher "missing_key_xyz" à l'écran qu'un texte vide ou un crash).
+// inconnue (ou sa traduction vide dans la langue courante), retourne
+// "[clé]" — filet de sécurité VOLONTAIREMENT VISIBLE : plus facile à
+// repérer pendant les tests qu'une chaîne vide ou la clé nue, sans jamais
+// crasher.
 - (NSString *)stringForKey:(NSString *)key;
 
 @end

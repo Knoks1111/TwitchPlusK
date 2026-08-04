@@ -1,5 +1,5 @@
 # ============================================================
-# Makefile — TwitchSevenTV (substrate-free, sideload)
+# Makefile — TwitchPlusK (substrate-free, sideload)
 # ============================================================
 
 ARCHS = arm64
@@ -8,11 +8,11 @@ TARGET = iphone:clang:16.5:14.0
 include $(THEOS)/makefiles/common.mk
 
 # ── Nom du dylib ──
-LIBRARY_NAME = TwitchSevenTV
+LIBRARY_NAME = TwitchPlusK
 
 # ── Headers ──
 # ── Fichiers source ──
-TwitchSevenTV_FILES = \
+TwitchPlusK_FILES = \
     TweakSevenTV.m \
     SevenTVManager.m \
     7tv-picker-controler.m \
@@ -32,19 +32,19 @@ TwitchSevenTV_FILES = \
     SevenTVBadgeProvider.m
 
 # ── Options de compilation ──
-TwitchSevenTV_CFLAGS = \
+TwitchPlusK_CFLAGS = \
     -fobjc-arc \
     -I$(THEOS_PROJECT_DIR) \
     -Wno-unused-variable \
     -Wno-unused-function
 
 # ── Options linker ──
-TwitchSevenTV_LDFLAGS = \
+TwitchPlusK_LDFLAGS = \
     -Wl,-no_warn_inits \
     -Wl,-w
 
 # ── Frameworks Apple ──
-TwitchSevenTV_FRAMEWORKS = UIKit Foundation QuartzCore ImageIO
+TwitchPlusK_FRAMEWORKS = UIKit Foundation QuartzCore ImageIO
 
 include $(THEOS_MAKE_PATH)/library.mk
 

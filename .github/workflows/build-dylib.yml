@@ -1,4 +1,4 @@
-name: 🔧 Build Dylib
+name: 🔧 Build Dylib TwitchSevenTV
 
 on:
   workflow_dispatch: {}
@@ -121,7 +121,7 @@ jobs:
           echo "📋 SDKs disponibles:"; ls "$THEOS/sdks/"
           echo "✅ Theos + SDK prêts"
 
-      - name: 🔑 Installer ldid + lief
+      - name: 🔑 Installer ldid + lief + GNU Make
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -129,8 +129,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          brew install ldid
+          brew install ldid make
           echo "✅ ldid: $(which ldid)"
+
+          MAKE_BIN_DIR="$(brew --prefix make)/libexec/gnubin"
+          echo "GNUMAKE_BIN_DIR=$MAKE_BIN_DIR" >> $GITHUB_ENV
+          echo "$MAKE_BIN_DIR" >> $GITHUB_PATH
+          echo "✅ GNU Make prêt: $MAKE_BIN_DIR"
 
           pip3 install "lief==0.17.6" --quiet --break-system-packages
           python3 -c "import lief; print('✅ lief', lief.__version__)"
@@ -139,6 +144,8 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$THEOS/bin:$PATH"
+
+          echo "🔨 Make utilisé: $(which make) — $(make --version | head -1)"
 
           SDK_NAME=$(ls "$THEOS/sdks/" | grep -E 'iPhoneOS[0-9.]+\.sdk' | sort -V | tail -1)
           if [ -z "$SDK_NAME" ]; then

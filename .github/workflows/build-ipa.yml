@@ -7,9 +7,8 @@ on:
         description: "Dylib link — either an artifact link from a 'Build Dylib' run's Artifacts page, or any direct download link to a .dylib file"
         required: true
       ipa_url:
-        description: 'Direct Twitch IPA URL'
-        required: false
-        default: ''
+        description: 'Direct Twitch IPA link (filebin, etc.)'
+        required: true
 
 permissions:
   actions: read
@@ -104,37 +103,16 @@ jobs:
           echo "DYLIB_PATH=$DYLIB_PATH" >> $GITHUB_ENV
 
       - name: 📲 Télécharger l'IPA Twitch
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           IPA_SOURCE="${{ github.event.inputs.ipa_url }}"
           if [ -z "$IPA_SOURCE" ]; then
-            IPA_SOURCE="${{ secrets.TWITCH_IPA_URL }}"
-          fi
-          if [ -z "$IPA_SOURCE" ]; then
-            echo "❌ Pas d'URL IPA — configure TWITCH_IPA_URL dans Settings → Secrets"
+            echo "❌ Aucun lien IPA fourni"
             exit 1
           fi
 
-          if echo "$IPA_SOURCE" | grep -q "github.com.*releases"; then
-            if echo "$IPA_SOURCE" | grep -qE '/releases/tag/'; then
-              RELEASE_TAG=$(echo "$IPA_SOURCE" | sed -E 's#.*/releases/tag/##')
-            elif echo "$IPA_SOURCE" | grep -qE '/releases/download/'; then
-              RELEASE_TAG=$(echo "$IPA_SOURCE" | sed -E 's#.*/releases/download/([^/]+)/.*#\1#')
-            else
-              RELEASE_TAG="$IPA_SOURCE"
-            fi
-
-            echo "📦 GitHub Release détecté, tag: $RELEASE_TAG"
-            gh release download "$RELEASE_TAG" \
-              --repo "${{ github.repository }}" \
-              --pattern "*.ipa" \
-              --output Twitch.ipa
-            echo "✅ Téléchargé depuis GitHub Release"
-
-          elif echo "$IPA_SOURCE" | grep -q "drive.google.com"; then
+          if echo "$IPA_SOURCE" | grep -q "drive.google.com"; then
             FILE_ID=$(echo "$IPA_SOURCE" | grep -oE '[-\w]{25,}' | head -1)
             echo "📎 Google Drive détecté, ID: $FILE_ID"
             pip3 install gdown --quiet --break-system-packages

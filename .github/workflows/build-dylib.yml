@@ -1,4 +1,4 @@
-name: 🔧 Build Dylib
+name: 🔧 Build Dylib TwitchPlusK
 
 on:
   workflow_dispatch: {}
@@ -162,12 +162,12 @@ jobs:
 
           make -j$(sysctl -n hw.ncpu) package FINALPACKAGE=1 $MAKE_EXTRA
 
-          DYLIB_PATH=$(find .theos -name "TwitchSevenTV.dylib" 2>/dev/null | head -1)
+          DYLIB_PATH=$(find .theos -name "*.dylib" 2>/dev/null | head -1)
           if [ -z "$DYLIB_PATH" ]; then
-            DYLIB_PATH=$(find . -name "TwitchSevenTV.dylib" 2>/dev/null | head -1)
+            DYLIB_PATH=$(find . -name "*.dylib" -not -path "./theos/*" 2>/dev/null | head -1)
           fi
           if [ -z "$DYLIB_PATH" ]; then
-            echo "❌ TwitchSevenTV.dylib introuvable après make"
+            echo "❌ Aucun .dylib introuvable après make"
             find . -name "*.dylib" 2>/dev/null || true
             exit 1
           fi
@@ -191,7 +191,7 @@ jobs:
       - name: 📤 Sauvegarder la .dylib
         uses: actions/upload-artifact@v6
         with:
-          name: TwitchSevenTV-v${{ github.run_number }}-dylib
+          name: TwitchPlusK-v${{ github.run_number }}-dylib
           path: ${{ env.DYLIB_PATH }}
           retention-days: 7
           compression-level: 0
@@ -200,7 +200,7 @@ jobs:
         if: env.DEB_PATH != ''
         uses: actions/upload-artifact@v6
         with:
-          name: TwitchSevenTV-v${{ github.run_number }}-deb
+          name: TwitchPlusK-v${{ github.run_number }}-deb
           path: ${{ env.DEB_PATH }}
           retention-days: 7
 
@@ -210,6 +210,6 @@ jobs:
           echo "  Dylib buildé ! 🎉"
           echo "========================================"
           echo "👉 Va dans Actions → ce run → Artifacts"
-          echo "👉 Clique-droit sur 'TwitchSevenTV-v${{ github.run_number }}-dylib' → Copier le lien"
+          echo "👉 Clique-droit sur 'TwitchPlusK-v${{ github.run_number }}-dylib' → Copier le lien"
           echo "👉 Colle ce lien dans le workflow 'Build IPA' pour injecter"
           echo "========================================"

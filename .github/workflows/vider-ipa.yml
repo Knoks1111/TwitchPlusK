@@ -8,9 +8,9 @@ on:
         required: true
         default: "ipa-base"
       output_name:
-        description: "Préfixe optionnel (laisse vide pour 'Clean_')"
-        required: false
-        default: ""
+        description: "Nom de l'IPA finale (sans .ipa)"
+        required: true
+        default: "Twitch_clean"
 
 permissions:
   contents: read
@@ -29,11 +29,8 @@ jobs:
           echo "📦 Téléchargement depuis release '${{ github.event.inputs.release_tag }}' (*.ipa)"
           gh release download "${{ github.event.inputs.release_tag }}" \
             --repo "${{ github.repository }}" \
-            --pattern "*.ipa"
-          ORIGINAL_IPA=$(ls *.ipa | head -1)
-          echo "📄 Nom original : $ORIGINAL_IPA"
-          mv "$ORIGINAL_IPA" original.ipa
-          echo "ORIGINAL_BASE=${ORIGINAL_IPA%.ipa}" >> $GITHUB_ENV
+            --pattern "*.ipa" \
+            --output original.ipa
           echo "✅ Téléchargement terminé : $(du -sh original.ipa | cut -f1)"
 
       # ─── 2. Extraire l'IPA ────────────────────────────────────────────────
@@ -141,13 +138,7 @@ jobs:
       # ─── 9. Repackager en IPA ─────────────────────────────────────────────
       - name: 📦 Repackager en IPA propre
         run: |
-          # Récupérer le nom original de l'IPA depuis la release
-          ORIGINAL_BASE="${{ env.ORIGINAL_BASE }}"
-
-          PREFIX="${{ github.event.inputs.output_name }}"
-          if [ -z "$PREFIX" ]; then PREFIX="Clean"; fi
-
-          OUTPUT_IPA="${PREFIX}_${ORIGINAL_BASE}.ipa"
+          OUTPUT_IPA="${{ github.event.inputs.output_name }}.ipa"
           cd IPA_extracted
           zip -qr "../$OUTPUT_IPA" Payload/
           cd ..
@@ -158,7 +149,7 @@ jobs:
       - name: 📤 Upload de l'IPA finale
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.OUTPUT_IPA }}
+          name: ${{ github.event.inputs.output_name }}
           path: ${{ env.OUTPUT_IPA }}
           retention-days: 7
           compression-level: 0

@@ -1003,7 +1003,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     search.backgroundColor = [UIColor clearColor];
     search.textColor       = textColor;
     search.attributedPlaceholder = [[NSAttributedString alloc]
-        initWithString:@"Rechercher…"
+        initWithString:L(@"placeholder_search_picker")
             attributes:@{NSForegroundColorAttributeName: subColor}];
     search.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
@@ -1405,7 +1405,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         if (query.length == 0) {
             UIColor *subColor = [UIColor colorWithWhite:0.55 alpha:1.0];
             textField.attributedPlaceholder = [[NSAttributedString alloc]
-                initWithString:@"Rechercher…"
+                initWithString:L(@"placeholder_search_picker")
                     attributes:@{NSForegroundColorAttributeName: subColor}];
         }
         [self _applySearchQuery:query];

@@ -1,6 +1,6 @@
 # TwitchPlusK
 
-Enhanced Twitch chat for iOS — 7TV emotes & badges, auto-claim channel points, and ad blocking. Sideloaded, no jailbreak required.
+Enhanced Twitch app for iOS — 7TV emotes & badges, auto-claim channel points, and ad blocking. Sideloaded, no jailbreak required.
 
 ## Install
 

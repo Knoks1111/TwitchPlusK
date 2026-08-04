@@ -996,7 +996,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 
     UITextField *search = [[UITextField alloc] initWithFrame:
         CGRectMake(0, 0, searchCapsule.bounds.size.width, kS7TVPickerSearchH)];
-    search.placeholder     = @"Rechercher…";
+    search.placeholder     = L(@"placeholder_search_picker");
     search.font            = [UIFont systemFontOfSize:13];
     search.returnKeyType   = UIReturnKeyDone;
     search.clearButtonMode = UITextFieldViewModeNever; // remplacé par notre propre bouton croix (point 4)
@@ -1383,7 +1383,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
                   preferredStyle:UIAlertControllerStyleAlert];
 
     [alert addTextFieldWithConfigurationHandler:^(UITextField *alertField) {
-        alertField.placeholder   = @"Nom de l'emote…";
+        alertField.placeholder   = L(@"placeholder_emote_name");
         alertField.text          = currentQuery;
         alertField.returnKeyType = UIReturnKeySearch;
         alertField.clearButtonMode = UITextFieldViewModeWhileEditing;

@@ -9,6 +9,7 @@
 #import "SevenTVEmoteImageCache.h"
 #import "SevenTVEmoteAnimationEngine.h"
 #import "SevenTVBadgeProvider.h"
+#import "7tv-localization.h"
 #import "SevenTVManager.h"
 #import <math.h>
 
@@ -597,12 +598,12 @@
 
 - (void)s7tv_updateNewMessagesBannerText {
     if (self.pendingNewMessagesCount == 0) {
-        self.unseenMessagesBannerLabel.text = @"nouveaux messages";
+        self.unseenMessagesBannerLabel.text = L(@"banner_new_messages_generic");
     } else if (self.pendingNewMessagesCount == 1) {
-        self.unseenMessagesBannerLabel.text = @"1 nouveau message";
+        self.unseenMessagesBannerLabel.text = L(@"banner_new_messages_one");
     } else {
         self.unseenMessagesBannerLabel.text =
-            [NSString stringWithFormat:@"%lu nouveaux messages", (unsigned long)self.pendingNewMessagesCount];
+            [NSString stringWithFormat:L(@"banner_new_messages_format"), (unsigned long)self.pendingNewMessagesCount];
     }
 }
 

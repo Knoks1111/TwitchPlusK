@@ -167,6 +167,11 @@ jobs:
           fi
           echo "📂 App: $APP_PATH"
 
+          TWITCH_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" \
+            "$APP_PATH/Info.plist" 2>/dev/null || echo "unknown")
+          echo "📱 Version Twitch détectée: $TWITCH_VERSION"
+          echo "TWITCH_VERSION=$TWITCH_VERSION" >> $GITHUB_ENV
+
           APP_NAME=$(basename "$APP_PATH" .app)
           BINARY="$APP_PATH/$APP_NAME"
 
@@ -256,8 +261,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="v${{ github.run_number }}"
+          TAG="7tv-ios-v${{ github.run_number }}"
           IPA_NAME="${{ env.IPA_NAME }}"
+          TWITCH_VERSION="${{ env.TWITCH_VERSION }}"
+          TITLE="7TV iOS v${{ github.run_number }} — Twitch ${TWITCH_VERSION}"
+
+          NOTES_FILE="release_notes.md"
+          cat > "$NOTES_FILE" << NOTESEOF
+          ## 7TV iOS release info
+          - **Twitch app version:** \`${TWITCH_VERSION}\`
+          - **7TV build:** #${{ github.run_number }}
+          - **iOS 15+**
+
+          ## Must read
+          - Sideload via SideStore.
+          - Pour tester juste une modif du dylib sans resideload complet : télécharge le \`.dylib\` seul depuis les artifacts du workflow **Build Dylib**, glisse-le dans LiveContainer → Tweaks de Twitch → relance.
+          - Émotes 7TV injectées via hook WebSocket IRC + redirection CDN.
+          NOTESEOF
 
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "📦 Release '$TAG' existe déjà — upload de l'asset"
@@ -268,8 +288,8 @@ jobs:
             echo "🆕 Création de la release '$TAG'"
             gh release create "$TAG" "$IPA_NAME" \
               --repo "${{ github.repository }}" \
-              --title "$TAG" \
-              --notes "Build automatique — dylib injecté via ${{ github.event.inputs.dylib_artifact_url }}"
+              --title "$TITLE" \
+              --notes-file "$NOTES_FILE"
           fi
 
           echo "✅ IPA publiée: https://github.com/${{ github.repository }}/releases/tag/$TAG"

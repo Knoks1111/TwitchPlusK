@@ -7,6 +7,7 @@
 
 #import "SevenTVLogsController.h"
 #import "SevenTVManager.h"
+#import "7tv-localization.h"
 
 // Nombre de lignes à partir duquel on n'auto-scroll plus
 // (pour ne pas interrompre l'utilisateur qui lit les anciens logs)
@@ -92,7 +93,7 @@ static const NSInteger kAutoScrollThreshold = 20;
         UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
             ({
                 UILabel *title = [[UILabel alloc] init];
-                title.text = @"Logs 7TV";
+                title.text = L(@"title_logs_7tv");
                 title.font = [UIFont boldSystemFontOfSize:17];
                 title;
             }),
@@ -136,7 +137,7 @@ static const NSInteger kAutoScrollThreshold = 20;
 - (void)setupEmptyLabel {
     self.emptyLabel = [[UILabel alloc] init];
     self.emptyLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.emptyLabel.text = @"Aucun log pour l'instant.\nLes messages apparaîtront ici en temps réel.";
+    self.emptyLabel.text = L(@"empty_no_logs");
     self.emptyLabel.numberOfLines = 0;
     self.emptyLabel.textAlignment = NSTextAlignmentCenter;
     self.emptyLabel.font = [UIFont systemFontOfSize:15];
@@ -173,7 +174,7 @@ static const NSInteger kAutoScrollThreshold = 20;
 
     // Bouton "Copier tout"
     UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [copyBtn setTitle:@"Copier tout" forState:UIControlStateNormal];
+    [copyBtn setTitle:L(@"button_copy_all") forState:UIControlStateNormal];
     [copyBtn setImage:[UIImage systemImageNamed:@"doc.on.doc"] forState:UIControlStateNormal];
     copyBtn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     [copyBtn addTarget:self action:@selector(copyAllTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -181,7 +182,7 @@ static const NSInteger kAutoScrollThreshold = 20;
 
     // Bouton "Effacer"
     UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [clearBtn setTitle:@"Effacer" forState:UIControlStateNormal];
+    [clearBtn setTitle:L(@"common_clear") forState:UIControlStateNormal];
     [clearBtn setImage:[UIImage systemImageNamed:@"trash"] forState:UIControlStateNormal];
     [clearBtn setTintColor:[UIColor systemRedColor]];
     clearBtn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
@@ -291,14 +292,14 @@ static const NSInteger kAutoScrollThreshold = 20;
 
 - (void)clearTapped {
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"Effacer les logs ?"
-                         message:@"Toutes les lignes seront supprimées du buffer."
+        alertControllerWithTitle:L(@"alert_clear_logs_confirm_title")
+                         message:L(@"alert_clear_logs_confirm_message")
                   preferredStyle:UIAlertControllerStyleAlert];
 
-    [alert addAction:[UIAlertAction actionWithTitle:@"Annuler"
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
                                              style:UIAlertActionStyleCancel
                                            handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Effacer"
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_clear")
                                              style:UIAlertActionStyleDestructive
                                            handler:^(UIAlertAction *a) {
         [[SevenTVManager sharedManager] clearLogs];
@@ -335,11 +336,11 @@ static const NSInteger kAutoScrollThreshold = 20;
 
 - (void)updateCountLabel:(NSInteger)count {
     if (count == 0) {
-        self.countLabel.text = @"buffer vide";
+        self.countLabel.text = L(@"buffer_empty");
     } else if (count == 1) {
-        self.countLabel.text = @"1 ligne";
+        self.countLabel.text = L(@"buffer_one_line");
     } else {
-        self.countLabel.text = [NSString stringWithFormat:@"%ld lignes", (long)count];
+        self.countLabel.text = [NSString stringWithFormat:L(@"buffer_n_lines_format"), (long)count];
     }
 }
 

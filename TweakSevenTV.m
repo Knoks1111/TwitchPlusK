@@ -820,7 +820,8 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
                 shareBtn.tintColor              = s_orientationLocked
                     ? [UIColor colorWithRed:0.55 green:0.25 blue:0.95 alpha:1.0]
                     : [UIColor whiteColor];
-                shareBtn.accessibilityLabel      = @"Verrouiller l'orientation";
+                shareBtn.accessibilityLabel      = s_orientationLocked
+                    ? L(@"a11y_unlock_orientation") : L(@"a11y_lock_orientation");
                 shareBtn.accessibilityIdentifier = @"s7tv_lock_button";
 
                 [shareBtn addTarget:[SevenTVManager sharedManager]
@@ -1707,7 +1708,7 @@ static void s7tv_showOrientationToast(BOOL locked) {
         CGFloat winH = toastWindow.bounds.size.height;
 
         NSString *symbol = locked ? @"lock.rotation"      : @"lock.rotation.open";
-        NSString *label  = locked ? @"Verrouillé" : @"Déverrouillé";
+        NSString *label  = locked ? L(@"lock_locked") : L(@"lock_unlocked");
 
         UIView *toast = [[UIView alloc] init];
         toast.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.62];

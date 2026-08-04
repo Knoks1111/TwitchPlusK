@@ -203,6 +203,12 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"banner_new_messages_generic":     @[@"nouveaux messages", @"new messages"],
         @"banner_new_messages_one":         @[@"1 nouveau message", @"1 new message"],
         @"banner_new_messages_format":      @[@"%lu nouveaux messages", @"%lu new messages"],
+
+        // ── Verrouillage de rotation ──────────────────────────────────────
+        @"lock_locked":                     @[@"Verrouillé", @"Locked"],
+        @"lock_unlocked":                   @[@"Déverrouillé", @"Unlocked"],
+        @"a11y_lock_orientation":           @[@"Verrouiller la rotation", @"Lock rotation"],
+        @"a11y_unlock_orientation":         @[@"Déverrouiller la rotation", @"Unlock rotation"],
     };
 }
 

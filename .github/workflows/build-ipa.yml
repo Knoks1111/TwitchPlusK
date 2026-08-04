@@ -1,4 +1,4 @@
-name: 📦 Build IPA (injection dylib)
+name: 📦 Build IPA (final)
 
 on:
   workflow_dispatch:

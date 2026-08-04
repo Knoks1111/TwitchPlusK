@@ -1,4 +1,4 @@
-name: 📦 Build IPA (final)
+name: 📦 Build IPA (injection dylib)
 
 on:
   workflow_dispatch:
@@ -83,8 +83,8 @@ jobs:
             DYLIB_PATH=$(find dylib_extracted -name "*.dylib" | head -1)
           elif echo "$FILE_TYPE" | grep -qiE "mach-o"; then
             echo "⚙️  Binaire Mach-O direct détecté (pas une archive)"
-            cp dylib_download dylib_extracted/TwitchSevenTV.dylib
-            DYLIB_PATH="dylib_extracted/TwitchSevenTV.dylib"
+            cp dylib_download dylib_extracted/TwitchPlusK.dylib
+            DYLIB_PATH="dylib_extracted/TwitchPlusK.dylib"
           else
             echo "❌ Fichier téléchargé non reconnu (ni archive, ni Mach-O)"
             exit 1
@@ -148,7 +148,7 @@ jobs:
 
           echo "✅ IPA: $(du -sh Twitch.ipa | cut -f1)"
 
-      - name: 💉 Injecter 7TV dans l'IPA Twitch
+      - name: 💉 Injecter TwitchPlusK dans l'IPA Twitch
         run: |
           set -euo pipefail
           DYLIB_PATH="${{ env.DYLIB_PATH }}"
@@ -193,14 +193,14 @@ jobs:
           fi
           echo "⚙️  Binaire: $BINARY"
 
-          cp "$DYLIB_PATH" "$APP_PATH/TwitchSevenTV.dylib"
+          cp "$DYLIB_PATH" "$APP_PATH/TwitchPlusK.dylib"
           echo "✅ .dylib copié"
 
           python3 << PYEOF
           import lief, sys
 
           binary_path = "$BINARY"
-          dylib_ref   = "@executable_path/TwitchSevenTV.dylib"
+          dylib_ref   = "@executable_path/TwitchPlusK.dylib"
 
           fat = lief.MachO.parse(binary_path)
           if fat is None:
@@ -223,14 +223,14 @@ jobs:
           PYEOF
 
           echo "🔍 Vérification otool -L:"
-          otool -L "$BINARY" | grep -E "TwitchSevenTV|7tv" || {
-            echo "❌ TwitchSevenTV.dylib absent des dépendances — injection échouée"
+          otool -L "$BINARY" | grep -E "TwitchPlusK|twitchplusk" || {
+            echo "❌ TwitchPlusK.dylib absent des dépendances — injection échouée"
             otool -L "$BINARY" | head -10
             exit 1
           }
           echo "✅ Injection confirmée"
 
-          ldid -S "$APP_PATH/TwitchSevenTV.dylib"
+          ldid -S "$APP_PATH/TwitchPlusK.dylib"
           echo "✅ ldid .dylib OK"
 
           ldid -S "$BINARY" 2>/dev/null && echo "✅ ldid binaire OK" \
@@ -240,18 +240,18 @@ jobs:
           find . -name ".DS_Store" -delete 2>/dev/null || true
           find . -name "__MACOSX" -exec rm -rf {} + 2>/dev/null || true
 
-          zip -qr ../TwitchSevenTV_patched.ipa Payload \
+          zip -qr ../TwitchPlusK_patched.ipa Payload \
             --exclude "*.DS_Store" \
             --exclude "__MACOSX/*"
           cd ..
 
-          if [ ! -s "TwitchSevenTV_patched.ipa" ]; then
+          if [ ! -s "TwitchPlusK_patched.ipa" ]; then
             echo "❌ IPA patchée vide"
             exit 1
           fi
 
-          IPA_NAME="7tv-ios-${TWITCH_VERSION}.ipa"
-          mv TwitchSevenTV_patched.ipa "$IPA_NAME"
+          IPA_NAME="twitchplusk-${TWITCH_VERSION}.ipa"
+          mv TwitchPlusK_patched.ipa "$IPA_NAME"
           echo "✅ IPA finale: $IPA_NAME ($(du -sh "$IPA_NAME" | cut -f1))"
           echo "IPA_NAME=$IPA_NAME" >> $GITHUB_ENV
 
@@ -260,14 +260,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="7tv-ios-${{ env.TWITCH_VERSION }}"
+          TAG="twitchplusk-${{ env.TWITCH_VERSION }}"
           IPA_NAME="${{ env.IPA_NAME }}"
           TWITCH_VERSION="${{ env.TWITCH_VERSION }}"
-          TITLE="7TV iOS — Twitch ${TWITCH_VERSION}"
+          TITLE="TwitchPlusK — Twitch ${TWITCH_VERSION}"
 
           NOTES_FILE="release_notes.md"
           cat > "$NOTES_FILE" << NOTESEOF
-          ## 7TV iOS release info
+          ## TwitchPlusK release info
           - **Twitch app version:** \`${TWITCH_VERSION}\`
           - **iOS 15+**
 

@@ -250,8 +250,7 @@ jobs:
             exit 1
           fi
 
-          BUILD_DATE=$(date +"%Y%m%d-%H%M")
-          IPA_NAME="TwitchSevenTV_v${{ github.run_number }}_${BUILD_DATE}.ipa"
+          IPA_NAME="7tv-ios-v${{ github.run_number }}.ipa"
           mv TwitchSevenTV_patched.ipa "$IPA_NAME"
           echo "✅ IPA finale: $IPA_NAME ($(du -sh "$IPA_NAME" | cut -f1))"
           echo "IPA_NAME=$IPA_NAME" >> $GITHUB_ENV
@@ -274,9 +273,7 @@ jobs:
           - **iOS 15+**
 
           ## Must read
-          - Sideload via SideStore.
-          - Pour tester juste une modif du dylib sans resideload complet : télécharge le \`.dylib\` seul depuis les artifacts du workflow **Build Dylib**, glisse-le dans LiveContainer → Tweaks de Twitch → relance.
-          - Émotes 7TV injectées via hook WebSocket IRC + redirection CDN.
+          - Sideload with SideStore.
           NOTESEOF
 
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then

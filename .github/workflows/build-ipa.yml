@@ -4,14 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       dylib_artifact_url:
-        description: "Lien de l'artifact dylib (collé depuis la page Artifacts d'un run 'Build Dylib')"
+        description: "Dylib artifact link (copied from a 'Build Dylib' run's Artifacts page)"
         required: true
       release_tag:
-        description: "Tag de la release (laisse vide = auto vN incrémenté). Remplis pour écraser un tag précis."
         required: false
         default: ''
       ipa_url:
-        description: 'URL directe IPA Twitch (optionnel si secret TWITCH_IPA_URL configuré)'
+        description: 'Direct Twitch IPA URL'
         required: false
         default: ''
 

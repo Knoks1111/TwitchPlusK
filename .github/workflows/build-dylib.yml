@@ -1,4 +1,4 @@
-name: 🔧 Build Dylib TwitchPlusK
+name: 🔧 Build Dylib
 
 on:
   workflow_dispatch: {}

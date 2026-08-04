@@ -16,11 +16,11 @@ jobs:
     steps:
 
       - name: 📥 Récupérer le code du tweak
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 💾 Cache Theos
         id: cache-theos
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/theos
           key: theos-ios-${{ runner.os }}-v8
@@ -189,7 +189,7 @@ jobs:
           echo "DEB_PATH=$DEB_PATH"     >> $GITHUB_ENV
 
       - name: 📤 Sauvegarder la .dylib
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: TwitchSevenTV-v${{ github.run_number }}-dylib
           path: ${{ env.DYLIB_PATH }}
@@ -198,7 +198,7 @@ jobs:
 
       - name: 📤 Sauvegarder le .deb
         if: env.DEB_PATH != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: TwitchSevenTV-v${{ github.run_number }}-deb
           path: ${{ env.DEB_PATH }}

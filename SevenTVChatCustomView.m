@@ -1080,13 +1080,13 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
                 attachment.image = cachedImage;
             }
 
-            // Centrage sur la ligne de base + fine-tune réglable dans le
-            // picker (emoteVerticalOffset, défaut -4 = rendu d'origine :
-            // emote posée sur la ligne du bas). Un slider ajuste ce y pour
-            // coller au rendu Twitch. Badges non concernés.
-            CGFloat lineHeight = messageFont.lineHeight;
-            CGFloat y = -(lineHeight - targetHeight) / 2.0 + cfg.emoteVerticalOffset;
-            attachment.bounds = CGRectMake(0, y, targetWidth, targetHeight);
+            // Le y du bounds est piloté DIRECTEMENT par emoteVerticalOffset
+            // (défaut -4) : on reproduit exactement l'ancien comportement
+            // d'origine (emote posée sur la ligne du bas). Le slider ajuste
+            // ce y vers le haut (négatif) ou le bas (positif). Pas de
+            // centrage baseline — c'est ce qui avait cassé le rendu d'origine.
+            attachment.bounds =
+                CGRectMake(0, cfg.emoteVerticalOffset, targetWidth, targetHeight);
 
             [result appendAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];
             continue;

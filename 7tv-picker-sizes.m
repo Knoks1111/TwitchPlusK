@@ -56,11 +56,17 @@ static const char kS7TVRowKeyTag = 0;
 
     CGFloat rowH = 84.0, rowY = 12.0;
     CGFloat previewW = 64.0, previewH = 44.0;
+    const CGFloat pillW = 44.0;
+
     for (NSArray *entry in self._sizeOptionsTable) {
         NSString *key = entry[0], *label = entry[1];
         CGFloat minVal = [entry[2] doubleValue], maxVal = [entry[3] doubleValue];
         CGFloat current = [[[SevenTVChatAppearanceConfig sharedConfig] valueForKey:key] doubleValue];
         if (current < minVal || current > maxVal) current = minVal;
+
+        // Position de la preview (case image à droite) — calculée tôt car
+        // la pill de valeur est alignée sur la fin de la barre (slider).
+        CGFloat previewX = frame.size.width - previewW - 8;
 
         UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, rowY, frame.size.width, rowH)];
         row.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -76,14 +82,18 @@ static const char kS7TVRowKeyTag = 0;
         nameLbl.text = label;
         [row addSubview:nameLbl];
 
-        UILabel *valuePill = [[UILabel alloc] initWithFrame:CGRectMake(12 + 130 + 6, 7, 44, 20)];
+        // Pill de valeur — décalée tout à droite, son bord droit aligné sur
+        // la fin de la barre (slider). Plus jamais coupée par le libellé,
+        // quelle que soit sa longueur.
+        UILabel *valuePill = [[UILabel alloc] initWithFrame:
+            CGRectMake(previewX - 8 - pillW, 7, pillW, 20)];
         valuePill.font = [UIFont boldSystemFontOfSize:11];
         valuePill.textColor = [UIColor whiteColor];
         valuePill.textAlignment = NSTextAlignmentCenter;
         valuePill.backgroundColor = accent;
         valuePill.layer.cornerRadius = 6;
         valuePill.layer.masksToBounds = YES;
-        // Affichage de la valeur avec signe explicite : +4 pt, -4 pt, 0 pt
+        // Affichage avec signe explicite : +4 pt, -4 pt, 0 pt
         valuePill.text = [NSString stringWithFormat:@"%+ld pt", (long)llround(current)];
         [row addSubview:valuePill];
         self.sizeValueLabels[key] = valuePill;
@@ -101,7 +111,6 @@ static const char kS7TVRowKeyTag = 0;
             forControlEvents:UIControlEventTouchUpInside];
         [row addSubview:resetBtn];
 
-        CGFloat previewX = frame.size.width - previewW - 8;
         UIView *previewBox = [[UIView alloc] initWithFrame:CGRectMake(previewX, 34, previewW, previewH)];
         previewBox.backgroundColor = cardColor;
         previewBox.layer.cornerRadius = 8;
@@ -154,7 +163,6 @@ static const char kS7TVRowKeyTag = 0;
 
 // Met à jour la pill "XX pt" + la preview d'une ligne donnée
 - (void)_refreshRowDisplayForKey:(NSString *)key value:(CGFloat)val {
-    // Affichage avec signe explicite : +4 pt, -4 pt, 0 pt
     self.sizeValueLabels[key].text = [NSString stringWithFormat:@"%+ld pt", (long)llround(val)];
     [self _updatePreviewForKey:key value:val];
 }
@@ -165,24 +173,58 @@ static const char kS7TVRowKeyTag = 0;
 }
 
 - (void)_buildPreviewContentForKey:(NSString *)key inBox:(UIView *)box value:(CGFloat)value {
-    NSString *kind = [self _previewKindForKey:key];
     UIView *content = nil;
-    if ([kind isEqualToString:@"text"]) {
+
+    if ([key isEqualToString:@"usernameFontSize"] || [key isEqualToString:@"messageFontSize"]) {
+        // Preview texte (pseudo / message)
         UILabel *lbl = [[UILabel alloc] init];
         BOOL isUsername = [key isEqualToString:@"usernameFontSize"];
         lbl.text = isUsername ? L(@"preview_username") : L(@"preview_greeting");
         lbl.textColor = isUsername
             ? [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0]
             : [UIColor whiteColor];
+        lbl.tag = 1001;
         content = lbl;
+    } else if ([key isEqualToString:@"lineSpacing"]) {
+        // Preview "espacement des messages" : deux lignes "Yo" empilées qui
+        // s'écartent/se rapprochent de la valeur exacte (identique au chat).
+        UIView *container = [[UIView alloc] initWithFrame:box.bounds];
+        for (NSInteger i = 1; i <= 2; i++) {
+            UILabel *l = [[UILabel alloc] init];
+            l.text = @"Yo";
+            l.font = [UIFont systemFontOfSize:13];
+            l.textColor = [UIColor whiteColor];
+            [l sizeToFit];
+            l.tag = 1000 + i;
+            [container addSubview:l];
+        }
+        content = container;
+    } else if ([key isEqualToString:@"emoteVerticalOffset"]) {
+        // Preview "alignement des emotes" : texte "7tv: " + petite emote
+        // (carré violet) qui se décale verticalement de la valeur, comme
+        // dans le chat. Emote volontairement petite pour tenir dans la case.
+        UIView *container = [[UIView alloc] initWithFrame:box.bounds];
+        UILabel *l = [[UILabel alloc] init];
+        l.text = @"7tv: ";
+        l.font = [UIFont systemFontOfSize:12];
+        l.textColor = [UIColor whiteColor];
+        [l sizeToFit];
+        l.tag = 2001;
+        [container addSubview:l];
+        UIView *emote = [[UIView alloc] init];
+        emote.backgroundColor = [UIColor colorWithRed:0.57 green:0.28 blue:1.0 alpha:1.0]; // violet Twitch
+        emote.layer.cornerRadius = 4;
+        emote.clipsToBounds = YES;
+        emote.tag = 2002;
+        [container addSubview:emote];
+        content = container;
     } else {
-        // Pour emoteVerticalOffset, pas d'image utile — on montre un simple
-        // symbole de position plutôt qu'un UIImageView vide (voir
-        // _updatePreviewForKey qui le traite comme un cas spécial plus bas).
+        // Preview image réelle (emote 7TV / Twitch / badge)
         UIImageView *iv = [[UIImageView alloc] init];
         iv.contentMode = UIViewContentModeScaleAspectFit;
         content = iv;
     }
+
     [box addSubview:content];
     self.sizePreviewViews[key] = content;
     [self _updatePreviewForKey:key value:value];
@@ -194,7 +236,7 @@ static const char kS7TVRowKeyTag = 0;
     if (!content || !box) return;
     CGFloat boxW = box.bounds.size.width, boxH = box.bounds.size.height;
 
-    if ([[self _previewKindForKey:key] isEqualToString:@"text"]) {
+    if ([key isEqualToString:@"usernameFontSize"] || [key isEqualToString:@"messageFontSize"]) {
         UILabel *lbl = (UILabel *)content;
         BOOL isUsername = [key isEqualToString:@"usernameFontSize"];
         lbl.font = isUsername ? [UIFont boldSystemFontOfSize:value] : [UIFont systemFontOfSize:value];
@@ -203,19 +245,36 @@ static const char kS7TVRowKeyTag = 0;
             CGRect f = lbl.frame; f.size.width = boxW - 8; lbl.frame = f;
         }
         lbl.center = CGPointMake(boxW / 2.0, boxH / 2.0);
+    } else if ([key isEqualToString:@"lineSpacing"]) {
+        UIView *container = content;
+        UILabel *top    = [container viewWithTag:1001];
+        UILabel *bottom = [container viewWithTag:1002];
+        CGFloat lineH = top.bounds.size.height;
+        // Écart réel = value (même valeur que dans le chat).
+        CGFloat totalH = lineH * 2 + value;
+        totalH = MIN(totalH, boxH - 4); // ne déborde jamais de la case
+        CGFloat startY = (boxH - totalH) / 2.0;
+        top.frame = CGRectMake((boxW - top.bounds.size.width) / 2.0, startY,
+                               top.bounds.size.width, lineH);
+        bottom.frame = CGRectMake((boxW - bottom.bounds.size.width) / 2.0, startY + lineH + value,
+                                  bottom.bounds.size.width, lineH);
     } else if ([key isEqualToString:@"emoteVerticalOffset"]) {
-        // Preview spéciale "alignement" : une barre de baseline fixe + une
-        // petite emote carrée qui se déplace verticalement avec la valeur,
-        // pour visualiser le réglage sans avoir besoin d'une vraie image.
-        UIImageView *iv = (UIImageView *)content;
-        iv.image = nil;
-        // Dessine un carré gris "emote" déplacé selon la valeur du slider.
-        CGFloat emoteH = 16;
-        CGFloat baseY = boxH / 2.0; // baseline au milieu
-        CGFloat emoteY = baseY - emoteH / 2.0 + value; // value déplace vers haut (négatif) / bas (positif)
-        iv.frame = CGRectMake((boxW - emoteH) / 2.0, emoteY, emoteH, emoteH);
-        iv.backgroundColor = [UIColor colorWithWhite:0.4 alpha:1.0];
+        UIView *container = content;
+        UILabel *lbl   = [container viewWithTag:2001];
+        UIView  *emote = [container viewWithTag:2002];
+        CGFloat emoteH = 16, emoteW = 16; // petite emote, tient dans la case
+        // "7tv: " centré verticalement à gauche, emote juste après à droite.
+        CGFloat totalW = lbl.bounds.size.width + 4 + emoteW;
+        CGFloat startX = (boxW > totalW) ? (boxW - totalW) / 2.0 : 0;
+        lbl.frame = CGRectMake(startX, (boxH - lbl.bounds.size.height) / 2.0,
+                               lbl.bounds.size.width, lbl.bounds.size.height);
+        // value négatif → emote plus haute ; positif → plus basse (comme chat)
+        CGFloat baseY = (boxH - emoteH) / 2.0; // position centrée à value = 0
+        CGFloat emoteY = baseY + value;
+        emoteY = MAX(0, MIN(emoteY, boxH - emoteH)); // reste dans la case
+        emote.frame = CGRectMake(startX + lbl.bounds.size.width + 4, emoteY, emoteW, emoteH);
     } else {
+        // Preview image réelle — aspect ratio d'origine, grandit/rétrécit avec la valeur
         UIImageView *iv = (UIImageView *)content;
         UIImage *img = iv.image;
         CGFloat ratio = (img && img.size.height > 0) ? (img.size.width / img.size.height) : 1.0;

@@ -16,11 +16,9 @@
 
 @end
 
-// ─── Sous-pages 7TV ───────────────────────────────────────────────────────────
-@interface SevenTVEmotesPageController    : UITableViewController @end
-@interface SevenTVStatsPageController     : UITableViewController @end
-@interface SevenTVDebugPageController     : UITableViewController @end
-@interface SevenTVFavoritesListController : UITableViewController @end
-
-// ─── Sous-pages Live Stream Control ────────────────
-@interface S7TVLiveStreamController : UITableViewController @end
+// ─── Sous-pages 7TV (architecture v3 — 4 catégories larges et évolutives) ─────
+@interface SevenTVAppearancePageController : UITableViewController @end  // Apparence
+@interface SevenTVContentPageController    : UITableViewController @end  // Contenu
+@interface SevenTVAdblockPageController    : UIViewController      @end  // Adblock (vide pour l'instant)
+@interface SevenTVAdvancedPageController   : UITableViewController @end  // Avancé
+@interface SevenTVFavoritesListController  : UITableViewController @end

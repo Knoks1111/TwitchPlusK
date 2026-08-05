@@ -75,9 +75,10 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Titres de page ──────────────────────────────────────────────
         @"title_7tv_settings":              @[@"7TV Settings", @"7TV Settings"],
-        @"title_live_stream_control":       @[@"Contrôle du stream", @"Live Stream Control"],
-        @"title_emotes_7tv":                @[@"Emotes 7TV", @"7TV Emotes"],
-        @"title_statistiques":              @[@"Statistiques", @"Statistics"],
+        @"title_apparence":                 @[@"Apparence", @"Appearance"],
+        @"title_contenu":                   @[@"Contenu", @"Content"],
+        @"title_adblock":                   @[@"Adblock", @"Adblock"], // terme déjà utilisé tel quel en français
+        @"title_avance":                    @[@"Avancé", @"Advanced"],
         @"title_mes_favoris":               @[@"Mes favoris", @"My Favorites"],
         @"title_debogage":                  @[@"Débogage", @"Debug"],
         @"title_logs_7tv":                  @[@"Logs 7TV", @"7TV Logs"],
@@ -86,28 +87,33 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"label_7tv_badge":                 @[@"7TV", @"7TV"],
         @"header_7tv_settings_caps":        @[@"7TV SETTINGS", @"7TV SETTINGS"],
 
-        // ── Rechargement des emotes ─────────────────────────────────────
-        @"action_reload_emotes":            @[@"Recharger les emotes", @"Reload emotes"],
-        @"alert_reload_started_title":      @[@"Rechargement lancé", @"Reload started"],
-        @"alert_reload_started_message":    @[@"Les emotes seront disponibles dans quelques secondes.",
-                                               @"Emotes will be available in a few seconds."],
+        // ── Cache (accueil → Avancé) ─────────────────────────────────────
+        @"action_clear_cache":              @[@"Vider le cache", @"Clear cache"],
+        @"alert_cache_cleared_title":       @[@"Cache vidé", @"Cache cleared"],
+        @"alert_cache_cleared_message":     @[@"Les emotes seront rechargées dans quelques secondes.",
+                                               @"Emotes will reload in a few seconds."],
 
-        // ── Live Stream Control ─────────────────────────────────────────
-        @"subtitle_auto_collect":           @[@"Récupération auto des points de chaîne", @"Auto collect channel points"],
+        // ── Résumé accueil (remplace l'ancien écran Statistiques) ────────
+        @"summary_emotes_channel_format":   @[@"%lu emotes chargées · %@", @"%lu emotes loaded · %@"],
+
+        // ── Contenu : section Stream ──────────────────────────────────────
+        @"section_stream":                  @[@"Stream", @"Stream"], // anglicisme déjà courant en français
         @"switch_auto_collect_title":       @[@"Récupération auto des points de chaîne", @"Auto Collect Channel Points"],
         @"desc_auto_collect":               @[@"Réclame automatiquement le coffre de points de chaîne quand il apparaît dans le chat.",
                                                @"Automatically claims the live channel-points chest when it appears in chat."],
 
-        // ── Menu principal (Emotes / Stats / Debug) ─────────────────────
-        @"menu_emotes_subtitle":            @[@"Animées, picker", @"Animated, picker"],
-        @"menu_stats_subtitle":             @[@"Emotes chargées, channel actif", @"Loaded emotes, active channel"],
-        @"menu_debug_subtitle":             @[@"Logs, tap logger, bouton flottant", @"Logs, tap logger, floating button"],
+        // ── Adblock (catégorie réservée, vide pour l'instant) ────────────
+        @"adblock_coming_soon":             @[@"Bientôt disponible.", @"Coming soon."],
+
+        // ── Menu principal (Apparence / Contenu / Adblock / Avancé) ──────
+        @"menu_apparence_subtitle":         @[@"Chat custom, animations", @"Custom chat, animations"],
+        @"menu_contenu_subtitle":           @[@"Favoris, stream", @"Favorites, stream"],
+        @"menu_adblock_subtitle":           @[@"Bientôt disponible", @"Coming soon"],
+        @"menu_avance_subtitle":            @[@"Cache, logs, options", @"Cache, logs, options"],
 
         // ── En-têtes de section ──────────────────────────────────────────
         @"section_general":                 @[@"Général", @"General"],
         @"section_affichage":               @[@"Affichage", @"Display"],
-        @"section_channel_actif":           @[@"Channel actif", @"Active channel"],
-        @"section_emotes_chargees":         @[@"Emotes chargées", @"Loaded emotes"],
         @"section_favoris":                 @[@"Favoris", @"Favorites"],
         @"section_options":                 @[@"Options", @"Options"],
         @"section_logs":                    @[@"Logs", @"Logs"],
@@ -115,12 +121,10 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"section_langue":                  @[@"Langue", @"Language"],
 
         // ── Switchs de réglages ───────────────────────────────────────────
-        @"switch_enable_7tv":               @[@"Activer les emotes 7TV", @"Enable 7TV emotes"],
-        @"switch_animated_chat":            @[@"Emotes animées dans le chat", @"Animated emotes in chat"],
+        @"switch_chat_custom":              @[@"Chat custom", @"Custom chat"],
         @"switch_animations_picker":        @[@"Animations dans le picker", @"Animations in picker"],
         @"switch_animations_favorites_only":@[@"Animations uniquement pour les favoris", @"Animations for favorites only"],
         @"switch_floating_button":          @[@"Bouton flottant 7TV", @"7TV floating button"],
-        @"switch_chat_custom_test":         @[@"⚠️ Test chat custom (expérimental)", @"⚠️ Custom chat test (experimental)"],
         @"switch_enable_logs":              @[@"Activer les logs", @"Enable logs"],
         @"switch_logs_console":             @[@"Logs console (Console.app)", @"Console logs (Console.app)"],
 
@@ -184,13 +188,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"placeholder_search_picker":       @[@"Rechercher…", @"Search…"],
         @"placeholder_emote_name":          @[@"Nom de l'emote…", @"Emote name…"],
 
-        // ── Page Statistiques ────────────────────────────────────────────
+        // ── Résumé accueil ────────────────────────────────────────────────
         @"stats_no_channel":                @[@"Aucun channel", @"No channel"],
-        @"stats_join_stream_hint":          @[@"Rejoins un stream pour charger les emotes",
-                                               @"Join a stream to load emotes"],
-        @"stats_global_emotes":             @[@"Emotes globales", @"Global emotes"],
-        @"stats_channel_emotes":            @[@"Emotes du channel", @"Channel emotes"],
-        @"stats_total":                     @[@"Total", @"Total"],
         @"alert_error_title":               @[@"Erreur", @"Error"],
         @"alert_invalid_format_title":      @[@"Format invalide", @"Invalid format"],
         @"alert_unknown_format_title":      @[@"Format inconnu", @"Unknown format"],

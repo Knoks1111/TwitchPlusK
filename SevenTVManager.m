@@ -313,6 +313,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         _logOrientation    = NO;
         _logImageConversion = NO;
         _logChatCustom     = YES;   // ON par défaut pendant le dev du chat custom (Phase 0+)
+        _logChannelPoints  = YES;   // ON par défaut pendant le dev de l'autoclaim
         _logDump           = NO;
 
         _globalEmotes      = @{};
@@ -580,6 +581,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if ([prefs objectForKey:@"s7tv_log_orientation"]   != nil) _logOrientation        = [prefs boolForKey:@"s7tv_log_orientation"];
     if ([prefs objectForKey:@"s7tv_log_image_conv"]    != nil) _logImageConversion    = [prefs boolForKey:@"s7tv_log_image_conv"];
     if ([prefs objectForKey:@"s7tv_log_chat_custom"]   != nil) _logChatCustom         = [prefs boolForKey:@"s7tv_log_chat_custom"];
+    if ([prefs objectForKey:@"s7tv_log_channel_points"] != nil) _logChannelPoints     = [prefs boolForKey:@"s7tv_log_channel_points"];
     if ([prefs objectForKey:@"s7tv_log_dump"]          != nil) _logDump               = [prefs boolForKey:@"s7tv_log_dump"];
 
     // Charger les favoris (array d'IDs 7TV)
@@ -612,6 +614,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     [prefs setBool:self.logOrientation       forKey:@"s7tv_log_orientation"];
     [prefs setBool:self.logImageConversion   forKey:@"s7tv_log_image_conv"];
     [prefs setBool:self.logChatCustom        forKey:@"s7tv_log_chat_custom"];
+    [prefs setBool:self.logChannelPoints     forKey:@"s7tv_log_channel_points"];
     [prefs setBool:self.logDump              forKey:@"s7tv_log_dump"];
     [prefs synchronize];
 }
@@ -696,6 +699,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 - (void)setLogOrientation:(BOOL)v     { _logOrientation = v;     [self savePreferences]; }
 - (void)setLogImageConversion:(BOOL)v { _logImageConversion = v; [self savePreferences]; }
 - (void)setLogChatCustom:(BOOL)v      { _logChatCustom = v;      [self savePreferences]; }
+- (void)setLogChannelPoints:(BOOL)v   { _logChannelPoints = v;   [self savePreferences]; }
 - (void)setLogDump:(BOOL)v            { _logDump = v;            [self savePreferences]; }
 
 
@@ -1521,9 +1525,9 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
     if (has(@"[NetDump]")) return S7TVLogCategoryDump;
 
     // 1. Channel Points (autoclaim) — priorité absolue, avant Erreurs :
-    // tous les logs de l'autoclaim (succès 🎁 et échecs "Erreur ...") doivent
-    // atterrir dans Chat Custom, pas se disperser en Erreurs/Dump.
-    if (has(@"Channel Points")) return S7TVLogCategoryChatCustom;
+    // tous les logs de l'autoclaim (succès 🎁 et échecs "Erreur ...") ont
+    // leur propre catégorie dédiée, pas de dispersion en Erreurs/Dump.
+    if (has(@"Channel Points")) return S7TVLogCategoryChannelPoints;
 
     // 2. Erreurs / Avertissements — priorité absolue
     if (has(@"❌") || has(@"⚠️")) return S7TVLogCategoryError;
@@ -1607,6 +1611,7 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
         case S7TVLogCategoryOrientation:     return self.logOrientation;
         case S7TVLogCategoryImageConversion: return self.logImageConversion;
         case S7TVLogCategoryChatCustom:      return self.logChatCustom;
+        case S7TVLogCategoryChannelPoints:   return self.logChannelPoints;
         case S7TVLogCategoryDump:            return self.logDump;
     }
     return NO;

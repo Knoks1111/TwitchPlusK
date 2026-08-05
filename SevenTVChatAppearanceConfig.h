@@ -49,6 +49,13 @@ extern NSString *const S7TVChatAppearanceConfigDidChangeNotification;
 @property (nonatomic, assign) CGFloat lineSpacing;             // entre deux messages
 @property (nonatomic, assign) CGFloat usernameMessageSpacing;  // entre pseudo et texte du message
 
+// Décalage vertical des emotes (7TV + Twitch natives) dans la ligne de
+// message — fine-tune du bounds des attachments. Négatif = emote plus
+// haute, positif = plus basse. N'affecte PAS les badges.
+// Valeur par défaut -4 : reproduit exactement le rendu d'origine (emote
+// posée sur la ligne du bas).
+@property (nonatomic, assign) CGFloat emoteVerticalOffset;
+
 // --- Résolution d'image emotes 7TV (1x/2x/3x/4x — voir Phase 2) ---
 // Défaut technique x2, pas une mesure Twitch (n'a pas d'équivalent natif à
 // mesurer, c'est un choix de compromis netteté/mémoire — voir Phase 2).

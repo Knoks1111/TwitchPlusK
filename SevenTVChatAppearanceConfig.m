@@ -19,6 +19,7 @@ static NSString *const kS7TVCfgUsernameFontSize        = @"s7tv_cfg_username_fon
 static NSString *const kS7TVCfgMessageFontSize         = @"s7tv_cfg_message_font_size";
 static NSString *const kS7TVCfgLineSpacing             = @"s7tv_cfg_line_spacing";
 static NSString *const kS7TVCfgUsernameMessageSpacing  = @"s7tv_cfg_username_message_spacing";
+static NSString *const kS7TVCfgEmoteVerticalOffset     = @"s7tv_cfg_emote_vertical_offset";
 static NSString *const kS7TVCfgEmote7TVResolution      = @"s7tv_cfg_emote_7tv_resolution";
 
 static const CGFloat kDefaultEmote7TVSize          = 28.0;
@@ -26,8 +27,9 @@ static const CGFloat kDefaultEmoteTwitchSize        = 28.0; // TODO mesure réel
 static const CGFloat kDefaultBadgeSize              = 17.0;
 static const CGFloat kDefaultUsernameFontSize       = 13.0;
 static const CGFloat kDefaultMessageFontSize        = 13.0;
-static const CGFloat kDefaultLineSpacing            = 4.0;  // TODO mesure réelle
+static const CGFloat kDefaultLineSpacing            = 6.0;  // défaut = rendu du picker à 6
 static const CGFloat kDefaultUsernameMessageSpacing = 4.0;  // TODO mesure réelle
+static const CGFloat kDefaultEmoteVerticalOffset    = -4.0; // rendu d'origine
 static const NSInteger kDefaultEmote7TVResolution   = 2;
 
 
@@ -59,6 +61,7 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     _messageFontSize         = kDefaultMessageFontSize;
     _lineSpacing             = kDefaultLineSpacing;
     _usernameMessageSpacing  = kDefaultUsernameMessageSpacing;
+    _emoteVerticalOffset     = kDefaultEmoteVerticalOffset;
     _emote7TVResolution      = kDefaultEmote7TVResolution;
 }
 
@@ -81,15 +84,18 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
         _lineSpacing = [prefs doubleForKey:kS7TVCfgLineSpacing];
     if ([prefs objectForKey:kS7TVCfgUsernameMessageSpacing] != nil)
         _usernameMessageSpacing = [prefs doubleForKey:kS7TVCfgUsernameMessageSpacing];
+    if ([prefs objectForKey:kS7TVCfgEmoteVerticalOffset] != nil)
+        _emoteVerticalOffset = [prefs doubleForKey:kS7TVCfgEmoteVerticalOffset];
     if ([prefs objectForKey:kS7TVCfgEmote7TVResolution] != nil)
         _emote7TVResolution = [prefs integerForKey:kS7TVCfgEmote7TVResolution];
 
     [[SevenTVManager sharedManager]
         log:@"[ChatCustom] 🏗 Config chargée — emote7TV=%.1f emoteTwitch=%.1f badge=%.1f "
-             @"pseudo=%.1f message=%.1f lineSpacing=%.1f pseudoMsgSpacing=%.1f res=%ldx",
+             @"pseudo=%.1f message=%.1f lineSpacing=%.1f pseudoMsgSpacing=%.1f "
+             @"emoteOff=%.1f res=%ldx",
         _emote7TVSize, _emoteTwitchSize, _badgeSize, _usernameFontSize,
         _messageFontSize, _lineSpacing, _usernameMessageSpacing,
-        (long)_emote7TVResolution];
+        _emoteVerticalOffset, (long)_emote7TVResolution];
 }
 
 - (void)save {
@@ -101,6 +107,7 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     [prefs setDouble:self.messageFontSize        forKey:kS7TVCfgMessageFontSize];
     [prefs setDouble:self.lineSpacing            forKey:kS7TVCfgLineSpacing];
     [prefs setDouble:self.usernameMessageSpacing forKey:kS7TVCfgUsernameMessageSpacing];
+    [prefs setDouble:self.emoteVerticalOffset    forKey:kS7TVCfgEmoteVerticalOffset];
     [prefs setInteger:self.emote7TVResolution    forKey:kS7TVCfgEmote7TVResolution];
 }
 
@@ -126,8 +133,6 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
 
 #pragma mark - Reset (point d'accroche pour l'écran Phase 6)
 
-// Table nom-de-propriété → (défaut, clé UserDefaults). Une seule table à
-// maintenir plutôt qu'un if/else dupliqué entre reset et save/load.
 - (nullable NSDictionary<NSString *, id> *)s7tv_resetTable {
     return @{
         @"emote7TVSize":           @[@(kDefaultEmote7TVSize),          kS7TVCfgEmote7TVSize],
@@ -137,6 +142,7 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
         @"messageFontSize":        @[@(kDefaultMessageFontSize),       kS7TVCfgMessageFontSize],
         @"lineSpacing":            @[@(kDefaultLineSpacing),           kS7TVCfgLineSpacing],
         @"usernameMessageSpacing": @[@(kDefaultUsernameMessageSpacing),kS7TVCfgUsernameMessageSpacing],
+        @"emoteVerticalOffset":    @[@(kDefaultEmoteVerticalOffset),   kS7TVCfgEmoteVerticalOffset],
         @"emote7TVResolution":     @[@(kDefaultEmote7TVResolution),    kS7TVCfgEmote7TVResolution],
     };
 }

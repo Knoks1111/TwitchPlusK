@@ -180,6 +180,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"size_label_badges":               @[@"Badges", @"Badges"],
         @"size_label_username":             @[@"Texte pseudo", @"Username text"],
         @"size_label_message":              @[@"Texte message", @"Message text"],
+        @"size_label_line_spacing":         @[@"Espacement des messages", @"Message spacing"],
         @"preview_username":                @[@"Pseudo", @"Username"],
         @"preview_greeting":                @[@"Salut !", @"Hi!"],
 

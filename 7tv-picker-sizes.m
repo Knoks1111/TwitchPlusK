@@ -25,11 +25,16 @@ static const char kS7TVRowKeyTag = 0;
 
 - (NSArray<NSArray *> *)_sizeOptionsTable {
     return @[
-        @[@"emote7TVSize",     L(@"title_emotes_7tv"),      @12, @56],
-        @[@"emoteTwitchSize",  L(@"size_label_emote_twitch"), @12, @56],
-        @[@"badgeSize",        L(@"size_label_badges"),      @8,  @34],
-        @[@"usernameFontSize", L(@"size_label_username"),    @8,  @28],
-        @[@"messageFontSize",  L(@"size_label_message"),     @8,  @28],
+        @[@"emote7TVSize",     L(@"title_emotes_7tv"),         @12, @56],
+        @[@"emoteTwitchSize",  L(@"size_label_emote_twitch"),  @12, @56],
+        @[@"badgeSize",        L(@"size_label_badges"),        @8,  @34],
+        @[@"usernameFontSize", L(@"size_label_username"),      @8,  @28],
+        @[@"messageFontSize",  L(@"size_label_message"),       @8,  @28],
+        // Espacement entre deux messages — branche sur lineSpacing, déjà
+        // présent dans SevenTVChatAppearanceConfig (défaut 4). Même pattern
+        // que les autres lignes : slider → setValue:forSizeKey:, reset →
+        // resetKeyToDefault:, snap au pas 1.
+        @[@"lineSpacing",      L(@"size_label_line_spacing"),  @0,  @30],
     ];
 }
 
@@ -42,11 +47,6 @@ static const char kS7TVRowKeyTag = 0;
              accent:(UIColor *)accent
           cardColor:(UIColor *)cardColor {
 
-    // ── Panneau des tailles ──────────────────────────────────────────────
-    // S'adapte au contenu réel (5 lignes) au lieu d'une hauteur fixe qui
-    // laissait un grand vide sous la dernière ligne. La hauteur calculée ici
-    // (contentHeight) est ensuite appliquée au picker par
-    // -[SevenTVEmotePickerController emotePickerSizesToggleTapped].
     UIScrollView *sizesPanel = [[UIScrollView alloc] initWithFrame:
         CGRectMake(0, 0, frame.size.width, frame.size.height)];
     sizesPanel.backgroundColor = bgColor;
@@ -131,7 +131,7 @@ static const char kS7TVRowKeyTag = 0;
         rowY += rowH;
     }
     sizesPanel.contentSize = CGSizeMake(frame.size.width, rowY);
-    self.contentHeight = rowY + 8; // + petite marge basse, utilisé pour adapter la hauteur du picker
+    self.contentHeight = rowY + 8;
     [container addSubview:sizesPanel];
 }
 
@@ -139,11 +139,8 @@ static const char kS7TVRowKeyTag = 0;
     NSString *key = objc_getAssociatedObject(slider, &kS7TVRowKeyTag);
     if (!key) return;
     NSInteger val = (NSInteger)roundf(slider.value);
-    slider.value = (float)val; // snap au pas 1
+    slider.value = (float)val;
 
-    // Branché sur la vraie config du chat custom (SevenTVChatAppearanceConfig)
-    // — setValue:forSizeKey: sauvegarde ET notifie automatiquement le chat
-    // en direct pour la clé concernée.
     [[SevenTVChatAppearanceConfig sharedConfig] setValue:(CGFloat)val forSizeKey:key];
     [self _refreshRowDisplayForKey:key value:val];
 }
@@ -163,9 +160,6 @@ static const char kS7TVRowKeyTag = 0;
     [self _updatePreviewForKey:key value:val];
 }
 
-// "image" = vraie image (aspect ratio d'origine) : emote 7TV globale, vraie
-// emote Twitch (Kappa, CDN officiel), vrai badge Twitch (Modérateur, CDN
-// officiel). "text" = mot d'exemple rendu à la taille réglée (pseudo / message).
 - (NSString *)_previewKindForKey:(NSString *)key {
     if ([key isEqualToString:@"usernameFontSize"] || [key isEqualToString:@"messageFontSize"]) return @"text";
     return @"image";
@@ -183,8 +177,6 @@ static const char kS7TVRowKeyTag = 0;
             : [UIColor whiteColor];
         content = lbl;
     } else {
-        // Image réelle chargée async par -loadRealPreviewAssetsIfNeeded
-        // (ou déjà en cache si le panneau a déjà été ouvert une fois).
         UIImageView *iv = [[UIImageView alloc] init];
         iv.contentMode = UIViewContentModeScaleAspectFit;
         content = iv;
@@ -210,7 +202,6 @@ static const char kS7TVRowKeyTag = 0;
         }
         lbl.center = CGPointMake(boxW / 2.0, boxH / 2.0);
     } else {
-        // Image réelle — aspect ratio d'origine, grandit/rétrécit avec la valeur
         UIImageView *iv = (UIImageView *)content;
         UIImage *img = iv.image;
         CGFloat ratio = (img && img.size.height > 0) ? (img.size.width / img.size.height) : 1.0;

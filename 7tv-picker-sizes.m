@@ -30,11 +30,8 @@ static const char kS7TVRowKeyTag = 0;
         @[@"badgeSize",        L(@"size_label_badges"),        @8,  @34],
         @[@"usernameFontSize", L(@"size_label_username"),      @8,  @28],
         @[@"messageFontSize",  L(@"size_label_message"),       @8,  @28],
-        // Espacement entre deux messages — branche sur lineSpacing, déjà
-        // présent dans SevenTVChatAppearanceConfig (défaut 4). Même pattern
-        // que les autres lignes : slider → setValue:forSizeKey:, reset →
-        // resetKeyToDefault:, snap au pas 1.
         @[@"lineSpacing",      L(@"size_label_line_spacing"),  @0,  @30],
+        @[@"emoteVerticalOffset", L(@"size_label_emote_offset"), @-10, @10],
     ];
 }
 
@@ -86,7 +83,8 @@ static const char kS7TVRowKeyTag = 0;
         valuePill.backgroundColor = accent;
         valuePill.layer.cornerRadius = 6;
         valuePill.layer.masksToBounds = YES;
-        valuePill.text = [NSString stringWithFormat:@"%ld pt", (long)llround(current)];
+        // Affichage de la valeur avec signe explicite : +4 pt, -4 pt, 0 pt
+        valuePill.text = [NSString stringWithFormat:@"%+ld pt", (long)llround(current)];
         [row addSubview:valuePill];
         self.sizeValueLabels[key] = valuePill;
 
@@ -156,7 +154,8 @@ static const char kS7TVRowKeyTag = 0;
 
 // Met à jour la pill "XX pt" + la preview d'une ligne donnée
 - (void)_refreshRowDisplayForKey:(NSString *)key value:(CGFloat)val {
-    self.sizeValueLabels[key].text = [NSString stringWithFormat:@"%ld pt", (long)llround(val)];
+    // Affichage avec signe explicite : +4 pt, -4 pt, 0 pt
+    self.sizeValueLabels[key].text = [NSString stringWithFormat:@"%+ld pt", (long)llround(val)];
     [self _updatePreviewForKey:key value:val];
 }
 
@@ -177,6 +176,9 @@ static const char kS7TVRowKeyTag = 0;
             : [UIColor whiteColor];
         content = lbl;
     } else {
+        // Pour emoteVerticalOffset, pas d'image utile — on montre un simple
+        // symbole de position plutôt qu'un UIImageView vide (voir
+        // _updatePreviewForKey qui le traite comme un cas spécial plus bas).
         UIImageView *iv = [[UIImageView alloc] init];
         iv.contentMode = UIViewContentModeScaleAspectFit;
         content = iv;
@@ -201,6 +203,18 @@ static const char kS7TVRowKeyTag = 0;
             CGRect f = lbl.frame; f.size.width = boxW - 8; lbl.frame = f;
         }
         lbl.center = CGPointMake(boxW / 2.0, boxH / 2.0);
+    } else if ([key isEqualToString:@"emoteVerticalOffset"]) {
+        // Preview spéciale "alignement" : une barre de baseline fixe + une
+        // petite emote carrée qui se déplace verticalement avec la valeur,
+        // pour visualiser le réglage sans avoir besoin d'une vraie image.
+        UIImageView *iv = (UIImageView *)content;
+        iv.image = nil;
+        // Dessine un carré gris "emote" déplacé selon la valeur du slider.
+        CGFloat emoteH = 16;
+        CGFloat baseY = boxH / 2.0; // baseline au milieu
+        CGFloat emoteY = baseY - emoteH / 2.0 + value; // value déplace vers haut (négatif) / bas (positif)
+        iv.frame = CGRectMake((boxW - emoteH) / 2.0, emoteY, emoteH, emoteH);
+        iv.backgroundColor = [UIColor colorWithWhite:0.4 alpha:1.0];
     } else {
         UIImageView *iv = (UIImageView *)content;
         UIImage *img = iv.image;

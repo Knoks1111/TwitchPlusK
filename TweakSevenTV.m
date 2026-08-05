@@ -56,6 +56,8 @@ static const char kS7TVTextFieldTagged = 5;
 static const char kS7TVBitsHijacked    = 6;
 static const char kS7TVOrigSectionCount = 7;
 static const char kS7TVShareHijacked   = 8;   // verrou orientation
+static const char kS7TVChannelPointsPolling  = 9;  // marque une instance ChatInputView déjà sous polling
+static const char kS7TVChannelPointsClaimed  = 10; // anti double-clic sur le même claim
 
 // État global verrou d'orientation
 static BOOL s_orientationLocked             = NO;
@@ -129,6 +131,164 @@ static void s7tv_swizzle(Class targetClass,
     return r;
 }
 @end
+
+
+// ────────────────────────────────────────────────────────────
+// MARK: - Auto Collect Channel Points (module 100% autonome)
+// ────────────────────────────────────────────────────────────
+//
+// Volontairement indépendant de tout le reste du fichier (pas de swizzle
+// partagé, pas de clé associated-object partagée avec le hijack Bits ou
+// le verrou d'orientation) : ce module scanne lui-même périodiquement la
+// hiérarchie des fenêtres pour trouver Twitch.ChatInputView, sans passer
+// par didMoveToWindow. Peut être retiré intégralement (les 3 fonctions
+// ci-dessous + son appel de démarrage dans TwitchSevenTVInit) sans
+// toucher au reste du tweak.
+//
+// Fonctionnement :
+//  1. s7tv_findChatInputView()      — cherche l'instance active, une fois
+//  2. s7tv_pollChannelPointsClaim() — une fois trouvée, vérifie l'état du
+//                                     claim toutes les 1.5s et déclenche
+//                                     la collecte native si besoin
+//  3. s7tv_scanForChannelPointsLoop() — boucle de fond qui relance la
+//                                       recherche toutes les 2s, pour
+//                                       capter chaque nouvelle instance
+//                                       (nouveau stream, retour au chat...)
+//
+// Mécanisme de collecte : Twitch.ChatInputView expose une propriété
+// `channelPointsButton` (type privé Twitch.ChannelPointsChatButton) avec
+// une propriété `showsClaim` (BOOL) qui passe à YES quand un coffre à
+// points est réclamable. Le tap utilisateur déclenche en interne
+// -[ChatInputView handleChannelPointsButtonTapped] (zéro argument), qui
+// envoie la vraie requête GraphQL authentifiée (ClaimChannelPointsMutation)
+// — on ne fait que déclencher cette méthode native, jamais de
+// reconstruction de requête réseau nous-mêmes.
+//
+// showsClaim n'est probablement pas KVO-compliant (propriété Swift privée,
+// pas forcément marquée `dynamic`) — on poll donc la valeur au lieu
+// d'observer via KVO, pour ne jamais dépendre d'un mécanisme qui pourrait
+// échouer silencieusement.
+//
+// Sécurité : chaque accès à une propriété privée Twitch passe par
+// valueForKey: encadré d'un @try/@catch — si Twitch renomme ou retire la
+// propriété dans une future version, le module logue proprement et
+// s'arrête pour cette instance au lieu de crasher le reste de l'app.
+
+// Cherche la première instance de Twitch.ChatInputView actuellement
+// affichée, tous écrans/fenêtres connectés confondus (couvre normal,
+// théâtre, et PiP si jamais Twitch y instancie sa propre ChatInputView).
+static UIView *s7tv_findChatInputView(void) {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+
+        for (UIWindow *window in windowScene.windows) {
+            NSMutableArray<UIView *> *bfs = [NSMutableArray arrayWithObject:window];
+            while (bfs.count > 0) {
+                UIView *v = bfs.firstObject;
+                [bfs removeObjectAtIndex:0];
+
+                if ([NSStringFromClass([v class]) isEqualToString:@"Twitch.ChatInputView"]) {
+                    return v;
+                }
+                [bfs addObjectsFromArray:v.subviews];
+            }
+        }
+    }
+    return nil;
+}
+
+// Poll actif sur UNE instance de ChatInputView déjà trouvée. S'arrête
+// tout seul dès que la vue quitte l'écran (self.window == nil), ce qui
+// couvre naturellement la fermeture du stream sans logique de cleanup
+// séparée à maintenir.
+static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
+    if (!chatInputView || !chatInputView.window) return;
+
+    id channelPointsButton = nil;
+    @try {
+        channelPointsButton = [chatInputView valueForKey:@"channelPointsButton"];
+    } @catch (NSException *exception) {
+        [[SevenTVManager sharedManager]
+            log:@"Erreur Channel Points: propriété 'channelPointsButton' introuvable (%@) — polling abandonné",
+            exception.reason];
+        return; // Twitch a changé sa structure interne — inutile de continuer sur cette instance
+    }
+
+    if (channelPointsButton) {
+        BOOL showsClaim = NO;
+        @try {
+            showsClaim = [[channelPointsButton valueForKey:@"showsClaim"] boolValue];
+        } @catch (NSException *exception) {
+            [[SevenTVManager sharedManager]
+                log:@"Erreur Channel Points: propriété 'showsClaim' introuvable (%@) — polling abandonné",
+                exception.reason];
+            return;
+        }
+
+        BOOL alreadyClaimed = [objc_getAssociatedObject(channelPointsButton,
+                                                          &kS7TVChannelPointsClaimed) boolValue];
+
+        if (showsClaim && !alreadyClaimed) {
+            NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
+            BOOL autoCollectEnabled = [prefs objectForKey:kTCLiveAutoCollectChannelPoints] != nil
+                ? [prefs boolForKey:kTCLiveAutoCollectChannelPoints]
+                : YES; // défaut ON, comme dans les réglages
+
+            if (autoCollectEnabled) {
+                // Marqué AVANT l'appel pour éviter un double-déclenchement si le
+                // prochain tick de polling arrive avant que showsClaim retombe à NO.
+                objc_setAssociatedObject(channelPointsButton, &kS7TVChannelPointsClaimed, @YES,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+                SEL claimSel = NSSelectorFromString(@"handleChannelPointsButtonTapped");
+                if ([chatInputView respondsToSelector:claimSel]) {
+                    [[SevenTVManager sharedManager] log:@"🎁 Channel Points: claim détecté — collecte automatique"];
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [chatInputView performSelector:claimSel];
+                    #pragma clang diagnostic pop
+                } else {
+                    [[SevenTVManager sharedManager]
+                        log:@"Erreur Channel Points: sélecteur 'handleChannelPointsButtonTapped' introuvable sur ChatInputView"];
+                }
+            }
+        } else if (!showsClaim && alreadyClaimed) {
+            // Le claim précédent a été traité — réarme pour le prochain coffre.
+            objc_setAssociatedObject(channelPointsButton, &kS7TVChannelPointsClaimed, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+
+    __weak UIView *weakChatInputView = chatInputView;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *strongChatInputView = weakChatInputView;
+        if (strongChatInputView) {
+            s7tv_pollChannelPointsClaim(strongChatInputView);
+        }
+    });
+}
+
+// Boucle de fond permanente : cherche une ChatInputView pas encore sous
+// polling toutes les 2s. Tourne pour toute la durée de vie de l'app,
+// coût négligeable (un BFS peu profond sur la hiérarchie de fenêtres,
+// une fois toutes les 2 secondes).
+static void s7tv_scanForChannelPointsLoop(void) {
+    UIView *chatInputView = s7tv_findChatInputView();
+
+    if (chatInputView && !objc_getAssociatedObject(chatInputView, &kS7TVChannelPointsPolling)) {
+        objc_setAssociatedObject(chatInputView, &kS7TVChannelPointsPolling, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [[SevenTVManager sharedManager] log:@"🎁 Channel Points: ChatInputView trouvée — démarrage du polling"];
+        s7tv_pollChannelPointsClaim(chatInputView);
+    }
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        s7tv_scanForChannelPointsLoop();
+    });
+}
 
 
 // ────────────────────────────────────────────────────────────
@@ -1958,6 +2118,11 @@ static void TwitchSevenTVInit(void) {
 
     // Section 7TV dans les paramètres Twitch
     s7tv_swizzle_account_menu();
+
+    // Auto Collect Channel Points — module 100% autonome (voir sa section
+    // dédiée plus haut dans ce fichier), aucune dépendance avec les
+    // swizzles ci-dessus. Démarré directement ici, pas via didMoveToWindow.
+    s7tv_scanForChannelPointsLoop();
 
     // Blocked URLs + HLS Sanitizer
 

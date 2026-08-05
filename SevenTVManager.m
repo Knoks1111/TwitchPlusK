@@ -1520,10 +1520,15 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
     // reste du diagnostic (voir TweakSevenTV.m, S7TVGQLSnifferProtocol).
     if (has(@"[NetDump]")) return S7TVLogCategoryDump;
 
-    // 1. Erreurs / Avertissements — priorité absolue
+    // 1. Channel Points (autoclaim) — priorité absolue, avant Erreurs :
+    // tous les logs de l'autoclaim (succès 🎁 et échecs "Erreur ...") doivent
+    // atterrir dans Chat Custom, pas se disperser en Erreurs/Dump.
+    if (has(@"Channel Points")) return S7TVLogCategoryChatCustom;
+
+    // 2. Erreurs / Avertissements — priorité absolue
     if (has(@"❌") || has(@"⚠️")) return S7TVLogCategoryError;
 
-    // 2. Chat Custom (diagnostic Phase 0+ du chat maison — tag explicite,
+    // 3. Chat Custom (diagnostic Phase 0+ du chat maison — tag explicite,
     // avant le Dump générique pour ne pas y être noyé)
     if (has(@"[ChatCustom]")) return S7TVLogCategoryChatCustom;
 

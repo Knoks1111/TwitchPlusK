@@ -29,7 +29,9 @@ static const CGFloat kDefaultUsernameFontSize       = 13.0;
 static const CGFloat kDefaultMessageFontSize        = 13.0;
 static const CGFloat kDefaultLineSpacing            = 6.0;  // défaut = rendu du picker à 6
 static const CGFloat kDefaultUsernameMessageSpacing = 4.0;  // TODO mesure réelle
-static const CGFloat kDefaultEmoteVerticalOffset    = -4.0; // rendu d'origine
+// +4 = rendu d'origine (emote posée sur la ligne du bas). Sens logique :
+// positif = vers le haut, négatif = vers le bas, 0 = centré.
+static const CGFloat kDefaultEmoteVerticalOffset    = 4.0;
 static const NSInteger kDefaultEmote7TVResolution   = 2;
 
 

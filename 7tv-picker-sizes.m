@@ -10,7 +10,6 @@
 #import "7tv-localization.h"
 #import <objc/runtime.h>
 
-// associe un UISlider/UIButton de ligne à sa clé SevenTVChatAppearanceConfig
 static const char kS7TVRowKeyTag = 0;
 
 @interface SevenTVPickerSizesPanel ()
@@ -35,8 +34,6 @@ static const char kS7TVRowKeyTag = 0;
     ];
 }
 
-// Retrouve l'emote "EZ" (globale) — utilisée comme preview dans la 1re ligne
-// (taille emotes 7TV) et dans la ligne "alignement des emotes".
 - (SevenTVEmote *)_findEZEmote {
     SevenTVEmote *ez = nil;
     for (SevenTVEmote *e in self.picker.emotePickerAllEmotes) {
@@ -75,8 +72,6 @@ static const char kS7TVRowKeyTag = 0;
         CGFloat current = [[[SevenTVChatAppearanceConfig sharedConfig] valueForKey:key] doubleValue];
         if (current < minVal || current > maxVal) current = minVal;
 
-        // Position de la preview (case à droite) — calculée tôt pour le
-        // positionnement de la pill alignée sur la fin de la barre.
         CGFloat previewX = frame.size.width - previewW - 8;
 
         UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, rowY, frame.size.width, rowH)];
@@ -87,10 +82,9 @@ static const char kS7TVRowKeyTag = 0;
         rowSep.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         [row addSubview:rowSep];
 
-        // Label de titre — occupe TOUT l'espace libre entre la marge gauche
-        // et la pill (alignée sur la fin de la barre). Largement suffisant
-        // pour "Espacement des messages" sans jamais couper le texte.
         CGFloat pillLeft = previewX - 8 - pillW;
+        // Label de titre — occupe tout l'espace libre avant la pill, plus
+        // jamais coupé.
         UILabel *nameLbl = [[UILabel alloc] initWithFrame:
             CGRectMake(12, 11, pillLeft - 12 - 6, 16)];
         nameLbl.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
@@ -102,7 +96,6 @@ static const char kS7TVRowKeyTag = 0;
         nameLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         [row addSubview:nameLbl];
 
-        // Pill de valeur — bord droit aligné sur la fin de la barre.
         UILabel *valuePill = [[UILabel alloc] initWithFrame:
             CGRectMake(pillLeft, 7, pillW, 20)];
         valuePill.font = [UIFont boldSystemFontOfSize:11];
@@ -164,7 +157,6 @@ static const char kS7TVRowKeyTag = 0;
     if (!key) return;
     NSInteger val = (NSInteger)roundf(slider.value);
     slider.value = (float)val;
-
     [[SevenTVChatAppearanceConfig sharedConfig] setValue:(CGFloat)val forSizeKey:key];
     [self _refreshRowDisplayForKey:key value:val];
 }
@@ -178,7 +170,6 @@ static const char kS7TVRowKeyTag = 0;
     [self _refreshRowDisplayForKey:key value:val];
 }
 
-// Met à jour la pill "XX pt" + la preview d'une ligne donnée
 - (void)_refreshRowDisplayForKey:(NSString *)key value:(CGFloat)val {
     self.sizeValueLabels[key].text = [NSString stringWithFormat:@"%+ld pt", (long)llround(val)];
     [self _updatePreviewForKey:key value:val];
@@ -188,7 +179,6 @@ static const char kS7TVRowKeyTag = 0;
     UIView *content = nil;
 
     if ([key isEqualToString:@"usernameFontSize"] || [key isEqualToString:@"messageFontSize"]) {
-        // Preview texte (pseudo / message)
         UILabel *lbl = [[UILabel alloc] init];
         BOOL isUsername = [key isEqualToString:@"usernameFontSize"];
         lbl.text = isUsername ? L(@"preview_username") : L(@"preview_greeting");
@@ -197,8 +187,6 @@ static const char kS7TVRowKeyTag = 0;
             : [UIColor whiteColor];
         content = lbl;
     } else if ([key isEqualToString:@"lineSpacing"]) {
-        // Preview "espacement des messages" : deux lignes "Yo" empilées qui
-        // s'écartent/se rapprochent de la valeur exacte (identique au chat).
         UIView *container = [[UIView alloc] initWithFrame:box.bounds];
         for (NSInteger i = 1; i <= 2; i++) {
             UILabel *l = [[UILabel alloc] init];
@@ -211,9 +199,6 @@ static const char kS7TVRowKeyTag = 0;
         }
         content = container;
     } else if ([key isEqualToString:@"emoteVerticalOffset"]) {
-        // Preview "alignement des emotes" : préfixe traduit "7tv: " + la
-        // VRAIE emote EZ (petite, pour tenir dans la case) qui se décale
-        // verticalement de la valeur, exactement comme dans le chat.
         UIView *container = [[UIView alloc] initWithFrame:box.bounds];
         UILabel *l = [[UILabel alloc] init];
         l.text = L(@"preview_7tv_prefix");
@@ -228,7 +213,6 @@ static const char kS7TVRowKeyTag = 0;
         [container addSubview:emoteIV];
         content = container;
     } else {
-        // Preview image réelle (emote Twitch / badge)
         UIImageView *iv = [[UIImageView alloc] init];
         iv.contentMode = UIViewContentModeScaleAspectFit;
         content = iv;
@@ -260,7 +244,7 @@ static const char kS7TVRowKeyTag = 0;
         UILabel *bottom = [container viewWithTag:1002];
         CGFloat lineH = top.bounds.size.height;
         CGFloat totalH = lineH * 2 + value;
-        totalH = MIN(totalH, boxH - 4); // ne déborde jamais de la case
+        totalH = MIN(totalH, boxH - 4);
         CGFloat startY = (boxH - totalH) / 2.0;
         top.frame = CGRectMake((boxW - top.bounds.size.width) / 2.0, startY,
                                top.bounds.size.width, lineH);
@@ -270,19 +254,19 @@ static const char kS7TVRowKeyTag = 0;
         UIView *container = content;
         UILabel *lbl = (UILabel *)[container viewWithTag:2001];
         UIImageView *emote = (UIImageView *)[container viewWithTag:2002];
-        CGFloat emoteH = 16, emoteW = 16; // petite, tient dans la case
+        CGFloat emoteH = 16, emoteW = 16;
         CGFloat textW = lbl.bounds.size.width;
         CGFloat totalW = textW + 4 + emoteW;
         CGFloat startX = (boxW > totalW) ? (boxW - totalW) / 2.0 : 0;
         lbl.frame = CGRectMake(startX, (boxH - lbl.bounds.size.height) / 2.0,
                                textW, lbl.bounds.size.height);
-        // value négatif → emote plus haute ; positif → plus basse (comme chat)
+        // Sens logique : positif = vers le haut, négatif = vers le bas,
+        // 0 = centré — identique au chat.
         CGFloat baseY = (boxH - emoteH) / 2.0;
-        CGFloat emoteY = baseY + value;
-        emoteY = MAX(0, MIN(emoteY, boxH - emoteH)); // reste dans la case
+        CGFloat emoteY = baseY - value;
+        emoteY = MAX(0, MIN(emoteY, boxH - emoteH));
         emote.frame = CGRectMake(startX + textW + 4, emoteY, emoteW, emoteH);
     } else {
-        // Preview image réelle — aspect ratio d'origine, grandit/rétrécit avec la valeur
         UIImageView *iv = (UIImageView *)content;
         UIImage *img = iv.image;
         CGFloat ratio = (img && img.size.height > 0) ? (img.size.width / img.size.height) : 1.0;
@@ -294,11 +278,6 @@ static const char kS7TVRowKeyTag = 0;
     }
 }
 
-// Charge les vraies images des previews (une seule fois, mises en cache dans
-// les UIImageView elles-mêmes — pas de refetch aux toggles suivants) :
-//  - "Emotes 7TV" + "Alignement" → l'emote globale EZ (même pipeline que la grille)
-//  - "Emotes Twitch" → Kappa (emote globale Twitch, ID stable et public)
-//  - "Badges" → le badge Modérateur Twitch (asset public du CDN officiel)
 - (void)loadRealPreviewAssetsIfNeeded {
     UIImageView *ivEZ = (UIImageView *)self.sizePreviewViews[@"emote7TVSize"];
     if ([ivEZ isKindOfClass:[UIImageView class]] && !ivEZ.image) {
@@ -308,8 +287,6 @@ static const char kS7TVRowKeyTag = 0;
                                      imageView:ivEZ];
     }
 
-    // La preview "alignement" contient un UIImageView (tag 2002) dans son
-    // container → on retrouve l'imageView interne et on cherche EZ dedans.
     UIView *alignContainer = self.sizePreviewViews[@"emoteVerticalOffset"];
     UIImageView *alignIV = (UIImageView *)[alignContainer viewWithTag:2002];
     if ([alignIV isKindOfClass:[UIImageView class]] && !alignIV.image) {
@@ -333,11 +310,6 @@ static const char kS7TVRowKeyTag = 0;
     }
 }
 
-// Fetch + décodage générique (même pipeline réseau que la grille — réutilise
-// pickerImageSession/decodePickerImageData:wantsAnimated: du picker hôte).
-// L'image est appliquée sur `imageView` (qui peut être une sous-vue d'un
-// container, ex: la preview "alignement"), et la preview de `key` est
-// rafraîchie une fois l'image posée.
 - (void)_loadPreviewImageFromURL:(NSURL *)url forKey:(NSString *)key imageView:(UIImageView *)iv {
     if (!url) return;
     __weak typeof(self) weakSelf = self;

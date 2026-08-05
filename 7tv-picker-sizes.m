@@ -260,10 +260,12 @@ static const char kS7TVRowKeyTag = 0;
         CGFloat startX = (boxW > totalW) ? (boxW - totalW) / 2.0 : 0;
         lbl.frame = CGRectMake(startX, (boxH - lbl.bounds.size.height) / 2.0,
                                textW, lbl.bounds.size.height);
-        // Sens logique : positif = vers le haut, négatif = vers le bas,
-        // 0 = centré — identique au chat.
+        // Même formule que le chat (SevenTVChatCustomView.m) : baseY est
+        // l'équivalent preview de la ligne de base du texte, et le -4.0
+        // est le même rebase fixe qu'en chat. Résultat : à offset=0
+        // l'emote est posée "sur la ligne du bas", identique au chat.
         CGFloat baseY = (boxH - emoteH) / 2.0;
-        CGFloat emoteY = baseY - value;
+        CGFloat emoteY = baseY - value - 4.0;
         emoteY = MAX(0, MIN(emoteY, boxH - emoteH));
         emote.frame = CGRectMake(startX + textW + 4, emoteY, emoteW, emoteH);
     } else {

@@ -691,11 +691,13 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
                 attachment.image = cachedImage;
             }
 
-            // Sens logique : positif = vers le haut, négatif = vers le bas,
-            // 0 = centré. Dans les bounds d'un NSTextAttachment, un y négatif
-            // déplace vers le haut → on inverse le signe. Défaut +4 = rendu
-            // d'origine (emote posée sur la ligne du bas).
-            CGFloat y = -cfg.emoteVerticalOffset;
+            // Sens logique : positif = vers le haut, négatif = vers le bas.
+            // Dans les bounds d'un NSTextAttachment, un y négatif déplace
+            // vers le haut → on inverse le signe. Le -4.0 fixe est le rebase
+            // du zéro : à offset=0, l'emote est posée sur la ligne du bas
+            // (= l'ancien rendu par défaut, qui valait +4 sur l'ancienne
+            // échelle centrée).
+            CGFloat y = -cfg.emoteVerticalOffset - 4.0;
             attachment.bounds = CGRectMake(0, y, targetWidth, targetHeight);
 
             [result appendAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];

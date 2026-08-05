@@ -140,6 +140,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"log_cat_orientation":             @[@"Orientation Lock", @"Orientation Lock"],
         @"log_cat_cdn":                     @[@"CDN / Cache emotes", @"CDN / Emote cache"],
         @"log_cat_chat_custom":             @[@"Chat Custom", @"Custom Chat"],
+        @"log_cat_channel_points":          @[@"Channel Points", @"Channel Points"],
         @"log_cat_dump":                    @[@"Dump", @"Dump"],
 
         // ── Page Favoris ──────────────────────────────────────────────────

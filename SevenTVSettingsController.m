@@ -154,7 +154,12 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
     // 17pt Regular = taille standard iOS Settings / Twitch natif
     lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
     lbl.textColor = [UIColor whiteColor];
-    lbl.numberOfLines = 1;
+    // 0 = illimité (pas de troncature) — un libellé trop long pour tenir sur
+    // une ligne passe à la ligne au lieu d'être coupé avec "…". La hauteur de
+    // la cellule doit être en UITableViewAutomaticDimension côté delegate
+    // pour que ça s'affiche correctement (voir heightForRowAtIndexPath des
+    // controllers qui utilisent cette cellule).
+    lbl.numberOfLines = 0;
     lbl.translatesAutoresizingMaskIntoConstraints = NO;
     [cell.contentView addSubview:lbl];
 
@@ -247,6 +252,14 @@ static void S7TVStyleTableView(UITableView *tv) {
     tv.backgroundColor   = S7TVBg();
     tv.separatorColor    = [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0];
     tv.separatorInset    = UIEdgeInsetsMake(0, 52, 0, 0);
+    // Défaut : hauteur de ligne auto-calculée à partir du contenu (nécessaire
+    // pour que S7TVSwitchCell puisse s'étendre sur 2 lignes — voir son
+    // commentaire numberOfLines=0). Les controllers qui ont besoin d'une
+    // hauteur fixe pour une section donnée (ex: liste de favoris à 52pt)
+    // gardent la priorité via leur propre heightForRowAtIndexPath: — cette
+    // valeur n'est qu'un filet de sécurité pour l'estimation initiale.
+    tv.rowHeight         = UITableViewAutomaticDimension;
+    tv.estimatedRowHeight = 60;
 }
 
 // Helper NSUserDefaults
@@ -696,7 +709,7 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
-    return ip.section == S7TVContentSectionFavorites ? 52 : 60;
+    return ip.section == S7TVContentSectionFavorites ? 52 : UITableViewAutomaticDimension;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {

@@ -241,8 +241,13 @@ static void S7TVStyleTableView(UITableView *tv) {
 }
 
 // Helper NSUserDefaults
-static BOOL S7TVBool(NSString *key) {
-    return [[NSUserDefaults standardUserDefaults] boolForKey:key];
+// Variante avec défaut ON : utilisée pour les clés qui doivent démarrer
+// activées tant que l'utilisateur n'a jamais touché au switch (ex. Auto
+// Collect Channel Points). boolForKey: seul renverrait NO en l'absence de
+// la clé, ce qui ne correspond pas au comportement par défaut souhaité.
+static BOOL S7TVBoolDefaultYes(NSString *key) {
+    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
+    return [prefs objectForKey:key] != nil ? [prefs boolForKey:key] : YES;
 }
 static void S7TVSetBool(NSString *key, BOOL val) {
     [[NSUserDefaults standardUserDefaults] setBool:val forKey:key];
@@ -730,7 +735,7 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
     if (ip.section == S7TVContentSectionStream) {
         return S7TVSwitchCell(L(@"switch_auto_collect_title"),
                     @"giftcard.fill", [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
-                    S7TVBool(kTCLiveAutoCollectChannelPoints), self, @selector(toggleAutoCollect:));
+                    S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints), self, @selector(toggleAutoCollect:));
     }
 
     // ── Section Favoris ─────────────────────────────────────────────────────
@@ -1464,16 +1469,11 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     }
 }
 
-// Vider le cache — VISUEL UNIQUEMENT pour l'instant (voir discussion) :
-// déclenche un rechargement des emotes, comme le faisait l'ancien bouton
-// "Recharger les emotes" de l'accueil. Le vrai vidage du cache disque
-// (s7tv_cache_global / s7tv_cache_ch_*, voir SevenTVURLProtocol) et du
-// cache mémoire du picker reste TODO — câblage prévu dans une passe dédiée.
+// Vide entièrement le cache 7TV (disque + mémoire + badges) via
+// SevenTVManager, puis relance le chargement des emotes.
 - (void)clearCache {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
-    [mgr loadGlobalEmotes];
-    if (mgr.currentChannelTwitchID)
-        [mgr loadEmotesForChannelTwitchID:mgr.currentChannelTwitchID];
+    [mgr clearAllCaches];
 
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:L(@"alert_cache_cleared_title")

@@ -55,9 +55,10 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
     S7TVLogCategoryOrientation,      // 🔒 Orientation Lock
     S7TVLogCategoryImageConversion,  // 🖼 CDN / Cache emotes
     S7TVLogCategoryChatCustom,       // 🏗 Chat Custom (diagnostic Phase 0+)
+    S7TVLogCategoryChannelPoints,    // 🎁 Channel Points (autoclaim)
     S7TVLogCategoryDump,             // 🗑️ Dump (et tout ce qui n'est pas classé)
 };
-#define S7TV_LOG_CATEGORY_COUNT 13
+#define S7TV_LOG_CATEGORY_COUNT 14
 
 
 // ============================================================
@@ -118,6 +119,7 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, assign) BOOL logOrientation;         // 🔒 Orientation Lock
 @property (nonatomic, assign) BOOL logImageConversion;     // 🖼 CDN / Cache emotes
 @property (nonatomic, assign) BOOL logChatCustom;           // 🏗 Chat Custom
+@property (nonatomic, assign) BOOL logChannelPoints;         // 🎁 Channel Points
 @property (nonatomic, assign) BOOL logDump;                // 🗑️ Dump
 
 // --- Données des emotes ---

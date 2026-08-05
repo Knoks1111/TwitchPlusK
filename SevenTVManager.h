@@ -207,4 +207,14 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // Vide le buffer de logs
 - (void)clearLogs;
 
+// --- Cache ---
+// Vide entièrement le cache 7TV : fichiers JSON du cache disque
+// (Library/Caches/s7tv/*.json — emotes globales + par channel) et
+// dictionnaires d'emotes en mémoire (globalEmotes/channelEmotes). Recharge
+// ensuite immédiatement les emotes globales et celles du channel actif si
+// disponible, pour que l'effet soit visible sans avoir à recharger le stream.
+// N'affecte PAS les favoris (s7tv_favorites), les badges, ni les préférences
+// de réglages.
+- (void)clearAllCaches;
+
 @end

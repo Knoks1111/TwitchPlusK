@@ -293,8 +293,9 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if (self) {
         _isEnabled             = YES;
         _showAnimated          = YES;
-        _showPickerAnimations  = NO;   // Désactivé par défaut (perf)
+        _showPickerAnimations  = YES;  // Activé par défaut
         _showPickerAnimationsFavoritesOnly = NO;
+        _chatCustomTestEnabled = YES;  // Activé par défaut — c'est le mode de rendu du chat désormais
         _debugLogging          = (S7TV_DEBUG == 1);
 
         // Système de logs par catégorie — valeurs par défaut avant chargement
@@ -562,7 +563,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if ([prefs objectForKey:@"s7tv_picker_anim_favs"]  != nil) _showPickerAnimationsFavoritesOnly = [prefs boolForKey:@"s7tv_picker_anim_favs"];
     if ([prefs objectForKey:@"s7tv_debug"]             != nil) _debugLogging          = [prefs boolForKey:@"s7tv_debug"];
     if ([prefs objectForKey:@"s7tv_floating_btn"]      != nil) _showFloatingButton     = [prefs boolForKey:@"s7tv_floating_btn"];
-    else _showFloatingButton = YES; // activé par défaut
+    else _showFloatingButton = NO; // désactivé par défaut
     if ([prefs objectForKey:@"s7tv_chat_custom_test"]  != nil) _chatCustomTestEnabled  = [prefs boolForKey:@"s7tv_chat_custom_test"];
 
     // --- Logs : interrupteur global + catégories ---
@@ -1684,6 +1685,52 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
             postNotificationName:S7TVLogsDidUpdateNotification
                           object:self userInfo:@{@"cleared": @YES}];
     });
+}
+
+
+// ============================================================
+// MARK: - Cache : vidage complet
+// ============================================================
+
+- (void)clearAllCaches {
+    [self log:@"🗑️ Vidage du cache 7TV demandé (disque + mémoire)"];
+
+    // 1) Fichiers JSON du cache disque (Library/Caches/s7tv/*.json —
+    // global.json, ch_<twitchID>.json...). Même file d'exécution que la
+    // lecture/écriture du cache pour éviter toute course avec un
+    // chargement en cours (voir _readCacheFile:/_writeCacheFile:withEmotes:).
+    dispatch_async(self.fileIOQueue, ^{
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSError *listErr = nil;
+        NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:self.cacheDirectory error:&listErr];
+        if (listErr) {
+            [self log:@"⚠️ Impossible de lister le cache disque: %@", listErr.localizedDescription];
+            return;
+        }
+        for (NSString *file in files) {
+            NSError *rmErr = nil;
+            NSString *path = [self.cacheDirectory stringByAppendingPathComponent:file];
+            [fm removeItemAtPath:path error:&rmErr];
+            if (rmErr) {
+                [self log:@"⚠️ Suppression échouée pour %@: %@", file, rmErr.localizedDescription];
+            }
+        }
+    });
+
+    // 2) Dictionnaires d'emotes en mémoire — écriture protégée par
+    // dispatch_barrier_async sur emoteQueue (même convention que le reste
+    // du fichier, voir header de emoteQueue).
+    dispatch_barrier_async(self.emoteQueue, ^{
+        self.globalEmotes  = @{};
+        self.channelEmotes = @{};
+    });
+
+    // 3) Recharger immédiatement pour que l'effet soit visible sans
+    // attendre un changement de chaîne ou un relancement de l'app.
+    [self loadGlobalEmotes];
+    if (self.currentChannelTwitchID) {
+        [self loadEmotesForChannelTwitchID:self.currentChannelTwitchID];
+    }
 }
 
 @end

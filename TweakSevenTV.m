@@ -182,12 +182,16 @@ static void s7tv_swizzle(Class targetClass,
 //    filtrage par nom de classe ("Twitch.ChannelPointsChatButton"),
 //    exactement comme bitsButton/emoticonButton sont déjà retrouvés
 //    ailleurs dans ce fichier.
-//  - `showsClaim` est déduit visuellement : ChannelPointsChatButton
-//    ajoute un `activeBonusOverlayView` (type TwitchCoreUI.GlowView,
-//    le composant d'incrustation "glow" générique de Twitch) en subview
-//    quand un coffre est réclamable, et le retire sinon. On détecte donc
-//    la présence d'un GlowView visible et non masqué parmi les subviews
-//    du bouton plutôt que de lire un booléen Swift privé inaccessible.
+//  - `showsClaim` est déduit du fait que Twitch anime activement l'icône
+//    ou le bouton à ce moment précis (wiggle/pulse/explosion — confirmé
+//    dans le binaire via ChannelPointsAnimator.swift : playPulseAnimation(),
+//    playExplosionAnimation(), startAnimatingWigglingIfNeeded(for:)...).
+//    On détecte ces animations via -[CALayer animationKeys], une API
+//    QuartzCore publique et stable, plutôt que de lire un booléen Swift
+//    privé inaccessible. (Une première tentative basée sur la présence
+//    d'un "TwitchCoreUI.GlowView" en subview s'est avérée fausse : ce
+//    composant n'existe pas ici, Twitch ne pose pas de badge statique —
+//    voir les logs de debug qui ont infirmé cette hypothèse.)
 //
 // Cette approche est plus proche du fonctionnement natif : c'est le même
 // signal visuel que Twitch utilise pour afficher l'incrustation "Claim
@@ -227,53 +231,59 @@ static void s7tv_debugDumpViewTree(UIView *root, NSInteger depth, NSMutableStrin
     }
 }
 
-// Un coffre à points est réclamable si le bouton affiche son incrustation
-// "glow" (TwitchCoreUI.GlowView) visible en subview. Ne lit aucune
-// propriété Swift privée — uniquement class/subviews/isHidden/alpha,
-// toutes garanties ObjC-compliant via UIView.
+// Un coffre à points est réclamable quand Twitch anime visuellement l'icône
+// (wiggle/pulse/explosion — voir ChannelPointsAnimator.swift dans le
+// binaire : playPulseAnimation(), playExplosionAnimation(),
+// startAnimatingWigglingIfNeeded(for:)...). Ce ne sont pas des vues
+// statiques ajoutées/retirées mais des animations Core Animation posées
+// directement sur les layers. On les détecte via -[CALayer animationKeys],
+// une API 100% publique et stable côté ObjC/QuartzCore — indépendante de
+// tout ce que Swift expose ou non au runtime ObjC.
 static BOOL s7tv_channelPointsButtonShowsClaim(UIView *channelPointsButton) {
     if (!channelPointsButton) {
         [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: showsClaim -> NO (channelPointsButton == nil)"];
         return NO;
     }
 
+    UIView *icon = s7tv_findSubviewByClassName(channelPointsButton, @"TwitchCoreUI.TwitchImageView");
+    UIView *countingLabelView = s7tv_findSubviewByClassName(channelPointsButton, @"TwitchCoreUI.CountingLabel");
+    NSString *labelText = nil;
+    if (countingLabelView && [countingLabelView isKindOfClass:[UILabel class]]) {
+        labelText = ((UILabel *)countingLabelView).text;
+    }
+
+    NSArray<NSString *> *buttonAnimKeys = channelPointsButton.layer.animationKeys;
+    NSArray<NSString *> *iconAnimKeys = icon.layer.animationKeys;
+
     [[SevenTVManager sharedManager]
-        log:@"🎁 Channel Points debug: bouton trouvé — class=%@ hidden=%d alpha=%.2f frame=%@ subviews=%lu",
+        log:@"🎁 Channel Points debug: bouton — class=%@ hidden=%d alpha=%.2f frame=%@ subviews=%lu label='%@' iconImage=%@ boutonAnimKeys=%@ iconAnimKeys=%@",
         NSStringFromClass([channelPointsButton class]),
         channelPointsButton.hidden,
         channelPointsButton.alpha,
         NSStringFromCGRect(channelPointsButton.frame),
-        (unsigned long)channelPointsButton.subviews.count];
+        (unsigned long)channelPointsButton.subviews.count,
+        labelText,
+        icon ? [(UIImageView *)icon image] : nil,
+        buttonAnimKeys,
+        iconAnimKeys];
 
     if (channelPointsButton.hidden || channelPointsButton.alpha <= 0.01) {
         [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: showsClaim -> NO (bouton hidden ou alpha nulle)"];
         return NO;
     }
 
-    UIView *glow = s7tv_findSubviewByClassName(channelPointsButton, @"TwitchCoreUI.GlowView");
+    BOOL hasActiveAnimation = buttonAnimKeys.count > 0 || iconAnimKeys.count > 0;
 
-    if (glow) {
-        [[SevenTVManager sharedManager]
-            log:@"🎁 Channel Points debug: TwitchCoreUI.GlowView trouvé — hidden=%d alpha=%.2f frame=%@",
-            glow.hidden, glow.alpha, NSStringFromCGRect(glow.frame)];
-    } else {
-        [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: aucun TwitchCoreUI.GlowView dans les subviews du bouton"];
-    }
-
-    // Dump complet de la hiérarchie du bouton à chaque tick où on n'a PAS
-    // détecté de claim — permet de repérer à l'oeil la vraie vue/classe
-    // utilisée pour l'incrustation si "TwitchCoreUI.GlowView" est le
-    // mauvais nom ou si elle est logée ailleurs (ex: directement sur
-    // ChatInputView plutôt que sur le bouton).
-    if (!glow || glow.hidden || glow.alpha <= 0.01) {
+    // Dump complet de la hiérarchie à chaque tick sans animation détectée —
+    // garde-fou tant qu'on n'a pas confirmé ce signal sur un vrai coffre.
+    if (!hasActiveAnimation) {
         NSMutableString *dump = [NSMutableString stringWithString:@"🎁 Channel Points debug: dump hiérarchie channelPointsButton:\n"];
         s7tv_debugDumpViewTree(channelPointsButton, 0, dump);
         [[SevenTVManager sharedManager] log:@"%@", dump];
     }
 
-    BOOL result = glow != nil && !glow.hidden && glow.alpha > 0.01;
-    [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: showsClaim -> %d", result];
-    return result;
+    [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: showsClaim -> %d", hasActiveAnimation];
+    return hasActiveAnimation;
 }
 
 // Cherche la première instance de Twitch.ChatInputView actuellement

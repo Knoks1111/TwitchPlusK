@@ -210,16 +210,70 @@ static UIView *s7tv_findSubviewByClassName(UIView *root, NSString *className) {
     return nil;
 }
 
+// DEBUG — dump récursif (classe + hidden + alpha + frame) de toute la
+// hiérarchie sous `root`, avec indentation par profondeur. Utilisé
+// uniquement pour identifier à l'oeil la vraie classe/l'état de
+// l'incrustation "claim" quand la détection échoue.
+static void s7tv_debugDumpViewTree(UIView *root, NSInteger depth, NSMutableString *out) {
+    if (!root || depth > 6) return;
+    for (NSInteger i = 0; i < depth; i++) [out appendString:@"  "];
+    [out appendFormat:@"- %@ | hidden=%d alpha=%.2f frame=%@\n",
+        NSStringFromClass([root class]),
+        root.hidden,
+        root.alpha,
+        NSStringFromCGRect(root.frame)];
+    for (UIView *sub in root.subviews) {
+        s7tv_debugDumpViewTree(sub, depth + 1, out);
+    }
+}
+
 // Un coffre à points est réclamable si le bouton affiche son incrustation
 // "glow" (TwitchCoreUI.GlowView) visible en subview. Ne lit aucune
 // propriété Swift privée — uniquement class/subviews/isHidden/alpha,
 // toutes garanties ObjC-compliant via UIView.
 static BOOL s7tv_channelPointsButtonShowsClaim(UIView *channelPointsButton) {
-    if (!channelPointsButton || channelPointsButton.hidden || channelPointsButton.alpha <= 0.01) {
+    if (!channelPointsButton) {
+        [[SevenTVManager sharedManager] log:@"🔍 CP debug: showsClaim -> NO (channelPointsButton == nil)"];
         return NO;
     }
+
+    [[SevenTVManager sharedManager]
+        log:@"🔍 CP debug: bouton trouvé — class=%@ hidden=%d alpha=%.2f frame=%@ subviews=%lu",
+        NSStringFromClass([channelPointsButton class]),
+        channelPointsButton.hidden,
+        channelPointsButton.alpha,
+        NSStringFromCGRect(channelPointsButton.frame),
+        (unsigned long)channelPointsButton.subviews.count];
+
+    if (channelPointsButton.hidden || channelPointsButton.alpha <= 0.01) {
+        [[SevenTVManager sharedManager] log:@"🔍 CP debug: showsClaim -> NO (bouton hidden ou alpha nulle)"];
+        return NO;
+    }
+
     UIView *glow = s7tv_findSubviewByClassName(channelPointsButton, @"TwitchCoreUI.GlowView");
-    return glow != nil && !glow.hidden && glow.alpha > 0.01;
+
+    if (glow) {
+        [[SevenTVManager sharedManager]
+            log:@"🔍 CP debug: TwitchCoreUI.GlowView trouvé — hidden=%d alpha=%.2f frame=%@",
+            glow.hidden, glow.alpha, NSStringFromCGRect(glow.frame)];
+    } else {
+        [[SevenTVManager sharedManager] log:@"🔍 CP debug: aucun TwitchCoreUI.GlowView dans les subviews du bouton"];
+    }
+
+    // Dump complet de la hiérarchie du bouton à chaque tick où on n'a PAS
+    // détecté de claim — permet de repérer à l'oeil la vraie vue/classe
+    // utilisée pour l'incrustation si "TwitchCoreUI.GlowView" est le
+    // mauvais nom ou si elle est logée ailleurs (ex: directement sur
+    // ChatInputView plutôt que sur le bouton).
+    if (!glow || glow.hidden || glow.alpha <= 0.01) {
+        NSMutableString *dump = [NSMutableString stringWithString:@"🔍 CP debug: dump hiérarchie channelPointsButton:\n"];
+        s7tv_debugDumpViewTree(channelPointsButton, 0, dump);
+        [[SevenTVManager sharedManager] log:@"%@", dump];
+    }
+
+    BOOL result = glow != nil && !glow.hidden && glow.alpha > 0.01;
+    [[SevenTVManager sharedManager] log:@"🔍 CP debug: showsClaim -> %d", result];
+    return result;
 }
 
 // Cherche la première instance de Twitch.ChatInputView actuellement
@@ -251,9 +305,28 @@ static UIView *s7tv_findChatInputView(void) {
 // couvre naturellement la fermeture du stream sans logique de cleanup
 // séparée à maintenir.
 static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
-    if (!chatInputView || !chatInputView.window) return;
+    if (!chatInputView) {
+        [[SevenTVManager sharedManager] log:@"🔍 CP debug: poll tick — chatInputView == nil, arrêt"];
+        return;
+    }
+    if (!chatInputView.window) {
+        [[SevenTVManager sharedManager] log:@"🔍 CP debug: poll tick — chatInputView.window == nil (hors écran), arrêt"];
+        return;
+    }
+
+    [[SevenTVManager sharedManager]
+        log:@"🔍 CP debug: poll tick — chatInputView OK (window=%@), recherche channelPointsButton...",
+        chatInputView.window];
 
     UIView *channelPointsButton = s7tv_findSubviewByClassName(chatInputView, @"Twitch.ChannelPointsChatButton");
+
+    if (!channelPointsButton) {
+        [[SevenTVManager sharedManager]
+            log:@"🔍 CP debug: Twitch.ChannelPointsChatButton introuvable dans les subviews de ChatInputView"];
+        NSMutableString *dump = [NSMutableString stringWithString:@"🔍 CP debug: dump hiérarchie ChatInputView (bouton non trouvé):\n"];
+        s7tv_debugDumpViewTree(chatInputView, 0, dump);
+        [[SevenTVManager sharedManager] log:@"%@", dump];
+    }
 
     if (channelPointsButton) {
         BOOL showsClaim = s7tv_channelPointsButtonShowsClaim(channelPointsButton);
@@ -261,11 +334,18 @@ static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
         BOOL alreadyClaimed = [objc_getAssociatedObject(channelPointsButton,
                                                           &kS7TVChannelPointsClaimed) boolValue];
 
+        [[SevenTVManager sharedManager]
+            log:@"🔍 CP debug: état — showsClaim=%d alreadyClaimed=%d", showsClaim, alreadyClaimed];
+
         if (showsClaim && !alreadyClaimed) {
             NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
             BOOL autoCollectEnabled = [prefs objectForKey:kTCLiveAutoCollectChannelPoints] != nil
                 ? [prefs boolForKey:kTCLiveAutoCollectChannelPoints]
                 : YES; // défaut ON, comme dans les réglages
+
+            [[SevenTVManager sharedManager]
+                log:@"🔍 CP debug: autoCollectEnabled=%d (pref existante=%d)",
+                autoCollectEnabled, [prefs objectForKey:kTCLiveAutoCollectChannelPoints] != nil];
 
             if (autoCollectEnabled) {
                 // Marqué AVANT l'appel pour éviter un double-déclenchement si le
@@ -274,12 +354,17 @@ static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
                                          OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
                 SEL claimSel = NSSelectorFromString(@"handleChannelPointsButtonTapped");
-                if ([chatInputView respondsToSelector:claimSel]) {
+                BOOL responds = [chatInputView respondsToSelector:claimSel];
+                [[SevenTVManager sharedManager]
+                    log:@"🔍 CP debug: chatInputView respondsToSelector(handleChannelPointsButtonTapped)=%d", responds];
+
+                if (responds) {
                     [[SevenTVManager sharedManager] log:@"🎁 Channel Points: claim détecté — collecte automatique"];
                     #pragma clang diagnostic push
                     #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
                     [chatInputView performSelector:claimSel];
                     #pragma clang diagnostic pop
+                    [[SevenTVManager sharedManager] log:@"🔍 CP debug: performSelector(handleChannelPointsButtonTapped) exécuté sans exception"];
                 } else {
                     [[SevenTVManager sharedManager]
                         log:@"Erreur Channel Points: sélecteur 'handleChannelPointsButtonTapped' introuvable sur ChatInputView"];
@@ -287,6 +372,7 @@ static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
             }
         } else if (!showsClaim && alreadyClaimed) {
             // Le claim précédent a été traité — réarme pour le prochain coffre.
+            [[SevenTVManager sharedManager] log:@"🔍 CP debug: réarmement (claim précédent traité)"];
             objc_setAssociatedObject(channelPointsButton, &kS7TVChannelPointsClaimed, nil,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
@@ -309,7 +395,11 @@ static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
 static void s7tv_scanForChannelPointsLoop(void) {
     UIView *chatInputView = s7tv_findChatInputView();
 
-    if (chatInputView && !objc_getAssociatedObject(chatInputView, &kS7TVChannelPointsPolling)) {
+    if (!chatInputView) {
+        [[SevenTVManager sharedManager] log:@"🔍 CP debug: scan — aucune Twitch.ChatInputView trouvée dans la hiérarchie de fenêtres"];
+    } else if (objc_getAssociatedObject(chatInputView, &kS7TVChannelPointsPolling)) {
+        [[SevenTVManager sharedManager] log:@"🔍 CP debug: scan — ChatInputView déjà sous polling, rien à faire"];
+    } else {
         objc_setAssociatedObject(chatInputView, &kS7TVChannelPointsPolling, @YES,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [[SevenTVManager sharedManager] log:@"🎁 Channel Points: ChatInputView trouvée — démarrage du polling"];

@@ -176,12 +176,14 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"buffer_n_lines_format":           @[@"%ld lignes", @"%ld lines"],
 
         // ── Panneau des tailles (picker) ──────────────────────────────────
+        @"title_emotes_7tv":                @[@"Emotes 7TV", @"7TV emotes"],
         @"size_label_emote_twitch":         @[@"Emotes Twitch", @"Twitch Emotes"],
         @"size_label_badges":               @[@"Badges", @"Badges"],
         @"size_label_username":             @[@"Texte pseudo", @"Username text"],
         @"size_label_message":              @[@"Texte message", @"Message text"],
         @"size_label_line_spacing":         @[@"Espacement des messages", @"Message spacing"],
         @"size_label_emote_offset":         @[@"Alignement des emotes", @"Emote alignment"],
+        @"preview_7tv_prefix":              @[@"7TV: ", @"7tv: "],
         @"preview_username":                @[@"Pseudo", @"Username"],
         @"preview_greeting":                @[@"Salut !", @"Hi!"],
 

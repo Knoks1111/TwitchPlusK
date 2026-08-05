@@ -169,14 +169,23 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
         [icon.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
         [icon.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
 
-        // CRITIQUE top+bottom : résout la hauteur du label et centre verticalement
-        [lbl.leadingAnchor   constraintEqualToAnchor:icon.trailingAnchor constant:14],
-        [lbl.topAnchor       constraintEqualToAnchor:cell.contentView.topAnchor constant:13],
-        [lbl.bottomAnchor    constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-13],
-
-        [sw.leadingAnchor    constraintGreaterThanOrEqualToAnchor:lbl.trailingAnchor constant:12],
+        // Switch d'abord : taille intrinsèque fixe (UISwitch ne se redimensionne
+        // jamais), positionné uniquement par son trailing + centerY. Aucune
+        // contrainte de leading dessus — sinon un texte long crée un conflit
+        // avec le trailing fixe (constraint requise vs requise), qu'AutoLayout
+        // résout de façon imprévisible : c'était la cause du switch poussé hors
+        // de la cellule (et donc non tappable).
         [sw.trailingAnchor   constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
         [sw.centerYAnchor    constraintEqualToAnchor:cell.contentView.centerYAnchor],
+
+        // Label : borné par le switch via un <= (pas un >= côté switch) — se
+        // compresse et tronque proprement (numberOfLines=1 + "…") si le texte
+        // est trop long pour la largeur disponible, sans jamais pousser le
+        // switch ni entrer en conflit avec sa position fixe ci-dessus.
+        [lbl.leadingAnchor   constraintEqualToAnchor:icon.trailingAnchor constant:14],
+        [lbl.trailingAnchor  constraintLessThanOrEqualToAnchor:sw.leadingAnchor constant:-12],
+        [lbl.topAnchor       constraintEqualToAnchor:cell.contentView.topAnchor constant:13],
+        [lbl.bottomAnchor    constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-13],
     ]];
     return cell;
 }

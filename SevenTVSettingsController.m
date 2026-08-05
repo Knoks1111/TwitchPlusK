@@ -1242,7 +1242,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 // Section 0 = Cache (vider le cache)
 // Section 1 = Options (bouton flottant)
-// Section 2 = Logs (activer logs, voir les logs, logs console, puis 13 catégories)
+// Section 2 = Logs (activer logs, voir les logs, logs console, puis 14 catégories)
 // Section 3 = Danger (effacer les logs)
 #define S7TV_SECTION_CACHE        0
 #define S7TV_SECTION_OPTIONS      1
@@ -1253,7 +1253,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 #define S7TV_LOGS_ROW_VIEW        1
 #define S7TV_LOGS_ROW_CONSOLE     2
 #define S7TV_LOGS_ROW_FIRST_CAT   3
-#define S7TV_LOGS_CAT_COUNT       13
+#define S7TV_LOGS_CAT_COUNT       14
 #define S7TV_LOGS_ROW_COUNT       (S7TV_LOGS_ROW_FIRST_CAT + S7TV_LOGS_CAT_COUNT)
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
@@ -1404,25 +1404,29 @@ forRowAtIndexPath:(NSIndexPath *)ip {
             L(@"log_cat_errors"), L(@"log_cat_tap"), L(@"log_cat_swizzle"),
             L(@"log_cat_cache"), L(@"log_cat_prefetch"), L(@"log_cat_api"), L(@"log_cat_irc"),
             L(@"log_cat_ui_picker"), L(@"section_favoris"),
-            L(@"log_cat_orientation"), L(@"log_cat_cdn"), L(@"log_cat_chat_custom"), L(@"log_cat_dump"),
+            L(@"log_cat_orientation"), L(@"log_cat_cdn"), L(@"log_cat_chat_custom"),
+            L(@"log_cat_channel_points"), L(@"log_cat_dump"),
         ];
         NSArray<NSString *> *icons = @[
             @"exclamationmark.triangle.fill", @"hand.tap.fill", @"bolt.horizontal.circle.fill",
             @"network", @"arrow.down.circle.fill", @"globe", @"antenna.radiowaves.left.and.right",
             @"paintbrush.fill", @"star.fill",
-            @"lock.rotation", @"photo.fill", @"hammer.fill", @"trash.fill",
+            @"lock.rotation", @"photo.fill", @"hammer.fill",
+            @"gift.fill", @"trash.fill",
         ];
         NSArray<NSNumber *> *values = @[
             @(mgr.logErrors), @(mgr.logTap), @(mgr.logSwizzle), @(mgr.logCache),
             @(mgr.logPrefetch), @(mgr.logAPI), @(mgr.logIRCChannel),
             @(mgr.logUIPicker), @(mgr.logFavorites), @(mgr.logOrientation),
-            @(mgr.logImageConversion), @(mgr.logChatCustom), @(mgr.logDump),
+            @(mgr.logImageConversion), @(mgr.logChatCustom),
+            @(mgr.logChannelPoints), @(mgr.logDump),
         ];
         NSArray *selectors = @[
             @"toggleLogErrors:", @"toggleLogTap:", @"toggleLogSwizzle:", @"toggleLogCache:",
             @"toggleLogPrefetch:", @"toggleLogAPI:", @"toggleLogIRCChannel:",
             @"toggleLogUIPicker:", @"toggleLogFavorites:", @"toggleLogOrientation:",
-            @"toggleLogImageConversion:", @"toggleLogChatCustom:", @"toggleLogDump:",
+            @"toggleLogImageConversion:", @"toggleLogChatCustom:",
+            @"toggleLogChannelPoints:", @"toggleLogDump:",
         ];
 
         UITableViewCell *cell = S7TVSwitchCell(titles[catIdx],
@@ -1541,6 +1545,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 - (void)toggleLogOrientation:(UISwitch *)sw      { [SevenTVManager sharedManager].logOrientation      = sw.isOn; }
 - (void)toggleLogImageConversion:(UISwitch *)sw  { [SevenTVManager sharedManager].logImageConversion  = sw.isOn; }
 - (void)toggleLogChatCustom:(UISwitch *)sw       { [SevenTVManager sharedManager].logChatCustom       = sw.isOn; }
+- (void)toggleLogChannelPoints:(UISwitch *)sw    { [SevenTVManager sharedManager].logChannelPoints    = sw.isOn; }
 - (void)toggleLogDump:(UISwitch *)sw             { [SevenTVManager sharedManager].logDump             = sw.isOn; }
 
 @end

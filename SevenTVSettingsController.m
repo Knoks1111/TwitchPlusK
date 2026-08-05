@@ -1401,32 +1401,36 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         // --- Catégories de logs ---
         NSInteger catIdx = row - S7TV_LOGS_ROW_FIRST_CAT;
         NSArray<NSString *> *titles = @[
-            L(@"log_cat_errors"), L(@"log_cat_tap"), L(@"log_cat_swizzle"),
+            L(@"log_cat_errors"), L(@"log_cat_chat_custom"), L(@"log_cat_channel_points"),
+            L(@"log_cat_tap"), L(@"log_cat_swizzle"),
             L(@"log_cat_cache"), L(@"log_cat_prefetch"), L(@"log_cat_api"), L(@"log_cat_irc"),
             L(@"log_cat_ui_picker"), L(@"section_favoris"),
-            L(@"log_cat_orientation"), L(@"log_cat_cdn"), L(@"log_cat_chat_custom"),
-            L(@"log_cat_channel_points"), L(@"log_cat_dump"),
+            L(@"log_cat_orientation"), L(@"log_cat_cdn"),
+            L(@"log_cat_dump"),
         ];
         NSArray<NSString *> *icons = @[
-            @"exclamationmark.triangle.fill", @"hand.tap.fill", @"bolt.horizontal.circle.fill",
+            @"exclamationmark.triangle.fill", @"hammer.fill", @"gift.fill",
+            @"hand.tap.fill", @"bolt.horizontal.circle.fill",
             @"network", @"arrow.down.circle.fill", @"globe", @"antenna.radiowaves.left.and.right",
             @"paintbrush.fill", @"star.fill",
-            @"lock.rotation", @"photo.fill", @"hammer.fill",
-            @"gift.fill", @"trash.fill",
+            @"lock.rotation", @"photo.fill",
+            @"trash.fill",
         ];
         NSArray<NSNumber *> *values = @[
-            @(mgr.logErrors), @(mgr.logTap), @(mgr.logSwizzle), @(mgr.logCache),
+            @(mgr.logErrors), @(mgr.logChatCustom), @(mgr.logChannelPoints),
+            @(mgr.logTap), @(mgr.logSwizzle), @(mgr.logCache),
             @(mgr.logPrefetch), @(mgr.logAPI), @(mgr.logIRCChannel),
             @(mgr.logUIPicker), @(mgr.logFavorites), @(mgr.logOrientation),
-            @(mgr.logImageConversion), @(mgr.logChatCustom),
-            @(mgr.logChannelPoints), @(mgr.logDump),
+            @(mgr.logImageConversion),
+            @(mgr.logDump),
         ];
         NSArray *selectors = @[
-            @"toggleLogErrors:", @"toggleLogTap:", @"toggleLogSwizzle:", @"toggleLogCache:",
+            @"toggleLogErrors:", @"toggleLogChatCustom:", @"toggleLogChannelPoints:",
+            @"toggleLogTap:", @"toggleLogSwizzle:", @"toggleLogCache:",
             @"toggleLogPrefetch:", @"toggleLogAPI:", @"toggleLogIRCChannel:",
             @"toggleLogUIPicker:", @"toggleLogFavorites:", @"toggleLogOrientation:",
-            @"toggleLogImageConversion:", @"toggleLogChatCustom:",
-            @"toggleLogChannelPoints:", @"toggleLogDump:",
+            @"toggleLogImageConversion:",
+            @"toggleLogDump:",
         ];
 
         UITableViewCell *cell = S7TVSwitchCell(titles[catIdx],

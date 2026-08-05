@@ -313,7 +313,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         _logOrientation    = NO;
         _logImageConversion = NO;
         _logChatCustom     = YES;   // ON par défaut pendant le dev du chat custom (Phase 0+)
-        _logChannelPoints  = YES;   // ON par défaut pendant le dev de l'autoclaim
+        _logChannelPoints  = NO;    // OFF par défaut
         _logDump           = NO;
 
         _globalEmotes      = @{};

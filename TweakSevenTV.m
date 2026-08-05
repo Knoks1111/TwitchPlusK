@@ -155,24 +155,72 @@ static void s7tv_swizzle(Class targetClass,
 //                                       capter chaque nouvelle instance
 //                                       (nouveau stream, retour au chat...)
 //
-// Mécanisme de collecte : Twitch.ChatInputView expose une propriété
-// `channelPointsButton` (type privé Twitch.ChannelPointsChatButton) avec
-// une propriété `showsClaim` (BOOL) qui passe à YES quand un coffre à
-// points est réclamable. Le tap utilisateur déclenche en interne
-// -[ChatInputView handleChannelPointsButtonTapped] (zéro argument), qui
+// Mécanisme de collecte : Twitch.ChatInputView possède, parmi ses subviews
+// directes, une instance de Twitch.ChannelPointsChatButton. Le tap
+// utilisateur sur ce bouton déclenche en interne
+// -[ChatInputView handleChannelPointsButtonTapped] (zéro argument, méthode
+// @objc — c'est le vrai handler UIControl branché en target/action), qui
 // envoie la vraie requête GraphQL authentifiée (ClaimChannelPointsMutation)
 // — on ne fait que déclencher cette méthode native, jamais de
 // reconstruction de requête réseau nous-mêmes.
 //
-// showsClaim n'est probablement pas KVO-compliant (propriété Swift privée,
-// pas forcément marquée `dynamic`) — on poll donc la valeur au lieu
-// d'observer via KVO, pour ne jamais dépendre d'un mécanisme qui pourrait
-// échouer silencieusement.
+// IMPORTANT — pourquoi on ne passe PAS par valueForKey: ici :
+// ChatInputView et ChannelPointsChatButton sont des classes Swift pures.
+// Leurs stored properties internes (`channelPointsButton` sur ChatInputView,
+// `showsClaim` sur ChannelPointsChatButton) ne sont PAS marquées `@objc`/
+// `dynamic` : le compilateur Swift ne génère alors ni accesseur ObjC ni
+// ivar exploitable par le runtime ObjC. Le nom de la propriété existe bien
+// dans les métadonnées Swift (réflexion/Mirror), mais valueForKey: n'a
+// littéralement rien à trouver côté runtime ObjC → NSUnknownKeyException
+// systématique, à chaque tick, pas une erreur intermittente. Encadrer
+// l'appel d'un @try/@catch évite le crash mais ne réactive pas la
+// fonctionnalité : elle reste inopérante à 100% des essais.
 //
-// Sécurité : chaque accès à une propriété privée Twitch passe par
-// valueForKey: encadré d'un @try/@catch — si Twitch renomme ou retire la
-// propriété dans une future version, le module logue proprement et
-// s'arrête pour cette instance au lieu de crasher le reste de l'app.
+// Solution robuste : ne dépendre que d'API publiques UIKit, garanties
+// stables côté ObjC quelle que soit l'implémentation Swift interne :
+//  - `channelPointsButton` est retrouvé par parcours de `subviews` et
+//    filtrage par nom de classe ("Twitch.ChannelPointsChatButton"),
+//    exactement comme bitsButton/emoticonButton sont déjà retrouvés
+//    ailleurs dans ce fichier.
+//  - `showsClaim` est déduit visuellement : ChannelPointsChatButton
+//    ajoute un `activeBonusOverlayView` (type TwitchCoreUI.GlowView,
+//    le composant d'incrustation "glow" générique de Twitch) en subview
+//    quand un coffre est réclamable, et le retire sinon. On détecte donc
+//    la présence d'un GlowView visible et non masqué parmi les subviews
+//    du bouton plutôt que de lire un booléen Swift privé inaccessible.
+//
+// Cette approche est plus proche du fonctionnement natif : c'est le même
+// signal visuel que Twitch utilise pour afficher l'incrustation "Claim
+// now" à l'utilisateur, donc son état ne peut pas diverger de ce que
+// l'app montre réellement à l'écran.
+
+// Parcourt les subviews de `root` (BFS peu profond) et retourne la
+// première vue dont la classe correspond exactement à `className`.
+static UIView *s7tv_findSubviewByClassName(UIView *root, NSString *className) {
+    if (!root) return nil;
+    NSMutableArray<UIView *> *bfs = [NSMutableArray arrayWithArray:root.subviews];
+    while (bfs.count > 0) {
+        UIView *v = bfs.firstObject;
+        [bfs removeObjectAtIndex:0];
+        if ([NSStringFromClass([v class]) isEqualToString:className]) {
+            return v;
+        }
+        [bfs addObjectsFromArray:v.subviews];
+    }
+    return nil;
+}
+
+// Un coffre à points est réclamable si le bouton affiche son incrustation
+// "glow" (TwitchCoreUI.GlowView) visible en subview. Ne lit aucune
+// propriété Swift privée — uniquement class/subviews/isHidden/alpha,
+// toutes garanties ObjC-compliant via UIView.
+static BOOL s7tv_channelPointsButtonShowsClaim(UIView *channelPointsButton) {
+    if (!channelPointsButton || channelPointsButton.hidden || channelPointsButton.alpha <= 0.01) {
+        return NO;
+    }
+    UIView *glow = s7tv_findSubviewByClassName(channelPointsButton, @"TwitchCoreUI.GlowView");
+    return glow != nil && !glow.hidden && glow.alpha > 0.01;
+}
 
 // Cherche la première instance de Twitch.ChatInputView actuellement
 // affichée, tous écrans/fenêtres connectés confondus (couvre normal,
@@ -205,26 +253,10 @@ static UIView *s7tv_findChatInputView(void) {
 static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
     if (!chatInputView || !chatInputView.window) return;
 
-    id channelPointsButton = nil;
-    @try {
-        channelPointsButton = [chatInputView valueForKey:@"channelPointsButton"];
-    } @catch (NSException *exception) {
-        [[SevenTVManager sharedManager]
-            log:@"Erreur Channel Points: propriété 'channelPointsButton' introuvable (%@) — polling abandonné",
-            exception.reason];
-        return; // Twitch a changé sa structure interne — inutile de continuer sur cette instance
-    }
+    UIView *channelPointsButton = s7tv_findSubviewByClassName(chatInputView, @"Twitch.ChannelPointsChatButton");
 
     if (channelPointsButton) {
-        BOOL showsClaim = NO;
-        @try {
-            showsClaim = [[channelPointsButton valueForKey:@"showsClaim"] boolValue];
-        } @catch (NSException *exception) {
-            [[SevenTVManager sharedManager]
-                log:@"Erreur Channel Points: propriété 'showsClaim' introuvable (%@) — polling abandonné",
-                exception.reason];
-            return;
-        }
+        BOOL showsClaim = s7tv_channelPointsButtonShowsClaim(channelPointsButton);
 
         BOOL alreadyClaimed = [objc_getAssociatedObject(channelPointsButton,
                                                           &kS7TVChannelPointsClaimed) boolValue];

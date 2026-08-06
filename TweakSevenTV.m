@@ -1321,9 +1321,26 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
                                  completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
 - (NSURLSessionDataTask *)s7tv_dataTaskWithURL:(NSURL *)url
                              completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
+// Variante SANS completion handler — c'est celle-ci qu'utilise Apollo en
+// interne pour ses requêtes delegate-based (voir plus bas, hook
+// Apollo.URLSessionClient). On ne peut voir le corps de la requête SORTANTE
+// (donc confirmer qu'une ClaimChannelPointsMutation part bien) qu'ici —
+// didReceiveData:/didCompleteWithError: ne donnent que la réponse.
+- (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request;
 @end
 
 @implementation NSURLSession (SevenTV)
+
+- (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request {
+    if ([request.URL.host isEqualToString:@"gql.twitch.tv"] && request.HTTPBody) {
+        NSString *bodyStr = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
+        if ([bodyStr containsString:@"ClaimCommunityPoints"] || [bodyStr containsString:@"claimCommunityPoints"]) {
+            [[SevenTVManager sharedManager]
+                log:@"🎁 Channel Points debug: requête ClaimChannelPointsMutation envoyée — corps :\n%@", bodyStr];
+        }
+    }
+    return [self s7tv_dataTaskWithRequest:request];
+}
 
 - (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request
                                  completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
@@ -1452,6 +1469,27 @@ static NSMutableDictionary<NSNumber *, NSMutableData *> *s7tv_apolloBuffers(void
         if ([host isEqualToString:@"gql.twitch.tv"]) {
             [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:fullData];
             s7tv_scanGQLResponseForChannelPointsClaim(fullData);
+
+            // Preuve directe du résultat serveur de la mutation de claim —
+            // permet de voir un éventuel champ "error" renvoyé par Twitch
+            // (ex: coffre déjà expiré, déjà réclamé...) plutôt que de
+            // déduire l'échec indirectement.
+            static NSData *s_claimNeedle = nil;
+            static dispatch_once_t claimOnce;
+            dispatch_once(&claimOnce, ^{
+                s_claimNeedle = [@"claimCommunityPoints" dataUsingEncoding:NSUTF8StringEncoding];
+            });
+            if ([fullData rangeOfData:s_claimNeedle options:0 range:NSMakeRange(0, fullData.length)].location != NSNotFound) {
+                NSString *bodyStr = [[NSString alloc] initWithData:fullData encoding:NSUTF8StringEncoding];
+                [[SevenTVManager sharedManager]
+                    log:@"🎁 Channel Points debug: réponse ClaimChannelPointsMutation reçue — corps :\n%@", bodyStr];
+            }
+        }
+    } else if (error) {
+        NSString *host = task.currentRequest.URL.host ?: task.originalRequest.URL.host;
+        if ([host isEqualToString:@"gql.twitch.tv"]) {
+            [[SevenTVManager sharedManager]
+                log:@"🎁 Channel Points debug: requête gql.twitch.tv terminée en erreur réseau : %@", error];
         }
     }
 
@@ -1918,8 +1956,10 @@ static void s7tv_swizzle_token_capture(void) {
 static void s7tv_swizzle_session(void) {
     SEL selRequest  = @selector(dataTaskWithRequest:completionHandler:);
     SEL selURL      = @selector(dataTaskWithURL:completionHandler:);
+    SEL selReqOnly  = @selector(dataTaskWithRequest:);
     SEL swizRequest = @selector(s7tv_dataTaskWithRequest:completionHandler:);
     SEL swizURL     = @selector(s7tv_dataTaskWithURL:completionHandler:);
+    SEL swizReqOnly = @selector(s7tv_dataTaskWithRequest:);
 
     NSURLSession *probeStd = [NSURLSession sessionWithConfiguration:
                               [NSURLSessionConfiguration defaultSessionConfiguration]];
@@ -1928,6 +1968,7 @@ static void s7tv_swizzle_session(void) {
      NSStringFromClass(classStd)];
     s7tv_swizzle(classStd, [NSURLSession class], selRequest, swizRequest);
     s7tv_swizzle(classStd, [NSURLSession class], selURL, swizURL);
+    s7tv_swizzle(classStd, [NSURLSession class], selReqOnly, swizReqOnly);
 
     Class classShared = object_getClass([NSURLSession sharedSession]);
     [[SevenTVManager sharedManager] log:@"🔍 NSURLSession shared: %@",
@@ -1935,6 +1976,7 @@ static void s7tv_swizzle_session(void) {
     if (classShared != classStd) {
         s7tv_swizzle(classShared, [NSURLSession class], selRequest, swizRequest);
         s7tv_swizzle(classShared, [NSURLSession class], selURL, swizURL);
+        s7tv_swizzle(classShared, [NSURLSession class], selReqOnly, swizReqOnly);
     } else {
         [[SevenTVManager sharedManager] log:@"ℹ️  sharedSession même classe que standard"];
     }

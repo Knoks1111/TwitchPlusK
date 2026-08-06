@@ -180,7 +180,21 @@ static void s7tv_swizzle(Class targetClass,
 // écrit depuis le thread réseau (completion handler NSURLSession) et lu
 // depuis le main thread (boucle de polling).
 static NSString *s_s7tvPendingChannelPointsClaimID = nil;
-static NSString *s_s7tvLastTriggeredChannelPointsClaimID = nil;
+
+// Dédup PAR COOLDOWN, pas permanente : on retente le même ID toutes les
+// kS7TVClaimRetryCooldown secondes tant que le GQL continue de le signaler
+// (voir s7tv_scanGQLResponseForChannelPointsClaim). Nécessaire car
+// performSelector peut s'exécuter "avec succès" (aucune exception) sans
+// que Twitch envoie réellement la mutation — observé en conditions réelles
+// juste après un lancement d'app : la ChatInputView existe déjà et répond
+// au sélecteur, mais son câblage interne (bindings Channel Points) n'est
+// pas encore prêt. Le seul signal fiable de succès réel est la
+// confirmation serveur (availableClaim redevient null) — donc tant qu'elle
+// n'arrive pas, on continue d'essayer plutôt que d'abandonner après une
+// tentative qui n'a peut-être rien fait.
+static NSString      *s_s7tvLastTriggeredChannelPointsClaimID = nil;
+static NSTimeInterval  s_s7tvLastTriggerAttemptTime = 0;
+static const NSTimeInterval kS7TVClaimRetryCooldown = 2.0;
 
 static void s7tv_setPendingChannelPointsClaimID(NSString *claimID) {
     @synchronized ([SevenTVManager class]) {
@@ -293,16 +307,22 @@ static UIView *s7tv_findChatInputView(void) {
 // le hook réseau (cas normal, latence minimale) et depuis le polling de
 // secours (cas où aucune ChatInputView n'était encore trouvable au moment
 // de la détection réseau — ex: tout début de chargement du stream).
-// Dédup par comparaison d'ID : sûr même si les deux chemins s'exécutent
-// pour le même coffre.
+// Dédup par COOLDOWN (pas permanente) : voir le commentaire sur
+// kS7TVClaimRetryCooldown plus haut — un performSelector "réussi" (aucune
+// exception) ne garantit pas qu'une vraie requête soit partie.
 static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
     if (!claimID.length) return;
 
     NSString *lastTriggeredClaimID;
+    NSTimeInterval lastAttemptTime;
     @synchronized ([SevenTVManager class]) {
         lastTriggeredClaimID = s_s7tvLastTriggeredChannelPointsClaimID;
+        lastAttemptTime = s_s7tvLastTriggerAttemptTime;
     }
-    if ([claimID isEqualToString:lastTriggeredClaimID]) return;
+    NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+    BOOL recentlyAttemptedSameClaim = [claimID isEqualToString:lastTriggeredClaimID]
+        && (now - lastAttemptTime) < kS7TVClaimRetryCooldown;
+    if (recentlyAttemptedSameClaim) return;
 
     UIView *chatInputView = s7tv_findChatInputView();
     if (!chatInputView || !chatInputView.window) return; // retentera au prochain déclencheur
@@ -320,10 +340,13 @@ static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
         return;
     }
 
-    // Marqué AVANT l'appel pour éviter un double-déclenchement (le hook
-    // réseau et le polling de secours peuvent se chevaucher).
+    // Marqué AVANT l'appel (évite un double-déclenchement immédiat si le
+    // hook réseau et le polling de secours se chevauchent), mais le
+    // cooldown ci-dessus permet un retry automatique si cette tentative
+    // s'avère infructueuse — pas de blocage définitif.
     @synchronized ([SevenTVManager class]) {
         s_s7tvLastTriggeredChannelPointsClaimID = claimID;
+        s_s7tvLastTriggerAttemptTime = now;
     }
 
     [[SevenTVManager sharedManager] log:@"🎁 Channel Points: coffre réclamé automatiquement (id=%@)", claimID];

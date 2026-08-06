@@ -1404,6 +1404,118 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
 
 
 // ────────────────────────────────────────────────────────────
+// MARK: - Hook Apollo.URLSessionClient (GraphQL réel, delegate-based)
+// ────────────────────────────────────────────────────────────
+//
+// DÉCOUVERTE : le swizzle ci-dessus sur -[NSURLSession dataTaskWithRequest:
+// completionHandler:]/dataTaskWithURL:completionHandler: ne voit JAMAIS les
+// requêtes GraphQL réelles de Twitch (ChannelPointsQuery incluse) — confirmé
+// par des dizaines de ticks de logs sans le moindre "availableClaim", même
+// avec un coffre déjà présent à l'arrivée sur la chaîne.
+//
+// Raison confirmée dans le binaire (pas une hypothèse) :
+//   @rpath/TwitchApollo.framework/TwitchApollo
+//   Apollo.URLSessionClient                          (classe réelle)
+//   TwitchKit.TKGraphQL.urlSessionClient              (Twitch s'en sert)
+//   URLSession:dataTask:didReceiveData:                (sélecteur réel)
+//   urlSession(_:task:didCompleteWithError:)           (signature réelle)
+//
+// Twitch embarque son propre framework Apollo (le client GraphQL open-source
+// standard), et Apollo-iOS pilote ses requêtes via l'API DELEGATE de
+// NSURLSession (-URLSession:dataTask:didReceiveData:, -URLSession:task:
+// didCompleteWithError:), pas l'API à completion handler qu'on avait
+// swizzlée. C'est un mécanisme de requête entièrement différent, invisible
+// à l'ancien hook — pas un problème de format JSON, de timing, ou de nom de
+// champ. On corrige en swizzlant directement les méthodes délégué
+// d'Apollo.URLSessionClient : didReceiveData: peut être appelé plusieurs
+// fois par tâche (réponse en chunks), donc on accumule par
+// taskIdentifier, puis on traite le corps complet une fois assemblé à
+// didCompleteWithError: (si error == nil).
+
+static NSMutableDictionary<NSNumber *, NSMutableData *> *s7tv_apolloBuffers(void) {
+    static NSMutableDictionary *buffers = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ buffers = [NSMutableDictionary dictionary]; });
+    return buffers;
+}
+
+@interface NSObject (SevenTVApolloDelegate)
+- (void)s7tv_apolloURLSession:(NSURLSession *)session
+                      dataTask:(NSURLSessionDataTask *)dataTask
+                didReceiveData:(NSData *)data;
+- (void)s7tv_apolloURLSession:(NSURLSession *)session
+                          task:(NSURLSessionTask *)task
+          didCompleteWithError:(NSError *)error;
+@end
+
+@implementation NSObject (SevenTVApolloDelegate)
+
+- (void)s7tv_apolloURLSession:(NSURLSession *)session
+                      dataTask:(NSURLSessionDataTask *)dataTask
+                didReceiveData:(NSData *)data {
+    NSString *host = dataTask.currentRequest.URL.host ?: dataTask.originalRequest.URL.host;
+    if ([host isEqualToString:@"gql.twitch.tv"]) {
+        @synchronized (s7tv_apolloBuffers()) {
+            NSNumber *key = @(dataTask.taskIdentifier);
+            NSMutableData *buf = s7tv_apolloBuffers()[key];
+            if (!buf) {
+                buf = [NSMutableData data];
+                s7tv_apolloBuffers()[key] = buf;
+            }
+            [buf appendData:data];
+        }
+    }
+    // Appelle l'implémentation originale (échangée par le swizzle) —
+    // indispensable pour qu'Apollo reçoive bien ses propres données.
+    [self s7tv_apolloURLSession:session dataTask:dataTask didReceiveData:data];
+}
+
+- (void)s7tv_apolloURLSession:(NSURLSession *)session
+                          task:(NSURLSessionTask *)task
+          didCompleteWithError:(NSError *)error {
+    NSNumber *key = @(task.taskIdentifier);
+    NSData *fullData = nil;
+    @synchronized (s7tv_apolloBuffers()) {
+        fullData = [s7tv_apolloBuffers()[key] copy];
+        [s7tv_apolloBuffers() removeObjectForKey:key];
+    }
+
+    if (fullData.length > 0 && !error) {
+        NSString *host = task.currentRequest.URL.host ?: task.originalRequest.URL.host;
+        if ([host isEqualToString:@"gql.twitch.tv"]) {
+            [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:fullData];
+            s7tv_scanGQLResponseForChannelPointsClaim(fullData);
+        }
+    }
+
+    [self s7tv_apolloURLSession:session task:task didCompleteWithError:error];
+}
+
+@end
+
+// Swizzle direct sur Apollo.URLSessionClient — classe concrète connue par
+// son nom exact (confirmé dans le binaire), pas besoin de sonder une
+// instance comme pour NSURLSessionWebSocketTask (qui est un vrai cluster
+// de classes abstrait ; Apollo.URLSessionClient est une classe concrète
+// normale, instanciée directement par Apollo).
+static void s7tv_swizzle_apollo_gql(void) {
+    Class apolloClass = NSClassFromString(@"Apollo.URLSessionClient");
+    if (!apolloClass) {
+        [[SevenTVManager sharedManager]
+            log:@"⚠️ Channel Points: Apollo.URLSessionClient introuvable — hook GQL delegate non posé"];
+        return;
+    }
+
+    s7tv_swizzle(apolloClass, [NSObject class],
+                 @selector(URLSession:dataTask:didReceiveData:),
+                 @selector(s7tv_apolloURLSession:dataTask:didReceiveData:));
+    s7tv_swizzle(apolloClass, [NSObject class],
+                 @selector(URLSession:task:didCompleteWithError:),
+                 @selector(s7tv_apolloURLSession:task:didCompleteWithError:));
+}
+
+
+// ────────────────────────────────────────────────────────────
 // MARK: - Fix A: Extraction room-id depuis ROOMSTATE
 // ────────────────────────────────────────────────────────────
 
@@ -2250,6 +2362,7 @@ static void TwitchSevenTVInit(void) {
     // Interception réponses GQL Twitch
     s7tv_swizzle_token_capture();
     s7tv_swizzle_session();
+    s7tv_swizzle_apollo_gql();
 
     // Interception IRC WebSocket
     s7tv_swizzle_websocket();

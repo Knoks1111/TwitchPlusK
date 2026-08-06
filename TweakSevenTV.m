@@ -47,6 +47,20 @@
 // Cle NSUserDefaults Auto Collect Channel Points
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 
+// Lecture centralisée du toggle (défaut ON, comme dans les réglages).
+// Utilisée par toute la logique Channel Points ET par ses logs, pour que
+// désactiver le toggle coupe VRAIMENT tout ce qui est spécifique aux
+// Channel Points — seule exception volontaire : le log de découverte de
+// ChatInputView (s7tv_scanForChannelPointsLoop), qui sert aussi de
+// diagnostic général de la boucle de polling elle-même, indépendamment
+// de la collecte automatique.
+static BOOL s7tv_channelPointsAutoCollectEnabled(void) {
+    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
+    return [prefs objectForKey:kTCLiveAutoCollectChannelPoints] != nil
+        ? [prefs boolForKey:kTCLiveAutoCollectChannelPoints]
+        : YES;
+}
+
 
 // ────────────────────────────────────────────────────────────
 // MARK: - Clés associated objects
@@ -196,6 +210,17 @@ static NSString      *s_s7tvLastTriggeredChannelPointsClaimID = nil;
 static NSTimeInterval  s_s7tvLastTriggerAttemptTime = 0;
 static const NSTimeInterval kS7TVClaimRetryCooldown = 2.0;
 
+// ID du dernier coffre dont le SERVEUR a confirmé la collecte réussie,
+// via le corps même de la réponse ClaimChannelPointsMutation (voir
+// s7tv_scanGQLResponseForChannelPointsMutationResult). C'est le seul
+// signal d'arrêt fiable : Twitch ne re-fetch pas forcément
+// ChannelPointsQuery juste après une mutation réussie, donc attendre un
+// futur `availableClaim: null` peut ne jamais arriver et le polling de
+// secours (s7tv_pollChannelPointsClaim) retenterait indéfiniment sur un
+// coffre déjà collecté. Tant que pendingClaimID == confirmedCollectedID,
+// on n'a plus besoin de rien tenter.
+static NSString *s_s7tvConfirmedCollectedClaimID = nil;
+
 static void s7tv_setPendingChannelPointsClaimID(NSString *claimID) {
     @synchronized ([SevenTVManager class]) {
         s_s7tvPendingChannelPointsClaimID = [claimID copy];
@@ -205,6 +230,19 @@ static void s7tv_setPendingChannelPointsClaimID(NSString *claimID) {
 static NSString *s7tv_getPendingChannelPointsClaimID(void) {
     @synchronized ([SevenTVManager class]) {
         return s_s7tvPendingChannelPointsClaimID;
+    }
+}
+
+static void s7tv_markChannelPointsClaimConfirmedCollected(NSString *claimID) {
+    if (!claimID.length) return;
+    @synchronized ([SevenTVManager class]) {
+        s_s7tvConfirmedCollectedClaimID = [claimID copy];
+        // Si le coffre en attente est celui qu'on vient de confirmer
+        // collecté, on le vide aussi : plus rien à faire dessus, et ça
+        // coupe court même si un autre code path relit pendingClaimID.
+        if ([s_s7tvPendingChannelPointsClaimID isEqualToString:claimID]) {
+            s_s7tvPendingChannelPointsClaimID = nil;
+        }
     }
 }
 
@@ -279,6 +317,65 @@ static void s7tv_scanGQLResponseForChannelPointsClaim(NSData *data) {
     }
 }
 
+// Appelé sur CHAQUE réponse gql.twitch.tv interceptée (thread réseau) —
+// spécifiquement pour lire le RÉSULTAT d'une ClaimChannelPointsMutation
+// (distinct de s7tv_scanGQLResponseForChannelPointsClaim, qui lit
+// `availableClaim` dans les réponses de ChannelPointsQuery). On a ici la
+// preuve directe et immédiate du succès ou de l'échec de la collecte —
+// pas besoin d'attendre un futur refetch qui peut ne jamais arriver.
+//
+// Formes observées en conditions réelles :
+//   Succès : {"data":{"claimCommunityPoints":{"claim":{"id":"..."},
+//             "error":null, ...}}}
+//   Échec  : {"errors":[{...,"extensions":{"code":"IntegrityCheckFailed"}}],
+//             "data":{"claimCommunityPoints":null}}
+static void s7tv_scanGQLResponseForChannelPointsMutationResult(NSData *data) {
+    if (data.length == 0) return;
+
+    static NSData *s_needle = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        s_needle = [@"claimCommunityPoints" dataUsingEncoding:NSUTF8StringEncoding];
+    });
+    if ([data rangeOfData:s_needle options:0 range:NSMakeRange(0, data.length)].location == NSNotFound) {
+        return;
+    }
+
+    NSError *jsonError = nil;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+    if (jsonError || ![json isKindOfClass:[NSDictionary class]]) return;
+
+    id dataField = json[@"data"];
+    if (![dataField isKindOfClass:[NSDictionary class]]) return;
+
+    id payload = dataField[@"claimCommunityPoints"];
+    if (![payload isKindOfClass:[NSDictionary class]]) {
+        // "claimCommunityPoints": null — mutation rejetée au niveau GQL
+        // (voir "errors" au niveau racine, ex: IntegrityCheckFailed). Le
+        // cooldown existant se charge déjà du retry, rien à faire ici.
+        return;
+    }
+
+    id error = payload[@"error"];
+    id claim = payload[@"claim"];
+    BOOL success = (!error || [error isKindOfClass:[NSNull class]])
+        && [claim isKindOfClass:[NSDictionary class]];
+
+    if (!success) return;
+
+    NSString *confirmedClaimID = claim[@"id"];
+    if (!confirmedClaimID.length) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        s7tv_markChannelPointsClaimConfirmedCollected(confirmedClaimID);
+        if (s7tv_channelPointsAutoCollectEnabled()) {
+            [[SevenTVManager sharedManager]
+                log:@"🎁 Channel Points: collecte confirmée par le serveur (id=%@) — arrêt des tentatives pour ce coffre",
+                    confirmedClaimID];
+        }
+    });
+}
+
 // Cherche la première instance de Twitch.ChatInputView actuellement
 // affichée, tous écrans/fenêtres connectés confondus (couvre normal,
 // théâtre, et PiP si jamais Twitch y instancie sa propre ChatInputView).
@@ -315,10 +412,18 @@ static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
 
     NSString *lastTriggeredClaimID;
     NSTimeInterval lastAttemptTime;
+    NSString *confirmedCollectedClaimID;
     @synchronized ([SevenTVManager class]) {
         lastTriggeredClaimID = s_s7tvLastTriggeredChannelPointsClaimID;
         lastAttemptTime = s_s7tvLastTriggerAttemptTime;
+        confirmedCollectedClaimID = s_s7tvConfirmedCollectedClaimID;
     }
+
+    // Le serveur a déjà confirmé (via le corps de la mutation) que ce
+    // coffre précis est collecté — plus rien à faire, quelle que soit la
+    // raison pour laquelle pendingClaimID traîne encore sur cet ID
+    // (ex: pas de refetch ChannelPointsQuery après la mutation).
+    if ([claimID isEqualToString:confirmedCollectedClaimID]) return;
     NSTimeInterval now = [NSDate date].timeIntervalSince1970;
     BOOL recentlyAttemptedSameClaim = [claimID isEqualToString:lastTriggeredClaimID]
         && (now - lastAttemptTime) < kS7TVClaimRetryCooldown;
@@ -327,12 +432,7 @@ static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
     UIView *chatInputView = s7tv_findChatInputView();
     if (!chatInputView || !chatInputView.window) return; // retentera au prochain déclencheur
 
-    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    BOOL autoCollectEnabled = [prefs objectForKey:kTCLiveAutoCollectChannelPoints] != nil
-        ? [prefs boolForKey:kTCLiveAutoCollectChannelPoints]
-        : YES; // défaut ON, comme dans les réglages
-    if (!autoCollectEnabled) return;
-
+    if (!s7tv_channelPointsAutoCollectEnabled()) return;
     SEL claimSel = NSSelectorFromString(@"handleChannelPointsButtonTapped");
     if (![chatInputView respondsToSelector:claimSel]) {
         [[SevenTVManager sharedManager]
@@ -1358,8 +1458,10 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     if ([request.URL.host isEqualToString:@"gql.twitch.tv"] && request.HTTPBody) {
         NSString *bodyStr = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
         if ([bodyStr containsString:@"ClaimCommunityPoints"] || [bodyStr containsString:@"claimCommunityPoints"]) {
-            [[SevenTVManager sharedManager]
-                log:@"🎁 Channel Points debug: requête ClaimChannelPointsMutation envoyée — corps :\n%@", bodyStr];
+            if (s7tv_channelPointsAutoCollectEnabled()) {
+                [[SevenTVManager sharedManager]
+                    log:@"🎁 Channel Points debug: requête ClaimChannelPointsMutation envoyée — corps :\n%@", bodyStr];
+            }
         }
     }
     return [self s7tv_dataTaskWithRequest:request];
@@ -1492,21 +1594,7 @@ static NSMutableDictionary<NSNumber *, NSMutableData *> *s7tv_apolloBuffers(void
         if ([host isEqualToString:@"gql.twitch.tv"]) {
             [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:fullData];
             s7tv_scanGQLResponseForChannelPointsClaim(fullData);
-
-            // Preuve directe du résultat serveur de la mutation de claim —
-            // permet de voir un éventuel champ "error" renvoyé par Twitch
-            // (ex: coffre déjà expiré, déjà réclamé...) plutôt que de
-            // déduire l'échec indirectement.
-            static NSData *s_claimNeedle = nil;
-            static dispatch_once_t claimOnce;
-            dispatch_once(&claimOnce, ^{
-                s_claimNeedle = [@"claimCommunityPoints" dataUsingEncoding:NSUTF8StringEncoding];
-            });
-            if ([fullData rangeOfData:s_claimNeedle options:0 range:NSMakeRange(0, fullData.length)].location != NSNotFound) {
-                NSString *bodyStr = [[NSString alloc] initWithData:fullData encoding:NSUTF8StringEncoding];
-                [[SevenTVManager sharedManager]
-                    log:@"🎁 Channel Points debug: réponse ClaimChannelPointsMutation reçue — corps :\n%@", bodyStr];
-            }
+            s7tv_scanGQLResponseForChannelPointsMutationResult(fullData);
         }
     } else if (error) {
         NSString *host = task.currentRequest.URL.host ?: task.originalRequest.URL.host;

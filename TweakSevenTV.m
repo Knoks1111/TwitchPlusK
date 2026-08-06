@@ -137,72 +137,41 @@ static void s7tv_swizzle(Class targetClass,
 // ────────────────────────────────────────────────────────────
 //
 // Volontairement indépendant de tout le reste du fichier (pas de swizzle
-// partagé, pas de clé associated-object partagée avec le hijack Bits ou
-// le verrou d'orientation) : ce module scanne lui-même périodiquement la
-// hiérarchie des fenêtres pour trouver Twitch.ChatInputView, sans passer
-// par didMoveToWindow. Peut être retiré intégralement (les 3 fonctions
-// ci-dessous + son appel de démarrage dans TwitchSevenTVInit) sans
-// toucher au reste du tweak.
+// partagé avec le hijack Bits ou le verrou d'orientation, sauf le hook
+// GQL Apollo ci-dessous qui lui est indispensable).
 //
-// Fonctionnement :
-//  1. s7tv_findChatInputView()      — cherche l'instance active, une fois
-//  2. s7tv_pollChannelPointsClaim() — une fois trouvée, vérifie l'état du
-//                                     claim toutes les 1.5s et déclenche
-//                                     la collecte native si besoin
-//  3. s7tv_scanForChannelPointsLoop() — boucle de fond qui relance la
-//                                       recherche toutes les 2s, pour
-//                                       capter chaque nouvelle instance
-//                                       (nouveau stream, retour au chat...)
+// ARCHITECTURE FINALE (après plusieurs itérations, voir historique git
+// pour le détail des approches écartées — UI/valueForKey:, GlowView,
+// CALayer.animationKeys : toutes invalidées par des tests réels) :
 //
-// Mécanisme de collecte : Twitch.ChatInputView possède, parmi ses subviews
-// directes, une instance de Twitch.ChannelPointsChatButton. Le tap
-// utilisateur sur ce bouton déclenche en interne
-// -[ChatInputView handleChannelPointsButtonTapped] (zéro argument, méthode
-// @objc — c'est le vrai handler UIControl branché en target/action), qui
-// envoie la vraie requête GraphQL authentifiée (ClaimChannelPointsMutation)
-// — on ne fait que déclencher cette méthode native, jamais de
-// reconstruction de requête réseau nous-mêmes.
+//  1. s7tv_swizzle_apollo_gql() — hook sur Apollo.URLSessionClient
+//     (TwitchApollo.framework), le vrai client GraphQL de Twitch. Pilote
+//     ses requêtes via l'API DELEGATE de NSURLSession
+//     (-URLSession:dataTask:didReceiveData:/-URLSession:task:
+//     didCompleteWithError:), invisible à un swizzle sur les méthodes à
+//     completion handler de NSURLSession. Accumule les chunks par
+//     taskIdentifier et transmet le corps complet une fois assemblé.
 //
-// IMPORTANT — pourquoi on ne passe PAS par valueForKey: ici, ni par
-// l'inspection de la hiérarchie de vues :
-// ChatInputView et ChannelPointsChatButton sont des classes Swift pures.
-// Leurs stored properties internes (`channelPointsButton` sur ChatInputView,
-// `showsClaim` sur ChannelPointsChatButton) ne sont PAS marquées `@objc`/
-// `dynamic` : le compilateur Swift ne génère alors ni accesseur ObjC ni
-// ivar exploitable par le runtime ObjC — valueForKey: échoue à 100% des
-// essais (NSUnknownKeyException systématique, pas intermittente).
+//  2. s7tv_scanGQLResponseForChannelPointsClaim() — scanne chaque réponse
+//     gql.twitch.tv (gate rapide par octets avant tout parsing JSON) pour
+//     le champ `CommunityPoints.availableClaim` : non-null seulement
+//     quand un coffre est réclamable — c'est le booléen `showsClaim`
+//     interne de Twitch, mais exposé en JSON brut, donc indépendant de
+//     Swift/KVC/UI. Dès qu'un nouvel ID de coffre est détecté, déclenche
+//     IMMÉDIATEMENT (main thread) — pas d'attente du prochain tick.
 //
-// Deux tentatives basées sur l'UI ont ensuite échoué, et les logs de debug
-// le confirment sans ambiguïté :
-//   1. Présence d'un "TwitchCoreUI.GlowView" en subview → ce composant
-//      n'existe simplement pas dans la hiérarchie du bouton.
-//   2. Détection via -[CALayer animationKeys] (wiggle/pulse/explosion —
-//      confirmés dans ChannelPointsAnimator.swift) → ces animations sont
-//      des EVENEMENTS ponctuels de quelques secondes, pas un état
-//      persistant. Un polling toutes les 1,5s les rate presque à coup sûr
-//      (30+ ticks consécutifs à animKeys=(null) alors qu'un coffre était
-//      pourtant présent). Continuer sur cette voie serait encore deviner.
+//  3. s7tv_triggerChannelPointsClaimIfNeeded() — logique unique de
+//     déclenchement (dédup par ID, vérif pref utilisateur, appel natif).
+//     Appelle -[ChatInputView handleChannelPointsButtonTapped] (méthode
+//     @objc réelle, le vrai handler UIControl branché en target/action
+//     sur le bouton) — Twitch envoie alors lui-même la vraie mutation
+//     GraphQL authentifiée (ClaimChannelPointsMutation). On ne reconstruit
+//     jamais aucune requête réseau nous-mêmes.
 //
-// Solution robuste : arrêter d'observer l'UI et lire directement la
-// source de vérité que Twitch interroge lui-même. Le tweak intercepte déjà
-// TOUTES les réponses gql.twitch.tv (swizzle sur
-// -[NSURLSession dataTaskWithRequest:completionHandler:]/dataTaskWithURL:,
-// voir plus bas dans ce fichier — c'est ce même point d'accroche qui
-// alimente extractAndLoadEmotesFromGQLResponse:). D'après
-// twitch_strings.txt, le JSON de réponse de ChannelPointsQuery contient un
-// champ `CommunityPoints.availableClaim`, non-null uniquement quand un
-// coffre est réclamable — exactement le booléen `showsClaim` interne,
-// mais exposé cette fois en JSON brut, donc totalement indépendant de
-// Swift/KVC/UI. On scanne chaque réponse GQL pour ce champ (scan
-// récursif, gate rapide par recherche d'octets avant tout parsing JSON
-// pour ne payer le coût du parsing que sur les réponses concernées) et on
-// mémorise l'ID du coffre détecté dans un état global thread-safe. Le
-// polling existant (qui trouve déjà ChatInputView de façon fiable, cf.
-// logs précédents) n'a plus qu'à lire ce drapeau au lieu de deviner depuis
-// l'UI, puis déclenche le VRAI handler natif (handleChannelPointsButtonTapped)
-// exactement comme avant — on ne reconstruit toujours aucune requête
-// réseau nous-mêmes, on se contente de savoir QUAND appeler le handler
-// natif avec certitude.
+//  4. s7tv_pollChannelPointsClaim()/s7tv_scanForChannelPointsLoop() —
+//     filet de sécurité silencieux (1.5s/2s) pour le seul cas où le
+//     déclenchement immédiat n'a pas trouvé de ChatInputView au bon
+//     moment (ex: stream encore en cours de chargement réseau).
 
 // État global : ID du dernier coffre détecté comme réclamable via GQL
 // (nil si aucun), et ID du dernier coffre effectivement déclenché, pour
@@ -255,6 +224,8 @@ static id s7tv_findValueForKeyRecursive(id json, NSString *key, BOOL *found) {
 // Gate rapide par recherche d'octets bruts avant de payer le coût d'un
 // parsing JSON complet — la quasi-totalité des réponses GQL n'ont rien à
 // voir avec les Channel Points (chat, badges, métadonnées stream...).
+static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID); // forward decl, définie plus bas
+
 static void s7tv_scanGQLResponseForChannelPointsClaim(NSData *data) {
     if (data.length == 0) return;
 
@@ -277,7 +248,6 @@ static void s7tv_scanGQLResponseForChannelPointsClaim(NSData *data) {
 
     if (!claim || [claim isKindOfClass:[NSNull class]]) {
         s7tv_setPendingChannelPointsClaimID(nil);
-        [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: GQL confirme — availableClaim=null (aucun coffre en attente)"];
         return;
     }
 
@@ -285,7 +255,13 @@ static void s7tv_scanGQLResponseForChannelPointsClaim(NSData *data) {
         NSString *claimID = claim[@"id"];
         if (!claimID.length) claimID = @"unknown";
         s7tv_setPendingChannelPointsClaimID(claimID);
-        [[SevenTVManager sharedManager] log:@"🎁 Channel Points: coffre détecté via GQL — availableClaim.id=%@", claimID];
+
+        // Déclenchement immédiat (main thread) plutôt que d'attendre le
+        // prochain tick du polling de secours — latence minimale entre la
+        // détection réseau et la collecte réelle.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            s7tv_triggerChannelPointsClaimIfNeeded(claimID);
+        });
     }
 }
 
@@ -313,67 +289,61 @@ static UIView *s7tv_findChatInputView(void) {
     return nil;
 }
 
-// Poll actif sur UNE instance de ChatInputView déjà trouvée. S'arrête
-// tout seul dès que la vue quitte l'écran (self.window == nil), ce qui
-// couvre naturellement la fermeture du stream sans logique de cleanup
-// séparée à maintenir. Ne lit plus AUCUN état UI pour décider — seulement
-// le drapeau alimenté par s7tv_scanGQLResponseForChannelPointsClaim.
-static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
-    if (!chatInputView) {
-        [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: poll tick — chatInputView == nil, arrêt"];
-        return;
-    }
-    if (!chatInputView.window) {
-        [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: poll tick — chatInputView.window == nil (hors écran), arrêt"];
-        return;
-    }
+// Logique unique de déclenchement, appelée à la fois immédiatement depuis
+// le hook réseau (cas normal, latence minimale) et depuis le polling de
+// secours (cas où aucune ChatInputView n'était encore trouvable au moment
+// de la détection réseau — ex: tout début de chargement du stream).
+// Dédup par comparaison d'ID : sûr même si les deux chemins s'exécutent
+// pour le même coffre.
+static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
+    if (!claimID.length) return;
 
-    NSString *pendingClaimID = s7tv_getPendingChannelPointsClaimID();
     NSString *lastTriggeredClaimID;
     @synchronized ([SevenTVManager class]) {
         lastTriggeredClaimID = s_s7tvLastTriggeredChannelPointsClaimID;
     }
+    if ([claimID isEqualToString:lastTriggeredClaimID]) return;
 
-    [[SevenTVManager sharedManager]
-        log:@"🎁 Channel Points debug: poll tick — pendingClaimID=%@ lastTriggeredClaimID=%@",
-        pendingClaimID, lastTriggeredClaimID];
+    UIView *chatInputView = s7tv_findChatInputView();
+    if (!chatInputView || !chatInputView.window) return; // retentera au prochain déclencheur
 
-    if (pendingClaimID.length > 0 && ![pendingClaimID isEqualToString:lastTriggeredClaimID]) {
-        NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-        BOOL autoCollectEnabled = [prefs objectForKey:kTCLiveAutoCollectChannelPoints] != nil
-            ? [prefs boolForKey:kTCLiveAutoCollectChannelPoints]
-            : YES; // défaut ON, comme dans les réglages
+    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
+    BOOL autoCollectEnabled = [prefs objectForKey:kTCLiveAutoCollectChannelPoints] != nil
+        ? [prefs boolForKey:kTCLiveAutoCollectChannelPoints]
+        : YES; // défaut ON, comme dans les réglages
+    if (!autoCollectEnabled) return;
 
+    SEL claimSel = NSSelectorFromString(@"handleChannelPointsButtonTapped");
+    if (![chatInputView respondsToSelector:claimSel]) {
         [[SevenTVManager sharedManager]
-            log:@"🎁 Channel Points debug: autoCollectEnabled=%d (pref existante=%d)",
-            autoCollectEnabled, [prefs objectForKey:kTCLiveAutoCollectChannelPoints] != nil];
+            log:@"Erreur Channel Points: sélecteur 'handleChannelPointsButtonTapped' introuvable sur ChatInputView"];
+        return;
+    }
 
-        if (autoCollectEnabled) {
-            // Marqué AVANT l'appel pour éviter un double-déclenchement si le
-            // prochain tick de polling arrive avant que le GQL suivant ne
-            // confirme availableClaim=null.
-            @synchronized ([SevenTVManager class]) {
-                s_s7tvLastTriggeredChannelPointsClaimID = pendingClaimID;
-            }
+    // Marqué AVANT l'appel pour éviter un double-déclenchement (le hook
+    // réseau et le polling de secours peuvent se chevaucher).
+    @synchronized ([SevenTVManager class]) {
+        s_s7tvLastTriggeredChannelPointsClaimID = claimID;
+    }
 
-            SEL claimSel = NSSelectorFromString(@"handleChannelPointsButtonTapped");
-            BOOL responds = [chatInputView respondsToSelector:claimSel];
-            [[SevenTVManager sharedManager]
-                log:@"🎁 Channel Points debug: chatInputView respondsToSelector(handleChannelPointsButtonTapped)=%d", responds];
+    [[SevenTVManager sharedManager] log:@"🎁 Channel Points: coffre réclamé automatiquement (id=%@)", claimID];
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    [chatInputView performSelector:claimSel];
+    #pragma clang diagnostic pop
+}
 
-            if (responds) {
-                [[SevenTVManager sharedManager]
-                    log:@"🎁 Channel Points: claim détecté via GQL (id=%@) — collecte automatique", pendingClaimID];
-                #pragma clang diagnostic push
-                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                [chatInputView performSelector:claimSel];
-                #pragma clang diagnostic pop
-                [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: performSelector(handleChannelPointsButtonTapped) exécuté sans exception"];
-            } else {
-                [[SevenTVManager sharedManager]
-                    log:@"Erreur Channel Points: sélecteur 'handleChannelPointsButtonTapped' introuvable sur ChatInputView"];
-            }
-        }
+// Filet de sécurité silencieux : re-tente toutes les 1.5s au cas où le
+// déclenchement immédiat depuis le hook réseau n'ait pas pu trouver de
+// ChatInputView au bon moment (ex: stream encore en train de charger).
+// Aucun log en fonctionnement normal — seul s7tv_triggerChannelPointsClaimIfNeeded
+// logue, et seulement en cas de collecte réelle ou d'erreur.
+static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
+    if (!chatInputView || !chatInputView.window) return;
+
+    NSString *pendingClaimID = s7tv_getPendingChannelPointsClaimID();
+    if (pendingClaimID.length > 0) {
+        s7tv_triggerChannelPointsClaimIfNeeded(pendingClaimID);
     }
 
     __weak UIView *weakChatInputView = chatInputView;
@@ -389,15 +359,12 @@ static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
 // Boucle de fond permanente : cherche une ChatInputView pas encore sous
 // polling toutes les 2s. Tourne pour toute la durée de vie de l'app,
 // coût négligeable (un BFS peu profond sur la hiérarchie de fenêtres,
-// une fois toutes les 2 secondes).
+// une fois toutes les 2 secondes). Silencieuse sauf à la découverte
+// effective d'une nouvelle instance.
 static void s7tv_scanForChannelPointsLoop(void) {
     UIView *chatInputView = s7tv_findChatInputView();
 
-    if (!chatInputView) {
-        [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: scan — aucune Twitch.ChatInputView trouvée dans la hiérarchie de fenêtres"];
-    } else if (objc_getAssociatedObject(chatInputView, &kS7TVChannelPointsPolling)) {
-        [[SevenTVManager sharedManager] log:@"🎁 Channel Points debug: scan — ChatInputView déjà sous polling, rien à faire"];
-    } else {
+    if (chatInputView && !objc_getAssociatedObject(chatInputView, &kS7TVChannelPointsPolling)) {
         objc_setAssociatedObject(chatInputView, &kS7TVChannelPointsPolling, @YES,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [[SevenTVManager sharedManager] log:@"🎁 Channel Points: ChatInputView trouvée — démarrage du polling"];
@@ -1598,34 +1565,6 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                 }
 
                 if (textToProcess) {
-                    // Détection Channel Points via PubSub — voir
-                    // Twitch/ChannelPoints.swift dans le binaire :
-                    // classe ChannelPoints.PubSub, topics
-                    // "community-points-channel-v1"/"community-points-user-v1",
-                    // événements "claim-available"/"claim-claimed"/
-                    // "points-earned". Ce hook WebSocket est déjà générique
-                    // (posé sur la classe concrète, donc actif sur TOUTE
-                    // connexion WebSocket de l'app, pas seulement l'IRC) —
-                    // on capture ici la trame brute complète dès qu'elle
-                    // contient un de ces marqueurs confirmés dans le binaire,
-                    // AVANT d'écrire un parseur : le format exact (JSON
-                    // simple ou enveloppe topic/message à la Twitch PubSub
-                    // web classique) n'est pas confirmé, seuls les noms de
-                    // topics/événements le sont. Capturer la vraie trame
-                    // évite de deviner une structure JSON une 3e fois.
-                    if ([textToProcess containsString:@"community-points-channel-v1"] ||
-                        [textToProcess containsString:@"community-points-user-v1"] ||
-                        [textToProcess containsString:@"claim-available"] ||
-                        [textToProcess containsString:@"claim-claimed"] ||
-                        [textToProcess containsString:@"points-earned"]) {
-                        NSString *truncated = textToProcess.length > 4000
-                            ? [textToProcess substringToIndex:4000]
-                            : textToProcess;
-                        [[SevenTVManager sharedManager]
-                            log:@"🎁 Channel Points debug: trame WebSocket PubSub capturée (%lu octets, tronquée à 4000) :\n%@",
-                            (unsigned long)textToProcess.length, truncated];
-                    }
-
                     BOOL addedMessage = NO;
                     NSArray<NSString *> *ircLines = [textToProcess
                         componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];

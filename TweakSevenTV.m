@@ -1486,6 +1486,34 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                 }
 
                 if (textToProcess) {
+                    // Détection Channel Points via PubSub — voir
+                    // Twitch/ChannelPoints.swift dans le binaire :
+                    // classe ChannelPoints.PubSub, topics
+                    // "community-points-channel-v1"/"community-points-user-v1",
+                    // événements "claim-available"/"claim-claimed"/
+                    // "points-earned". Ce hook WebSocket est déjà générique
+                    // (posé sur la classe concrète, donc actif sur TOUTE
+                    // connexion WebSocket de l'app, pas seulement l'IRC) —
+                    // on capture ici la trame brute complète dès qu'elle
+                    // contient un de ces marqueurs confirmés dans le binaire,
+                    // AVANT d'écrire un parseur : le format exact (JSON
+                    // simple ou enveloppe topic/message à la Twitch PubSub
+                    // web classique) n'est pas confirmé, seuls les noms de
+                    // topics/événements le sont. Capturer la vraie trame
+                    // évite de deviner une structure JSON une 3e fois.
+                    if ([textToProcess containsString:@"community-points-channel-v1"] ||
+                        [textToProcess containsString:@"community-points-user-v1"] ||
+                        [textToProcess containsString:@"claim-available"] ||
+                        [textToProcess containsString:@"claim-claimed"] ||
+                        [textToProcess containsString:@"points-earned"]) {
+                        NSString *truncated = textToProcess.length > 4000
+                            ? [textToProcess substringToIndex:4000]
+                            : textToProcess;
+                        [[SevenTVManager sharedManager]
+                            log:@"🎁 Channel Points debug: trame WebSocket PubSub capturée (%lu octets, tronquée à 4000) :\n%@",
+                            (unsigned long)textToProcess.length, truncated];
+                    }
+
                     BOOL addedMessage = NO;
                     NSArray<NSString *> *ircLines = [textToProcess
                         componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];

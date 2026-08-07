@@ -1727,7 +1727,18 @@ static void s7tv_scanWebSocketTextForChannelPointsClaimAvailable(NSString *text)
     if (!claimID.length) return;
 
     s7tv_setPendingChannelPointsClaimID(claimID);
-    dispatch_async(dispatch_get_main_queue(), ^{
+
+    // Délai volontaire avant la 1ère tentative (uniquement pour ce chemin
+    // PubSub) : on intercepte les octets bruts de la trame AVANT que le
+    // pipeline interne de Twitch (son propre observer ChannelPoints.PubSub
+    // sur cette même trame) ait eu le temps de mettre à jour l'état interne
+    // du bouton (showsClaim). Sans ce délai, handleChannelPointsButtonTapped
+    // ouvre le panneau de dépense au lieu de claim (0 requête réseau
+    // observée sur 30 tentatives en conditions réelles). Le chemin GQL (au
+    // join) n'a pas ce problème — l'état y est déjà cohérent dès la
+    // construction de la vue — donc pas de délai ajouté là-bas.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
         s7tv_triggerChannelPointsClaimIfNeeded(claimID);
     });
 }

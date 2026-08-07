@@ -194,7 +194,7 @@ static NSString *s_s7tvPendingChannelPointsClaimID = nil;
 // tentative qui n'a peut-être rien fait.
 static NSString      *s_s7tvLastTriggeredChannelPointsClaimID = nil;
 static NSTimeInterval  s_s7tvLastTriggerAttemptTime = 0;
-static const NSTimeInterval kS7TVClaimRetryCooldown = 2.0;
+static const NSTimeInterval kS7TVClaimRetryCooldown = 4.0;
 
 // Garde-fou anti-spam : plafond de tentatives par coffre. Sans lui, un
 // coffre dont le tap natif ne produit jamais de requête réseau (observé en
@@ -211,7 +211,7 @@ static const NSTimeInterval kS7TVClaimRetryCooldown = 2.0;
 // événement GQL/PubSub) réarmera le compteur.
 static NSString      *s_s7tvClaimIDBeingTimed = nil;
 static NSTimeInterval  s_s7tvFirstAttemptTimeForCurrentClaim = 0;
-static const NSTimeInterval kS7TVMaxRetryDuration = 15.0;
+static const NSTimeInterval kS7TVMaxRetryDuration = 60.0;
 
 static void s7tv_setPendingChannelPointsClaimID(NSString *claimID) {
     @synchronized ([SevenTVManager class]) {

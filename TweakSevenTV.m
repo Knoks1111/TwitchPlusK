@@ -196,6 +196,23 @@ static NSString      *s_s7tvLastTriggeredChannelPointsClaimID = nil;
 static NSTimeInterval  s_s7tvLastTriggerAttemptTime = 0;
 static const NSTimeInterval kS7TVClaimRetryCooldown = 2.0;
 
+// Garde-fou anti-spam : plafond de tentatives par coffre. Sans lui, un
+// coffre dont le tap natif ne produit jamais de requête réseau (observé en
+// conditions réelles : handleChannelPointsButtonTapped exécuté sans
+// exception mais AUCUNE requête ClaimChannelPointsMutation envoyée sur 30+
+// tentatives) fait ouvrir/fermer en boucle le panneau de dépense des
+// Channel Points — Twitch route apparemment le tap vers cette action au
+// lieu du claim quand son état interne ne considère pas (encore, ou plus)
+// ce coffre comme actif, même si notre détection réseau externe (GQL/
+// PubSub) le signale toujours comme disponible. On abandonne après
+// kS7TVMaxRetryDuration secondes de tentatives infructueuses sur le MÊME
+// ID, et on efface pendingClaimID pour que le polling arrête de le
+// retenter — une détection ultérieure authentique du même ID (nouvel
+// événement GQL/PubSub) réarmera le compteur.
+static NSString      *s_s7tvClaimIDBeingTimed = nil;
+static NSTimeInterval  s_s7tvFirstAttemptTimeForCurrentClaim = 0;
+static const NSTimeInterval kS7TVMaxRetryDuration = 15.0;
+
 static void s7tv_setPendingChannelPointsClaimID(NSString *claimID) {
     @synchronized ([SevenTVManager class]) {
         s_s7tvPendingChannelPointsClaimID = [claimID copy];
@@ -324,6 +341,31 @@ static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
         && (now - lastAttemptTime) < kS7TVClaimRetryCooldown;
     if (recentlyAttemptedSameClaim) return;
 
+    // Plafond anti-spam : voir kS7TVMaxRetryDuration plus haut.
+    NSTimeInterval firstAttemptTime;
+    NSString *claimIDBeingTimed;
+    @synchronized ([SevenTVManager class]) {
+        claimIDBeingTimed = s_s7tvClaimIDBeingTimed;
+        firstAttemptTime = s_s7tvFirstAttemptTimeForCurrentClaim;
+    }
+    if (![claimID isEqualToString:claimIDBeingTimed]) {
+        // Nouveau coffre (ou premier essai) — on démarre le chrono.
+        @synchronized ([SevenTVManager class]) {
+            s_s7tvClaimIDBeingTimed = claimID;
+            s_s7tvFirstAttemptTimeForCurrentClaim = now;
+        }
+    } else if ((now - firstAttemptTime) > kS7TVMaxRetryDuration) {
+        [[SevenTVManager sharedManager]
+            log:@"⚠️ Channel Points: abandon après %.0fs de tentatives infructueuses (id=%@) — le tap natif ne produit aucune requête de claim, probablement ouverture du panneau de dépense côté Twitch",
+            kS7TVMaxRetryDuration, claimID];
+        s7tv_setPendingChannelPointsClaimID(nil); // stoppe le polling pour cet ID
+        @synchronized ([SevenTVManager class]) {
+            s_s7tvClaimIDBeingTimed = nil;
+            s_s7tvFirstAttemptTimeForCurrentClaim = 0;
+        }
+        return;
+    }
+
     UIView *chatInputView = s7tv_findChatInputView();
     if (!chatInputView || !chatInputView.window) return; // retentera au prochain déclencheur
 
@@ -349,7 +391,9 @@ static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
         s_s7tvLastTriggerAttemptTime = now;
     }
 
-    [[SevenTVManager sharedManager] log:@"🎁 Channel Points: coffre réclamé automatiquement (id=%@)", claimID];
+    [[SevenTVManager sharedManager]
+        log:@"🎁 Channel Points: coffre réclamé automatiquement (id=%@) — chatInputView.window=%@ frame=%@",
+        claimID, NSStringFromClass([chatInputView.window class]), NSStringFromCGRect(chatInputView.frame)];
     #pragma clang diagnostic push
     #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
     [chatInputView performSelector:claimSel];

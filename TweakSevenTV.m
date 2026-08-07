@@ -1643,6 +1643,51 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
 // MARK: - Hook NSURLSessionWebSocketTask (chat IRC Twitch)
 // ────────────────────────────────────────────────────────────
 
+// Parsing de l'événement PubSub "claim-available" (nouveau coffre qui
+// spawn en cours de session — PAS le cas déjà couvert par le GQL initial
+// au join de la chaîne). Format confirmé par capture réelle en conditions
+// de test sur les événements jumeaux "points-earned"/"claim-claimed" de la
+// même famille (classe Twitch.ChannelPoints.PubSub) :
+//   {"notification":{"pubsub":"{\"type\":\"claim-claimed\",\"data\":{...,\"claim\":{\"id\":\"...\"}}}"}}
+// Double encodage JSON : le champ "pubsub" est une STRING contenant du
+// JSON, pas un objet direct — on parse donc en deux temps.
+static void s7tv_scanWebSocketTextForChannelPointsClaimAvailable(NSString *text) {
+    if (!text.length) return;
+    if (![text containsString:@"claim-available"]) return; // gate rapide, évite un parsing JSON sur chaque trame WS
+
+    NSData *outerData = [text dataUsingEncoding:NSUTF8StringEncoding];
+    if (!outerData) return;
+
+    NSError *err = nil;
+    id outerJSON = [NSJSONSerialization JSONObjectWithData:outerData options:0 error:&err];
+    if (err || !outerJSON) return;
+
+    BOOL foundPubsubField = NO;
+    id pubsubValue = s7tv_findValueForKeyRecursive(outerJSON, @"pubsub", &foundPubsubField);
+    if (!foundPubsubField || ![pubsubValue isKindOfClass:[NSString class]]) return;
+
+    NSData *innerData = [(NSString *)pubsubValue dataUsingEncoding:NSUTF8StringEncoding];
+    if (!innerData) return;
+
+    id innerJSON = [NSJSONSerialization JSONObjectWithData:innerData options:0 error:&err];
+    if (err || ![innerJSON isKindOfClass:[NSDictionary class]]) return;
+
+    NSDictionary *innerDict = innerJSON;
+    if (![innerDict[@"type"] isEqualToString:@"claim-available"]) return;
+
+    BOOL foundClaim = NO;
+    id claim = s7tv_findValueForKeyRecursive(innerDict[@"data"], @"claim", &foundClaim);
+    if (!foundClaim || ![claim isKindOfClass:[NSDictionary class]]) return;
+
+    NSString *claimID = claim[@"id"];
+    if (!claimID.length) return;
+
+    s7tv_setPendingChannelPointsClaimID(claimID);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        s7tv_triggerChannelPointsClaimIfNeeded(claimID);
+    });
+}
+
 @interface NSURLSessionWebSocketTask (SevenTV)
 - (void)s7tv_receiveMessageWithCompletionHandler:
     (void (^)(NSURLSessionWebSocketMessage *, NSError *))completionHandler;
@@ -1668,6 +1713,8 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                 }
 
                 if (textToProcess) {
+                    s7tv_scanWebSocketTextForChannelPointsClaimAvailable(textToProcess);
+
                     BOOL addedMessage = NO;
                     NSArray<NSString *> *ircLines = [textToProcess
                         componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];

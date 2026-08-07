@@ -320,6 +320,49 @@ static UIView *s7tv_findChatInputView(void) {
     return nil;
 }
 
+// DIAGNOSTIC — recense TOUTES les instances de Twitch.ChatInputView
+// actuellement en mémoire (pas seulement la première trouvée), avec leur
+// fenêtre et leur état isKeyWindow/hidden. Sert à vérifier l'hypothèse
+// qu'on puisse taper sur une instance orpheline/inactive quand plusieurs
+// coexistent (ex: transition PiP, changement d'écran). Appelé uniquement
+// juste avant un vrai tap (pas à chaque poll) pour rester peu bavard.
+static void s7tv_logAllChatInputViewInstances(void) {
+    NSMutableArray<UIView *> *allFound = [NSMutableArray array];
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        for (UIWindow *window in windowScene.windows) {
+            NSMutableArray<UIView *> *bfs = [NSMutableArray arrayWithObject:window];
+            while (bfs.count > 0) {
+                UIView *v = bfs.firstObject;
+                [bfs removeObjectAtIndex:0];
+                if ([NSStringFromClass([v class]) isEqualToString:@"Twitch.ChatInputView"]) {
+                    [allFound addObject:v];
+                }
+                [bfs addObjectsFromArray:v.subviews];
+            }
+        }
+    }
+
+    if (allFound.count <= 1) {
+        [[SevenTVManager sharedManager]
+            log:@"🎁 Channel Points debug: %lu instance(s) de ChatInputView en mémoire", (unsigned long)allFound.count];
+        return;
+    }
+
+    NSMutableString *desc = [NSMutableString stringWithFormat:
+        @"🎁 Channel Points debug: %lu instances de ChatInputView trouvées simultanément :\n", (unsigned long)allFound.count];
+    for (UIView *v in allFound) {
+        [desc appendFormat:@"  - window=%@ isKeyWindow=%d hidden=%d alpha=%.2f frame=%@\n",
+            NSStringFromClass([v.window class]),
+            v.window.isKeyWindow,
+            v.hidden,
+            v.alpha,
+            NSStringFromCGRect(v.frame)];
+    }
+    [[SevenTVManager sharedManager] log:@"%@", desc];
+}
+
 // Logique unique de déclenchement, appelée à la fois immédiatement depuis
 // le hook réseau (cas normal, latence minimale) et depuis le polling de
 // secours (cas où aucune ChatInputView n'était encore trouvable au moment
@@ -368,6 +411,8 @@ static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
 
     UIView *chatInputView = s7tv_findChatInputView();
     if (!chatInputView || !chatInputView.window) return; // retentera au prochain déclencheur
+
+    s7tv_logAllChatInputViewInstances();
 
     NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
     BOOL autoCollectEnabled = [prefs objectForKey:kTCLiveAutoCollectChannelPoints] != nil

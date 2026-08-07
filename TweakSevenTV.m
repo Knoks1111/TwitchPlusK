@@ -1771,6 +1771,28 @@ static void s7tv_scanWebSocketTextForChannelPointsClaimAvailable(NSString *text)
     NSString *claimID = claim[@"id"];
     if (!claimID.length) return;
 
+    // VÉRIFICATION CHANNEL_ID — probablement la vraie cause des échecs
+    // systématiques (0 requête/60s) observés sur certains coffres. Notre
+    // hook WebSocket est branché sur la classe concrète NSURLSessionWebSocketTask
+    // et capte donc TOUTES les connexions, tous channels confondus (y
+    // compris une souscription PubSub restée active pour une chaîne
+    // visitée plus tôt dans la session). Si l'événement concerne une
+    // chaîne différente de celle actuellement affichée, taper sur le
+    // bouton de la chaîne AFFICHÉE ne peut jamais réclamer un coffre
+    // d'une AUTRE chaîne — Twitch ouvre alors le panneau à la place,
+    // sans jamais envoyer de requête de claim, quel que soit le nombre de
+    // tentatives. Le champ existe et est déjà confirmé par capture réelle
+    // sur les événements jumeaux "claim-claimed"/"points-earned".
+    NSString *claimChannelID = claim[@"channel_id"];
+    NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+    if (claimChannelID.length && currentChannelID.length
+        && ![claimChannelID isEqualToString:currentChannelID]) {
+        [[SevenTVManager sharedManager]
+            log:@"🎁 Channel Points debug: événement claim-available ignoré — channel_id=%@ ≠ chaîne actuelle=%@",
+            claimChannelID, currentChannelID];
+        return;
+    }
+
     s7tv_setPendingChannelPointsClaimID(claimID);
 
     // Délai volontaire avant la 1ère tentative (uniquement pour ce chemin

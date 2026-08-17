@@ -21,6 +21,13 @@
 @interface S7TVChatCustomCell : UITableViewCell
 @property (nonatomic, strong) UILabel *messageLabel;
 @property (nonatomic, strong, nullable) NSSet<NSString *> *animationKeys;
+// Phase 3 — bandeau d'accent (barre colorée + icône + fond teinté) pour les
+// messages système (sub/resub/gift). Invisible par défaut, activé par
+// s7tv_configureSystemAccentWithColor:iconName:.
+@property (nonatomic, strong) UIView *systemAccentBar;
+@property (nonatomic, strong) UIImageView *systemIconView;
+@property (nonatomic, strong) NSLayoutConstraint *messageLabelLeadingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *systemAccentBarWidthConstraint;
 @end
 
 @implementation S7TVChatCustomCell
@@ -43,14 +50,57 @@
                                                       action:@selector(s7tv_handleTap:)]];
         [self.contentView addSubview:_messageLabel];
 
+        _systemAccentBar = [[UIView alloc] init];
+        _systemAccentBar.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentView addSubview:_systemAccentBar];
+
+        _systemIconView = [[UIImageView alloc] init];
+        _systemIconView.translatesAutoresizingMaskIntoConstraints = NO;
+        _systemIconView.contentMode = UIViewContentModeScaleAspectFit;
+        _systemIconView.hidden = YES;
+        [self.contentView addSubview:_systemIconView];
+
+        _systemAccentBarWidthConstraint =
+            [_systemAccentBar.widthAnchor constraintEqualToConstant:0];
+        _messageLabelLeadingConstraint =
+            [_messageLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:8];
+
         [NSLayoutConstraint activateConstraints:@[
+            [_systemAccentBar.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+            [_systemAccentBar.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+            [_systemAccentBar.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+            _systemAccentBarWidthConstraint,
+
+            [_systemIconView.leadingAnchor constraintEqualToAnchor:_systemAccentBar.trailingAnchor constant:8],
+            [_systemIconView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:4],
+            [_systemIconView.widthAnchor constraintEqualToConstant:14],
+            [_systemIconView.heightAnchor constraintEqualToConstant:14],
+
+            _messageLabelLeadingConstraint,
             [_messageLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:4],
             [_messageLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-4],
-            [_messageLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:8],
             [_messageLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8],
         ]];
     }
     return self;
+}
+
+// Couleurs/icônes approximatives (barre + icône + fond teinté à 12%), pas
+// mesurées pixel-perfect sur le rendu natif — TODO mesure réelle si besoin
+// (même convention que SevenTVChatAppearanceConfig). accentColor nil =
+// message normal (tout redevient invisible/transparent).
+- (void)s7tv_configureSystemAccentWithColor:(nullable UIColor *)accentColor
+                                    iconName:(nullable NSString *)iconName {
+    BOOL isSystem = (accentColor != nil);
+    self.systemAccentBar.backgroundColor = accentColor ?: [UIColor clearColor];
+    self.systemAccentBarWidthConstraint.constant = isSystem ? 3.0 : 0.0;
+    self.systemIconView.hidden = !isSystem;
+    self.systemIconView.tintColor = accentColor;
+    self.systemIconView.image = iconName ? [UIImage systemImageNamed:iconName] : nil;
+    self.messageLabelLeadingConstraint.constant = isSystem ? 31.0 : 8.0;
+    self.contentView.backgroundColor = isSystem
+        ? [accentColor colorWithAlphaComponent:0.12]
+        : [UIColor clearColor];
 }
 
 - (void)s7tv_handleTap:(UITapGestureRecognizer *)gesture {
@@ -283,6 +333,31 @@
     S7TVChatMessage *msg = self.messagesByID[messageID];
     if (!msg) return cell;
 
+    // Phase 3 — bandeau d'accent (barre + icône + fond teinté) pour sub/
+    // resub/gift. Couleurs approximatives — voir commentaire de la méthode.
+    if (msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
+        UIColor *accentColor; NSString *iconName;
+        switch (msg.systemInfo.kind) {
+            case S7TVSystemMessageKindCommunityGift:
+                accentColor = [UIColor colorWithRed:0.90 green:0.20 blue:0.65 alpha:1.0];
+                iconName = @"gift.fill";
+                break;
+            case S7TVSystemMessageKindSubOrResub:
+            default:
+                if (msg.systemInfo.isPrime) {
+                    accentColor = [UIColor colorWithRed:0.62 green:0.35 blue:0.95 alpha:1.0];
+                    iconName = @"crown.fill";
+                } else {
+                    accentColor = [UIColor colorWithRed:0.19 green:0.82 blue:0.45 alpha:1.0];
+                    iconName = @"star.fill";
+                }
+                break;
+        }
+        [cell s7tv_configureSystemAccentWithColor:accentColor iconName:iconName];
+    } else {
+        [cell s7tv_configureSystemAccentWithColor:nil iconName:nil];
+    }
+
     NSMutableArray<id<S7TVResolvedEmote>> *uncachedEmotes = [NSMutableArray array];
     NSMutableArray<id<S7TVResolvedEmote>> *animatedEmotes = [NSMutableArray array];
     cell.messageLabel.attributedText = [self s7tv_buildAttributedStringForMessage:msg
@@ -426,7 +501,8 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     NSNumber *cached = self.rowHeightCache[msg.messageID];
     if (cached) return cached.doubleValue;
 
-    CGFloat availableWidth = self.bounds.size.width - 16;
+    CGFloat leadingInset = (msg.type == S7TVChatMessageTypeSystem) ? 31.0 : 8.0;
+    CGFloat availableWidth = self.bounds.size.width - leadingInset - 8;
     if (availableWidth <= 0) availableWidth = 300;
 
     NSMutableArray<id<S7TVResolvedEmote>> *unusedEmotes = [NSMutableArray array];
@@ -596,6 +672,58 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
 - (NSAttributedString *)s7tv_buildAttributedStringForMessage:(S7TVChatMessage *)msg
                                        collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes
                                        collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes {
+    NSMutableAttributedString *result = [NSMutableAttributedString new];
+
+    // Phase 3 — message système (sub/resub/gift) : bannière au lieu du
+    // "pseudo: texte" habituel, suivie éventuellement du commentaire que
+    // l'utilisateur a attaché à son resub (rendu comme un message normal).
+    if (msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
+        [self s7tv_appendSystemBannerForMessage:msg into:result];
+        if (msg.rawText.length) {
+            [result appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"]];
+            [self s7tv_appendNormalBodyForMessage:msg into:result
+                            collectUncachedEmotes:outUncachedEmotes
+                            collectAnimatedEmotes:outAnimatedEmotes];
+        }
+        s7tv_applyLineBreakParagraphStyle(result);
+        return result;
+    }
+
+    [self s7tv_appendNormalBodyForMessage:msg into:result
+                    collectUncachedEmotes:outUncachedEmotes
+                    collectAnimatedEmotes:outAnimatedEmotes];
+    s7tv_applyLineBreakParagraphStyle(result);
+    return result;
+}
+
+// Phase 3 — pseudo (couleur chat) + phrase système pré-construite par le
+// parser IRC (voir TweakSevenTV.m, s7tv_buildSystemMessagePhrase). Le
+// renderer ne fait qu'afficher, aucune logique de formulation ici.
+- (void)s7tv_appendSystemBannerForMessage:(S7TVChatMessage *)msg
+                                      into:(NSMutableAttributedString *)result {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    UIFont *nameFont = [UIFont boldSystemFontOfSize:cfg.usernameFontSize];
+    UIFont *bodyFont = [UIFont systemFontOfSize:cfg.messageFontSize];
+    UIColor *nameColor = s7tv_readableColorOnDarkBackground(msg.authorColor);
+    UIColor *bodyColor = [UIColor colorWithWhite:0.85 alpha:1.0];
+    NSString *displayName = msg.authorDisplayName.length ? msg.authorDisplayName : @"???";
+
+    [result appendAttributedString:[[NSAttributedString alloc]
+        initWithString:displayName
+            attributes:@{NSFontAttributeName: nameFont, NSForegroundColorAttributeName: nameColor}]];
+    [result appendAttributedString:[[NSAttributedString alloc]
+        initWithString:[@" " stringByAppendingString:msg.systemPhrase ?: @""]
+            attributes:@{NSFontAttributeName: bodyFont, NSForegroundColorAttributeName: bodyColor}]];
+}
+
+// Corps badges + pseudo + tokens — extrait de l'ancien
+// s7tv_buildAttributedStringForMessage: (comportement inchangé pour les
+// messages normaux), réutilisé aussi pour le commentaire attaché à un
+// message système (Phase 3).
+- (void)s7tv_appendNormalBodyForMessage:(S7TVChatMessage *)msg
+                                    into:(NSMutableAttributedString *)result
+                  collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes
+                  collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
 
     UIFont *usernameFont = [UIFont boldSystemFontOfSize:cfg.usernameFontSize];
@@ -603,7 +731,6 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
     UIColor *usernameColor = s7tv_readableColorOnDarkBackground(msg.authorColor);
     UIColor *messageColor  = [UIColor whiteColor];
 
-    NSMutableAttributedString *result = [NSMutableAttributedString new];
     NSString *displayName = msg.authorDisplayName.length ? msg.authorDisplayName : @"???";
 
     SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
@@ -639,15 +766,13 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
             initWithString:@"[message supprimé]"
                 attributes:@{NSFontAttributeName: messageFont,
                              NSForegroundColorAttributeName: [UIColor grayColor]}]];
-        s7tv_applyLineBreakParagraphStyle(result);
-        return result;
+        return;
     }
 
     NSArray<S7TVChatToken *> *tokens = msg.tokens;
     if (!tokens.count) {
         s7tv_appendTextWithLinkDetection(result, msg.rawText ?: @"", messageFont, messageColor);
-        s7tv_applyLineBreakParagraphStyle(result);
-        return result;
+        return;
     }
 
     for (S7TVChatToken *token in tokens) {
@@ -707,9 +832,6 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
 
         s7tv_appendTextWithLinkDetection(result, token.text ?: @"", messageFont, messageColor);
     }
-
-    s7tv_applyLineBreakParagraphStyle(result);
-    return result;
 }
 
 @end

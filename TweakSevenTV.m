@@ -1100,6 +1100,170 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     return msg;
 }
 
+// ────────────────────────────────────────────────────────────
+// MARK: - Parsing IRC USERNOTICE (Phase 3 — sub / resub / gift sub)
+// ────────────────────────────────────────────────────────────
+//
+// system-msg= n'est PAS utilisé comme source du texte affiché : c'est un
+// fallback généré serveur, alors que le rendu natif Twitch (screenshots
+// Knoks, Phase 3) est reconstruit en français à partir des msg-param-*.
+// Périmètre actuel : sub/resub + gift communautaire (submysterygift).
+// Subgift ciblé (1 destinataire nommé) hors périmètre — pas de screenshot
+// de référence pour cette formulation, voir plan §Phase 3.
+
+static NSString *s7tv_pluralize(NSInteger count, NSString *singular, NSString *plural) {
+    return (count == 1) ? singular : plural;
+}
+
+static NSInteger s7tv_tierFromSubPlan(NSString *subPlan) {
+    if ([subPlan isEqualToString:@"2000"]) return 2;
+    if ([subPlan isEqualToString:@"3000"]) return 3;
+    return 1; // "1000", "Prime", ou absent → niveau 1
+}
+
+// Reproduit les formulations observées sur screenshots :
+//   - resub payant : "a pris un abonnement de niveau X. C'est son Ne mois
+//     d'abonnement, dont Se mois consécutifs !" (clause streak seulement si
+//     should-share-streak=1)
+//   - resub Prime : "s'est abonné(e) avec Prime. C'est son Ne mois
+//     d'abonnement !"
+//   - premier sub (cumulative<=1) : même verbe/plan, sans la phrase "Ne mois".
+//   - gift communautaire : "offre N abonnement(s) de niveau X à la
+//     communauté de {chaîne}. Cet utilisateur a déjà offert M abonnement(s)
+//     sur cette chaîne !"
+static NSString *s7tv_buildSystemMessagePhrase(S7TVSystemMessageInfo *info) {
+    if (info.kind == S7TVSystemMessageKindCommunityGift) {
+        NSString *giftWord   = s7tv_pluralize(info.massGiftCount, @"abonnement", @"abonnements");
+        NSString *senderWord = s7tv_pluralize(info.senderTotalGiftCount, @"abonnement", @"abonnements");
+        return [NSString stringWithFormat:
+            @"offre %ld %@ de niveau %ld à la communauté de %@. Cet utilisateur a déjà offert %ld %@ sur cette chaîne !",
+            (long)info.massGiftCount, giftWord, (long)info.tier,
+            info.channelDisplayName ?: @"la chaîne",
+            (long)info.senderTotalGiftCount, senderWord];
+    }
+
+    NSString *planPhrase = info.isPrime
+        ? @"avec Prime"
+        : [NSString stringWithFormat:@"de niveau %ld", (long)info.tier];
+    NSString *verb = info.isPrime ? @"s'est abonné(e)" : @"a pris un abonnement";
+
+    if (info.cumulativeMonths <= 1) {
+        return [NSString stringWithFormat:@"%@ %@ !", verb, planPhrase];
+    }
+
+    NSString *streakClause = (info.streakMonths > 0)
+        ? [NSString stringWithFormat:@", dont %lde mois consécutifs", (long)info.streakMonths]
+        : @"";
+    return [NSString stringWithFormat:@"%@ %@. C'est son %lde mois d'abonnement%@ !",
+        verb, planPhrase, (long)info.cumulativeMonths, streakClause];
+}
+
+// Parse une ligne IRC complète et retourne un S7TVChatMessage de type
+// .system si c'est un USERNOTICE exploitable (sub/resub/gift communautaire),
+// nil sinon — même contrat que s7tv_parsePRIVMSG (jamais de message à
+// moitié rempli).
+static S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(NSString *ircLine) {
+    if (![ircLine containsString:@"USERNOTICE"]) return nil;
+    if (![ircLine hasPrefix:@"@"]) return nil; // pas de tags → pas de msg-id exploitable
+
+    NSRange firstSpace = [ircLine rangeOfString:@" "];
+    if (firstSpace.location == NSNotFound) return nil;
+    NSDictionary<NSString *, NSString *> *tags =
+        s7tv_parseIRCTags([ircLine substringWithRange:NSMakeRange(1, firstSpace.location - 1)]);
+    NSString *rest = [ircLine substringFromIndex:firstSpace.location + 1];
+
+    NSString *msgID = s7tv_tagValue(tags, @"msg-id", @"");
+    S7TVSystemMessageKind kind;
+    if ([msgID isEqualToString:@"sub"] || [msgID isEqualToString:@"resub"]) {
+        kind = S7TVSystemMessageKindSubOrResub;
+    } else if ([msgID isEqualToString:@"submysterygift"]) {
+        kind = S7TVSystemMessageKindCommunityGift;
+    } else {
+        return nil; // subgift ciblé, raid, giftpaidupgrade... hors périmètre pour l'instant
+    }
+
+    // Même garde-fou changement de chaîne que s7tv_parsePRIVMSG — voir le
+    // commentaire détaillé là-bas.
+    NSRange usernoticeRange = [rest rangeOfString:@"USERNOTICE"];
+    if (usernoticeRange.location == NSNotFound) return nil;
+    NSRange searchRange = NSMakeRange(usernoticeRange.location, rest.length - usernoticeRange.location);
+    NSRange textMarker = [rest rangeOfString:@" :" options:0 range:searchRange];
+    NSUInteger channelTokenEnd = (textMarker.location != NSNotFound) ? textMarker.location : rest.length;
+    NSUInteger channelTokenStart = usernoticeRange.location + usernoticeRange.length + 1;
+    // Le texte après " :" est optionnel pour un USERNOTICE (commentaire de
+    // l'utilisateur ajouté à son propre resub, ex: "ouais") — contrairement
+    // à PRIVMSG où son absence invalide le message.
+    NSString *messageText = (textMarker.location != NSNotFound)
+        ? [rest substringFromIndex:textMarker.location + 2] : @"";
+
+    if (channelTokenStart <= channelTokenEnd) {
+        NSString *channelToken = [rest substringWithRange:
+            NSMakeRange(channelTokenStart, channelTokenEnd - channelTokenStart)];
+        channelToken = [channelToken stringByTrimmingCharactersInSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([channelToken hasPrefix:@"#"]) channelToken = [channelToken substringFromIndex:1];
+        NSString *activeChannel = [SevenTVManager sharedManager].currentChannelName;
+        if (channelToken.length && activeChannel.length &&
+            [channelToken caseInsensitiveCompare:activeChannel] != NSOrderedSame) {
+            return nil;
+        }
+    }
+
+    NSString *messageID   = s7tv_tagValue(tags, @"id", [[NSUUID UUID] UUIDString]);
+    NSString *userID      = s7tv_tagValue(tags, @"user-id", @"");
+    NSString *displayName = s7tv_tagValue(tags, @"display-name", @"???");
+    NSString *colorHex    = s7tv_tagValue(tags, @"color", @"");
+    NSString *badgesTag   = s7tv_tagValue(tags, @"badges", @"");
+    NSString *subPlan     = s7tv_tagValue(tags, @"msg-param-sub-plan", @"1000");
+
+    S7TVSystemMessageInfo *info = [S7TVSystemMessageInfo new];
+    info.kind    = kind;
+    info.isPrime = [subPlan isEqualToString:@"Prime"];
+    info.tier    = s7tv_tierFromSubPlan(subPlan);
+
+    if (kind == S7TVSystemMessageKindSubOrResub) {
+        info.cumulativeMonths = [s7tv_tagValue(tags, @"msg-param-cumulative-months", @"1") integerValue];
+        BOOL shareStreak = [s7tv_tagValue(tags, @"msg-param-should-share-streak", @"0") integerValue] != 0;
+        info.streakMonths = shareStreak
+            ? [s7tv_tagValue(tags, @"msg-param-streak-months", @"0") integerValue] : 0;
+    } else {
+        info.massGiftCount = MAX(1, [s7tv_tagValue(tags, @"msg-param-mass-gift-count", @"1") integerValue]);
+        info.senderTotalGiftCount = [s7tv_tagValue(tags, @"msg-param-sender-count", @"0") integerValue];
+        info.channelDisplayName = [SevenTVManager sharedManager].currentChannelName ?: @"la chaîne";
+    }
+
+    S7TVChatMessage *msg = [[S7TVChatMessage alloc] initWithMessageID:messageID
+                                                             timestamp:[NSDate date]
+                                                          authorUserID:userID
+                                                     authorDisplayName:displayName
+                                                               rawText:messageText];
+    msg.type         = S7TVChatMessageTypeSystem;
+    msg.systemInfo   = info;
+    msg.systemPhrase = s7tv_buildSystemMessagePhrase(info);
+
+    if (colorHex.length >= 7) {
+        unsigned int rgb = 0;
+        NSScanner *scanner = [NSScanner scannerWithString:[colorHex substringFromIndex:1]];
+        if ([scanner scanHexInt:&rgb]) {
+            msg.authorColor = [UIColor colorWithRed:((rgb >> 16) & 0xFF) / 255.0
+                                               green:((rgb >> 8)  & 0xFF) / 255.0
+                                                blue:(rgb         & 0xFF) / 255.0
+                                               alpha:1.0];
+        }
+    }
+
+    // Commentaire optionnel attaché (ex: resub avec message) — tokenisé
+    // comme un message normal, rendu sous la bannière système (voir
+    // SevenTVChatCustomView, s7tv_appendNormalBodyForMessage:into:...).
+    if (messageText.length) {
+        msg.tokens = s7tv_tokenizeMessageWithNativeEmotes(messageText,
+                                                            s7tv_tagValue(tags, @"emotes", @""));
+    }
+    msg.badgeIdentifiers = s7tv_parseBadgesTag(badgesTag);
+
+    return msg;
+}
+
 
 // ────────────────────────────────────────────────────────────
 // MARK: - Hijack du bouton Bits → bouton 7TV (+ diagnostic Phase 0 chat)
@@ -1849,6 +2013,7 @@ static void s7tv_scanWebSocketTextForChannelPointsClaimAvailable(NSString *text)
                         }
 
                         S7TVChatMessage *chatMsg = s7tv_parsePRIVMSG(ircLine);
+                        if (!chatMsg) chatMsg = s7tv_parseUSERNOTICE(ircLine);
                         if (!chatMsg) continue;
                         [[SevenTVManager sharedManager].chatMessageStore addMessage:chatMsg];
                         addedMessage = YES;

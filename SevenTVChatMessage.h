@@ -90,6 +90,32 @@ typedef NS_ENUM(NSInteger, S7TVChatMessageState) {
 
 
 // ============================================================
+// MARK: - Messages système (Phase 3 — sub / resub / gift sub)
+// ============================================================
+//
+// Kind distingue seulement le gift communautaire du reste : premier sub vs
+// réabonnement se distingue via cumulativeMonths <= 1 (pas de tag IRC dédié
+// pour "premier sub"). Périmètre actuel : sub/resub + gift communautaire
+// (submysterygift) — voir s7tv_parseUSERNOTICE dans TweakSevenTV.m. Subgift
+// ciblé (1 destinataire nommé) hors périmètre pour l'instant.
+typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
+    S7TVSystemMessageKindSubOrResub = 0,
+    S7TVSystemMessageKindCommunityGift,
+};
+
+@interface S7TVSystemMessageInfo : NSObject
+@property (nonatomic, assign) S7TVSystemMessageKind kind;
+@property (nonatomic, assign) NSInteger tier;                 // 1/2/3, ignoré si isPrime
+@property (nonatomic, assign) BOOL      isPrime;
+@property (nonatomic, assign) NSInteger cumulativeMonths;      // SubOrResub uniquement
+@property (nonatomic, assign) NSInteger streakMonths;          // 0 si non partagé par l'utilisateur
+@property (nonatomic, assign) NSInteger massGiftCount;         // CommunityGift uniquement
+@property (nonatomic, assign) NSInteger senderTotalGiftCount;  // CommunityGift uniquement
+@property (nonatomic, copy, nullable) NSString *channelDisplayName; // CommunityGift uniquement
+@end
+
+
+// ============================================================
 // MARK: - S7TVChatMessage
 // ============================================================
 
@@ -125,6 +151,13 @@ typedef NS_ENUM(NSInteger, S7TVChatMessageState) {
 // pour le raisonnement complet). Résolu en image par SevenTVBadgeProvider au
 // moment du rendu, pas ici — ce modèle ne fait que porter la donnée brute.
 @property (nonatomic, copy, nullable) NSArray<NSString *> *badgeIdentifiers;
+
+// Phase 3 — nil pour un message normal. systemPhrase est pré-construit par
+// le parser IRC (TweakSevenTV.m, s7tv_buildSystemMessagePhrase) — le
+// renderer ne fait que de l'affichage, la logique de formulation reste
+// côté parsing, pas dans SevenTVChatCustomView.
+@property (nonatomic, strong, nullable) S7TVSystemMessageInfo *systemInfo;
+@property (nonatomic, copy, nullable) NSString *systemPhrase;
 
 @property (nonatomic, assign) S7TVChatMessageType type;
 @property (nonatomic, assign) S7TVChatMessageState state;

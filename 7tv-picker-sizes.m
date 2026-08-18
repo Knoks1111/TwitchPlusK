@@ -94,6 +94,21 @@ static const char kS7TVRowKeyTag = 0;
     return ez;
 }
 
+// Token emote 7TV (EZ ou fallback) + token espace de fin — factorisé car
+// réutilisé par plusieurs messages factices (message normal + commentaires
+// sub/prime) pour montrer le rendu emote7TVSize dans plusieurs contextes.
+// Tableau vide si aucune emote 7TV disponible (catalogue pas encore chargé) —
+// le message factice reste alors sans cette emote, sans erreur.
+- (NSArray<S7TVChatToken *> *)_ezEmoteTokensWithTrailingSpace {
+    SevenTVEmote *ez = [self _findEZEmote];
+    if (!ez) return @[];
+    S7TVChatToken *emoteTok = [S7TVChatToken emoteToken:ez.emoteName
+                                                 provider:S7TVChatTokenTypeEmote7TV
+                                                  emoteID:ez.emoteID];
+    emoteTok.resolvedEmote = [[S7TVPickerResolvedEmote alloc] initWithEmote:ez];
+    return @[emoteTok, [S7TVChatToken textToken:@" "]];
+}
+
 - (void)buildInView:(UIView *)container
               frame:(CGRect)frame
             bgColor:(UIColor *)bgColor
@@ -392,8 +407,31 @@ static const char kS7TVRowKeyTag = 0;
 // comme la référence utilisateur), gift communautaire, et un message
 // supprimé (collapsed). Pas de tap-to-reveal ici (chatView non interactive,
 // et la fonctionnalité n'existe pas encore côté chat réel — Phase 5).
+// 6 messages factices couvrant tous les réglages du panneau, dans un ordre
+// volontairement mélangé (pas juste "un de chaque type à la suite") pour se
+// rapprocher d'un vrai fil de chat : gift, normal (badge + emote 7TV + emote
+// Twitch native), sub avec commentaire (badge + emote 7TV dans le corps du
+// commentaire, pas seulement la bannière), normal (badge différent, texte
+// seul), prime avec commentaire (badge + emote 7TV), message supprimé
+// (collapsed). Pas de tap-to-reveal ici (chatView non interactive, et la
+// fonctionnalité n'existe pas encore côté chat réel — Phase 5).
 - (void)_populateFakeChatStore:(S7TVChatMessageStore *)store {
     NSDate *now = [NSDate date];
+
+    S7TVChatMessage *gift = [[S7TVChatMessage alloc]
+        initWithMessageID:@"s7tv_preview_gift"
+                 timestamp:now
+              authorUserID:@"s7tv_preview_u4"
+         authorDisplayName:L(@"preview_username")
+                   rawText:@""];
+    gift.type = S7TVChatMessageTypeSystem;
+    S7TVSystemMessageInfo *giftInfo = [S7TVSystemMessageInfo new];
+    giftInfo.kind = S7TVSystemMessageKindCommunityGift;
+    giftInfo.massGiftCount = 5;
+    giftInfo.senderTotalGiftCount = 12;
+    gift.systemInfo = giftInfo;
+    gift.systemPhrase = L(@"preview_gift_phrase");
+    [store addMessage:gift];
 
     S7TVChatMessage *normal = [[S7TVChatMessage alloc]
         initWithMessageID:@"s7tv_preview_normal"
@@ -411,16 +449,7 @@ static const char kS7TVRowKeyTag = 0;
     NSMutableArray<S7TVChatToken *> *tokens = [NSMutableArray array];
     [tokens addObject:[S7TVChatToken textToken:
         [L(@"preview_greeting") stringByAppendingString:@" "]]];
-
-    SevenTVEmote *ez = [self _findEZEmote];
-    if (ez) {
-        S7TVChatToken *emoteTok = [S7TVChatToken emoteToken:ez.emoteName
-                                                     provider:S7TVChatTokenTypeEmote7TV
-                                                      emoteID:ez.emoteID];
-        emoteTok.resolvedEmote = [[S7TVPickerResolvedEmote alloc] initWithEmote:ez];
-        [tokens addObject:emoteTok];
-        [tokens addObject:[S7TVChatToken textToken:@" "]];
-    }
+    [tokens addObjectsFromArray:[self _ezEmoteTokensWithTrailingSpace]];
 
     S7TVChatToken *kappaTok = [S7TVChatToken emoteToken:@"Kappa"
                                                  provider:S7TVChatTokenTypeEmoteTwitch
@@ -434,13 +463,17 @@ static const char kS7TVRowKeyTag = 0;
     normal.tokens = tokens;
     [store addMessage:normal];
 
+    // Sub avec commentaire attaché : badge + emote 7TV rendus dans le corps
+    // du commentaire (pas seulement la bannière système) — c'est le cas réel
+    // le plus fréquent (un abonné qui écrit un mot en resub).
     S7TVChatMessage *sub = [[S7TVChatMessage alloc]
         initWithMessageID:@"s7tv_preview_sub"
                  timestamp:now
               authorUserID:@"s7tv_preview_u2"
-         authorDisplayName:L(@"preview_username")
-                   rawText:@""];
+         authorDisplayName:L(@"preview_username_2")
+                   rawText:L(@"preview_sub_comment")];
     sub.type = S7TVChatMessageTypeSystem;
+    sub.badgeIdentifiers = @[@"subscriber/3"];
     S7TVSystemMessageInfo *subInfo = [S7TVSystemMessageInfo new];
     subInfo.kind = S7TVSystemMessageKindSubOrResub;
     subInfo.isPrime = NO;
@@ -448,37 +481,45 @@ static const char kS7TVRowKeyTag = 0;
     subInfo.cumulativeMonths = 3;
     sub.systemInfo = subInfo;
     sub.systemPhrase = L(@"preview_sub_phrase");
+    NSMutableArray<S7TVChatToken *> *subTokens = [NSMutableArray array];
+    [subTokens addObjectsFromArray:[self _ezEmoteTokensWithTrailingSpace]];
+    [subTokens addObject:[S7TVChatToken textToken:L(@"preview_sub_comment")]];
+    sub.tokens = subTokens;
     [store addMessage:sub];
 
+    // Normal #2 : badge différent (VIP), texte seul sans emote — variété de
+    // rendu (largeur de ligne, badge autre que modérateur).
+    S7TVChatMessage *normal2 = [[S7TVChatMessage alloc]
+        initWithMessageID:@"s7tv_preview_normal_2"
+                 timestamp:now
+              authorUserID:@"s7tv_preview_u6"
+         authorDisplayName:L(@"preview_username_3")
+                   rawText:L(@"preview_message_2")];
+    normal2.authorColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.25 alpha:1.0];
+    normal2.badgeIdentifiers = @[@"vip/1"];
+    [store addMessage:normal2];
+
+    // Prime avec commentaire attaché — même logique que le sub, badge/emote
+    // différents pour ne pas dupliquer visuellement le message sub.
     S7TVChatMessage *prime = [[S7TVChatMessage alloc]
         initWithMessageID:@"s7tv_preview_prime"
                  timestamp:now
               authorUserID:@"s7tv_preview_u3"
          authorDisplayName:L(@"preview_username")
-                   rawText:@""];
+                   rawText:L(@"preview_prime_comment")];
     prime.type = S7TVChatMessageTypeSystem;
+    prime.badgeIdentifiers = @[@"founder/0"];
     S7TVSystemMessageInfo *primeInfo = [S7TVSystemMessageInfo new];
     primeInfo.kind = S7TVSystemMessageKindSubOrResub;
     primeInfo.isPrime = YES;
     primeInfo.cumulativeMonths = 24;
     prime.systemInfo = primeInfo;
     prime.systemPhrase = L(@"preview_prime_phrase");
+    NSMutableArray<S7TVChatToken *> *primeTokens = [NSMutableArray array];
+    [primeTokens addObjectsFromArray:[self _ezEmoteTokensWithTrailingSpace]];
+    [primeTokens addObject:[S7TVChatToken textToken:L(@"preview_prime_comment")]];
+    prime.tokens = primeTokens;
     [store addMessage:prime];
-
-    S7TVChatMessage *gift = [[S7TVChatMessage alloc]
-        initWithMessageID:@"s7tv_preview_gift"
-                 timestamp:now
-              authorUserID:@"s7tv_preview_u4"
-         authorDisplayName:L(@"preview_username")
-                   rawText:@""];
-    gift.type = S7TVChatMessageTypeSystem;
-    S7TVSystemMessageInfo *giftInfo = [S7TVSystemMessageInfo new];
-    giftInfo.kind = S7TVSystemMessageKindCommunityGift;
-    giftInfo.massGiftCount = 5;
-    giftInfo.senderTotalGiftCount = 12;
-    gift.systemInfo = giftInfo;
-    gift.systemPhrase = L(@"preview_gift_phrase");
-    [store addMessage:gift];
 
     S7TVChatMessage *deleted = [[S7TVChatMessage alloc]
         initWithMessageID:@"s7tv_preview_deleted"

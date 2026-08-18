@@ -89,8 +89,12 @@
 // mesurées pixel-perfect sur le rendu natif — TODO mesure réelle si besoin
 // (même convention que SevenTVChatAppearanceConfig). accentColor nil =
 // message normal (tout redevient invisible/transparent).
+// backgroundEnabled : contrôle UNIQUEMENT le fond teinté (12%). La barre
+// d'accent (gauche) et l'icône restent toujours affichées/colorées quand
+// isSystem — voir SevenTVChatAppearanceConfig.systemMessageBackgroundsEnabled.
 - (void)s7tv_configureSystemAccentWithColor:(nullable UIColor *)accentColor
-                                    iconName:(nullable NSString *)iconName {
+                                    iconName:(nullable NSString *)iconName
+                           backgroundEnabled:(BOOL)backgroundEnabled {
     BOOL isSystem = (accentColor != nil);
     self.systemAccentBar.backgroundColor = accentColor ?: [UIColor clearColor];
     self.systemAccentBarWidthConstraint.constant = isSystem ? 3.0 : 0.0;
@@ -98,7 +102,7 @@
     self.systemIconView.tintColor = accentColor;
     self.systemIconView.image = iconName ? [UIImage systemImageNamed:iconName] : nil;
     self.messageLabelLeadingConstraint.constant = isSystem ? 31.0 : 8.0;
-    self.contentView.backgroundColor = isSystem
+    self.contentView.backgroundColor = (isSystem && backgroundEnabled)
         ? [accentColor colorWithAlphaComponent:0.12]
         : [UIColor clearColor];
 }
@@ -291,13 +295,15 @@
         [self s7tv_showNewMessagesBanner];
     }
 
-    if (self.rowHeightCache.count > 0) {
-        NSMutableArray<NSString *> *staleKeys = [NSMutableArray array];
-        for (NSString *key in self.rowHeightCache) {
-            if (!byID[key]) [staleKeys addObject:key];
-        }
-        [self.rowHeightCache removeObjectsForKeys:staleKeys];
-    }
+    // Invalidation complète plutôt que partielle (avant : ne retirait que les
+    // messages disparus). Nécessaire car reloadMessages est aussi le point
+    // d'entrée du rafraîchissement live sur changement de
+    // SevenTVChatAppearanceConfig (taille de police, espacement...) — une
+    // hauteur mise en cache pour un message toujours présent devenait
+    // périmée dès qu'un slider changeait, coupant le texte. Coût : quelques
+    // re-mesures de plus par reload (bornées aux lignes actuellement
+    // visibles/à l'écran), négligeable comparé au bug visuel.
+    [self.rowHeightCache removeAllObjects];
 
     NSDiffableDataSourceSnapshot<NSString *, NSString *> *snapshot =
         [[NSDiffableDataSourceSnapshot alloc] init];
@@ -334,28 +340,31 @@
     if (!msg) return cell;
 
     // Phase 3 — bandeau d'accent (barre + icône + fond teinté) pour sub/
-    // resub/gift. Couleurs approximatives — voir commentaire de la méthode.
+    // resub/gift. Couleurs + toggle du fond configurables (voir panneau
+    // Tailles → section Couleurs) au lieu d'être en dur.
     if (msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
+        SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
         UIColor *accentColor; NSString *iconName;
         switch (msg.systemInfo.kind) {
             case S7TVSystemMessageKindCommunityGift:
-                accentColor = [UIColor colorWithRed:0.90 green:0.20 blue:0.65 alpha:1.0];
+                accentColor = cfg.giftAccentColor;
                 iconName = @"gift.fill";
                 break;
             case S7TVSystemMessageKindSubOrResub:
             default:
                 if (msg.systemInfo.isPrime) {
-                    accentColor = [UIColor colorWithRed:0.62 green:0.35 blue:0.95 alpha:1.0];
+                    accentColor = cfg.primeAccentColor;
                     iconName = @"crown.fill";
                 } else {
-                    accentColor = [UIColor colorWithRed:0.19 green:0.82 blue:0.45 alpha:1.0];
+                    accentColor = cfg.subResubAccentColor;
                     iconName = @"star.fill";
                 }
                 break;
         }
-        [cell s7tv_configureSystemAccentWithColor:accentColor iconName:iconName];
+        [cell s7tv_configureSystemAccentWithColor:accentColor iconName:iconName
+                                 backgroundEnabled:cfg.systemMessageBackgroundsEnabled];
     } else {
-        [cell s7tv_configureSystemAccentWithColor:nil iconName:nil];
+        [cell s7tv_configureSystemAccentWithColor:nil iconName:nil backgroundEnabled:NO];
     }
 
     NSMutableArray<id<S7TVResolvedEmote>> *uncachedEmotes = [NSMutableArray array];

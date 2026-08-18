@@ -162,7 +162,6 @@
 @property (nonatomic, strong) NSDictionary<NSString *, S7TVChatMessage *> *messagesByID;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *rowHeightCache;
 @property (nonatomic, assign) CGFloat cachedContentWidth;
-@property (nonatomic, strong) UILabel *measuringLabel;
 @property (nonatomic, assign) BOOL isPinnedToBottom;
 @property (nonatomic, assign) NSUInteger pendingNewMessagesCount;
 @property (nonatomic, strong) UIView *unseenMessagesBanner;
@@ -180,10 +179,6 @@
         _rowHeightCache = [NSMutableDictionary dictionary];
         _cachedContentWidth = 0;
         _isPinnedToBottom = YES;
-
-        _measuringLabel = [[UILabel alloc] init];
-        _measuringLabel.numberOfLines = 0;
-        _measuringLabel.lineBreakMode = NSLineBreakByWordWrapping;
 
         _tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
         _tableView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -518,11 +513,37 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     return [self s7tv_heightForMessage:msg];
 }
 
+// Mesure via TextKit (NSLayoutManager/NSTextContainer) plutôt que
+// -[UILabel sizeThatFits:]. Raison : sizeThatFits: s'appuie en interne sur
+// un équivalent de -boundingRectWithSize:options:context:, qui n'est PAS
+// garanti pixel-exact pour du texte multi-lignes — dans le cas limite où
+// le dernier mot affleure tout juste availableWidth, cette estimation peut
+// considérer qu'il tient encore sur la ligne courante alors que le vrai
+// moteur TextKit (celui qui trace effectivement messageLabel) le fait
+// passer à une nouvelle ligne. Comme messageLabel.clipsToBounds = YES et
+// que la hauteur de cellule est figée par cette mesure, cette ligne
+// supplémentaire (le dernier mot seul) se retrouvait rognée hors du cadre
+// visible — mot invisible plutôt que texte tronqué.
+//
+// En mesurant avec le même moteur TextKit que celui qui trace réellement
+// le label (même pattern que s7tv_handleTap: plus haut dans ce fichier),
+// on garantit que le nombre de lignes calculé ici correspond exactement à
+// celui produit au rendu.
 - (CGSize)s7tv_measureAttributedText:(NSAttributedString *)text width:(CGFloat)width {
-    self.measuringLabel.attributedText = text;
-    CGSize fit = [self.measuringLabel sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
-    self.measuringLabel.attributedText = nil;
-    return fit;
+    NSTextStorage *textStorage = [[NSTextStorage alloc] initWithAttributedString:text];
+    NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
+    [textStorage addLayoutManager:layoutManager];
+
+    NSTextContainer *textContainer =
+        [[NSTextContainer alloc] initWithSize:CGSizeMake(width, CGFLOAT_MAX)];
+    textContainer.lineFragmentPadding = 0;   // identique à ce que trace UILabel
+    textContainer.maximumNumberOfLines = 0;  // identique à messageLabel.numberOfLines
+    [layoutManager addTextContainer:textContainer];
+
+    // Force le layout complet des glyphes avant de lire le rect utilisé.
+    [layoutManager glyphRangeForTextContainer:textContainer];
+    CGRect used = [layoutManager usedRectForTextContainer:textContainer];
+    return CGSizeMake(ceil(used.size.width), ceil(used.size.height));
 }
 
 - (CGFloat)s7tv_heightForMessage:(S7TVChatMessage *)msg {
@@ -541,7 +562,14 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     CGRect rect = CGRectMake(0, 0, fitSize.width, fitSize.height);
 
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
-    CGFloat height = ceil(rect.size.height) + 4 + cfg.lineSpacing;
+    // 8 = insets réels du label dans la cellule (top 4 + bottom 4, voir
+    // messageLabelLeadingConstraint / contraintes top/bottom dans
+    // S7TVChatCustomCell). Cette marge est structurelle et NE DOIT PAS
+    // dépendre de cfg.lineSpacing, qui est l'espacement ENTRE deux messages
+    // (voir SevenTVChatAppearanceConfig.h) — les conflater faisait
+    // disparaître la marge de sécurité du label dès que lineSpacing était
+    // réduit en dessous de 4 dans les réglages, aggravant le clipping.
+    CGFloat height = ceil(rect.size.height) + 8 + cfg.lineSpacing;
     self.rowHeightCache[msg.messageID] = @(height);
     return height;
 }

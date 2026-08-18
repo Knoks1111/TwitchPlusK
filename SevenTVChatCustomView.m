@@ -42,7 +42,16 @@
         _messageLabel = [[UILabel alloc] init];
         _messageLabel.numberOfLines = 0;
         _messageLabel.lineBreakMode = NSLineBreakByWordWrapping;
-        _messageLabel.clipsToBounds = YES;
+        // NO plutôt que YES : depuis que la hauteur de ligne (voir
+        // s7tv_heightForMessage:) ne dépend plus de la vraie taille des
+        // emotes/badges (fix "espacement instable"), une emote poussée très
+        // au-delà de messageFontSize dépasse la hauteur réservée à sa ligne.
+        // Avec clipsToBounds=YES elle serait rognée en haut/bas (moche,
+        // silencieux). En NO elle déborde visuellement sur les cellules
+        // voisines — pas parfait à valeurs extrêmes, mais visible/honnête,
+        // et la preview des réglages (Phase 6) permet de voir l'effet avant
+        // de valider une taille.
+        _messageLabel.clipsToBounds = NO;
         _messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _messageLabel.userInteractionEnabled = YES;
         [_messageLabel addGestureRecognizer:
@@ -390,7 +399,8 @@
     NSMutableArray<id<S7TVResolvedEmote>> *animatedEmotes = [NSMutableArray array];
     cell.messageLabel.attributedText = [self s7tv_buildAttributedStringForMessage:msg
                                                               collectUncachedEmotes:uncachedEmotes
-                                                              collectAnimatedEmotes:animatedEmotes];
+                                                              collectAnimatedEmotes:animatedEmotes
+                                                                    forMeasurement:NO];
 
     if (animatedEmotes.count > 0) {
         NSMutableSet<NSString *> *animationKeys = [NSMutableSet setWithCapacity:animatedEmotes.count];
@@ -534,9 +544,16 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (availableWidth <= 0) availableWidth = 300;
 
     NSMutableArray<id<S7TVResolvedEmote>> *unusedEmotes = [NSMutableArray array];
+    // forMeasurement:YES — la hauteur de ligne calculée ici ne doit PAS
+    // dépendre de la taille réelle des emotes/badges (cfg.emote7TVSize /
+    // emoteTwitchSize / badgeSize), sinon TextKit gonfle rect.size.height
+    // au max(police, attachment) et l'espacement varie message par message
+    // au lieu d'être contrôlé uniquement par cfg.lineSpacing. Le rendu réel
+    // (cellForRow, ligne ~391) continue d'utiliser les vraies tailles.
     NSAttributedString *text = [self s7tv_buildAttributedStringForMessage:msg
                                                       collectUncachedEmotes:unusedEmotes
-                                                      collectAnimatedEmotes:nil];
+                                                      collectAnimatedEmotes:nil
+                                                            forMeasurement:YES];
     CGSize fitSize = [self s7tv_measureAttributedText:text width:availableWidth];
     CGRect rect = CGRectMake(0, 0, fitSize.width, fitSize.height);
 
@@ -697,9 +714,16 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
     }
 }
 
+// forMeasurement : quand YES, les attachments emote/badge sont mesurés avec
+// une hauteur fixe dérivée de messageFontSize plutôt que la vraie taille
+// configurée (cfg.emote7TVSize/emoteTwitchSize/badgeSize) — voir
+// s7tv_appendNormalBodyForMessage: pour le détail. Utilisé uniquement par
+// s7tv_heightForMessage: (calcul de hauteur de ligne). Le rendu réel dans
+// la cellule passe toujours NO.
 - (NSAttributedString *)s7tv_buildAttributedStringForMessage:(S7TVChatMessage *)msg
                                        collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes
-                                       collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes {
+                                       collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes
+                                             forMeasurement:(BOOL)forMeasurement {
     NSMutableAttributedString *result = [NSMutableAttributedString new];
 
     // Phase 3 — message système (sub/resub/gift) : bannière au lieu du
@@ -711,7 +735,8 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
             [result appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"]];
             [self s7tv_appendNormalBodyForMessage:msg into:result
                             collectUncachedEmotes:outUncachedEmotes
-                            collectAnimatedEmotes:outAnimatedEmotes];
+                            collectAnimatedEmotes:outAnimatedEmotes
+                                  forMeasurement:forMeasurement];
         }
         s7tv_applyLineBreakParagraphStyle(result);
         return result;
@@ -719,7 +744,8 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
 
     [self s7tv_appendNormalBodyForMessage:msg into:result
                     collectUncachedEmotes:outUncachedEmotes
-                    collectAnimatedEmotes:outAnimatedEmotes];
+                    collectAnimatedEmotes:outAnimatedEmotes
+                          forMeasurement:forMeasurement];
     s7tv_applyLineBreakParagraphStyle(result);
     return result;
 }
@@ -751,11 +777,23 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
 - (void)s7tv_appendNormalBodyForMessage:(S7TVChatMessage *)msg
                                     into:(NSMutableAttributedString *)result
                   collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes
-                  collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes {
+                  collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes
+                        forMeasurement:(BOOL)forMeasurement {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
 
     UIFont *usernameFont = [UIFont boldSystemFontOfSize:cfg.usernameFontSize];
     UIFont *messageFont  = [UIFont systemFontOfSize:cfg.messageFontSize];
+
+    // Hauteur utilisée pour les attachments (badges + emotes) UNIQUEMENT en
+    // mode mesure — dérivée de messageFontSize, indépendante des réglages
+    // emote7TVSize/emoteTwitchSize/badgeSize. But : que la hauteur de ligne
+    // calculée par s7tv_heightForMessage: soit la même quel que soit le
+    // contenu du message (texte seul, emote 16pt ou 64pt) — seul
+    // cfg.lineSpacing doit faire varier l'espacement, jamais le contenu.
+    // Facteur 1.2 : légère marge au-dessus de la police, cohérente avec un
+    // ascender/descender de texte normal, pour ne pas mesurer plus serré
+    // qu'une ligne de texte pur ne le serait déjà.
+    CGFloat measurementAttachmentHeight = cfg.messageFontSize * 1.2;
     UIColor *usernameColor = s7tv_readableColorOnDarkBackground(msg.authorColor);
     UIColor *messageColor  = [UIColor whiteColor];
 
@@ -779,7 +817,8 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
         }
         NSTextAttachment *badgeAttachment = [[NSTextAttachment alloc] init];
         badgeAttachment.image = cachedBadgeImage;
-        badgeAttachment.bounds = CGRectMake(0, -3, cfg.badgeSize, cfg.badgeSize);
+        CGFloat badgeSize = forMeasurement ? measurementAttachmentHeight : cfg.badgeSize;
+        badgeAttachment.bounds = CGRectMake(0, -3, badgeSize, badgeSize);
         [result appendAttributedString:[NSAttributedString attributedStringWithAttachment:badgeAttachment]];
         [result appendAttributedString:[[NSAttributedString alloc] initWithString:@" "]];
     }
@@ -814,8 +853,16 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
                 continue;
             }
 
-            CGFloat targetHeight = (token.type == S7TVChatTokenTypeEmote7TV)
-                ? cfg.emote7TVSize : cfg.emoteTwitchSize;
+            CGFloat targetHeight;
+            if (forMeasurement) {
+                // Voir le commentaire sur measurementAttachmentHeight en
+                // haut de la méthode : la mesure ignore volontairement la
+                // vraie taille configurée de l'emote.
+                targetHeight = measurementAttachmentHeight;
+            } else {
+                targetHeight = (token.type == S7TVChatTokenTypeEmote7TV)
+                    ? cfg.emote7TVSize : cfg.emoteTwitchSize;
+            }
             CGFloat ratio = (emote.nativeSize.height > 0)
                 ? emote.nativeSize.width / emote.nativeSize.height : 1.0;
             CGFloat targetWidth = targetHeight * ratio;

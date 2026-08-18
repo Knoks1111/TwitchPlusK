@@ -77,7 +77,14 @@ static const CGFloat kDefaultEmoteTwitchSize        = 28.0; // TODO mesure réel
 static const CGFloat kDefaultBadgeSize              = 17.0;
 static const CGFloat kDefaultUsernameFontSize       = 13.0;
 static const CGFloat kDefaultMessageFontSize        = 13.0;
-static const CGFloat kDefaultLineSpacing            = 6.0;  // défaut = rendu du picker à 6
+// 2.0, pas 6.0 : compense exactement le passage de la marge structurelle
+// du label (top+bottom) de 4 à 8 dans SevenTVChatCustomView
+// s7tv_heightForMessage: (correction du bug de clipping du dernier mot en
+// cas limite de wrapping — voir commentaire de s7tv_measureAttributedText:
+// dans ce fichier .m). 8 + 2 = 10 = ancien 4 + 6 : espacement visuel entre
+// messages inchangé par défaut. Cette valeur reste "TODO mesure réelle"
+// comme avant, seule la compensation a changé.
+static const CGFloat kDefaultLineSpacing            = 2.0;  // défaut = rendu du picker à 6, compensé -4
 static const CGFloat kDefaultUsernameMessageSpacing = 4.0;  // TODO mesure réelle
 // 0 = rendu d'origine (emote posée sur la ligne du bas, ce qui correspondait
 // avant à +4 sur l'ancienne échelle). Sens logique : positif = vers le haut,

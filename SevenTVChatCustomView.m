@@ -260,17 +260,52 @@
             [_unseenMessagesBannerLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:arrowIcon.trailingAnchor constant:6],
             [_unseenMessagesBannerLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_unseenMessagesBanner.trailingAnchor constant:-12],
         ]];
+
+        [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self
+               selector:@selector(s7tv_handleDeviceOrientationChange:)
+                   name:UIDeviceOrientationDidChangeNotification
+                 object:nil];
     }
     return self;
 }
 
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+        name:UIDeviceOrientationDidChangeNotification object:nil];
+    [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
-    if (self.bounds.size.width > 0 && self.bounds.size.width != self.cachedContentWidth) {
-        self.cachedContentWidth = self.bounds.size.width;
+    // s7tv_actualVisibleWidth plutôt que self.bounds.size.width seul : un
+    // ancêtre peut recadrer visuellement cette vue (voir commentaire de
+    // s7tv_actualVisibleWidth) sans que self.bounds ne change, auquel cas
+    // comparer seulement self.bounds.size.width laisserait passer un
+    // changement de largeur réellement visible sans jamais invalider le
+    // cache ni redemander les hauteurs de ligne.
+    CGFloat visibleWidth = [self s7tv_actualVisibleWidth];
+    if (visibleWidth > 0 && visibleWidth != self.cachedContentWidth) {
+        self.cachedContentWidth = visibleWidth;
         [self.rowHeightCache removeAllObjects];
         [self.tableView reloadData];
     }
+}
+
+// Filet de sécurité : si un ancêtre change la largeur visuellement visible
+// sans jamais déclencher self.layoutSubviews (ex. transform appliqué par
+// Twitch sur un conteneur parent lors d'un passage paysage/théâtre, qui ne
+// propage pas nécessairement d'invalidation de layout jusqu'à cette vue),
+// on revérifie explicitement après chaque rotation, avec un court délai
+// pour laisser l'animation de rotation/repositionnement Twitch se stabiliser.
+- (void)s7tv_handleDeviceOrientationChange:(NSNotification *)note {
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakSelf setNeedsLayout];
+        [weakSelf layoutIfNeeded];
+    });
 }
 
 - (void)reloadMessages {
@@ -514,12 +549,14 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     // ce qu'on a corrigé jusqu'ici dans le calcul lui-même.
     if (indexPath.row < self.displayedMessages.count) {
         S7TVChatMessage *msg = self.displayedMessages[indexPath.row];
-        NSNumber *expected = self.rowHeightCache[msg.messageID];
+        CGFloat visibleWidth = [self s7tv_actualVisibleWidth];
+        NSString *cacheKey = [NSString stringWithFormat:@"%@|%.0f", msg.messageID, visibleWidth];
+        NSNumber *expected = self.rowHeightCache[cacheKey];
         [[SevenTVManager sharedManager]
             log:@"[ChatCustom] 🔍 willDisplay id=%@ cellFrameHeight=%.1f "
-                 @"expectedFromCache=%@ labelFrameHeight=%.1f "
+                 @"visibleWidth=%.1f expectedFromCache=%@ labelFrameHeight=%.1f "
                  @"labelNumberOfLines=%ld clipsToBounds=%d",
-            msg.messageID, cell.frame.size.height,
+            msg.messageID, cell.frame.size.height, visibleWidth,
             expected ?: @"nil",
             s7tvCell.messageLabel.frame.size.height,
             (long)s7tvCell.messageLabel.numberOfLines,
@@ -560,6 +597,39 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     return _prototypeCell;
 }
 
+// self.bounds.size.width n'est pas fiable telle quelle : constaté en
+// production (logs), cette valeur oscille (ex. 253.3 puis 390.0 pour la
+// même vue à quelques centaines de ms d'intervalle) sans que ça corresponde
+// à un vrai changement de largeur visible à l'écran — cohérent avec un
+// panneau flottant repositionné par Twitch via un mécanisme qui ne redonne
+// pas systématiquement à cette vue des bounds à jour (transform, conteneur
+// parent qui recadre visuellement sans resize direct). On calcule donc la
+// largeur RÉELLEMENT visible en remontant la hiérarchie et en intersectant,
+// dans le système de coordonnées de self, les bounds de chaque ancêtre qui
+// recadre visuellement (clipsToBounds == YES) — convertRect:toView: gère
+// correctement les transforms le cas échéant, contrairement à une
+// comparaison brute de bounds.size.width.
+- (CGFloat)s7tv_actualVisibleWidth {
+    CGRect visibleRect = self.bounds;
+    if (CGRectIsEmpty(visibleRect)) return self.bounds.size.width;
+
+    UIView *ancestor = self.superview;
+    while (ancestor) {
+        if (ancestor.clipsToBounds) {
+            CGRect ancestorRectInSelf = [ancestor convertRect:ancestor.bounds toView:self];
+            visibleRect = CGRectIntersection(visibleRect, ancestorRectInSelf);
+            if (CGRectIsNull(visibleRect)) {
+                // Intersection vide (vue actuellement hors écran/masquée) —
+                // pas une largeur exploitable, on retombe sur self.bounds
+                // plutôt que de mettre en cache une hauteur pour largeur 0.
+                return self.bounds.size.width;
+            }
+        }
+        ancestor = ancestor.superview;
+    }
+    return ceil(visibleRect.size.width);
+}
+
 // Mesure via la vraie cellule de production (S7TVChatCustomCell), pas un
 // pipeline TextKit reconstruit à côté. Tentative précédente : mesurer avec
 // NSLayoutManager/NSTextContainer configuré "à la main" pour imiter
@@ -575,10 +645,11 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
 // mêmes contraintes qui sert à la fois à mesurer et à afficher, il ne peut
 // structurellement plus y avoir de désaccord entre les deux.
 - (CGFloat)s7tv_heightForMessage:(S7TVChatMessage *)msg {
-    NSNumber *cached = self.rowHeightCache[msg.messageID];
+    CGFloat availableWidth = [self s7tv_actualVisibleWidth];
+    NSString *cacheKey = [NSString stringWithFormat:@"%@|%.0f", msg.messageID, availableWidth];
+    NSNumber *cached = self.rowHeightCache[cacheKey];
     if (cached) return cached.doubleValue;
 
-    CGFloat availableWidth = self.bounds.size.width;
     if (availableWidth <= 0) {
         // Largeur pas encore connue (avant le tout premier layout) : pas de
         // mesure fiable possible. Pas de valeur de secours arbitraire (un
@@ -615,7 +686,7 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     // ENTRE deux messages (voir SevenTVChatAppearanceConfig.h), toujours
     // volontairement indépendant de cette marge structurelle.
     CGFloat height = ceil(fitSize.height) + cfg.lineSpacing;
-    self.rowHeightCache[msg.messageID] = @(height);
+    self.rowHeightCache[cacheKey] = @(height);
 
     // ── Diagnostic temporaire ────────────────────────────────────────────
     // À retirer une fois le bug de clipping identifié avec certitude. Donne

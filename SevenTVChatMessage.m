@@ -9,6 +9,60 @@
 
 
 // ============================================================
+// MARK: - S7TVChatUserColorRegistry
+// ============================================================
+
+@interface SevenTVChatUserColorRegistry ()
+@property (nonatomic, strong) NSMutableDictionary<NSString *, UIColor *> *colorsByLowercaseUsername;
+// Même pattern que S7TVChatMessageStore.storeQueue plus bas dans ce
+// fichier : queue concurrente dédiée, lecture en dispatch_sync, écriture
+// en dispatch_barrier_async.
+@property (nonatomic, strong) dispatch_queue_t queue;
+@end
+
+@implementation SevenTVChatUserColorRegistry
+
++ (instancetype)sharedRegistry {
+    static SevenTVChatUserColorRegistry *instance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[SevenTVChatUserColorRegistry alloc] init];
+    });
+    return instance;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _colorsByLowercaseUsername = [NSMutableDictionary dictionary];
+        _queue = dispatch_queue_create("tv.s7tv.chat-user-color-registry",
+                                        DISPATCH_QUEUE_CONCURRENT);
+    }
+    return self;
+}
+
+- (void)registerColor:(nullable UIColor *)color forUsername:(NSString *)username {
+    if (!color || !username.length) return;
+    NSString *key = username.lowercaseString;
+    dispatch_barrier_async(self.queue, ^{
+        self.colorsByLowercaseUsername[key] = color;
+    });
+}
+
+- (nullable UIColor *)colorForUsername:(NSString *)username {
+    if (!username.length) return nil;
+    NSString *key = username.lowercaseString;
+    __block UIColor *result;
+    dispatch_sync(self.queue, ^{
+        result = self.colorsByLowercaseUsername[key];
+    });
+    return result;
+}
+
+@end
+
+
+// ============================================================
 // MARK: - S7TVChatToken
 // ============================================================
 
@@ -21,10 +75,11 @@
     return t;
 }
 
-+ (instancetype)mentionToken:(NSString *)text {
++ (instancetype)mentionToken:(NSString *)text color:(nullable UIColor *)color {
     S7TVChatToken *t = [S7TVChatToken new];
     t.type = S7TVChatTokenTypeMention;
     t.text = text;
+    t.mentionColor = color;
     return t;
 }
 
@@ -135,6 +190,15 @@
     dispatch_barrier_async(self.storeQueue, ^{
         // Doublon (ex: re-livraison IRC) → no-op plutôt que dupliquer à l'écran.
         if (self.messagesByID[message.messageID]) return;
+
+        // Alimente le registre pseudo -> couleur (voir
+        // SevenTVChatUserColorRegistry ci-dessus) AVANT tout autre traitement, pour
+        // que la couleur de CET auteur soit déjà disponible si un message
+        // suivant (même dans le même burst IRC) le mentionne.
+        if (message.authorColor && message.authorDisplayName.length) {
+            [[SevenTVChatUserColorRegistry sharedRegistry]
+                registerColor:message.authorColor forUsername:message.authorDisplayName];
+        }
 
         [self.orderedMessages addObject:message];
         self.messagesByID[message.messageID] = message;

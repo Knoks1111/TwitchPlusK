@@ -23,6 +23,49 @@ NS_ASSUME_NONNULL_BEGIN
 
 
 // ============================================================
+// MARK: - S7TVChatUserColorRegistry
+// ============================================================
+//
+// Registre pseudo (insensible à la casse) -> couleur Twitch, alimenté au
+// fil de l'eau par les messages qui arrivent (voir
+// S7TVChatMessageStore addMessage: dans le .m). Sert à colorer les
+// mentions "@pseudo" ET les pseudos cités sans @ dans le texte d'un
+// message (comportement 7TV PC) — voir SevenTVChatTokenizer.m — en
+// réutilisant la couleur déjà connue de cet utilisateur plutôt que d'en
+// deviner une.
+//
+// Portée volontairement globale (singleton, pas liée à une chaîne) : la
+// couleur d'un pseudo Twitch est la même partout, et ça évite de perdre
+// l'info si quelqu'un est mentionné avant d'avoir lui-même parlé sur CETTE
+// session de vue (mais a déjà parlé ailleurs pendant la session app).
+//
+// Limite connue : un pseudo mentionné qui n'a jamais encore posté dans le
+// chat (sur cette session) n'a pas de couleur connue — comportement normal,
+// Twitch IRC ne fournit la couleur d'un utilisateur que via SES propres
+// messages, jamais à la demande pour un pseudo arbitraire.
+//
+// Pas de purge automatique : table légère (un UIColor par pseudo vu), coût
+// mémoire négligeable même sur une session très longue.
+//
+// Regroupé ici plutôt que dans un fichier séparé : classe courte, utilisée
+// uniquement en lien avec S7TVChatMessage/S7TVChatToken (alimentation côté
+// store, lecture côté tokenizer) — pas de raison de la disperser ailleurs.
+
+@interface SevenTVChatUserColorRegistry : NSObject
+
++ (instancetype)sharedRegistry;
+
+// No-op si color est nil ou username vide — n'écrase jamais une couleur
+// déjà connue par une valeur absente.
+- (void)registerColor:(nullable UIColor *)color forUsername:(NSString *)username;
+
+// Recherche insensible à la casse. nil si le pseudo n'a jamais été vu.
+- (nullable UIColor *)colorForUsername:(NSString *)username;
+
+@end
+
+
+// ============================================================
 // MARK: - Token (segment de message)
 // ============================================================
 //
@@ -53,13 +96,24 @@ typedef NS_ENUM(NSInteger, S7TVChatTokenType) {
 // type saura résoudre en image".
 @property (nonatomic, copy, nullable) NSString *providerEmoteID;
 
+// Couleur du pseudo mentionné/cité, résolue via
+// SevenTVChatUserColorRegistry au moment de la tokenisation (voir
+// SevenTVChatTokenizer.m) — nil si ce pseudo n'a jamais été vu dans le
+// chat (comportement 7TV PC : reste blanc dans ce cas, pas de couleur
+// devinée). Utilisé uniquement pour .mention.
+@property (nonatomic, strong, nullable) UIColor *mentionColor;
+
 // Emote déjà résolue par le tokenizer (Phase 2) — dimensions/URL/animé,
 // mis en cache ici pour que le renderer n'ait pas à re-interroger le
 // fournisseur à chaque passage de cellule. nil pour les tokens non-emote.
 @property (nonatomic, strong, nullable) id<S7TVResolvedEmote> resolvedEmote;
 
 + (instancetype)textToken:(NSString *)text;
-+ (instancetype)mentionToken:(NSString *)text;
+
+// color : couleur connue du pseudo mentionné (via
+// SevenTVChatUserColorRegistry), nil si inconnu — voir mentionColor
+// ci-dessus.
++ (instancetype)mentionToken:(NSString *)text color:(nullable UIColor *)color;
 + (instancetype)urlToken:(NSString *)text;
 + (instancetype)emoteToken:(NSString *)name
                    provider:(S7TVChatTokenType)providerType   // .emote7TV ou .emoteTwitch

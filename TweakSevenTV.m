@@ -1121,41 +1121,74 @@ static NSInteger s7tv_tierFromSubPlan(NSString *subPlan) {
     return 1; // "1000", "Prime", ou absent → niveau 1
 }
 
-// Reproduit les formulations observées sur screenshots :
-//   - resub payant : "a pris un abonnement de niveau X. C'est son Ne mois
-//     d'abonnement, dont Se mois consécutifs !" (clause streak seulement si
-//     should-share-streak=1)
-//   - resub Prime : "s'est abonné(e) avec Prime. C'est son Ne mois
-//     d'abonnement !"
+// Ordinal du mois d'abonnement — "24e" en français, "24th" en anglais.
+// Seul le compte de mois cumulés (celui qui exprime "c'est son Ne mois")
+// utilise un ordinal ; le streak (voir sysmsg_streak_clause_format) est
+// resté en nombre cardinal simple dans les deux langues — l'ancien code
+// appliquait aussi un "e" français au streak ("dont 6e mois consécutifs"),
+// peu naturel, corrigé au passage de la localisation ("dont 6 mois
+// consécutifs").
+static NSString *s7tv_ordinalMonthString(NSInteger months) {
+    if ([S7TVLocalization shared].currentLanguage == S7TVLanguageEnglish) {
+        NSInteger mod100 = months % 100;
+        NSString *suffix;
+        if (mod100 >= 11 && mod100 <= 13) {
+            suffix = @"th";
+        } else {
+            switch (months % 10) {
+                case 1:  suffix = @"st"; break;
+                case 2:  suffix = @"nd"; break;
+                case 3:  suffix = @"rd"; break;
+                default: suffix = @"th"; break;
+            }
+        }
+        return [NSString stringWithFormat:@"%ld%@", (long)months, suffix];
+    }
+    return [NSString stringWithFormat:@"%lde", (long)months];
+}
+
+// Reproduit les formulations observées sur screenshots (voir 7tv-localization.m,
+// section "Messages système sub/resub/gift", pour le détail des deux langues) :
+//   - resub payant : "<verbe> <plan>. C'est son Ne mois d'abonnement, dont S
+//     mois consécutifs !" (clause streak seulement si should-share-streak=1)
+//   - resub Prime : "<verbe> avec Prime. C'est son Ne mois d'abonnement !"
 //   - premier sub (cumulative<=1) : même verbe/plan, sans la phrase "Ne mois".
 //   - gift communautaire : "offre N abonnement(s) de niveau X à la
 //     communauté de {chaîne}. Cet utilisateur a déjà offert M abonnement(s)
 //     sur cette chaîne !"
+// Localisé via L() (suit le toggle FR/EN interne du tweak) plutôt que lu
+// depuis system-msg= IRC — voir le commentaire en tête de fichier sur ce
+// choix : system-msg est un texte de secours serveur non stylable (pseudo
+// non extractible pour le gras/couleur) et pas garanti dans la langue voulue,
+// alors que le natif Twitch lui-même reconstruit cette phrase depuis les
+// mêmes champs msg-param-* qu'on utilise ici.
 static NSString *s7tv_buildSystemMessagePhrase(S7TVSystemMessageInfo *info) {
     if (info.kind == S7TVSystemMessageKindCommunityGift) {
-        NSString *giftWord   = s7tv_pluralize(info.massGiftCount, @"abonnement", @"abonnements");
-        NSString *senderWord = s7tv_pluralize(info.senderTotalGiftCount, @"abonnement", @"abonnements");
-        return [NSString stringWithFormat:
-            @"offre %ld %@ de niveau %ld à la communauté de %@. Cet utilisateur a déjà offert %ld %@ sur cette chaîne !",
+        NSString *giftWord   = s7tv_pluralize(info.massGiftCount,
+            L(@"sysmsg_word_sub_singular"), L(@"sysmsg_word_sub_plural"));
+        NSString *senderWord = s7tv_pluralize(info.senderTotalGiftCount,
+            L(@"sysmsg_word_sub_singular"), L(@"sysmsg_word_sub_plural"));
+        return [NSString stringWithFormat:L(@"sysmsg_gift_format"),
             (long)info.massGiftCount, giftWord, (long)info.tier,
-            info.channelDisplayName ?: @"la chaîne",
+            info.channelDisplayName ?: L(@"sysmsg_fallback_channel"),
             (long)info.senderTotalGiftCount, senderWord];
     }
 
     NSString *planPhrase = info.isPrime
-        ? @"avec Prime"
-        : [NSString stringWithFormat:@"de niveau %ld", (long)info.tier];
-    NSString *verb = info.isPrime ? @"s'est abonné(e)" : @"a pris un abonnement";
+        ? L(@"sysmsg_plan_prime")
+        : [NSString stringWithFormat:L(@"sysmsg_plan_tier_format"), (long)info.tier];
+    NSString *verb = info.isPrime ? L(@"sysmsg_verb_sub_prime") : L(@"sysmsg_verb_sub_tier");
 
     if (info.cumulativeMonths <= 1) {
-        return [NSString stringWithFormat:@"%@ %@ !", verb, planPhrase];
+        return [NSString stringWithFormat:L(@"sysmsg_first_sub_format"), verb, planPhrase];
     }
 
     NSString *streakClause = (info.streakMonths > 0)
-        ? [NSString stringWithFormat:@", dont %lde mois consécutifs", (long)info.streakMonths]
+        ? [NSString stringWithFormat:L(@"sysmsg_streak_clause_format"), (long)info.streakMonths]
         : @"";
-    return [NSString stringWithFormat:@"%@ %@. C'est son %lde mois d'abonnement%@ !",
-        verb, planPhrase, (long)info.cumulativeMonths, streakClause];
+    NSString *monthOrdinal = s7tv_ordinalMonthString(info.cumulativeMonths);
+    return [NSString stringWithFormat:L(@"sysmsg_resub_format"),
+        verb, planPhrase, monthOrdinal, streakClause];
 }
 
 // Parse une ligne IRC complète et retourne un S7TVChatMessage de type
@@ -1229,7 +1262,7 @@ static S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(NSString *ircLine) {
     } else {
         info.massGiftCount = MAX(1, [s7tv_tagValue(tags, @"msg-param-mass-gift-count", @"1") integerValue]);
         info.senderTotalGiftCount = [s7tv_tagValue(tags, @"msg-param-sender-count", @"0") integerValue];
-        info.channelDisplayName = [SevenTVManager sharedManager].currentChannelName ?: @"la chaîne";
+        info.channelDisplayName = [SevenTVManager sharedManager].currentChannelName ?: L(@"sysmsg_fallback_channel");
     }
 
     S7TVChatMessage *msg = [[S7TVChatMessage alloc] initWithMessageID:messageID

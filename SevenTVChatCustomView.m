@@ -504,6 +504,28 @@
   willDisplayCell:(UITableViewCell *)cell
 forRowAtIndexPath:(NSIndexPath *)indexPath {
     S7TVChatCustomCell *s7tvCell = (S7TVChatCustomCell *)cell;
+
+    // ── Diagnostic temporaire ────────────────────────────────────────────
+    // Compare la hauteur RÉELLEMENT appliquée par UITableView à la cellule
+    // (cell.frame.size.height, la vérité terrain) avec ce que
+    // s7tv_heightForMessage: avait calculé et mis en cache pour ce même
+    // messageID. Si les deux diffèrent, la table view n'utilise pas (ou
+    // écrase) la hauteur qu'on lui a donnée — root cause différente de tout
+    // ce qu'on a corrigé jusqu'ici dans le calcul lui-même.
+    if (indexPath.row < self.displayedMessages.count) {
+        S7TVChatMessage *msg = self.displayedMessages[indexPath.row];
+        NSNumber *expected = self.rowHeightCache[msg.messageID];
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] 🔍 willDisplay id=%@ cellFrameHeight=%.1f "
+                 @"expectedFromCache=%@ labelFrameHeight=%.1f "
+                 @"labelNumberOfLines=%ld clipsToBounds=%d",
+            msg.messageID, cell.frame.size.height,
+            expected ?: @"nil",
+            s7tvCell.messageLabel.frame.size.height,
+            (long)s7tvCell.messageLabel.numberOfLines,
+            s7tvCell.messageLabel.clipsToBounds];
+    }
+
     SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
     [engine removeObserver:s7tvCell.messageLabel];
     if (s7tvCell.animationKeys.count == 0) return;
@@ -594,6 +616,27 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     // volontairement indépendant de cette marge structurelle.
     CGFloat height = ceil(fitSize.height) + cfg.lineSpacing;
     self.rowHeightCache[msg.messageID] = @(height);
+
+    // ── Diagnostic temporaire ────────────────────────────────────────────
+    // À retirer une fois le bug de clipping identifié avec certitude. Donne
+    // la vérité terrain plutôt que de continuer à deviner : largeur utilisée
+    // pour la mesure, hauteur calculée, hauteur réellement occupée par
+    // messageLabel après layoutIfNeeded (doit être ≤ height - cfg.lineSpacing
+    // pour ne rien perdre), et les 20 derniers caractères du texte source
+    // pour confirmer visuellement quel message est mesuré.
+    NSString *tail = msg.rawText.length > 20
+        ? [msg.rawText substringFromIndex:msg.rawText.length - 20]
+        : msg.rawText;
+    [[SevenTVManager sharedManager]
+        log:@"[ChatCustom] 🔍 id=%@ availableWidth=%.1f computedHeight=%.1f "
+             @"protoLabelFrameHeight=%.1f protoLabelBoundsHeight=%.1f "
+             @"protoContentViewFrameHeight=%.1f tail='%@'",
+        msg.messageID, availableWidth, height,
+        proto.messageLabel.frame.size.height,
+        proto.messageLabel.bounds.size.height,
+        proto.contentView.frame.size.height,
+        tail];
+
     return height;
 }
 

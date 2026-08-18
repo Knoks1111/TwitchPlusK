@@ -200,6 +200,25 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
                                                @"is gifting 5 subs to the community!"],
         @"preview_deleted_message":         @[@"message de test", @"test message"],
 
+        // ── Messages système sub/resub/gift (TweakSevenTV.m,
+        // s7tv_buildSystemMessagePhrase) — reconstruits nous-mêmes depuis les
+        // champs IRC msg-param-*, pas depuis system-msg= (voir commentaire de
+        // la fonction). %ld/%@ dans l'ordre où le code les insère.
+        @"sysmsg_verb_sub_tier":            @[@"a pris un abonnement", @"subscribed"],
+        @"sysmsg_verb_sub_prime":           @[@"s'est abonné(e)", @"subscribed"],
+        @"sysmsg_plan_prime":               @[@"avec Prime", @"with Prime"],
+        @"sysmsg_plan_tier_format":         @[@"de niveau %ld", @"at Tier %ld"],
+        @"sysmsg_first_sub_format":         @[@"%@ %@ !", @"%@ %@!"],
+        @"sysmsg_resub_format":             @[@"%@ %@. C'est son %@ mois d'abonnement%@ !",
+                                               @"%@ %@. This is their %@ month subscribed%@!"],
+        @"sysmsg_streak_clause_format":     @[@", dont %ld mois consécutifs",
+                                               @", including a %ld-month streak"],
+        @"sysmsg_word_sub_singular":        @[@"abonnement", @"subscription"],
+        @"sysmsg_word_sub_plural":          @[@"abonnements", @"subscriptions"],
+        @"sysmsg_gift_format":              @[@"offre %ld %@ de niveau %ld à la communauté de %@. Cet utilisateur a déjà offert %ld %@ sur cette chaîne !",
+                                               @"is gifting %ld %@ at Tier %ld to %@'s community! They've already gifted %ld %@ on this channel!"],
+        @"sysmsg_fallback_channel":         @[@"la chaîne", @"the channel"],
+
         // ── Picker : recherche ────────────────────────────────────────────
         @"alert_search_emote_title":        @[@"Rechercher une emote", @"Search for an emote"],
         @"action_search":                   @[@"Rechercher", @"Search"],

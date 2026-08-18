@@ -309,6 +309,13 @@
         [[NSDiffableDataSourceSnapshot alloc] init];
     [snapshot appendSectionsWithIdentifiers:@[@"main"]];
     [snapshot appendItemsWithIdentifiers:identifiers intoSectionWithIdentifier:@"main"];
+    // Sans ça, un reloadMessages où le set d'IDs ne change pas (cas du faux
+    // chat statique du panneau Tailles, ou plus généralement un changement
+    // de SevenTVChatAppearanceConfig sans nouveau message) produit un diff
+    // vide : la snapshot est "identique" du point de vue du diffable data
+    // source et aucune cell n'est reconfigurée, même si rowHeightCache a été
+    // vidé juste au-dessus.
+    [snapshot reloadItemsWithIdentifiers:identifiers];
 
     __weak typeof(self) weakSelf = self;
     [self.dataSource applySnapshot:snapshot animatingDifferences:NO completion:^{

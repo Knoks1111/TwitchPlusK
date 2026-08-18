@@ -24,6 +24,8 @@
 #import <UIKit/UIKit.h>
 
 @class SevenTVEmotePickerController;
+@class SevenTVChatCustomView;
+@class S7TVChatMessageStore;
 
 @interface SevenTVPickerSizesPanel : NSObject
 
@@ -34,9 +36,18 @@
 // Le picker en gère lui-même le hidden/frame (visibilité + redimensionnement).
 @property (nonatomic, weak, readonly) UIView *panelView;
 
-// Hauteur réelle du contenu (5 lignes), utilisée par le picker pour adapter
-// sa propre hauteur quand le panneau est affiché.
+// Hauteur réelle du contenu (5 lignes + section Couleurs), utilisée par le
+// picker pour adapter sa propre hauteur quand le panneau est affiché.
 @property (nonatomic, assign, readonly) CGFloat contentHeight;
+
+// Faux chat (preview live 1:1, 5 messages factices) — construit par
+// -buildInView:... mais volontairement PAS attaché à panelView : le panneau
+// est l'inputView du clavier et ne peut pas héberger un aperçu positionné
+// librement au milieu de l'écran. C'est au picker de poser fakeChatView dans
+// sa fenêtre flottante (au-dessus du champ de saisie) et de gérer son frame,
+// sa visibilité, et son cycle de vie (afficher/masquer avec le panneau).
+@property (nonatomic, strong, readonly) SevenTVChatCustomView *fakeChatView;
+@property (nonatomic, strong, readonly) S7TVChatMessageStore *fakeChatStore;
 
 // Construit les 5 lignes (nom + slider + pastille valeur + bouton reset +
 // preview live) dans `container`, avec le style visuel transmis par le picker

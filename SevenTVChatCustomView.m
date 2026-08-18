@@ -89,9 +89,17 @@
 // mesurées pixel-perfect sur le rendu natif — TODO mesure réelle si besoin
 // (même convention que SevenTVChatAppearanceConfig). accentColor nil =
 // message normal (tout redevient invisible/transparent).
-// backgroundEnabled : contrôle UNIQUEMENT le fond teinté (12%). La barre
-// d'accent (gauche) et l'icône restent toujours affichées/colorées quand
-// isSystem — voir SevenTVChatAppearanceConfig.systemMessageBackgroundsEnabled.
+// backgroundEnabled : contrôle UNIQUEMENT le fond (12% teinté vs neutre).
+// La barre d'accent (gauche) et l'icône restent toujours affichées/colorées
+// quand isSystem — voir SevenTVChatAppearanceConfig.systemMessageBackgroundsEnabled.
+// Fond OFF (comme PC) : le fond du chat de base (self.tableView) est
+// clearColor — transparent, hérite du fond natif Twitch derrière. Sur PC,
+// désactiver les fonds colorés ne rend PAS le message totalement
+// transparent : il garde un fond neutre légèrement plus clair que le fond du
+// chat pour rester visuellement distinct de la liste. Overlay blanc à faible
+// alpha plutôt qu'une couleur fixe : "plus clair que le fond de base" reste
+// vrai quel que soit le thème/la couleur réelle du fond natif Twitch
+// derrière (transparent ici, donc pas mesurable en dur).
 - (void)s7tv_configureSystemAccentWithColor:(nullable UIColor *)accentColor
                                     iconName:(nullable NSString *)iconName
                            backgroundEnabled:(BOOL)backgroundEnabled {
@@ -102,9 +110,13 @@
     self.systemIconView.tintColor = accentColor;
     self.systemIconView.image = iconName ? [UIImage systemImageNamed:iconName] : nil;
     self.messageLabelLeadingConstraint.constant = isSystem ? 31.0 : 8.0;
-    self.contentView.backgroundColor = (isSystem && backgroundEnabled)
-        ? [accentColor colorWithAlphaComponent:0.12]
-        : [UIColor clearColor];
+    if (!isSystem) {
+        self.contentView.backgroundColor = [UIColor clearColor];
+    } else if (backgroundEnabled) {
+        self.contentView.backgroundColor = [accentColor colorWithAlphaComponent:0.12];
+    } else {
+        self.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.05];
+    }
 }
 
 - (void)s7tv_handleTap:(UITapGestureRecognizer *)gesture {

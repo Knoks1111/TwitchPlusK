@@ -16,6 +16,7 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <UIKit/UIKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -61,6 +62,19 @@ extern NSString *const S7TVChatAppearanceConfigDidChangeNotification;
 // mesurer, c'est un choix de compromis netteté/mémoire — voir Phase 2).
 @property (nonatomic, assign) NSInteger emote7TVResolution;
 
+// --- Fonds colorés des messages système (sub/resub/prime/gift) ---
+// Toggle unique : la barre d'accent (gauche) et l'icône (couronne/étoile/
+// cadeau) restent TOUJOURS affichées et colorées, quel que soit l'état de
+// ce toggle — seul le fond teinté (contentView.backgroundColor à 12%
+// d'opacité) est concerné. Défaut YES = comportement historique.
+@property (nonatomic, assign) BOOL systemMessageBackgroundsEnabled;
+
+// Une couleur configurable par catégorie. Défauts = anciennes couleurs en
+// dur de SevenTVChatCustomView.m (vert/violet/rose).
+@property (nonatomic, strong) UIColor *subResubAccentColor;  // sub/resub non-Prime
+@property (nonatomic, strong) UIColor *primeAccentColor;     // sub/resub Prime
+@property (nonatomic, strong) UIColor *giftAccentColor;      // gift communautaire
+
 // --- Persistance ---
 // Recharge à chaud depuis NSUserDefaults (ex: après un changement dans un
 // futur écran de réglages custom — Phase 6). Les valeurs non trouvées en
@@ -85,6 +99,13 @@ extern NSString *const S7TVChatAppearanceConfigDidChangeNotification;
 // l'UI de réglages (Phase 6) pour afficher "valeur par défaut Twitch: Xpt"
 // à côté du contrôle, sans dupliquer les constantes ailleurs.
 - (CGFloat)defaultValueForKey:(NSString *)key;
+
+// Équivalents couleur de setValue:forSizeKey:/defaultValueForKey: — mêmes
+// garanties (sauvegarde + notification), pour subResubAccentColor/
+// primeAccentColor/giftAccentColor.
+- (void)setColor:(UIColor *)color forColorKey:(NSString *)key;
+- (nullable UIColor *)defaultColorForColorKey:(NSString *)key;
+- (void)resetColorKeyToDefault:(NSString *)key;
 
 @end
 

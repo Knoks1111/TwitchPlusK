@@ -118,9 +118,14 @@ static const char kS7TVRowKeyTag = 0;
 
     CGFloat contentY = 12.0;
 
-    contentY = [self _buildFakeChatSectionInScrollView:sizesPanel atY:contentY
-                                                  width:frame.size.width
-                                              cardColor:cardColor sepColor:sepColor subColor:subColor];
+    // Le faux chat n'est plus construit ici : il vit dans une fenêtre
+    // flottante séparée gérée par le picker (voir -[SevenTVEmotePickerController
+    // emotePickerSizesToggleTapped]), positionnée au-dessus du champ de
+    // saisie — le panneau scrollable ⚙️ Tailles ne peut pas héberger un
+    // aperçu positionné librement puisqu'il EST l'inputView (remplace le
+    // clavier). On construit quand même fakeChatStore/fakeChatView ici pour
+    // que le controller puisse les récupérer via les accesseurs publics.
+    [self _setupFakeChatView];
 
     contentY = [self _buildSystemColorsSectionInScrollView:sizesPanel atY:contentY
                                                        width:frame.size.width
@@ -362,52 +367,24 @@ static const char kS7TVRowKeyTag = 0;
     [self.fakeChatView reloadMessages];
 }
 
-#pragma mark - Faux chat (preview live 1:1, remplace les anciennes mini-previews)
+#pragma mark - Faux chat (preview live 1:1, hébergé par la fenêtre flottante du controller)
 
-- (CGFloat)_buildFakeChatSectionInScrollView:(UIScrollView *)scrollView
-                                          atY:(CGFloat)y
-                                        width:(CGFloat)width
-                                    cardColor:(UIColor *)cardColor
-                                     sepColor:(UIColor *)sepColor
-                                     subColor:(UIColor *)subColor {
-    UILabel *sectionLbl = [[UILabel alloc] initWithFrame:CGRectMake(12, y, width - 24, 16)];
-    sectionLbl.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
-    sectionLbl.textColor = subColor;
-    sectionLbl.text = L(@"sizes_preview_section_title");
-    sectionLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [scrollView addSubview:sectionLbl];
-    y += 22;
-
-    const CGFloat chatH = 176.0;
-    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12, y, width - 24, chatH)];
-    card.backgroundColor = cardColor;
-    card.layer.cornerRadius = 10;
-    card.clipsToBounds = YES;
-    card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [scrollView addSubview:card];
-
+// Construit fakeChatStore/fakeChatView sans les attacher à aucune vue —
+// c'est au controller (fenêtre flottante) de poser fakeChatView dans sa
+// propre hiérarchie et de lui donner un frame. Card/titre de section/
+// séparateur ne sont plus du ressort du panneau : ce sont des éléments de
+// chrome de la fenêtre flottante désormais.
+- (void)_setupFakeChatView {
     self.fakeChatStore = [[S7TVChatMessageStore alloc] init];
     [self _populateFakeChatStore:self.fakeChatStore];
 
     SevenTVChatCustomView *chatView = [[SevenTVChatCustomView alloc] initWithStore:self.fakeChatStore];
-    chatView.frame = CGRectInset(card.bounds, 8, 8);
-    chatView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    // Preview statique : pas de scroll/tap indépendant à l'intérieur du
-    // panneau de réglages (éviterait un conflit avec le scroll du panneau
-    // lui-même) — le contenu tient dans les 5 messages factices.
+    // Preview statique : pas de scroll/tap indépendant (le vrai chat en
+    // dessous ne doit pas non plus recevoir les touches à travers la
+    // fenêtre flottante) — le contenu tient dans les 5 messages factices.
     chatView.userInteractionEnabled = NO;
-    [card addSubview:chatView];
     self.fakeChatView = chatView;
     [chatView reloadMessages];
-
-    y += chatH;
-
-    UIView *rowSep = [[UIView alloc] initWithFrame:CGRectMake(12, y + 10, width - 24, 0.5)];
-    rowSep.backgroundColor = sepColor;
-    rowSep.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [scrollView addSubview:rowSep];
-
-    return y + 22;
 }
 
 // 5 messages factices couvrant tous les réglages du panneau : emote 7TV +

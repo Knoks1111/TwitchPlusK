@@ -16,6 +16,7 @@
 #import "7tv-localization.h"
 #import "7tv-picker-resolved-emote.h"
 #import "7tv-picker-cell.h"
+#import "SevenTVChatCustomView.h"
 #import "SevenTVEmoteImageCache.h"
 #import "SevenTVEmoteAnimationEngine.h"
 #import "SevenTVURLProtocol.h"
@@ -57,6 +58,13 @@
 // 2 pastilles séparées avec un espace entre elles.
 @property (nonatomic, weak) UIView   *pickerToolsCapsuleView;
 @property (nonatomic, assign) BOOL   pickerSizesPanelVisible;
+
+// Conteneur du faux chat (SevenTVPickerSizesPanel.fakeChatView), ajouté
+// directement à la key window — pas à emotePickerView — car ce dernier EST
+// l'inputView du clavier et ne peut pas héberger un aperçu positionné
+// librement par-dessus le vrai chat. weak : la key window (superview) le
+// retient, pas ce controller (même logique que emotePickerTextField).
+@property (nonatomic, weak) UIView *pickerFakeChatPreviewView;
 
 // ── Refonte tabbed + refonte visuelle du picker (style 7TV PC) ──────────
 // Onglet actif : 0 = Favoris, 1 = 7TV (voir S7TVPickerTab*)
@@ -580,9 +588,8 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
     self.emotePickerTextEntryView = nil;
     self.emotePickerTextField = nil;
     self.emotePickerView.hidden = YES;
+    [self _hideFakeChatPreview];
 }
-
-// Appelé par TweakSevenTV quand ChatInputView quitte la fenêtre (stream fermé).
 - (void)cleanupPickerForStreamClose {
     [[SevenTVManager sharedManager] log:@"🔒 cleanupPickerForStreamClose → nettoyage picker"];
     UITextView *tv = self.emotePickerTextEntryView;
@@ -596,6 +603,7 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
     self.emotePickerTextEntryView = nil;
     self.emotePickerTextField = nil;
     self.emotePickerView.hidden = YES;
+    [self _hideFakeChatPreview];
 }
 
 // IVar de cache pour le tri — invalidé quand globalEmotes/channelEmotes changent
@@ -1531,6 +1539,83 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     return nil;
 }
 
+// ── Faux chat flottant (preview live du panneau ⚙️ Tailles) ────────────────
+// Le panneau des tailles est le panelView de SevenTVPickerSizesPanel, qui EST
+// l'inputView du clavier (voir -_buildAndShowEmotePickerForView:) : impossible
+// d'y positionner un aperçu librement au milieu de l'écran. Solution : un
+// conteneur séparé ajouté directement à la key window, même technique que le
+// fallback "TextEntryView nil" plus haut (-toggleEmotePickerForChatInputView:)
+// qui fait déjà un addSubview: direct sur keyWindow.
+// Créé une seule fois ; repositionné/affiché à chaque ouverture du panneau
+// (l'orientation ou la hauteur de chatInputView peuvent avoir changé).
+- (UIView *)_ensureFakeChatPreviewContainer {
+    if (self.pickerFakeChatPreviewView) return self.pickerFakeChatPreviewView;
+
+    UIView *container = [[UIView alloc] init];
+    container.backgroundColor = [UIColor colorWithWhite:0.09 alpha:0.97];
+    container.layer.cornerRadius = 12;
+    container.clipsToBounds = YES;
+    container.hidden = YES;
+    // Pure preview : ne doit jamais intercepter les touches destinées au vrai
+    // chat / au picker en dessous, même s'il le recouvre visuellement.
+    container.userInteractionEnabled = NO;
+
+    SevenTVChatCustomView *chatView = self.sizesPanel.fakeChatView;
+    chatView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [container addSubview:chatView];
+
+    self.pickerFakeChatPreviewView = container;
+    return container;
+}
+
+// Affiche le conteneur, positionné juste au-dessus de chatInputView
+// (self.emotePickerTextField), ~50% de la hauteur d'écran, pleine largeur —
+// peut recouvrir le vrai chat (comportement validé). Repris à chaque appel
+// pour suivre l'orientation/la position courante de chatInputView plutôt que
+// figé à la première ouverture.
+- (void)_showFakeChatPreviewAboveInputView {
+    UIView *inputRoot = self.emotePickerTextField;
+    UIWindow *keyWindow = inputRoot.window;
+    if (!keyWindow) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes)
+            if ([scene isKindOfClass:[UIWindowScene class]])
+                for (UIWindow *w in ((UIWindowScene *)scene).windows)
+                    if (w.isKeyWindow) { keyWindow = w; break; }
+        if (!keyWindow) keyWindow = [UIApplication sharedApplication].windows.firstObject;
+    }
+    if (!keyWindow) {
+        [[SevenTVManager sharedManager] log:@"⚠️ _showFakeChatPreviewAboveInputView: pas de key window"];
+        return;
+    }
+
+    UIView *container = [self _ensureFakeChatPreviewContainer];
+    if (container.superview != keyWindow) {
+        [container removeFromSuperview];
+        [keyWindow addSubview:container];
+    }
+
+    CGFloat width  = keyWindow.bounds.size.width;
+    CGFloat height = keyWindow.bounds.size.height * 0.5;
+    // inputRoot peut être nil (picker jamais ouvert sur ce chat) — dans ce
+    // cas on colle simplement en bas de l'écran plutôt que de planter/ne
+    // rien afficher.
+    CGFloat inputTopY = keyWindow.bounds.size.height;
+    if (inputRoot) {
+        CGRect inputFrameInWindow = [inputRoot convertRect:inputRoot.bounds toView:keyWindow];
+        inputTopY = inputFrameInWindow.origin.y;
+    }
+    CGFloat y = MAX(0, inputTopY - height);
+
+    container.frame = CGRectMake(0, y, width, height);
+    self.sizesPanel.fakeChatView.frame = CGRectInset(container.bounds, 8, 8);
+    container.hidden = NO;
+    [keyWindow bringSubviewToFront:container];
+}
+
+- (void)_hideFakeChatPreview {
+    self.pickerFakeChatPreviewView.hidden = YES;
+}
+
 // ── Slider taille des emotes ───────────────────────────────────────────────
 
 // Table nom-de-clé → (nom affiché, min, max) — une seule source pour le menu
@@ -1582,7 +1667,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // réservée au clavier peut rester figée à l'ancienne hauteur).
     [self.emotePickerTextEntryView reloadInputViews];
 
-    if (show) [self.sizesPanel loadRealPreviewAssetsIfNeeded];
+    if (show) {
+        [self.sizesPanel loadRealPreviewAssetsIfNeeded];
+        [self _showFakeChatPreviewAboveInputView];
+    } else {
+        [self _hideFakeChatPreview];
+    }
 }
 
 // Ouvre l'écran de réglages complet depuis le picker (même écran que le

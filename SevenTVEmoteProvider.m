@@ -99,11 +99,21 @@
     // ci-dessus (voir S7TVSevenTVEmoteProvider). Cohérent avec le reste du fichier.
     resolved.nativeSize = CGSizeMake(1, 1);
 
-    // Animées (rare, emotes "animated" premium) non détectables depuis le
-    // tag IRC seul — traitées comme statiques pour l'instant (1ère frame
-    // uniquement de toute façon, voir SevenTVEmoteImageCache). Pas une
-    // régression : le pipeline d'animation n'existe pas encore, même pour 7TV.
-    resolved.isAnimated = NO;
+    // Animées ou non : indétectable depuis le tag IRC seul (Twitch ne le
+    // dit nulle part à l'avance). On met YES systématiquement plutôt que NO
+    // — l'URL CDN ci-dessous utilise le format "default", qui sert déjà
+    // automatiquement le GIF animé si l'emote en a un, un PNG statique
+    // sinon (documenté côté Twitch). isAnimated ne fait ici que déterminer
+    // si le pipeline PASSE par le décodage multi-frames
+    // (SevenTVEmoteImageCache framesForResolvedEmote:) plutôt que par le
+    // décodage 1-frame classique — et ce pipeline gère déjà très bien le
+    // cas "1 seule frame décodée" (voir s7tv_decodeAnimatedWebPData:),
+    // donc mettre YES pour une emote en réalité statique ne casse rien,
+    // ça évite juste de fermer la porte à celles qui SONT animées.
+    // (Avant : NO en dur, avec un commentaire "le pipeline n'existe pas
+    // encore" qui datait d'avant son implémentation — jamais mis à jour,
+    // c'était la cause du bug "emotes Twitch natives jamais animées".)
+    resolved.isAnimated = YES;
 
     // URL CDN Twitch standard (format documenté, utilisé par tous les clients
     // tiers) — 2.0 = résolution ~56x56, cohérent avec le choix x2 par défaut

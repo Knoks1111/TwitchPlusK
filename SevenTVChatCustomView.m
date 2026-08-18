@@ -162,6 +162,14 @@
 @property (nonatomic, strong) NSDictionary<NSString *, S7TVChatMessage *> *messagesByID;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *rowHeightCache;
 @property (nonatomic, assign) CGFloat cachedContentWidth;
+// Cellule prototype hors écran, jamais insérée dans tableView, utilisée
+// uniquement pour la mesure (s7tv_heightForMessage:). Même classe
+// (S7TVChatCustomCell) et même configuration que les cellules réellement
+// affichées (voir s7tv_configureCell:forMessage:attributedText:) — on
+// mesure avec la cellule de production elle-même plutôt qu'un pipeline de
+// layout parallèle, pour qu'il n'y ait structurellement aucune possibilité
+// de divergence entre la hauteur calculée et la hauteur réellement rendue.
+@property (nonatomic, strong) S7TVChatCustomCell *prototypeCell;
 @property (nonatomic, assign) BOOL isPinnedToBottom;
 @property (nonatomic, assign) NSUInteger pendingNewMessagesCount;
 @property (nonatomic, strong) UIView *unseenMessagesBanner;
@@ -346,16 +354,15 @@
 
 #pragma mark - Cell provider
 
-- (UITableViewCell *)s7tv_cellForMessageID:(NSString *)messageID
-                                atIndexPath:(NSIndexPath *)indexPath {
-    S7TVChatCustomCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"cell"
-                                                                     forIndexPath:indexPath];
-    S7TVChatMessage *msg = self.messagesByID[messageID];
-    if (!msg) return cell;
-
-    // Phase 3 — bandeau d'accent (barre + icône + fond teinté) pour sub/
-    // resub/gift. Couleurs + toggle du fond configurables (voir panneau
-    // Tailles → section Couleurs) au lieu d'être en dur.
+// Config partagée entre la cellule réellement affichée
+// (s7tv_cellForMessageID:) et la cellule prototype utilisée pour la
+// mesure (s7tv_heightForMessage:) — une seule et même logique, pour qu'il
+// n'y ait aucune chance que les deux divergent sur la config d'accent
+// (leadingInset notamment, qui influe directement sur la largeur
+// disponible pour le texte).
+- (void)s7tv_configureCell:(S7TVChatCustomCell *)cell
+                 forMessage:(S7TVChatMessage *)msg
+             attributedText:(NSAttributedString *)text {
     if (msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
         SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
         UIColor *accentColor; NSString *iconName;
@@ -380,12 +387,22 @@
     } else {
         [cell s7tv_configureSystemAccentWithColor:nil iconName:nil backgroundEnabled:NO];
     }
+    cell.messageLabel.attributedText = text;
+}
+
+- (UITableViewCell *)s7tv_cellForMessageID:(NSString *)messageID
+                                atIndexPath:(NSIndexPath *)indexPath {
+    S7TVChatCustomCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"cell"
+                                                                     forIndexPath:indexPath];
+    S7TVChatMessage *msg = self.messagesByID[messageID];
+    if (!msg) return cell;
 
     NSMutableArray<id<S7TVResolvedEmote>> *uncachedEmotes = [NSMutableArray array];
     NSMutableArray<id<S7TVResolvedEmote>> *animatedEmotes = [NSMutableArray array];
-    cell.messageLabel.attributedText = [self s7tv_buildAttributedStringForMessage:msg
-                                                              collectUncachedEmotes:uncachedEmotes
-                                                              collectAnimatedEmotes:animatedEmotes];
+    NSAttributedString *text = [self s7tv_buildAttributedStringForMessage:msg
+                                                      collectUncachedEmotes:uncachedEmotes
+                                                      collectAnimatedEmotes:animatedEmotes];
+    [self s7tv_configureCell:cell forMessage:msg attributedText:text];
 
     if (animatedEmotes.count > 0) {
         NSMutableSet<NSString *> *animationKeys = [NSMutableSet setWithCapacity:animatedEmotes.count];
@@ -513,63 +530,69 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     return [self s7tv_heightForMessage:msg];
 }
 
-// Mesure via TextKit (NSLayoutManager/NSTextContainer) plutôt que
-// -[UILabel sizeThatFits:]. Raison : sizeThatFits: s'appuie en interne sur
-// un équivalent de -boundingRectWithSize:options:context:, qui n'est PAS
-// garanti pixel-exact pour du texte multi-lignes — dans le cas limite où
-// le dernier mot affleure tout juste availableWidth, cette estimation peut
-// considérer qu'il tient encore sur la ligne courante alors que le vrai
-// moteur TextKit (celui qui trace effectivement messageLabel) le fait
-// passer à une nouvelle ligne. Comme messageLabel.clipsToBounds = YES et
-// que la hauteur de cellule est figée par cette mesure, cette ligne
-// supplémentaire (le dernier mot seul) se retrouvait rognée hors du cadre
-// visible — mot invisible plutôt que texte tronqué.
-//
-// En mesurant avec le même moteur TextKit que celui qui trace réellement
-// le label (même pattern que s7tv_handleTap: plus haut dans ce fichier),
-// on garantit que le nombre de lignes calculé ici correspond exactement à
-// celui produit au rendu.
-- (CGSize)s7tv_measureAttributedText:(NSAttributedString *)text width:(CGFloat)width {
-    NSTextStorage *textStorage = [[NSTextStorage alloc] initWithAttributedString:text];
-    NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
-    [textStorage addLayoutManager:layoutManager];
-
-    NSTextContainer *textContainer =
-        [[NSTextContainer alloc] initWithSize:CGSizeMake(width, CGFLOAT_MAX)];
-    textContainer.lineFragmentPadding = 0;   // identique à ce que trace UILabel
-    textContainer.maximumNumberOfLines = 0;  // identique à messageLabel.numberOfLines
-    [layoutManager addTextContainer:textContainer];
-
-    // Force le layout complet des glyphes avant de lire le rect utilisé.
-    [layoutManager glyphRangeForTextContainer:textContainer];
-    CGRect used = [layoutManager usedRectForTextContainer:textContainer];
-    return CGSizeMake(ceil(used.size.width), ceil(used.size.height));
+- (S7TVChatCustomCell *)s7tv_prototypeCell {
+    if (!_prototypeCell) {
+        _prototypeCell = [[S7TVChatCustomCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                     reuseIdentifier:nil];
+    }
+    return _prototypeCell;
 }
 
+// Mesure via la vraie cellule de production (S7TVChatCustomCell), pas un
+// pipeline TextKit reconstruit à côté. Tentative précédente : mesurer avec
+// NSLayoutManager/NSTextContainer configuré "à la main" pour imiter
+// UILabel — en pratique ça ne garantit PAS un résultat identique au pixel
+// près à ce que UILabel dessine réellement (divergence constatée en
+// production, notamment sur les messages qui wrap sur plusieurs lignes en
+// paysage). Ici on élimine cette classe de bug à la racine : on configure
+// une cellule prototype hors écran avec EXACTEMENT la même méthode que la
+// cellule réellement affichée (s7tv_configureCell:forMessage:attributedText:,
+// partagée avec s7tv_cellForMessageID:), on la contraint à la largeur
+// réelle, et on lui demande sa propre taille via Auto Layout
+// (systemLayoutSizeFittingSize:). Comme c'est le même UILabel avec les
+// mêmes contraintes qui sert à la fois à mesurer et à afficher, il ne peut
+// structurellement plus y avoir de désaccord entre les deux.
 - (CGFloat)s7tv_heightForMessage:(S7TVChatMessage *)msg {
     NSNumber *cached = self.rowHeightCache[msg.messageID];
     if (cached) return cached.doubleValue;
 
-    CGFloat leadingInset = (msg.type == S7TVChatMessageTypeSystem) ? 31.0 : 8.0;
-    CGFloat availableWidth = self.bounds.size.width - leadingInset - 8;
-    if (availableWidth <= 0) availableWidth = 300;
+    CGFloat availableWidth = self.bounds.size.width;
+    if (availableWidth <= 0) {
+        // Largeur pas encore connue (avant le tout premier layout) : pas de
+        // mesure fiable possible. Pas de valeur de secours arbitraire (un
+        // ancien fallback à 300pt en dur pouvait être plus large que le
+        // panneau réel — ex. le chat flottant en paysage — et sous-estimer
+        // la hauteur nécessaire). On ne met rien en cache : layoutSubviews
+        // videra rowHeightCache et redemandera cette hauteur dès que
+        // self.bounds sera valide.
+        return self.tableView.estimatedRowHeight;
+    }
 
     NSMutableArray<id<S7TVResolvedEmote>> *unusedEmotes = [NSMutableArray array];
     NSAttributedString *text = [self s7tv_buildAttributedStringForMessage:msg
                                                       collectUncachedEmotes:unusedEmotes
                                                       collectAnimatedEmotes:nil];
-    CGSize fitSize = [self s7tv_measureAttributedText:text width:availableWidth];
-    CGRect rect = CGRectMake(0, 0, fitSize.width, fitSize.height);
+
+    S7TVChatCustomCell *proto = [self s7tv_prototypeCell];
+    [self s7tv_configureCell:proto forMessage:msg attributedText:text];
+
+    proto.frame = CGRectMake(0, 0, availableWidth, 0);
+    [proto setNeedsLayout];
+    [proto layoutIfNeeded];
+
+    CGSize fitSize = [proto.contentView
+        systemLayoutSizeFittingSize:CGSizeMake(availableWidth, UILayoutFittingCompressedSize.height)
+       withHorizontalFittingPriority:UILayoutPriorityRequired
+             verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
 
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
-    // 8 = insets réels du label dans la cellule (top 4 + bottom 4, voir
-    // messageLabelLeadingConstraint / contraintes top/bottom dans
-    // S7TVChatCustomCell). Cette marge est structurelle et NE DOIT PAS
-    // dépendre de cfg.lineSpacing, qui est l'espacement ENTRE deux messages
-    // (voir SevenTVChatAppearanceConfig.h) — les conflater faisait
-    // disparaître la marge de sécurité du label dès que lineSpacing était
-    // réduit en dessous de 4 dans les réglages, aggravant le clipping.
-    CGFloat height = ceil(rect.size.height) + 8 + cfg.lineSpacing;
+    // fitSize.height inclut déjà les insets réels du label (top 4 + bottom
+    // 4, via les contraintes de S7TVChatCustomCell) puisqu'on mesure la
+    // cellule complète — plus besoin de les rajouter à la main comme avec
+    // l'ancienne mesure texte-seul. cfg.lineSpacing reste l'espacement
+    // ENTRE deux messages (voir SevenTVChatAppearanceConfig.h), toujours
+    // volontairement indépendant de cette marge structurelle.
+    CGFloat height = ceil(fitSize.height) + cfg.lineSpacing;
     self.rowHeightCache[msg.messageID] = @(height);
     return height;
 }

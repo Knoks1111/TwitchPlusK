@@ -858,6 +858,23 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
             continue;
         }
 
+        if (token.type == S7TVChatTokenTypeMention) {
+            // Couleur résolue par le tokenizer (voir
+            // SevenTVChatUserColorRegistry) — même traitement de contraste
+            // que le pseudo de l'auteur (s7tv_readableColorOnDarkBackground)
+            // pour rester lisible sur fond sombre. nil (pseudo jamais vu
+            // dans le chat) → couleur normale du texte, pas de couleur
+            // devinée.
+            UIColor *mentionColor = token.mentionColor
+                ? s7tv_readableColorOnDarkBackground(token.mentionColor)
+                : messageColor;
+            [result appendAttributedString:[[NSAttributedString alloc]
+                initWithString:token.text ?: @""
+                    attributes:@{NSFontAttributeName: messageFont,
+                                 NSForegroundColorAttributeName: mentionColor}]];
+            continue;
+        }
+
         s7tv_appendTextWithLinkDetection(result, token.text ?: @"", messageFont, messageColor);
     }
 }

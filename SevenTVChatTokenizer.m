@@ -28,9 +28,14 @@
 
         // Mention : détection simple par préfixe. La mise en forme visuelle
         // distincte (highlight du message si on est mentionné) arrive en
-        // Phase 6 — ici on se contente d'identifier le token.
+        // Phase 6 — ici on se contente d'identifier le token et de résoudre
+        // sa couleur (comportement 7TV PC : couleur du pseudo mentionné,
+        // si on l'a déjà vue passer dans le chat).
         if ([word hasPrefix:@"@"] && word.length > 1) {
-            [tokens addObject:[S7TVChatToken mentionToken:word]];
+            NSString *username = [word substringFromIndex:1];
+            UIColor *color = [[SevenTVChatUserColorRegistry sharedRegistry]
+                colorForUsername:username];
+            [tokens addObject:[S7TVChatToken mentionToken:word color:color]];
             continue;
         }
 
@@ -49,7 +54,18 @@
         }
 
         if (!resolved) {
-            [tokens addObject:[S7TVChatToken textToken:word]];
+            // Pseudo cité sans @ (comportement 7TV PC : un pseudo connu
+            // écrit tel quel dans le message est coloré comme une mention,
+            // pas seulement quand il est préfixé par @). On ne teste ce cas
+            // qu'après les emotes pour ne jamais voler la priorité à une
+            // emote dont le nom coïnciderait avec un pseudo.
+            UIColor *color = [[SevenTVChatUserColorRegistry sharedRegistry]
+                colorForUsername:word];
+            if (color) {
+                [tokens addObject:[S7TVChatToken mentionToken:word color:color]];
+            } else {
+                [tokens addObject:[S7TVChatToken textToken:word]];
+            }
         }
     }
 

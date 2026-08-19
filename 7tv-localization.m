@@ -202,6 +202,9 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"preview_gift_phrase":             @[@"offre 5 abonnements à la communauté !",
                                                @"is gifting 5 subs to the community!"],
         @"preview_deleted_message":         @[@"message de test", @"test message"],
+        // Cible du message de démo "mention de soi" (mentionsCurrentViewer)
+        // du faux chat — voir 7tv-picker-sizes.m, _populateFakeChatStore:.
+        @"preview_mention_target":          @[@"@Toi", @"@You"],
         @"preview_username_2":              @[@"Viewer_92", @"Viewer_92"],
         @"preview_username_3":              @[@"Modo_Chill", @"Modo_Chill"],
         @"preview_message_2":               @[@"quelqu'un a vu le dernier clip ?", @"anyone see the latest clip?"],

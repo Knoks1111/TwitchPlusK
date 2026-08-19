@@ -235,6 +235,31 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // selfMentionHighlightColor côté rendu — voir SevenTVChatCustomView.m.
 @property (nonatomic, assign) BOOL mentionsCurrentViewer;
 
+// ── Réponses / fils de discussion ───────────────────────────────────────
+// Tags IRC reply-parent-* : Twitch les duplique sur CHAQUE message qui
+// répond, donc dispo directement ici même si le message parent n'est plus
+// en mémoire (purgé) — pas besoin de le retrouver dans le store pour
+// afficher le bandeau "Répond à @X : ...".
+@property (nonatomic, copy, nullable) NSString *replyParentMessageID;   // tag reply-parent-msg-id
+@property (nonatomic, copy, nullable) NSString *replyParentUsername;    // tag reply-parent-user-login (ou display-name)
+@property (nonatomic, copy, nullable) NSString *replyParentBodyPreview; // tag reply-parent-msg-body (texte brut, tronqué au rendu, pas ici)
+
+// Racine du fil — À REMPLIR PAR LE PARSER avec le tag reply-thread-parent-msg-id
+// s'il existe, SINON replyParentMessageID lui-même (1er niveau de réponse =
+// racine). nil si ce message n'est pas une réponse.
+// C'est ce champ qui sert à regrouper les messages d'un même fil, JAMAIS
+// replyParentMessageID (qui ne pointe que sur le message immédiatement
+// au-dessus et fragmenterait un fil de 3+ messages en plusieurs sous-fils
+// déconnectés dès qu'quelqu'un répond à une réponse plutôt qu'au premier
+// message). Tous les messages d'un même fil partagent la même valeur ici.
+@property (nonatomic, copy, nullable) NSString *replyThreadRootID;
+
+// YES si CE message est la racine d'au moins un fil (quelqu'un lui a
+// répondu). Mis à jour par S7TVChatMessageStore quand un reply arrive, pas
+// par le parser — permet d'afficher "X réponses" sous un message racine
+// sans scanner le fil à chaque rendu de cellule.
+@property (nonatomic, assign) NSUInteger replyCount;
+
 // Texte brut IRC original, JAMAIS purgé par un changement de state — voir
 // exigence transverse #2. Seule la purge mémoire globale du store (limite
 // de rétention, voir S7TVChatMessageStore) peut faire disparaître un
@@ -310,6 +335,23 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 - (NSArray<S7TVChatMessage *> *)allMessages;
 
 - (nullable S7TVChatMessage *)messageWithID:(NSString *)messageID;
+
+// Tous les messages d'un même fil (replyThreadRootID == threadRootID), dans
+// l'ordre chronologique d'arrivée — alimente le panneau "Fil". Les messages
+// du fil déjà purgés de la mémoire (limite maxMessageCount) sont absents du
+// résultat plutôt que de planter ; le message racine lui-même peut être
+// absent (voir replyParentUsername/replyParentBodyPreview sur chaque
+// message pour ne pas dépendre de la présence du parent).
+- (NSArray<S7TVChatMessage *> *)messagesForThreadRootID:(NSString *)threadRootID;
+
+// Peuple ce store en lecture seule à partir d'une liste déjà connue (ex: un
+// fil de discussion extrait du store principal via -messagesForThreadRootID:).
+// Contrairement à -addMessage:, AUCUN effet de bord : pas de
+// re-registration de couleur, pas de purge, pas d'incrément de replyCount —
+// les messages passés sont des instances déjà comptabilisées ailleurs.
+// Réservé aux stores "vue" temporaires (ex: panneau Fil) qui affichent un
+// sous-ensemble d'un store principal ; jamais pour de l'ingestion IRC réelle.
+- (void)seedReadOnlyWithMessages:(NSArray<S7TVChatMessage *> *)messages;
 
 @property (nonatomic, strong, readonly) dispatch_queue_t storeQueue;
 

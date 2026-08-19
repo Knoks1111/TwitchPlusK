@@ -159,6 +159,12 @@
 // Index authorUserID → ensemble de messageID actuellement en mémoire pour
 // cet utilisateur. Alimente markAllMessagesDeletedForUserID: sans scan.
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *messageIDsByUserID;
+// threadRootID → messageID de réponse, dans l'ordre chronologique d'ajout
+// (le message racine lui-même n'est PAS dans ce tableau, seulement ses
+// réponses — voir -messagesForThreadRootID: qui reconstitue l'ordre complet
+// via orderedMessages si besoin, mais s'appuie d'abord sur cet index pour
+// savoir QUELS ids appartiennent au fil sans scanner tout le store).
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<NSString *> *> *replyIDsByThreadRootID;
 @property (nonatomic, strong, readwrite) dispatch_queue_t storeQueue;
 @end
 
@@ -171,6 +177,7 @@
         _orderedMessages     = [NSMutableArray array];
         _messagesByID        = [NSMutableDictionary dictionary];
         _messageIDsByUserID  = [NSMutableDictionary dictionary];
+        _replyIDsByThreadRootID = [NSMutableDictionary dictionary];
         // Même pattern que SevenTVManager.emoteQueue : concurrente, lectures
         // en dispatch_sync, écritures en dispatch_barrier_async.
         _storeQueue = dispatch_queue_create("tv.s7tv.chat-message-store",
@@ -212,6 +219,29 @@
             [set addObject:message.messageID];
         }
 
+        // ── Fils de discussion ──────────────────────────────────────────
+        // Toujours indexé sur replyThreadRootID (la racine), jamais sur
+        // replyParentMessageID (le parent immédiat) — voir le commentaire
+        // sur replyThreadRootID dans SevenTVChatMessage.h : indexer sur le
+        // parent immédiat fragmenterait un même fil dès qu'un message
+        // répond à une réponse plutôt qu'au tout premier message.
+        if (message.replyThreadRootID.length) {
+            NSMutableArray<NSString *> *replies = self.replyIDsByThreadRootID[message.replyThreadRootID];
+            if (!replies) {
+                replies = [NSMutableArray array];
+                self.replyIDsByThreadRootID[message.replyThreadRootID] = replies;
+            }
+            [replies addObject:message.messageID];
+
+            // Le message racine peut être encore en mémoire (cas courant) —
+            // si oui, on lui incrémente replyCount pour l'affichage "X
+            // réponses" sous le message racine. S'il n'est plus en mémoire
+            // (purgé), rien à mettre à jour ici : le panneau Fil retombe sur
+            // replyParentUsername/replyParentBodyPreview de chaque réponse.
+            S7TVChatMessage *root = self.messagesByID[message.replyThreadRootID];
+            root.replyCount += 1;
+        }
+
         [self s7tv_purgeIfNeeded];
     });
 }
@@ -229,6 +259,17 @@
             [set removeObject:oldest.messageID];
             if (set.count == 0) {
                 [self.messageIDsByUserID removeObjectForKey:oldest.authorUserID];
+            }
+        }
+        // Retire cette réponse de l'index de son fil si elle en a un — sinon
+        // messagesForThreadRootID: renverrait un id purgé (message
+        // introuvable dans messagesByID, filtré à la lecture de toute façon,
+        // mais autant garder l'index propre plutôt que de compter dessus).
+        if (oldest.replyThreadRootID.length) {
+            NSMutableArray<NSString *> *replies = self.replyIDsByThreadRootID[oldest.replyThreadRootID];
+            [replies removeObject:oldest.messageID];
+            if (replies.count == 0) {
+                [self.replyIDsByThreadRootID removeObjectForKey:oldest.replyThreadRootID];
             }
         }
     }
@@ -315,6 +356,39 @@
         result = self.messagesByID[messageID];
     });
     return result;
+}
+
+- (NSArray<S7TVChatMessage *> *)messagesForThreadRootID:(NSString *)threadRootID {
+    if (!threadRootID.length) return @[];
+    __block NSArray<S7TVChatMessage *> *result;
+    dispatch_sync(self.storeQueue, ^{
+        NSMutableArray<S7TVChatMessage *> *messages = [NSMutableArray array];
+        // Le message racine lui-même compte comme premier message du fil
+        // s'il est encore en mémoire.
+        S7TVChatMessage *root = self.messagesByID[threadRootID];
+        if (root) [messages addObject:root];
+        NSArray<NSString *> *replyIDs = self.replyIDsByThreadRootID[threadRootID];
+        for (NSString *msgID in replyIDs) {
+            S7TVChatMessage *msg = self.messagesByID[msgID];
+            if (msg) [messages addObject:msg]; // absent = purgé, on saute
+        }
+        result = messages;
+    });
+    return result;
+}
+
+- (void)seedReadOnlyWithMessages:(NSArray<S7TVChatMessage *> *)messages {
+    dispatch_barrier_async(self.storeQueue, ^{
+        [self.orderedMessages removeAllObjects];
+        [self.messagesByID removeAllObjects];
+        [self.messageIDsByUserID removeAllObjects];
+        [self.replyIDsByThreadRootID removeAllObjects];
+        for (S7TVChatMessage *msg in messages) {
+            if (!msg.messageID.length) continue;
+            [self.orderedMessages addObject:msg];
+            self.messagesByID[msg.messageID] = msg;
+        }
+    });
 }
 
 @end

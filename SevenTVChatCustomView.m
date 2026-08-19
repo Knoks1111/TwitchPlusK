@@ -39,6 +39,21 @@
 @property (nonatomic, strong) NSLayoutConstraint *messageLabelBottomConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *systemAccentBarWidthConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *systemAccentBarRightWidthConstraint;
+// ── Bandeau "Répond à @X" (fils de discussion) ──────────────────────────
+// Ligne compacte au-dessus du message, tappable, ouvre le panneau Fil côté
+// hôte (voir onReplyBannerTap). Invisible par défaut ; visible/positionné
+// par -s7tv_configureReplyBannerWithUsername:bodyPreview:.
+@property (nonatomic, strong) UILabel *replyBannerLabel;
+// messageLabel.top = contentView.top + constant (défaut, pas de reply) —
+// reste piloté par s7tv_configureSystemAccentWithColor:... comme avant.
+// messageLabelTopToBannerConstraint : messageLabel.top = replyBannerLabel.bottom
+// + 4 (actif uniquement quand le bandeau est visible). Les deux ne sont
+// JAMAIS actives en même temps — voir s7tv_configureReplyBannerWithUsername:.
+@property (nonatomic, strong) NSLayoutConstraint *messageLabelTopToBannerConstraint;
+// Callback plutôt qu'un delegate direct sur la cellule (comme animationKeys
+// plus bas) : la cellule ne connaît pas SevenTVChatCustomView, juste ce
+// qu'on lui donne au moment de la configuration (voir s7tv_cellForMessageID:).
+@property (nonatomic, copy, nullable) void (^onReplyBannerTap)(void);
 @end
 
 @implementation S7TVChatCustomCell
@@ -82,6 +97,19 @@
         _mentionBadgeLabel.hidden = YES;
         [self.contentView addSubview:_mentionBadgeLabel];
 
+        _replyBannerLabel = [[UILabel alloc] init];
+        _replyBannerLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _replyBannerLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+        _replyBannerLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.55];
+        _replyBannerLabel.numberOfLines = 1;
+        _replyBannerLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        _replyBannerLabel.hidden = YES;
+        _replyBannerLabel.userInteractionEnabled = YES;
+        [_replyBannerLabel addGestureRecognizer:
+            [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                      action:@selector(s7tv_handleReplyBannerTap:)]];
+        [self.contentView addSubview:_replyBannerLabel];
+
         _systemAccentBarWidthConstraint =
             [_systemAccentBar.widthAnchor constraintEqualToConstant:0];
         _systemAccentBarRightWidthConstraint =
@@ -106,6 +134,14 @@
         _messageLabelBottomConstraint =
             [_messageLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-4];
 
+        // Inactive par défaut — activée uniquement quand le bandeau reply
+        // est visible (voir s7tv_configureReplyBannerWithUsername:), en
+        // même temps que messageLabelTopConstraint est désactivée. Jamais
+        // les deux actives ensemble (conflit de contraintes sinon).
+        _messageLabelTopToBannerConstraint =
+            [_messageLabel.topAnchor constraintEqualToAnchor:_replyBannerLabel.bottomAnchor constant:4];
+        _messageLabelTopToBannerConstraint.active = NO;
+
         [NSLayoutConstraint activateConstraints:@[
             [_systemAccentBar.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
             [_systemAccentBar.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
@@ -125,6 +161,13 @@
             [_mentionBadgeLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8],
             [_mentionBadgeLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
             [_mentionBadgeLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.contentView.leadingAnchor constant:8],
+
+            // Même leading que messageLabel (suit isSystem via
+            // messageLabelLeadingConstraint, pas de leading dédié) pour que
+            // le bandeau s'aligne avec le texte du message juste en dessous.
+            [_replyBannerLabel.leadingAnchor constraintEqualToAnchor:_messageLabel.leadingAnchor],
+            [_replyBannerLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:4],
+            [_replyBannerLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8],
 
             _messageLabelLeadingConstraint,
             _messageLabelTopConstraint,
@@ -186,6 +229,38 @@
     } else {
         self.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.05];
     }
+}
+
+// username nil/vide → pas une réponse, bandeau masqué, messageLabel reprend
+// sa position normale (top = contentView.top, pilotée par
+// s7tv_configureSystemAccentWithColor:...). Simplification connue : si un
+// message est À LA FOIS une réponse ET un self-mention (mentionBadgeLabel
+// visible), le bandeau reply prend le dessus — messageLabelTopConstraint
+// (avec son constant 16 pour le badge) est désactivée dans ce cas, donc le
+// badge mention perdrait sa marge dédiée. Combo rare, pas géré précisément
+// pour l'instant.
+- (void)s7tv_configureReplyBannerWithUsername:(nullable NSString *)username
+                                    bodyPreview:(nullable NSString *)bodyPreview {
+    BOOL isReply = username.length > 0;
+    self.replyBannerLabel.hidden = !isReply;
+    if (isReply) {
+        NSString *preview = bodyPreview.length > 0 ? bodyPreview : @"";
+        // Troncature ici (pas dans le modèle, voir SevenTVChatMessage.h) —
+        // NSLineBreakByTruncatingTail sur le label gère déjà l'overflow
+        // visuel, mais on borne aussi la chaîne pour éviter de construire un
+        // attributedText énorme pour rien sur un message très long.
+        if (preview.length > 60) {
+            preview = [[preview substringToIndex:60]
+                stringByAppendingString:@"…"];
+        }
+        self.replyBannerLabel.text = [NSString stringWithFormat:L(@"chat_reply_banner_format"), username, preview];
+    }
+    self.messageLabelTopConstraint.active = !isReply;
+    self.messageLabelTopToBannerConstraint.active = isReply;
+}
+
+- (void)s7tv_handleReplyBannerTap:(UITapGestureRecognizer *)gesture {
+    if (self.onReplyBannerTap) self.onReplyBannerTap();
 }
 
 - (void)s7tv_handleTap:(UITapGestureRecognizer *)gesture {
@@ -538,6 +613,18 @@
                                                       collectUncachedEmotes:uncachedEmotes
                                                       collectAnimatedEmotes:animatedEmotes];
     [self s7tv_configureCell:cell forMessage:msg attributedText:text];
+    [cell s7tv_configureReplyBannerWithUsername:msg.replyParentUsername
+                                     bodyPreview:msg.replyParentBodyPreview];
+
+    NSString *threadRootID = msg.replyThreadRootID;
+    __weak typeof(self) weakSelfForReply = self;
+    cell.onReplyBannerTap = threadRootID.length ? ^{
+        __strong typeof(weakSelfForReply) strongSelf = weakSelfForReply;
+        if (!strongSelf) return;
+        if ([strongSelf.delegate respondsToSelector:@selector(chatCustomView:didTapReplyBannerForThreadRootID:)]) {
+            [strongSelf.delegate chatCustomView:strongSelf didTapReplyBannerForThreadRootID:threadRootID];
+        }
+    } : nil;
 
     if (animatedEmotes.count > 0) {
         NSMutableSet<NSString *> *animationKeys = [NSMutableSet setWithCapacity:animatedEmotes.count];

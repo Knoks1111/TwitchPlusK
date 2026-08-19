@@ -63,8 +63,18 @@ static const char kS7TVRowKeyTag = 0;
 @property (nonatomic, assign, readwrite) CGFloat contentHeight;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UISlider *> *sizeSliders;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *>  *sizeValueLabels;
+// Libellés (nameLbl) des lignes de sliders, gardés à part de sizeValueLabels
+// (qui contient la pastille "+X pt") — nécessaire pour retraduire ces
+// lignes à la volée sur changement de langue (voir
+// S7TVLanguageDidChangeNotification / _refreshLocalizedStrings).
+@property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *> *sizeRowLabels;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UIColorWell *> *colorWells;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *> *colorRowLabels;
+// Titre + toggle de la section Couleurs (voir
+// _buildSystemColorsSectionInScrollView:) — mêmes besoins de retraduction
+// à la volée que sizeRowLabels ci-dessus.
+@property (nonatomic, weak) UILabel *colorsSectionLabel;
+@property (nonatomic, weak) UILabel *colorsToggleLabel;
 // Ligne unique "vous êtes mentionné" (toggle + couleur combinés, voir
 // _buildSelfMentionSectionInScrollView:...) — pas besoin de dictionnaires
 // comme colorWells/colorRowLabels puisqu'il n'y a qu'une seule ligne, pas
@@ -133,6 +143,7 @@ static const char kS7TVRowKeyTag = 0;
     self.panelView       = sizesPanel;
     self.sizeSliders      = [NSMutableDictionary dictionary];
     self.sizeValueLabels  = [NSMutableDictionary dictionary];
+    self.sizeRowLabels    = [NSMutableDictionary dictionary];
     self.colorWells        = [NSMutableDictionary dictionary];
     self.colorRowLabels    = [NSMutableDictionary dictionary];
     self.panelTextColor    = textColor;
@@ -188,6 +199,7 @@ static const char kS7TVRowKeyTag = 0;
         nameLbl.minimumScaleFactor = 0.7;
         nameLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         [row addSubview:nameLbl];
+        self.sizeRowLabels[key] = nameLbl;
 
         UILabel *valuePill = [[UILabel alloc] initWithFrame:
             CGRectMake(pillLeft, 7, pillW, 20)];
@@ -235,6 +247,65 @@ static const char kS7TVRowKeyTag = 0;
     sizesPanel.contentSize = CGSizeMake(frame.size.width, contentY);
     self.contentHeight = contentY + 8;
     [container addSubview:sizesPanel];
+
+    // buildInView: n'est appelé qu'une fois par panneau (voir le controller) —
+    // c'est donc le bon endroit pour s'abonner une seule fois au changement
+    // de langue. Voir _handleLanguageDidChange: plus bas pour le pourquoi.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                              selector:@selector(_handleLanguageDidChange:)
+                                                  name:S7TVLanguageDidChangeNotification
+                                                object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+        name:S7TVLanguageDidChangeNotification object:nil];
+}
+
+#pragma mark - Retraduction à la volée (S7TVLanguageDidChangeNotification)
+//
+// Tout le texte de ce panneau (labels des sliders, section Couleurs, ligne
+// "Vous êtes mentionné", faux chat de preview) est construit une seule fois
+// dans buildInView:/_populateFakeChatStore: avec le résultat de L() figé
+// dans des NSString — sans cet observateur, un changement de langue en
+// cours de session ne se reflète qu'au prochain lancement de l'app (nouvel
+// appel à L() au prochain buildInView:). On retraduit ici en place plutôt
+// que de reconstruire tout le panneau : les frames sont statiques, pas
+// besoin de relayout, seul le texte affiché change.
+- (void)_handleLanguageDidChange:(NSNotification *)note {
+    [self _refreshLocalizedStrings];
+}
+
+- (void)_refreshLocalizedStrings {
+    self.colorsSectionLabel.text = L(@"sizes_colors_section_title");
+    self.colorsToggleLabel.text  = L(@"sizes_colors_toggle_label");
+
+    NSDictionary<NSString *, NSString *> *colorLabelKeys = @{
+        @"subResubAccentColor": @"sizes_color_sub_resub",
+        @"primeAccentColor":    @"sizes_color_prime",
+        @"giftAccentColor":     @"sizes_color_gift",
+    };
+    for (NSString *key in colorLabelKeys) {
+        self.colorRowLabels[key].text = L(colorLabelKeys[key]);
+    }
+
+    self.selfMentionRowLabel.text = L(@"sizes_self_mention_row_label");
+
+    // _sizeOptionsTable rappelle L() à chaque invocation : relire la table
+    // suffit à obtenir les libellés dans la nouvelle langue, sans dupliquer
+    // la liste des clés ici.
+    for (NSArray *entry in self._sizeOptionsTable) {
+        NSString *key = entry[0], *label = entry[1];
+        self.sizeRowLabels[key].text = label;
+    }
+
+    // Faux chat : ses messages (pseudos, phrases système, cible de mention
+    // "@Toi"/"@You", etc.) sont des NSString figées construites une seule
+    // fois par _populateFakeChatStore: — on les reconstruit entièrement
+    // plutôt que d'essayer de retraduire chaque message individuellement.
+    [self.fakeChatStore removeAllMessages];
+    [self _populateFakeChatStore:self.fakeChatStore];
+    [self.fakeChatView reloadMessages];
 }
 
 #pragma mark - Sliders (tailles/espacements)
@@ -277,6 +348,7 @@ static const char kS7TVRowKeyTag = 0;
     sectionLbl.text = L(@"sizes_colors_section_title");
     sectionLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [scrollView addSubview:sectionLbl];
+    self.colorsSectionLabel = sectionLbl;
     y += 26;
 
     // Toggle maître — dés/réactive le fond teinté pour tous les types
@@ -291,6 +363,7 @@ static const char kS7TVRowKeyTag = 0;
     toggleLbl.text = L(@"sizes_colors_toggle_label");
     toggleLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [toggleRow addSubview:toggleLbl];
+    self.colorsToggleLabel = toggleLbl;
 
     UISwitch *bgSwitch = [[UISwitch alloc] init];
     bgSwitch.onTintColor = accent;
@@ -633,16 +706,17 @@ static const char kS7TVRowKeyTag = 0;
     // chat est volontairement déconnecté du viewer réellement connecté (voir
     // le commentaire sur mentionsCurrentViewer dans SevenTVChatMessage.h),
     // donc le texte "@Toi" ci-dessous est purement cosmétique.
+    NSString *mentionTarget = L(@"preview_mention_target");
     S7TVChatMessage *mention = [[S7TVChatMessage alloc]
         initWithMessageID:@"s7tv_preview_mention"
                  timestamp:now
               authorUserID:@"s7tv_preview_u7"
          authorDisplayName:L(@"preview_username_3")
-                   rawText:@"@Toi"];
+                   rawText:mentionTarget];
     mention.authorColor = [UIColor colorWithRed:0.55 green:0.85 blue:0.35 alpha:1.0];
     mention.badgeIdentifiers = @[@"moderator/1"];
     mention.mentionsCurrentViewer = YES;
-    mention.tokens = @[[S7TVChatToken mentionToken:@"@Toi" color:nil]];
+    mention.tokens = @[[S7TVChatToken mentionToken:mentionTarget color:nil]];
     [store addMessage:mention];
 
     // Prime avec commentaire attaché — même logique que le sub, badge/emote

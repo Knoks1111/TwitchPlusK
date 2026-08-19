@@ -75,6 +75,18 @@ extern NSString *const S7TVChatAppearanceConfigDidChangeNotification;
 @property (nonatomic, strong) UIColor *primeAccentColor;     // sub/resub Prime
 @property (nonatomic, strong) UIColor *giftAccentColor;      // gift communautaire
 
+// --- Highlight "vous êtes mentionné" ---
+// Même mécanique visuelle que les fonds système ci-dessus (barre d'accent +
+// fond teinté à 12%, voir SevenTVChatCustomView.m,
+// s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:),
+// appliquée quand S7TVChatMessage.mentionsCurrentViewer == YES (viewer
+// connecté cité par quelqu'un d'autre — @pseudo ou pseudo nu). Toggle
+// unique combiné à la couleur (pas de fond neutre de repli comme pour
+// systemMessageBackgroundsEnabled) : off = aucun effet visuel du tout,
+// message rendu comme un message normal.
+@property (nonatomic, assign) BOOL selfMentionHighlightEnabled;
+@property (nonatomic, strong) UIColor *selfMentionHighlightColor;
+
 // --- Persistance ---
 // Recharge à chaud depuis NSUserDefaults (ex: après un changement dans un
 // futur écran de réglages custom — Phase 6). Les valeurs non trouvées en

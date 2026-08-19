@@ -224,6 +224,17 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // SevenTVChatCustomView.m, s7tv_appendNormalBodyForMessage:into:...
 @property (nonatomic, assign) BOOL isActionMessage;
 
+// YES si CE message (écrit par quelqu'un d'autre) cite le pseudo du viewer
+// connecté — @pseudo ou pseudo nu, même détection que les tokens .mention
+// habituels (voir S7TVChatToken ci-dessus). Calculé une fois à la
+// construction du message par s7tv_parsePRIVMSG (TweakSevenTV.m), comparé
+// à SevenTVManager.currentViewerDisplayName — PAS recalculé au rendu, pour
+// que le résultat reste stable même si le pseudo local change en cours de
+// session (peu probable mais gratuit à garantir ici). Piloté par
+// SevenTVChatAppearanceConfig.selfMentionHighlightEnabled/
+// selfMentionHighlightColor côté rendu — voir SevenTVChatCustomView.m.
+@property (nonatomic, assign) BOOL mentionsCurrentViewer;
+
 // Texte brut IRC original, JAMAIS purgé par un changement de state — voir
 // exigence transverse #2. Seule la purge mémoire globale du store (limite
 // de rétention, voir S7TVChatMessageStore) peut faire disparaître un

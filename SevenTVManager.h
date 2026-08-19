@@ -129,6 +129,14 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, strong) NSString *currentChannelName;
 @property (nonatomic, strong) NSString *currentChannelTwitchID;
 
+// Pseudo Twitch (display-name) du viewer connecté dans l'app — alimenté par
+// s7tv_handleUserState (TweakSevenTV.m) depuis les tags IRC USERSTATE/
+// GLOBALUSERSTATE (envoyés par Twitch à la connexion et à chaque JOIN/
+// message, tag display-name toujours présent). nil tant qu'aucun de ces
+// deux messages IRC n'a encore été observé. Sert à détecter les mentions du
+// viewer lui-même dans le chat (voir S7TVChatMessage.mentionsCurrentViewer).
+@property (nonatomic, copy) NSString *currentViewerDisplayName;
+
 // File de dispatch protégeant globalEmotes/channelEmotes (concurrent).
 // Utiliser dispatch_sync(mgr.emoteQueue, ^{ ... }) pour lire,
 // dispatch_barrier_async(mgr.emoteQueue, ^{ ... }) pour écrire.

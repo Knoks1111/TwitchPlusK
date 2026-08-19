@@ -1116,6 +1116,26 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     msg.twitchEmotesTag = emotesTag;
     msg.badgeIdentifiers = s7tv_parseBadgesTag(badgesTag);
 
+    // Détection self-mention : scan des tokens .mention déjà résolus par le
+    // tokenizer (@pseudo ET pseudo nu — voir S7TVChatToken), comparés au
+    // pseudo du viewer connecté (voir s7tv_handleUserState plus bas dans ce
+    // fichier). nil/vide tant qu'aucun USERSTATE n'a encore été observé →
+    // mentionsCurrentViewer reste NO par défaut, jamais de faux positif.
+    NSString *viewerName = [SevenTVManager sharedManager].currentViewerDisplayName;
+    if (viewerName.length) {
+        for (S7TVChatToken *token in msg.tokens) {
+            if (token.type != S7TVChatTokenTypeMention) continue;
+            NSString *mentionedName = token.text ?: @"";
+            if ([mentionedName hasPrefix:@"@"]) {
+                mentionedName = [mentionedName substringFromIndex:1];
+            }
+            if ([mentionedName caseInsensitiveCompare:viewerName] == NSOrderedSame) {
+                msg.mentionsCurrentViewer = YES;
+                break;
+            }
+        }
+    }
+
     return msg;
 }
 
@@ -1891,6 +1911,32 @@ static void s7tv_swizzle_apollo_gql(void) {
 
 
 // ────────────────────────────────────────────────────────────
+// MARK: - Extraction pseudo local depuis USERSTATE / GLOBALUSERSTATE
+// ────────────────────────────────────────────────────────────
+//
+// GLOBALUSERSTATE arrive une fois juste après l'auth IRC (CAP + PASS/NICK),
+// USERSTATE arrive à chaque JOIN et après chaque message envoyé par nous —
+// les deux portent le tag display-name du compte connecté. Une seule
+// fonction pour les deux : le check "USERSTATE" (substring) matche déjà
+// GLOBALUSERSTATE puisqu'il se termine par "USERSTATE", donc pas besoin de
+// distinguer les deux commandes, le contenu du tag est identique.
+static void s7tv_handleUserState(NSString *ircLine) {
+    if (![ircLine hasPrefix:@"@"]) return; // pas de tags → rien d'exploitable
+    NSRange firstSpace = [ircLine rangeOfString:@" "];
+    if (firstSpace.location == NSNotFound) return;
+
+    NSDictionary<NSString *, NSString *> *tags =
+        s7tv_parseIRCTags([ircLine substringWithRange:NSMakeRange(1, firstSpace.location - 1)]);
+    NSString *displayName = s7tv_tagValue(tags, @"display-name", @"");
+    if (!displayName.length) return;
+
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    if ([displayName isEqualToString:mgr.currentViewerDisplayName]) return; // déjà à jour
+    mgr.currentViewerDisplayName = displayName;
+    [mgr log:@"👤 Pseudo viewer connecté détecté (USERSTATE): %@", displayName];
+}
+
+// ────────────────────────────────────────────────────────────
 // MARK: - Fix A: Extraction room-id depuis ROOMSTATE
 // ────────────────────────────────────────────────────────────
 
@@ -2062,6 +2108,11 @@ static void s7tv_scanWebSocketTextForChannelPointsClaimAvailable(NSString *text)
                         if (!ircLine.length) continue;
                         if ([ircLine containsString:@"ROOMSTATE"]) {
                             s7tv_handleRoomState(ircLine);
+                        }
+                        // "USERSTATE" matche aussi GLOBALUSERSTATE (qui se
+                        // termine par ce mot) — voir s7tv_handleUserState.
+                        if ([ircLine containsString:@"USERSTATE"]) {
+                            s7tv_handleUserState(ircLine);
                         }
 
                         S7TVChatMessage *chatMsg = s7tv_parsePRIVMSG(ircLine);

@@ -428,6 +428,17 @@
         }
         [cell s7tv_configureSystemAccentWithColor:accentColor iconName:iconName
                                  backgroundEnabled:cfg.systemMessageBackgroundsEnabled];
+    } else if (msg.mentionsCurrentViewer && cfg.selfMentionHighlightEnabled) {
+        // Réutilise exactement le même mécanisme que les messages système
+        // (barre d'accent + fond teinté à 12%) — voir
+        // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:.
+        // Pas d'icône (nil) : ce n'est pas un type de message, juste un
+        // surlignage. backgroundEnabled toujours YES ici (pas de fond neutre
+        // de repli comme pour systemMessageBackgroundsEnabled) — le toggle
+        // cfg.selfMentionHighlightEnabled fait déjà tout ou rien au-dessus.
+        [cell s7tv_configureSystemAccentWithColor:cfg.selfMentionHighlightColor
+                                          iconName:nil
+                                 backgroundEnabled:YES];
     } else {
         [cell s7tv_configureSystemAccentWithColor:nil iconName:nil backgroundEnabled:NO];
     }

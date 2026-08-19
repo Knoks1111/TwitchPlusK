@@ -56,6 +56,11 @@ static UIColor *S7TVDefaultPrimeColor(void) {
 static UIColor *S7TVDefaultGiftColor(void) {
     return [UIColor colorWithRed:0.90 green:0.20 blue:0.65 alpha:1.0];
 }
+// Rouge/cramoisi — reprend l'esprit du surlignage natif Twitch "vous êtes
+// mentionné" (barre + fond teintés en rouge), voir référence Knoks.
+static UIColor *S7TVDefaultSelfMentionColor(void) {
+    return [UIColor colorWithRed:0.92 green:0.23 blue:0.27 alpha:1.0];
+}
 
 // ── Clés NSUserDefaults ──────────────────────────────────────────────────────
 static NSString *const kS7TVCfgEmote7TVSize           = @"s7tv_cfg_emote_7tv_size";
@@ -71,6 +76,8 @@ static NSString *const kS7TVCfgSystemBGEnabled         = @"s7tv_cfg_system_bg_en
 static NSString *const kS7TVCfgSubResubColor           = @"s7tv_cfg_color_sub_resub";
 static NSString *const kS7TVCfgPrimeColor              = @"s7tv_cfg_color_prime";
 static NSString *const kS7TVCfgGiftColor               = @"s7tv_cfg_color_gift";
+static NSString *const kS7TVCfgSelfMentionEnabled       = @"s7tv_cfg_self_mention_enabled";
+static NSString *const kS7TVCfgSelfMentionColor         = @"s7tv_cfg_color_self_mention";
 
 static const CGFloat kDefaultEmote7TVSize          = 28.0;
 static const CGFloat kDefaultEmoteTwitchSize        = 28.0; // TODO mesure réelle
@@ -128,6 +135,8 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     _subResubAccentColor     = S7TVDefaultSubResubColor();
     _primeAccentColor        = S7TVDefaultPrimeColor();
     _giftAccentColor         = S7TVDefaultGiftColor();
+    _selfMentionHighlightEnabled = YES;
+    _selfMentionHighlightColor   = S7TVDefaultSelfMentionColor();
 }
 
 #pragma mark - Persistance
@@ -168,6 +177,12 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     UIColor *giftColor = giftHex ? S7TVColorFromHexString(giftHex) : nil;
     if (giftColor) _giftAccentColor = giftColor;
 
+    if ([prefs objectForKey:kS7TVCfgSelfMentionEnabled] != nil)
+        _selfMentionHighlightEnabled = [prefs boolForKey:kS7TVCfgSelfMentionEnabled];
+    NSString *selfMentionHex = [prefs stringForKey:kS7TVCfgSelfMentionColor];
+    UIColor *selfMentionColor = selfMentionHex ? S7TVColorFromHexString(selfMentionHex) : nil;
+    if (selfMentionColor) _selfMentionHighlightColor = selfMentionColor;
+
     [[SevenTVManager sharedManager]
         log:@"[ChatCustom] 🏗 Config chargée — emote7TV=%.1f emoteTwitch=%.1f badge=%.1f "
              @"pseudo=%.1f message=%.1f lineSpacing=%.1f pseudoMsgSpacing=%.1f "
@@ -192,12 +207,21 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     [prefs setObject:S7TVColorToHexString(self.subResubAccentColor) forKey:kS7TVCfgSubResubColor];
     [prefs setObject:S7TVColorToHexString(self.primeAccentColor)    forKey:kS7TVCfgPrimeColor];
     [prefs setObject:S7TVColorToHexString(self.giftAccentColor)     forKey:kS7TVCfgGiftColor];
+    [prefs setBool:self.selfMentionHighlightEnabled forKey:kS7TVCfgSelfMentionEnabled];
+    [prefs setObject:S7TVColorToHexString(self.selfMentionHighlightColor) forKey:kS7TVCfgSelfMentionColor];
 }
 
 // Setter custom (toggle simple, pas de table KVC comme les tailles) —
 // mêmes garanties que setValue:forSizeKey: : sauvegarde + notification.
 - (void)setSystemMessageBackgroundsEnabled:(BOOL)systemMessageBackgroundsEnabled {
     _systemMessageBackgroundsEnabled = systemMessageBackgroundsEnabled;
+    [self save];
+    [self s7tv_postDidChangeNotification];
+}
+
+// Même garanties que setSystemMessageBackgroundsEnabled: ci-dessus.
+- (void)setSelfMentionHighlightEnabled:(BOOL)selfMentionHighlightEnabled {
+    _selfMentionHighlightEnabled = selfMentionHighlightEnabled;
     [self save];
     [self s7tv_postDidChangeNotification];
 }
@@ -251,6 +275,7 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
         @"subResubAccentColor": @[S7TVDefaultSubResubColor(), kS7TVCfgSubResubColor],
         @"primeAccentColor":    @[S7TVDefaultPrimeColor(),    kS7TVCfgPrimeColor],
         @"giftAccentColor":     @[S7TVDefaultGiftColor(),     kS7TVCfgGiftColor],
+        @"selfMentionHighlightColor": @[S7TVDefaultSelfMentionColor(), kS7TVCfgSelfMentionColor],
     };
 }
 
@@ -306,6 +331,7 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
         [prefs removeObjectForKey:entry.lastObject];
     }
     [prefs removeObjectForKey:kS7TVCfgSystemBGEnabled];
+    [prefs removeObjectForKey:kS7TVCfgSelfMentionEnabled];
     [self save];
     [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Config réinitialisée aux défauts"];
     [self s7tv_postDidChangeNotification];

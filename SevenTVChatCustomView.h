@@ -17,7 +17,25 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@class SevenTVChatCustomView;
+
+// Notifie l'hôte (le vrai chat, PAS ce composant) quand l'utilisateur tape
+// sur le bandeau "Répond à @X" d'un message. Cette vue ne présente jamais
+// elle-même le panneau "Fil" — même principe que le panneau des
+// tailles/fake chat du picker, géré par son controller hôte plutôt que par
+// le composant enfant.
+@protocol SevenTVChatCustomViewDelegate <NSObject>
+@optional
+// threadRootID = toujours la racine du fil (S7TVChatMessage.replyThreadRootID),
+// jamais le parent immédiat — c'est cet id qu'il faut passer à
+// -[S7TVChatMessageStore messagesForThreadRootID:] pour peupler le panneau.
+- (void)chatCustomView:(SevenTVChatCustomView *)view
+    didTapReplyBannerForThreadRootID:(NSString *)threadRootID;
+@end
+
 @interface SevenTVChatCustomView : UIView
+
+@property (nonatomic, weak) id<SevenTVChatCustomViewDelegate> delegate;
 
 - (instancetype)initWithStore:(S7TVChatMessageStore *)store;
 

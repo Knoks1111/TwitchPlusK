@@ -739,6 +739,169 @@ static const char kS7TVChatCustomInstalledView = 21;
 static __weak SevenTVChatCustomView *s_activeChatCustomView = nil;
 static __weak UIView *s_activeNativeChatView = nil;
 
+// ────────────────────────────────────────────────────────────
+// MARK: - Panneau "Fil" (réponses) — lecture seule pour l'instant
+// ────────────────────────────────────────────────────────────
+//
+// Flottant au-dessus du chat réel (même window que s_activeChatCustomView),
+// montre tous les messages d'un fil (S7TVChatMessage.replyThreadRootID) via
+// une SevenTVChatCustomView DÉDIÉE branchée sur un store TEMPORAIRE peuplé
+// via -seedReadOnlyWithMessages: (pas -addMessage: — évite de recompter
+// replyCount ou de perturber le registre couleur, voir SevenTVChatMessage.m)
+// avec les mêmes instances de message que le store principal : tokens,
+// emotes, badges déjà résolus, aucun recalcul, rendu strictement identique
+// au chat principal sans dupliquer la moindre logique de rendu.
+//
+// Écrire une réponse depuis ce panneau (poster vers Twitch) n'est PAS
+// encore implémenté — ça touche l'envoi WebSocket réel, prévu comme étape
+// séparée. Pour l'instant : consultation seule, fermeture via le bouton ✕.
+static const CGFloat kS7TVReplyThreadHeaderHeight = 45.0; // titre + séparateur, voir contraintes ci-dessous
+
+@interface S7TVReplyThreadPanel : NSObject <SevenTVChatCustomViewDelegate>
++ (instancetype)sharedPanel;
+// Reçoit directement le tap depuis la vue de chat réelle — voir l'assignation
+// de .delegate sur customView dans s7tv_applyChatCustomTest ci-dessus.
+- (void)showForThreadRootID:(NSString *)threadRootID;
+- (void)hide;
+// Appelé après chaque reload du chat principal (voir
+// s7tv_reloadActiveChatCustomView) — no-op si le panneau est fermé.
+- (void)refreshIfNeeded;
+@end
+
+@interface S7TVReplyThreadPanel ()
+@property (nonatomic, weak) UIView *containerView;
+@property (nonatomic, strong) SevenTVChatCustomView *threadChatView;
+@property (nonatomic, strong) S7TVChatMessageStore *threadStore;
+@property (nonatomic, copy) NSString *currentThreadRootID;
+@end
+
+@implementation S7TVReplyThreadPanel
+
++ (instancetype)sharedPanel {
+    static S7TVReplyThreadPanel *instance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ instance = [S7TVReplyThreadPanel new]; });
+    return instance;
+}
+
+- (void)chatCustomView:(SevenTVChatCustomView *)view
+    didTapReplyBannerForThreadRootID:(NSString *)threadRootID {
+    [self showForThreadRootID:threadRootID];
+}
+
+- (void)s7tv_ensureContainerInWindow:(UIWindow *)window {
+    if (self.containerView.window == window) return;
+    [self.containerView removeFromSuperview];
+
+    UIView *container = [[UIView alloc] init];
+    container.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.97];
+    container.layer.cornerRadius = 14;
+    container.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+    container.clipsToBounds = YES;
+    container.hidden = YES;
+    [window addSubview:container];
+    self.containerView = container;
+
+    UILabel *title = [[UILabel alloc] init];
+    title.text = L(@"chat_reply_thread_panel_title");
+    title.font = [UIFont boldSystemFontOfSize:14];
+    title.textColor = [UIColor whiteColor];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:title];
+
+    UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [closeButton setImage:[UIImage systemImageNamed:@"xmark"] forState:UIControlStateNormal];
+    closeButton.tintColor = [UIColor colorWithWhite:1.0 alpha:0.6];
+    closeButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [closeButton addTarget:self action:@selector(s7tv_closeTapped)
+           forControlEvents:UIControlEventTouchUpInside];
+    [container addSubview:closeButton];
+
+    UIView *separator = [[UIView alloc] init];
+    separator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
+    separator.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:separator];
+
+    self.threadStore = [S7TVChatMessageStore new];
+    self.threadChatView = [[SevenTVChatCustomView alloc] initWithStore:self.threadStore];
+    self.threadChatView.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:self.threadChatView];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [title.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [title.topAnchor constraintEqualToAnchor:container.topAnchor constant:12],
+
+        [closeButton.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8],
+        [closeButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [closeButton.widthAnchor constraintEqualToConstant:32],
+        [closeButton.heightAnchor constraintEqualToConstant:32],
+
+        [separator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [separator.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [separator.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:10],
+        [separator.heightAnchor constraintEqualToConstant:1],
+
+        [self.threadChatView.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [self.threadChatView.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [self.threadChatView.topAnchor constraintEqualToAnchor:separator.bottomAnchor],
+        [self.threadChatView.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-8],
+    ]];
+}
+
+- (void)s7tv_closeTapped {
+    [self hide];
+}
+
+- (void)s7tv_reloadThreadMessages {
+    if (!self.currentThreadRootID.length) return;
+    S7TVChatMessageStore *mainStore = [SevenTVManager sharedManager].chatMessageStore;
+    NSArray<S7TVChatMessage *> *threadMessages =
+        [mainStore messagesForThreadRootID:self.currentThreadRootID];
+    [self.threadStore seedReadOnlyWithMessages:threadMessages];
+    [self.threadChatView reloadMessages];
+}
+
+- (void)showForThreadRootID:(NSString *)threadRootID {
+    if (!threadRootID.length) return;
+    UIView *hostChatView = s_activeChatCustomView;
+    UIWindow *window = hostChatView.window;
+    if (!hostChatView || !window) return;
+
+    [self s7tv_ensureContainerInWindow:window];
+    self.currentThreadRootID = threadRootID;
+    [self s7tv_reloadThreadMessages];
+
+    CGRect hostFrameInWindow = [hostChatView convertRect:hostChatView.bounds toView:window];
+    CGFloat width     = hostFrameInWindow.size.width;
+    CGFloat maxHeight = hostFrameInWindow.size.height * 0.7;
+
+    // Même technique que le fake chat du picker (voir 7tv-picker-controler.m)
+    // : fixer la largeur d'abord pour que le contenu calcule son vrai
+    // wrapping, puis lire s7tvContentHeight plutôt qu'une hauteur fixe.
+    self.threadChatView.frame = CGRectMake(0, 0, width, maxHeight);
+    CGFloat contentHeight = [self.threadChatView s7tvContentHeight];
+    CGFloat height = MIN(MAX(contentHeight + kS7TVReplyThreadHeaderHeight + 8, 90), maxHeight);
+
+    self.containerView.frame = CGRectMake(
+        hostFrameInWindow.origin.x,
+        hostFrameInWindow.origin.y + hostFrameInWindow.size.height - height,
+        width, height);
+    self.containerView.hidden = NO;
+    [window bringSubviewToFront:self.containerView];
+}
+
+- (void)hide {
+    self.containerView.hidden = YES;
+    self.currentThreadRootID = nil;
+}
+
+- (void)refreshIfNeeded {
+    if (!self.currentThreadRootID.length || self.containerView.hidden) return;
+    [self s7tv_reloadThreadMessages];
+}
+
+@end
+
 // Appelée après un changement qui invalide l'affichage courant (nouveau
 // message, changement de chaîne...). No-op silencieux si aucune vue custom
 // n'est actuellement montée (kill switch désactivé, ou chat pas encore ouvert).
@@ -747,6 +910,10 @@ static void s7tv_reloadActiveChatCustomView(void) {
     if (!view) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         [view reloadMessages];
+        // Un nouveau message peut appartenir au fil actuellement affiché
+        // dans le panneau (quelqu'un vient de répondre) — no-op silencieux
+        // si le panneau est fermé, voir S7TVReplyThreadPanel.refreshIfNeeded.
+        [[S7TVReplyThreadPanel sharedPanel] refreshIfNeeded];
     });
 }
 
@@ -769,7 +936,6 @@ static void s7tv_scheduleChatCustomReload(void) {
         s7tv_reloadActiveChatCustomView();
     });
 }
-
 static void s7tv_applyChatCustomTest(UIView *chatView) {
     s_activeNativeChatView = chatView;
     UIStackView *stack = (UIStackView *)chatView.superview;
@@ -798,6 +964,7 @@ static void s7tv_applyChatCustomTest(UIView *chatView) {
 
     SevenTVChatCustomView *customView =
         [[SevenTVChatCustomView alloc] initWithStore:[SevenTVManager sharedManager].chatMessageStore];
+    customView.delegate = [S7TVReplyThreadPanel sharedPanel];
 
     [stack insertArrangedSubview:customView atIndex:idx];
     objc_setAssociatedObject(chatView, &kS7TVChatCustomInstalledView, customView, OBJC_ASSOCIATION_RETAIN);
@@ -825,6 +992,7 @@ static void s7tv_applyChatCustomToggle(void) {
     customView.hidden = YES;
     if (s_activeChatCustomView == customView) s_activeChatCustomView = nil;
 }
+
 
 
 // ────────────────────────────────────────────────────────────
@@ -1088,12 +1256,38 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     NSString *emotesTag    = s7tv_tagValue(tags, @"emotes", @"");
     NSString *badgesTag    = s7tv_tagValue(tags, @"badges", @"");
 
+    // ── Réponses / fils de discussion ───────────────────────────────────
+    // reply-parent-msg-id = message immédiatement au-dessus (juste pour le
+    // bandeau "Répond à @X"). reply-thread-parent-msg-id = racine du fil
+    // ENTIER, fournie par Twitch séparément dès le 2e niveau de réponse —
+    // c'est CE champ (jamais reply-parent-msg-id) qui doit servir à
+    // regrouper les messages d'un même fil, voir SevenTVChatMessage.h.
+    // Absent → pas une réponse (defaultValue @"" == non trouvé, testé via
+    // .length ci-dessous plutôt que comparé à une chaîne magique).
+    NSString *replyParentMsgID  = s7tv_tagValue(tags, @"reply-parent-msg-id", @"");
+    NSString *replyThreadRootID = s7tv_tagValue(tags, @"reply-thread-parent-msg-id", @"");
+    if (!replyThreadRootID.length) replyThreadRootID = replyParentMsgID; // 1er niveau = racine
+
     S7TVChatMessage *msg = [[S7TVChatMessage alloc] initWithMessageID:messageID
                                                              timestamp:[NSDate date]
                                                           authorUserID:userID
                                                      authorDisplayName:displayName
                                                                rawText:messageText];
     msg.isActionMessage = isActionMessage;
+    if (replyParentMsgID.length) {
+        msg.replyParentMessageID   = replyParentMsgID;
+        // reply-parent-user-login est le pseudo de connexion (minuscules,
+        // pas le display-name avec casse/accents) — display-name est ce
+        // qu'on affiche partout ailleurs dans ce fichier, donc on le
+        // préfère ici s'il est présent pour rester cohérent visuellement,
+        // avec repli sur user-login sinon.
+        NSString *parentDisplayName = s7tv_tagValue(tags, @"reply-parent-display-name", @"");
+        msg.replyParentUsername = parentDisplayName.length
+            ? parentDisplayName
+            : s7tv_tagValue(tags, @"reply-parent-user-login", @"");
+        msg.replyParentBodyPreview = s7tv_tagValue(tags, @"reply-parent-msg-body", @"");
+        msg.replyThreadRootID = replyThreadRootID;
+    }
     if (colorHex.length >= 7) {
         // Format "#RRGGBB" — parsing tolérant : couleur nil (fallback blanc
         // côté rendu) si le hex ne parse pas plutôt que crasher.
@@ -1967,6 +2161,11 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
         // Phase 0 : nettoyage au changement rapide de chaîne).
         [mgr.chatMessageStore removeAllMessages];
         [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Store de messages vidé (changement de chaîne)"];
+        // Le fil actuellement affiché (s'il y en a un) référence des
+        // messages de l'ancienne chaîne qui viennent d'être vidés du store
+        // — plutôt que de laisser un panneau obsolète/vide ouvert, on le
+        // ferme purement et simplement.
+        [[S7TVReplyThreadPanel sharedPanel] hide];
         s7tv_reloadActiveChatCustomView();
 
         if (mgr.currentChannelName.length > 0) {

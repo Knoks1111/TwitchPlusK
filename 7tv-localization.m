@@ -248,6 +248,11 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Chat custom (rendu live + faux chat de preview) ───────────────
         @"chat_deleted_message_placeholder": @[@"[message supprimé]", @"[message deleted]"],
+        // %@ 1 = pseudo répondu, %@ 2 = extrait du message parent (déjà
+        // tronqué côté appelant, voir SevenTVChatCustomView.m
+        // s7tv_configureReplyBannerWithUsername:bodyPreview:).
+        @"chat_reply_banner_format":        @[@"Répond à @%@ : %@", @"Replying to @%@: %@"],
+        @"chat_reply_thread_panel_title":   @[@"Fil", @"Thread"],
         // Petit badge en haut à droite d'un message qui cite le viewer
         // connecté (voir S7TVChatCustomView.m,
         // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:mentionBadgeText:).

@@ -27,6 +27,7 @@
 @property (nonatomic, strong) UIView *systemAccentBar;
 @property (nonatomic, strong) UIImageView *systemIconView;
 @property (nonatomic, strong) NSLayoutConstraint *messageLabelLeadingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *messageLabelBottomConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *systemAccentBarWidthConstraint;
 @end
 
@@ -64,6 +65,16 @@
             [_systemAccentBar.widthAnchor constraintEqualToConstant:0];
         _messageLabelLeadingConstraint =
             [_messageLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:8];
+        // -4 par défaut ; le constant réel est recalculé dans
+        // s7tv_configureCell:forMessage:attributedText: en fonction de
+        // cfg.lineSpacing (espacement ENTRE deux messages, voir
+        // SevenTVChatAppearanceConfig.h) à chaque configuration de cellule —
+        // avec les self-sizing cells, c'est ici (et non plus dans un calcul
+        // de hauteur externe supprimé) que cet espacement doit être ajouté,
+        // puisqu'il contribue directement à la hauteur intrinsèque de la
+        // cellule que UIKit va lire.
+        _messageLabelBottomConstraint =
+            [_messageLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-4];
 
         [NSLayoutConstraint activateConstraints:@[
             [_systemAccentBar.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
@@ -78,7 +89,7 @@
 
             _messageLabelLeadingConstraint,
             [_messageLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:4],
-            [_messageLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-4],
+            _messageLabelBottomConstraint,
             [_messageLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8],
         ]];
     }
@@ -389,17 +400,15 @@
 
 #pragma mark - Cell provider
 
-// Config partagée entre la cellule réellement affichée
-// (s7tv_cellForMessageID:) et la cellule prototype utilisée pour la
-// mesure (self-sizing cells, voir tableView.rowHeight ci-dessus) — une seule et même logique, pour qu'il
-// n'y ait aucune chance que les deux divergent sur la config d'accent
-// (leadingInset notamment, qui influe directement sur la largeur
-// disponible pour le texte).
+// Config partagée : évite toute divergence entre ce que fait
+// s7tv_cellForMessageID: (cellule réellement affichée) et une éventuelle
+// autre logique de configuration (leadingInset notamment, qui influe
+// directement sur la largeur disponible pour le texte).
 - (void)s7tv_configureCell:(S7TVChatCustomCell *)cell
                  forMessage:(S7TVChatMessage *)msg
              attributedText:(NSAttributedString *)text {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
     if (msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
-        SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
         UIColor *accentColor; NSString *iconName;
         switch (msg.systemInfo.kind) {
             case S7TVSystemMessageKindCommunityGift:
@@ -423,6 +432,14 @@
         [cell s7tv_configureSystemAccentWithColor:nil iconName:nil backgroundEnabled:NO];
     }
     cell.messageLabel.attributedText = text;
+    // cfg.lineSpacing = espacement ENTRE deux messages (voir
+    // SevenTVChatAppearanceConfig.h). Avec les self-sizing cells, il n'y a
+    // plus de calcul de hauteur externe où l'ajouter (voir
+    // tableView.rowHeight = UITableViewAutomaticDimension) — c'est donc ici,
+    // en l'ajoutant au constant de la contrainte de bas de label, qu'il doit
+    // être appliqué, puisque cette contrainte contribue directement à la
+    // hauteur intrinsèque que UIKit va lire pour dimensionner la cellule.
+    cell.messageLabelBottomConstraint.constant = -(4 + cfg.lineSpacing);
 }
 
 - (UITableViewCell *)s7tv_cellForMessageID:(NSString *)messageID

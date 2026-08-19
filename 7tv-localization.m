@@ -192,6 +192,9 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"sizes_color_sub_resub":           @[@"Abonnement", @"Subscription"],
         @"sizes_color_prime":               @[@"Prime", @"Prime"],
         @"sizes_color_gift":                @[@"Cadeau collectif", @"Community gift"],
+        // Ligne fondue dans la section ci-dessus (plus de section dédiée —
+        // voir 7tv-picker-sizes.m, _buildSelfMentionSectionInScrollView:).
+        @"sizes_self_mention_row_label":    @[@"Vous êtes mentionné", @"You're mentioned"],
         @"preview_sub_phrase":              @[@"a pris un abonnement Tier 1. C'est son 3e mois d'abonnement !",
                                                @"subscribed at Tier 1. This is their 3rd month!"],
         @"preview_prime_phrase":            @[@"s'est abonné(e) avec Prime. C'est son 24e mois d'abonnement !",
@@ -239,6 +242,13 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"alert_import_success_title_format":   @[@"%lu emote(s) ajoutée(s)", @"%lu emote(s) added"],
         @"alert_import_success_message_format": @[@"%lu nouvelle(s) importée(s), %lu déjà en favoris.",
                                                     @"%lu newly imported, %lu already favorited."],
+
+        // ── Chat custom (rendu live + faux chat de preview) ───────────────
+        @"chat_deleted_message_placeholder": @[@"[message supprimé]", @"[message deleted]"],
+        // Petit badge en haut à droite d'un message qui cite le viewer
+        // connecté (voir S7TVChatCustomView.m,
+        // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:mentionBadgeText:).
+        @"mention_badge_label":              @[@"TE MENTIONNE", @"MENTIONS YOU"],
 
         // ── Bannière "nouveaux messages" (chat custom) ────────────────────
         @"banner_new_messages_generic":     @[@"nouveaux messages", @"new messages"],

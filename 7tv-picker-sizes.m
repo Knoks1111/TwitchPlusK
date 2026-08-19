@@ -368,14 +368,17 @@ static const char kS7TVRowKeyTag = 0;
     return y + 8;
 }
 
-#pragma mark - Section "Vous êtes mentionné" (toggle + couleur, 1 seule ligne)
+#pragma mark - Ligne "Vous êtes mentionné" (toggle + couleur, 1 seule ligne)
 //
-// Contrairement à la section Couleurs ci-dessus (toggle séparé + 3 lignes,
-// une par type sub/prime/gift), il n'y a ici qu'un seul type de highlight à
-// régler — tout tient donc sur une seule ligne : label, reset, switch,
-// colorwell, dans cet ordre de droite à gauche. Même style (police, tailles
-// de contrôles, comportement grisé quand désactivé) que la section
-// Couleurs pour rester cohérent visuellement.
+// Fondue dans la section Couleurs des messages système ci-dessus (même
+// catégorie que sub/prime/gift) plutôt que d'avoir sa propre section — pas
+// de titre ici, cette méthode ne fait qu'ajouter une ligne de plus à la
+// suite de _buildSystemColorsSectionInScrollView: (voir l'appel chaîné dans
+// buildInView:). Une seule ligne suffit puisqu'il n'y a qu'un seul type de
+// highlight à régler : label, reset, switch, colorwell, dans cet ordre de
+// droite à gauche. Même style (police, tailles de contrôles, comportement
+// grisé quand désactivé) que les lignes de la section Couleurs pour rester
+// cohérent visuellement.
 - (CGFloat)_buildSelfMentionSectionInScrollView:(UIScrollView *)scrollView
                                              atY:(CGFloat)y
                                            width:(CGFloat)width
@@ -385,14 +388,6 @@ static const char kS7TVRowKeyTag = 0;
                                           accent:(UIColor *)accent {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
     BOOL enabled = cfg.selfMentionHighlightEnabled;
-
-    UILabel *sectionLbl = [[UILabel alloc] initWithFrame:CGRectMake(12, y, width - 24, 16)];
-    sectionLbl.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
-    sectionLbl.textColor = subColor;
-    sectionLbl.text = L(@"sizes_self_mention_section_title");
-    sectionLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [scrollView addSubview:sectionLbl];
-    y += 26;
 
     UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, width, 44)];
     row.autoresizingMask = UIViewAutoresizingFlexibleWidth;

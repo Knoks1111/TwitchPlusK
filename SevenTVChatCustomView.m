@@ -26,9 +26,19 @@
 // s7tv_configureSystemAccentWithColor:iconName:.
 @property (nonatomic, strong) UIView *systemAccentBar;
 @property (nonatomic, strong) UIImageView *systemIconView;
+// Miroir à droite de systemAccentBar + petit label ("TE MENTIONNE" /
+// "MENTIONS YOU") en haut à droite — uniquement pour le highlight
+// self-mention (mentionBadgeText non-nil dans
+// s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:mentionBadgeText:),
+// jamais pour les messages système sub/resub/gift qui n'ont pas cet élément
+// côté PC. Invisibles par défaut.
+@property (nonatomic, strong) UIView *systemAccentBarRight;
+@property (nonatomic, strong) UILabel *mentionBadgeLabel;
 @property (nonatomic, strong) NSLayoutConstraint *messageLabelLeadingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *messageLabelTopConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *messageLabelBottomConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *systemAccentBarWidthConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *systemAccentBarRightWidthConstraint;
 @end
 
 @implementation S7TVChatCustomCell
@@ -61,10 +71,30 @@
         _systemIconView.hidden = YES;
         [self.contentView addSubview:_systemIconView];
 
+        _systemAccentBarRight = [[UIView alloc] init];
+        _systemAccentBarRight.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentView addSubview:_systemAccentBarRight];
+
+        _mentionBadgeLabel = [[UILabel alloc] init];
+        _mentionBadgeLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _mentionBadgeLabel.font = [UIFont boldSystemFontOfSize:9];
+        _mentionBadgeLabel.textAlignment = NSTextAlignmentRight;
+        _mentionBadgeLabel.hidden = YES;
+        [self.contentView addSubview:_mentionBadgeLabel];
+
         _systemAccentBarWidthConstraint =
             [_systemAccentBar.widthAnchor constraintEqualToConstant:0];
+        _systemAccentBarRightWidthConstraint =
+            [_systemAccentBarRight.widthAnchor constraintEqualToConstant:0];
         _messageLabelLeadingConstraint =
             [_messageLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:8];
+        // 4 par défaut ; passe à une valeur plus grande quand le badge
+        // mentionBadgeLabel est affiché (voir
+        // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:mentionBadgeText:)
+        // pour lui laisser sa propre ligne au-dessus du texte du message,
+        // plutôt que de le superposer.
+        _messageLabelTopConstraint =
+            [_messageLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:4];
         // -4 par défaut ; le constant réel est recalculé dans
         // s7tv_configureCell:forMessage:attributedText: en fonction de
         // cfg.lineSpacing (espacement ENTRE deux messages, voir
@@ -87,8 +117,17 @@
             [_systemIconView.widthAnchor constraintEqualToConstant:14],
             [_systemIconView.heightAnchor constraintEqualToConstant:14],
 
+            [_systemAccentBarRight.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+            [_systemAccentBarRight.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+            [_systemAccentBarRight.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+            _systemAccentBarRightWidthConstraint,
+
+            [_mentionBadgeLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8],
+            [_mentionBadgeLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            [_mentionBadgeLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.contentView.leadingAnchor constant:8],
+
             _messageLabelLeadingConstraint,
-            [_messageLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:4],
+            _messageLabelTopConstraint,
             _messageLabelBottomConstraint,
             [_messageLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8],
         ]];
@@ -111,16 +150,35 @@
 // alpha plutôt qu'une couleur fixe : "plus clair que le fond de base" reste
 // vrai quel que soit le thème/la couleur réelle du fond natif Twitch
 // derrière (transparent ici, donc pas mesurable en dur).
+//
+// mentionBadgeText : non-nil UNIQUEMENT pour le highlight self-mention (pas
+// pour les messages système sub/resub/gift, qui n'ont pas cet élément côté
+// PC) — affiche une barre miroir à droite (même couleur/largeur que la
+// gauche) et un petit label en haut à droite ("TE MENTIONNE" /
+// "MENTIONS YOU", voir clé L(@"mention_badge_label")). Le label pousse le
+// texte du message vers le bas (messageLabelTopConstraint) pour lui garder
+// sa propre ligne plutôt que de le superposer.
 - (void)s7tv_configureSystemAccentWithColor:(nullable UIColor *)accentColor
                                     iconName:(nullable NSString *)iconName
-                           backgroundEnabled:(BOOL)backgroundEnabled {
+                           backgroundEnabled:(BOOL)backgroundEnabled
+                            mentionBadgeText:(nullable NSString *)mentionBadgeText {
     BOOL isSystem = (accentColor != nil);
+    BOOL showMentionBadge = isSystem && mentionBadgeText.length > 0;
+
     self.systemAccentBar.backgroundColor = accentColor ?: [UIColor clearColor];
     self.systemAccentBarWidthConstraint.constant = isSystem ? 3.0 : 0.0;
     self.systemIconView.hidden = !isSystem;
     self.systemIconView.tintColor = accentColor;
     self.systemIconView.image = iconName ? [UIImage systemImageNamed:iconName] : nil;
     self.messageLabelLeadingConstraint.constant = isSystem ? 31.0 : 8.0;
+
+    self.systemAccentBarRight.backgroundColor = accentColor ?: [UIColor clearColor];
+    self.systemAccentBarRightWidthConstraint.constant = showMentionBadge ? 3.0 : 0.0;
+    self.mentionBadgeLabel.hidden = !showMentionBadge;
+    self.mentionBadgeLabel.textColor = accentColor;
+    self.mentionBadgeLabel.text = showMentionBadge ? mentionBadgeText : nil;
+    self.messageLabelTopConstraint.constant = showMentionBadge ? 16.0 : 4.0;
+
     if (!isSystem) {
         self.contentView.backgroundColor = [UIColor clearColor];
     } else if (backgroundEnabled) {
@@ -427,20 +485,25 @@
                 break;
         }
         [cell s7tv_configureSystemAccentWithColor:accentColor iconName:iconName
-                                 backgroundEnabled:cfg.systemMessageBackgroundsEnabled];
+                                 backgroundEnabled:cfg.systemMessageBackgroundsEnabled
+                                  mentionBadgeText:nil];
     } else if (msg.mentionsCurrentViewer && cfg.selfMentionHighlightEnabled) {
         // Réutilise exactement le même mécanisme que les messages système
         // (barre d'accent + fond teinté à 12%) — voir
-        // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:.
+        // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:mentionBadgeText:.
         // Pas d'icône (nil) : ce n'est pas un type de message, juste un
         // surlignage. backgroundEnabled toujours YES ici (pas de fond neutre
         // de repli comme pour systemMessageBackgroundsEnabled) — le toggle
         // cfg.selfMentionHighlightEnabled fait déjà tout ou rien au-dessus.
+        // mentionBadgeText : ajoute la barre miroir à droite + le petit
+        // label "TE MENTIONNE"/"MENTIONS YOU" propres à ce cas.
         [cell s7tv_configureSystemAccentWithColor:cfg.selfMentionHighlightColor
                                           iconName:nil
-                                 backgroundEnabled:YES];
+                                 backgroundEnabled:YES
+                                  mentionBadgeText:L(@"mention_badge_label")];
     } else {
-        [cell s7tv_configureSystemAccentWithColor:nil iconName:nil backgroundEnabled:NO];
+        [cell s7tv_configureSystemAccentWithColor:nil iconName:nil backgroundEnabled:NO
+                                  mentionBadgeText:nil];
     }
     cell.messageLabel.attributedText = text;
     // cfg.lineSpacing = espacement ENTRE deux messages (voir
@@ -873,7 +936,7 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
 
     if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
         [result appendAttributedString:[[NSAttributedString alloc]
-            initWithString:@"[message supprimé]"
+            initWithString:L(@"chat_deleted_message_placeholder")
                 attributes:@{NSFontAttributeName: messageFont,
                              NSForegroundColorAttributeName: [UIColor grayColor]}]];
         return;

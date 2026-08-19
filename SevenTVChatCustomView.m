@@ -817,8 +817,18 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
 
     UIFont *usernameFont = [UIFont boldSystemFontOfSize:cfg.usernameFontSize];
     UIFont *messageFont  = [UIFont systemFontOfSize:cfg.messageFontSize];
+    // Mentions ("@pseudo" ET pseudo cité sans @, même token type — voir
+    // SevenTVChatMessage.h) en gras pour ressortir dans le corps du
+    // message, indépendamment de la couleur appliquée juste en dessous.
+    UIFont *mentionFont  = [UIFont boldSystemFontOfSize:cfg.messageFontSize];
     UIColor *usernameColor = s7tv_readableColorOnDarkBackground(msg.authorColor);
-    UIColor *messageColor  = [UIColor whiteColor];
+    // /me : le corps entier prend la couleur du pseudo (comportement
+    // Twitch) au lieu du blanc habituel — voir isActionMessage sur
+    // S7TVChatMessage, déballé du CTCP ACTION par s7tv_parsePRIVMSG dans
+    // TweakSevenTV.m. Un seul point de bascule : messageColor est déjà
+    // réutilisé pour tous les chemins du corps ci-dessous (fallback sans
+    // tokens, texte brut, emote non résolue, texte hors mention).
+    UIColor *messageColor  = msg.isActionMessage ? usernameColor : [UIColor whiteColor];
 
     NSString *displayName = msg.authorDisplayName.length ? msg.authorDisplayName : @"???";
 
@@ -931,7 +941,7 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
                 : messageColor;
             [result appendAttributedString:[[NSAttributedString alloc]
                 initWithString:token.text ?: @""
-                    attributes:@{NSFontAttributeName: messageFont,
+                    attributes:@{NSFontAttributeName: mentionFont,
                                  NSForegroundColorAttributeName: mentionColor}]];
             continue;
         }

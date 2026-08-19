@@ -1063,6 +1063,24 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     NSString *messageText = [rest substringFromIndex:textMarker.location + 2];
     if (!messageText.length) return nil;
 
+    // /me (Twitch l'encode en CTCP ACTION IRC standard) : le texte brut est
+    // enveloppé "\x01ACTION texte\x01". Déballage AVANT tokenisation —
+    // emotesTag utilise des offsets relatifs au texte réellement affiché
+    // (sans le wrapper ACTION), donc décaler l'appel à
+    // s7tv_tokenizeMessageWithNativeEmotes: plus bas casserait l'alignement
+    // des emotes si on ne déballait qu'après.
+    static NSString *const kS7TVActionPrefix = @"\x01ACTION ";
+    static NSString *const kS7TVActionSuffix = @"\x01";
+    BOOL isActionMessage = NO;
+    if (messageText.length > kS7TVActionPrefix.length &&
+        [messageText hasPrefix:kS7TVActionPrefix] &&
+        [messageText hasSuffix:kS7TVActionSuffix]) {
+        isActionMessage = YES;
+        messageText = [messageText substringWithRange:NSMakeRange(
+            kS7TVActionPrefix.length,
+            messageText.length - kS7TVActionPrefix.length - kS7TVActionSuffix.length)];
+    }
+
     NSString *messageID    = s7tv_tagValue(tags, @"id", [[NSUUID UUID] UUIDString]);
     NSString *userID       = s7tv_tagValue(tags, @"user-id", @"");
     NSString *displayName  = s7tv_tagValue(tags, @"display-name", @"???");
@@ -1075,6 +1093,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
                                                           authorUserID:userID
                                                      authorDisplayName:displayName
                                                                rawText:messageText];
+    msg.isActionMessage = isActionMessage;
     if (colorHex.length >= 7) {
         // Format "#RRGGBB" — parsing tolérant : couleur nil (fallback blanc
         // côté rendu) si le hex ne parse pas plutôt que crasher.

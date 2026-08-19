@@ -1069,8 +1069,8 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     // (sans le wrapper ACTION), donc décaler l'appel à
     // s7tv_tokenizeMessageWithNativeEmotes: plus bas casserait l'alignement
     // des emotes si on ne déballait qu'après.
-    static NSString *const kS7TVActionPrefix = @"\x01ACTION ";
-    static NSString *const kS7TVActionSuffix = @"\x01";
+    static NSString *const kS7TVActionPrefix = @"\001ACTION ";
+    static NSString *const kS7TVActionSuffix = @"\001";
     BOOL isActionMessage = NO;
     if (messageText.length > kS7TVActionPrefix.length &&
         [messageText hasPrefix:kS7TVActionPrefix] &&

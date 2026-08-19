@@ -380,6 +380,15 @@
     });
 }
 
+- (CGFloat)s7tvContentHeight {
+    // self.layoutIfNeeded d'abord : c'est -layoutSubviews qui détecte un
+    // changement de largeur (s7tv_actualVisibleWidth vs cachedContentWidth)
+    // et déclenche le reloadData nécessaire aux cellules self-sizing.
+    [self layoutIfNeeded];
+    [self.tableView layoutIfNeeded];
+    return self.tableView.contentSize.height;
+}
+
 - (void)reloadMessages {
     NSAssert([NSThread isMainThread],
              @"reloadMessages doit être appelé depuis le main thread (touche UIKit)");

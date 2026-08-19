@@ -126,8 +126,32 @@
                                                   selector:@selector(_s7tv_channelJoinedNotification:)
                                                       name:@"S7TVChannelJoined"
                                                     object:nil];
+
+        // Le TextEntryView de Twitch peut résigner le first responder sans
+        // passer par notre bouton (ex: tap ailleurs dans l'app) — UIKit
+        // retire alors l'inputView (notre picker) tout seul, SANS jamais
+        // appeler _hideEmotePicker. Le faux chat flottant (attaché à la key
+        // window, indépendant du clavier) restait donc affiché tant que le
+        // picker n'était pas rouvert/refermé manuellement. On rattrape ça ici.
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(_s7tv_textEntryDidEndEditing:)
+                                                      name:UITextViewTextDidEndEditingNotification
+                                                    object:nil];
     }
     return self;
+}
+
+- (void)_s7tv_textEntryDidEndEditing:(NSNotification *)note {
+    if (note.object != self.emotePickerTextEntryView) return;
+    if (!self.emotePickerView || self.emotePickerView.hidden) return; // picker déjà fermé, rien à faire
+
+    // Pas de resignFirstResponder/reloadInputViews ici : la résignation est
+    // déjà en cours côté UIKit (c'est elle qui a déclenché cette notif).
+    // On se contente de remettre notre propre état à plat.
+    self.emotePickerTextEntryView = nil;
+    self.emotePickerTextField = nil;
+    self.emotePickerView.hidden = YES;
+    [self _hideFakeChatPreview];
 }
 
 // Panneau des tailles — composant enfant, créé à la demande la première fois
@@ -1594,8 +1618,30 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         [keyWindow addSubview:container];
     }
 
-    CGFloat width  = keyWindow.bounds.size.width;
-    CGFloat height = keyWindow.bounds.size.height * 0.5;
+    CGFloat width     = keyWindow.bounds.size.width;
+    CGFloat maxHeight = keyWindow.bounds.size.height * 0.5; // plafond, jamais dépassé
+    static const CGFloat kFakeChatInset = 8.0; // même valeur que CGRectInset(container.bounds, 8, 8) plus bas
+
+    // ── Hauteur réelle du contenu ────────────────────────────────────────
+    // Avant, la hauteur était fixée à 50% de l'écran quel que soit le
+    // nombre de messages factices → gros vide en dessous du dernier message.
+    // On fixe d'abord la largeur du chatView (nécessaire pour que sa collection
+    // calcule le wrapping du texte et donc sa vraie hauteur de contenu), on
+    // force le layout, puis on lit contentSize.height. SevenTVChatCustomView
+    // est une UICollectionView (diffable data source) → UIScrollView.contentSize
+    // reflète exactement la hauteur des 7 messages empilés.
+    UIView *chatView = self.sizesPanel.fakeChatView;
+    chatView.frame = CGRectMake(0, 0, width - kFakeChatInset * 2, maxHeight);
+    [chatView layoutIfNeeded];
+    CGFloat contentHeight = 0;
+    if ([chatView isKindOfClass:[UIScrollView class]]) {
+        contentHeight = ((UIScrollView *)chatView).contentSize.height;
+    }
+
+    CGFloat height = (contentHeight > 0)
+        ? MIN(contentHeight + kFakeChatInset * 2, maxHeight)
+        : maxHeight; // fallback si contentSize indisponible (pas encore layoutée)
+
     // inputRoot peut être nil (picker jamais ouvert sur ce chat) — dans ce
     // cas on colle simplement en bas de l'écran plutôt que de planter/ne
     // rien afficher.
@@ -1607,7 +1653,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     CGFloat y = MAX(0, inputTopY - height);
 
     container.frame = CGRectMake(0, y, width, height);
-    self.sizesPanel.fakeChatView.frame = CGRectInset(container.bounds, 8, 8);
+    self.sizesPanel.fakeChatView.frame = CGRectInset(container.bounds, kFakeChatInset, kFakeChatInset);
     container.hidden = NO;
     [keyWindow bringSubviewToFront:container];
 }

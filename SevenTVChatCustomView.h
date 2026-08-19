@@ -27,6 +27,14 @@ NS_ASSUME_NONNULL_BEGIN
 // justifiera, pas avant d'avoir un rendu qui marche.
 - (void)reloadMessages;
 
+// Hauteur réelle du contenu (tableView.contentSize.height, cellules
+// self-sizing incluses). Force un layout complet (largeur → recalcul des
+// cellules si besoin, cf. -layoutSubviews) avant de lire la valeur — donc
+// self.frame doit déjà avoir la bonne largeur au moment de l'appel.
+// Utilisée par SevenTVEmotePickerController pour dimensionner sa fenêtre
+// flottante de preview sur le contenu réel plutôt qu'une hauteur fixe.
+- (CGFloat)s7tvContentHeight;
+
 @end
 
 NS_ASSUME_NONNULL_END

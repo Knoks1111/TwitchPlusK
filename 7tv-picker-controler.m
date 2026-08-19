@@ -1630,13 +1630,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // force le layout, puis on lit contentSize.height. SevenTVChatCustomView
     // est une UICollectionView (diffable data source) → UIScrollView.contentSize
     // reflète exactement la hauteur des 7 messages empilés.
-    UIView *chatView = self.sizesPanel.fakeChatView;
+    SevenTVChatCustomView *chatView = self.sizesPanel.fakeChatView;
     chatView.frame = CGRectMake(0, 0, width - kFakeChatInset * 2, maxHeight);
-    [chatView layoutIfNeeded];
-    CGFloat contentHeight = 0;
-    if ([chatView isKindOfClass:[UIScrollView class]]) {
-        contentHeight = ((UIScrollView *)chatView).contentSize.height;
-    }
+    CGFloat contentHeight = [chatView s7tvContentHeight];
 
     CGFloat height = (contentHeight > 0)
         ? MIN(contentHeight + kFakeChatInset * 2, maxHeight)

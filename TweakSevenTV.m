@@ -824,6 +824,12 @@ static const CGFloat kS7TVReplyThreadHeaderHeight = 45.0; // titre + séparateur
 
     self.threadStore = [S7TVChatMessageStore new];
     self.threadChatView = [[SevenTVChatCustomView alloc] initWithStore:self.threadStore];
+    // Comportement Twitch (voir capture PC) : à l'INTÉRIEUR du panneau Fil,
+    // aucun message n'affiche son propre bandeau "Répond à @X" — le
+    // contexte est déjà donné par le panneau lui-même. Sans ça, le message
+    // racine (1er du fil) affichait aussi son bandeau et perdait sa place
+    // de "rendu basique en entier" en haut du panneau.
+    self.threadChatView.showsReplyBanners = NO;
     self.threadChatView.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:self.threadChatView];
 
@@ -1027,6 +1033,41 @@ static NSString *s7tv_tagValue(NSDictionary<NSString *, NSString *> *tags,
     return v.length ? v : defaultValue;
 }
 
+// Décode l'échappement générique des valeurs de tags IRC (IRCv3 tag
+// escaping) : \s = espace, \: = point-virgule, \\ = backslash, \r, \n.
+// C'est ce qui manquait et causait l'affichage brut "Mais\sdu\sscoup\s..."
+// dans le bandeau reply-parent-msg-body — le seul tag de ce fichier qui
+// contient régulièrement des espaces, donc le seul où l'absence de décodage
+// se voyait à l'écran. Les autres tags (badges=, emotes=, etc.) ne
+// contiennent normalement aucun caractère à échapper → no-op pour eux.
+static NSString *s7tv_unescapeIRCTagValue(NSString *value) {
+    if (![value containsString:@"\\"]) return value; // fast path, cas le plus fréquent
+    NSMutableString *result = [NSMutableString stringWithCapacity:value.length];
+    NSUInteger i = 0;
+    NSUInteger len = value.length;
+    while (i < len) {
+        unichar c = [value characterAtIndex:i];
+        if (c == '\\' && i + 1 < len) {
+            unichar next = [value characterAtIndex:i + 1];
+            switch (next) {
+                case 's': [result appendString:@" "]; break;
+                case ':': [result appendString:@";"]; break;
+                case '\\': [result appendString:@"\\"]; break;
+                case 'r': [result appendString:@"\r"]; break;
+                case 'n': [result appendString:@"\n"]; break;
+                // Séquence inconnue : on garde le caractère tel quel plutôt
+                // que de planter (parsing tolérant, exigence Phase 1a).
+                default: [result appendFormat:@"%C", next]; break;
+            }
+            i += 2;
+        } else {
+            [result appendFormat:@"%C", c];
+            i += 1;
+        }
+    }
+    return result;
+}
+
 // Parse le bloc de tags IRC "@key1=val1;key2=val2;... " en dictionnaire.
 // Tolère les tags sans valeur (key= ou key seul) et les lignes sans tags.
 static NSDictionary<NSString *, NSString *> *s7tv_parseIRCTags(NSString *tagBlock) {
@@ -1042,7 +1083,7 @@ static NSDictionary<NSString *, NSString *> *s7tv_parseIRCTags(NSString *tagBloc
         }
         NSString *key = [pair substringToIndex:eq.location];
         NSString *val = [pair substringFromIndex:eq.location + 1];
-        if (key.length) tags[key] = val;
+        if (key.length) tags[key] = s7tv_unescapeIRCTagValue(val);
     }
     return tags;
 }

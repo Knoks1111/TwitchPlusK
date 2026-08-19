@@ -321,6 +321,7 @@
         _messagesByID = @{};
         _cachedContentWidth = 0;
         _isPinnedToBottom = YES;
+        _showsReplyBanners = YES;
 
         _tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
         _tableView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -613,10 +614,12 @@
                                                       collectUncachedEmotes:uncachedEmotes
                                                       collectAnimatedEmotes:animatedEmotes];
     [self s7tv_configureCell:cell forMessage:msg attributedText:text];
-    [cell s7tv_configureReplyBannerWithUsername:msg.replyParentUsername
-                                     bodyPreview:msg.replyParentBodyPreview];
 
-    NSString *threadRootID = msg.replyThreadRootID;
+    BOOL isReply = self.showsReplyBanners && msg.replyParentUsername.length > 0;
+    [cell s7tv_configureReplyBannerWithUsername:isReply ? msg.replyParentUsername : nil
+                                     bodyPreview:isReply ? msg.replyParentBodyPreview : nil];
+
+    NSString *threadRootID = self.showsReplyBanners ? msg.replyThreadRootID : nil;
     __weak typeof(self) weakSelfForReply = self;
     cell.onReplyBannerTap = threadRootID.length ? ^{
         __strong typeof(weakSelfForReply) strongSelf = weakSelfForReply;

@@ -37,6 +37,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, weak) id<SevenTVChatCustomViewDelegate> delegate;
 
+// YES par défaut (chat principal). Passer à NO pour un usage "panneau Fil"
+// (voir S7TVReplyThreadPanel, TweakSevenTV.m) : à l'intérieur d'un fil déjà
+// filtré, réafficher "Répond à @X" sur chaque message est redondant — Twitch
+// masque ce bandeau dans ce contexte précis (mais pas dans le flux
+// principal, où il reste indispensable).
+@property (nonatomic, assign) BOOL showsReplyBanners;
+
 - (instancetype)initWithStore:(S7TVChatMessageStore *)store;
 
 // Recharge l'affichage depuis le store. Phase 1c fait un reload complet à

@@ -160,16 +160,7 @@
 @property (nonatomic, strong) UITableViewDiffableDataSource<NSString *, NSString *> *dataSource;
 @property (nonatomic, strong) NSArray<S7TVChatMessage *> *displayedMessages;
 @property (nonatomic, strong) NSDictionary<NSString *, S7TVChatMessage *> *messagesByID;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *rowHeightCache;
 @property (nonatomic, assign) CGFloat cachedContentWidth;
-// Cellule prototype hors écran, jamais insérée dans tableView, utilisée
-// uniquement pour la mesure (s7tv_heightForMessage:). Même classe
-// (S7TVChatCustomCell) et même configuration que les cellules réellement
-// affichées (voir s7tv_configureCell:forMessage:attributedText:) — on
-// mesure avec la cellule de production elle-même plutôt qu'un pipeline de
-// layout parallèle, pour qu'il n'y ait structurellement aucune possibilité
-// de divergence entre la hauteur calculée et la hauteur réellement rendue.
-@property (nonatomic, strong) S7TVChatCustomCell *prototypeCell;
 @property (nonatomic, assign) BOOL isPinnedToBottom;
 @property (nonatomic, assign) NSUInteger pendingNewMessagesCount;
 @property (nonatomic, strong) UIView *unseenMessagesBanner;
@@ -184,7 +175,6 @@
         _store = store;
         _displayedMessages = @[];
         _messagesByID = @{};
-        _rowHeightCache = [NSMutableDictionary dictionary];
         _cachedContentWidth = 0;
         _isPinnedToBottom = YES;
 
@@ -193,6 +183,19 @@
         _tableView.backgroundColor        = [UIColor clearColor];
         _tableView.separatorStyle         = UITableViewCellSeparatorStyleNone;
         _tableView.delegate               = self;
+        // Self-sizing cells natives plutôt qu'un calcul de hauteur maison.
+        // Deux techniques de prédiction externe (NSLayoutManager manuel,
+        // puis cellule prototype + systemLayoutSizeFittingSize:) ont chacune
+        // divergé du rendu réel en production (voir logs — notamment
+        // systemLayoutSizeFittingSize: qui ne reflétait pas fidèlement le
+        // layout d'une cellule réellement attachée à une fenêtre, un
+        // comportement documenté comme peu fiable sur du contenu Auto
+        // Layout complexe). En laissant UITableView calculer lui-même la
+        // hauteur à partir de la VRAIE cellule affichée (via ses contraintes
+        // Auto Layout, déjà en place dans S7TVChatCustomCell — label pinné
+        // top/bottom/leading/trailing), il n'existe plus de calcul externe
+        // pouvant diverger : plus aucune classe de bug possible ici.
+        _tableView.rowHeight = UITableViewAutomaticDimension;
         _tableView.estimatedRowHeight = 24;
         [_tableView registerClass:[S7TVChatCustomCell class]
             forCellReuseIdentifier:@"cell"];
@@ -281,14 +284,14 @@
     [super layoutSubviews];
     // s7tv_actualVisibleWidth plutôt que self.bounds.size.width seul : un
     // ancêtre peut recadrer visuellement cette vue (voir commentaire de
-    // s7tv_actualVisibleWidth) sans que self.bounds ne change, auquel cas
-    // comparer seulement self.bounds.size.width laisserait passer un
-    // changement de largeur réellement visible sans jamais invalider le
-    // cache ni redemander les hauteurs de ligne.
+    // s7tv_actualVisibleWidth) sans que self.bounds ne change. Avec les
+    // self-sizing cells (UITableViewAutomaticDimension), UITableView met en
+    // cache la hauteur calculée par Auto Layout pour chaque ligne — un
+    // reloadData force le recalcul quand la largeur réellement visible
+    // change, même si self.bounds n'a pas bougé.
     CGFloat visibleWidth = [self s7tv_actualVisibleWidth];
     if (visibleWidth > 0 && visibleWidth != self.cachedContentWidth) {
         self.cachedContentWidth = visibleWidth;
-        [self.rowHeightCache removeAllObjects];
         [self.tableView reloadData];
     }
 }
@@ -345,15 +348,13 @@
         [self s7tv_showNewMessagesBanner];
     }
 
-    // Invalidation complète plutôt que partielle (avant : ne retirait que les
-    // messages disparus). Nécessaire car reloadMessages est aussi le point
-    // d'entrée du rafraîchissement live sur changement de
-    // SevenTVChatAppearanceConfig (taille de police, espacement...) — une
-    // hauteur mise en cache pour un message toujours présent devenait
-    // périmée dès qu'un slider changeait, coupant le texte. Coût : quelques
-    // re-mesures de plus par reload (bornées aux lignes actuellement
-    // visibles/à l'écran), négligeable comparé au bug visuel.
-    [self.rowHeightCache removeAllObjects];
+    // Invalidation complète via reloadItemsWithIdentifiers (voir plus bas) :
+    // nécessaire car reloadMessages est aussi le point d'entrée du
+    // rafraîchissement live sur changement de SevenTVChatAppearanceConfig
+    // (taille de police, espacement...) — sans ça, un message dont le
+    // contenu texte n'a pas changé ne serait pas reconfiguré, et les
+    // self-sizing cells ne recalculeraient pas leur hauteur pour refléter
+    // le nouveau réglage.
 
     NSDiffableDataSourceSnapshot<NSString *, NSString *> *snapshot =
         [[NSDiffableDataSourceSnapshot alloc] init];
@@ -363,8 +364,7 @@
     // chat statique du panneau Tailles, ou plus généralement un changement
     // de SevenTVChatAppearanceConfig sans nouveau message) produit un diff
     // vide : la snapshot est "identique" du point de vue du diffable data
-    // source et aucune cell n'est reconfigurée, même si rowHeightCache a été
-    // vidé juste au-dessus.
+    // source et aucune cell n'est reconfigurée.
     [snapshot reloadItemsWithIdentifiers:identifiers];
 
     __weak typeof(self) weakSelf = self;
@@ -391,7 +391,7 @@
 
 // Config partagée entre la cellule réellement affichée
 // (s7tv_cellForMessageID:) et la cellule prototype utilisée pour la
-// mesure (s7tv_heightForMessage:) — une seule et même logique, pour qu'il
+// mesure (self-sizing cells, voir tableView.rowHeight ci-dessus) — une seule et même logique, pour qu'il
 // n'y ait aucune chance que les deux divergent sur la config d'accent
 // (leadingInset notamment, qui influe directement sur la largeur
 // disponible pour le texte).
@@ -477,7 +477,6 @@
 
 - (void)s7tv_reloadMessageWithID:(NSString *)messageID {
     if (!self.messagesByID[messageID]) return;
-    [self.rowHeightCache removeObjectForKey:messageID];
     NSDiffableDataSourceSnapshot<NSString *, NSString *> *snapshot = [self.dataSource snapshot];
     [snapshot reloadItemsWithIdentifiers:@[messageID]];
     [self.dataSource applySnapshot:snapshot animatingDifferences:NO];
@@ -539,30 +538,6 @@
   willDisplayCell:(UITableViewCell *)cell
 forRowAtIndexPath:(NSIndexPath *)indexPath {
     S7TVChatCustomCell *s7tvCell = (S7TVChatCustomCell *)cell;
-
-    // ── Diagnostic temporaire ────────────────────────────────────────────
-    // Compare la hauteur RÉELLEMENT appliquée par UITableView à la cellule
-    // (cell.frame.size.height, la vérité terrain) avec ce que
-    // s7tv_heightForMessage: avait calculé et mis en cache pour ce même
-    // messageID. Si les deux diffèrent, la table view n'utilise pas (ou
-    // écrase) la hauteur qu'on lui a donnée — root cause différente de tout
-    // ce qu'on a corrigé jusqu'ici dans le calcul lui-même.
-    if (indexPath.row < self.displayedMessages.count) {
-        S7TVChatMessage *msg = self.displayedMessages[indexPath.row];
-        CGFloat visibleWidth = [self s7tv_actualVisibleWidth];
-        NSString *cacheKey = [NSString stringWithFormat:@"%@|%.0f", msg.messageID, visibleWidth];
-        NSNumber *expected = self.rowHeightCache[cacheKey];
-        [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] 🔍 willDisplay id=%@ cellFrameHeight=%.1f "
-                 @"visibleWidth=%.1f expectedFromCache=%@ labelFrameHeight=%.1f "
-                 @"labelNumberOfLines=%ld clipsToBounds=%d",
-            msg.messageID, cell.frame.size.height, visibleWidth,
-            expected ?: @"nil",
-            s7tvCell.messageLabel.frame.size.height,
-            (long)s7tvCell.messageLabel.numberOfLines,
-            s7tvCell.messageLabel.clipsToBounds];
-    }
-
     SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
     [engine removeObserver:s7tvCell.messageLabel];
     if (s7tvCell.animationKeys.count == 0) return;
@@ -581,22 +556,6 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:s7tvCell.messageLabel];
 }
 
-- (CGFloat)tableView:(UITableView *)tableView
-    heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSString *messageID = [self.dataSource itemIdentifierForIndexPath:indexPath];
-    S7TVChatMessage *msg = messageID ? self.messagesByID[messageID] : nil;
-    if (!msg) return self.tableView.estimatedRowHeight;
-    return [self s7tv_heightForMessage:msg];
-}
-
-- (S7TVChatCustomCell *)s7tv_prototypeCell {
-    if (!_prototypeCell) {
-        _prototypeCell = [[S7TVChatCustomCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                                     reuseIdentifier:nil];
-    }
-    return _prototypeCell;
-}
-
 // self.bounds.size.width n'est pas fiable telle quelle : constaté en
 // production (logs), cette valeur oscille (ex. 253.3 puis 390.0 pour la
 // même vue à quelques centaines de ms d'intervalle) sans que ça corresponde
@@ -608,7 +567,9 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
 // dans le système de coordonnées de self, les bounds de chaque ancêtre qui
 // recadre visuellement (clipsToBounds == YES) — convertRect:toView: gère
 // correctement les transforms le cas échéant, contrairement à une
-// comparaison brute de bounds.size.width.
+// comparaison brute de bounds.size.width. Utilisée par layoutSubviews pour
+// savoir quand forcer un reloadData (self-sizing cells) après un tel
+// recadrage.
 - (CGFloat)s7tv_actualVisibleWidth {
     CGRect visibleRect = self.bounds;
     if (CGRectIsEmpty(visibleRect)) return self.bounds.size.width;
@@ -620,95 +581,13 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
             visibleRect = CGRectIntersection(visibleRect, ancestorRectInSelf);
             if (CGRectIsNull(visibleRect)) {
                 // Intersection vide (vue actuellement hors écran/masquée) —
-                // pas une largeur exploitable, on retombe sur self.bounds
-                // plutôt que de mettre en cache une hauteur pour largeur 0.
+                // pas une largeur exploitable, on retombe sur self.bounds.
                 return self.bounds.size.width;
             }
         }
         ancestor = ancestor.superview;
     }
     return ceil(visibleRect.size.width);
-}
-
-// Mesure via la vraie cellule de production (S7TVChatCustomCell), pas un
-// pipeline TextKit reconstruit à côté. Tentative précédente : mesurer avec
-// NSLayoutManager/NSTextContainer configuré "à la main" pour imiter
-// UILabel — en pratique ça ne garantit PAS un résultat identique au pixel
-// près à ce que UILabel dessine réellement (divergence constatée en
-// production, notamment sur les messages qui wrap sur plusieurs lignes en
-// paysage). Ici on élimine cette classe de bug à la racine : on configure
-// une cellule prototype hors écran avec EXACTEMENT la même méthode que la
-// cellule réellement affichée (s7tv_configureCell:forMessage:attributedText:,
-// partagée avec s7tv_cellForMessageID:), on la contraint à la largeur
-// réelle, et on lui demande sa propre taille via Auto Layout
-// (systemLayoutSizeFittingSize:). Comme c'est le même UILabel avec les
-// mêmes contraintes qui sert à la fois à mesurer et à afficher, il ne peut
-// structurellement plus y avoir de désaccord entre les deux.
-- (CGFloat)s7tv_heightForMessage:(S7TVChatMessage *)msg {
-    CGFloat availableWidth = [self s7tv_actualVisibleWidth];
-    NSString *cacheKey = [NSString stringWithFormat:@"%@|%.0f", msg.messageID, availableWidth];
-    NSNumber *cached = self.rowHeightCache[cacheKey];
-    if (cached) return cached.doubleValue;
-
-    if (availableWidth <= 0) {
-        // Largeur pas encore connue (avant le tout premier layout) : pas de
-        // mesure fiable possible. Pas de valeur de secours arbitraire (un
-        // ancien fallback à 300pt en dur pouvait être plus large que le
-        // panneau réel — ex. le chat flottant en paysage — et sous-estimer
-        // la hauteur nécessaire). On ne met rien en cache : layoutSubviews
-        // videra rowHeightCache et redemandera cette hauteur dès que
-        // self.bounds sera valide.
-        return self.tableView.estimatedRowHeight;
-    }
-
-    NSMutableArray<id<S7TVResolvedEmote>> *unusedEmotes = [NSMutableArray array];
-    NSAttributedString *text = [self s7tv_buildAttributedStringForMessage:msg
-                                                      collectUncachedEmotes:unusedEmotes
-                                                      collectAnimatedEmotes:nil];
-
-    S7TVChatCustomCell *proto = [self s7tv_prototypeCell];
-    [self s7tv_configureCell:proto forMessage:msg attributedText:text];
-
-    proto.frame = CGRectMake(0, 0, availableWidth, 0);
-    [proto setNeedsLayout];
-    [proto layoutIfNeeded];
-
-    CGSize fitSize = [proto.contentView
-        systemLayoutSizeFittingSize:CGSizeMake(availableWidth, UILayoutFittingCompressedSize.height)
-       withHorizontalFittingPriority:UILayoutPriorityRequired
-             verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
-
-    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
-    // fitSize.height inclut déjà les insets réels du label (top 4 + bottom
-    // 4, via les contraintes de S7TVChatCustomCell) puisqu'on mesure la
-    // cellule complète — plus besoin de les rajouter à la main comme avec
-    // l'ancienne mesure texte-seul. cfg.lineSpacing reste l'espacement
-    // ENTRE deux messages (voir SevenTVChatAppearanceConfig.h), toujours
-    // volontairement indépendant de cette marge structurelle.
-    CGFloat height = ceil(fitSize.height) + cfg.lineSpacing;
-    self.rowHeightCache[cacheKey] = @(height);
-
-    // ── Diagnostic temporaire ────────────────────────────────────────────
-    // À retirer une fois le bug de clipping identifié avec certitude. Donne
-    // la vérité terrain plutôt que de continuer à deviner : largeur utilisée
-    // pour la mesure, hauteur calculée, hauteur réellement occupée par
-    // messageLabel après layoutIfNeeded (doit être ≤ height - cfg.lineSpacing
-    // pour ne rien perdre), et les 20 derniers caractères du texte source
-    // pour confirmer visuellement quel message est mesuré.
-    NSString *tail = msg.rawText.length > 20
-        ? [msg.rawText substringFromIndex:msg.rawText.length - 20]
-        : msg.rawText;
-    [[SevenTVManager sharedManager]
-        log:@"[ChatCustom] 🔍 id=%@ availableWidth=%.1f computedHeight=%.1f "
-             @"protoLabelFrameHeight=%.1f protoLabelBoundsHeight=%.1f "
-             @"protoContentViewFrameHeight=%.1f tail='%@'",
-        msg.messageID, availableWidth, height,
-        proto.messageLabel.frame.size.height,
-        proto.messageLabel.bounds.size.height,
-        proto.contentView.frame.size.height,
-        tail];
-
-    return height;
 }
 
 #pragma mark - Construction du texte

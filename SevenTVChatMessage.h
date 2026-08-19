@@ -216,6 +216,14 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 @property (nonatomic, assign) S7TVChatMessageType type;
 @property (nonatomic, assign) S7TVChatMessageState state;
 
+// YES si le message vient d'un /me (CTCP ACTION en IRC, voir
+// s7tv_parsePRIVMSG dans TweakSevenTV.m qui déballe déjà le wrapper
+// \x01ACTION ... \x01 avant de remplir rawText/tokens). Comportement
+// Twitch : le corps entier du message prend authorColor au lieu du blanc
+// habituel (le pseudo est déjà coloré dans tous les cas) — voir
+// SevenTVChatCustomView.m, s7tv_appendNormalBodyForMessage:into:...
+@property (nonatomic, assign) BOOL isActionMessage;
+
 // Texte brut IRC original, JAMAIS purgé par un changement de state — voir
 // exigence transverse #2. Seule la purge mémoire globale du store (limite
 // de rétention, voir S7TVChatMessageStore) peut faire disparaître un

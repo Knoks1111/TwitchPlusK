@@ -813,6 +813,15 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     [window addSubview:container];
     self.containerView = container;
 
+    UIImageView *titleIcon = [[UIImageView alloc] init];
+    UIImageSymbolConfiguration *titleIconConfig =
+        [UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
+    titleIcon.image = [UIImage systemImageNamed:@"bubble.left.and.bubble.right"
+                             withConfiguration:titleIconConfig];
+    titleIcon.tintColor = [UIColor colorWithWhite:1.0 alpha:0.7];
+    titleIcon.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:titleIcon];
+
     UILabel *title = [[UILabel alloc] init];
     title.text = L(@"chat_reply_thread_panel_title");
     title.font = [UIFont boldSystemFontOfSize:12];
@@ -868,7 +877,12 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
         [self.rootChatView.heightAnchor constraintEqualToConstant:0];
 
     [NSLayoutConstraint activateConstraints:@[
-        [title.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:12],
+        [titleIcon.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:12],
+        [titleIcon.centerYAnchor constraintEqualToAnchor:container.topAnchor constant:kS7TVReplyThreadTitleHeight / 2],
+        [titleIcon.widthAnchor constraintEqualToConstant:14],
+        [titleIcon.heightAnchor constraintEqualToConstant:14],
+
+        [title.leadingAnchor constraintEqualToAnchor:titleIcon.trailingAnchor constant:6],
         [title.centerYAnchor constraintEqualToAnchor:container.topAnchor constant:kS7TVReplyThreadTitleHeight / 2],
 
         [closeButton.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-6],

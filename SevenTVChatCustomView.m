@@ -74,6 +74,18 @@
         self.backgroundColor = [UIColor clearColor];
         self.selectionStyle  = UITableViewCellSelectionStyleNone;
 
+        // Toute la cellule ouvre le fil quand le message est une réponse
+        // (onReplyBannerTap nil sinon → no-op) — pas juste le petit bandeau
+        // "Répond à @X". Ajouté sur contentView (pas messageLabel) pour
+        // couvrir toute la surface, y compris la marge/le padding autour du
+        // texte. cancelsTouchesInBegan=NO : laisse le tap sur un lien dans
+        // messageLabel (s7tv_handleTap:) se déclencher normalement en plus.
+        UITapGestureRecognizer *wholeCellTap =
+            [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                      action:@selector(s7tv_handleWholeCellTap:)];
+        wholeCellTap.cancelsTouchesInView = NO;
+        [self.contentView addGestureRecognizer:wholeCellTap];
+
         _messageLabel = [[UILabel alloc] init];
         _messageLabel.numberOfLines = 0;
         _messageLabel.lineBreakMode = NSLineBreakByWordWrapping;
@@ -121,7 +133,7 @@
 
         _threadBarView = [[UIView alloc] init];
         _threadBarView.translatesAutoresizingMaskIntoConstraints = NO;
-        _threadBarView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.22];
+        _threadBarView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.35];
         _threadBarView.hidden = YES;
         [self.contentView addSubview:_threadBarView];
 
@@ -189,8 +201,8 @@
             _messageLabelBottomConstraint,
             [_messageLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8],
 
-            [_threadBarView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:6],
-            [_threadBarView.widthAnchor constraintEqualToConstant:2],
+            [_threadBarView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+            [_threadBarView.widthAnchor constraintEqualToConstant:3],
             [_threadBarView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
             [_threadBarView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
         ]];
@@ -290,6 +302,10 @@
     if (enabled) {
         self.messageLabelLeadingConstraint.constant = 16.0;
     }
+}
+
+- (void)s7tv_handleWholeCellTap:(UITapGestureRecognizer *)gesture {
+    if (self.onReplyBannerTap) self.onReplyBannerTap();
 }
 
 - (void)s7tv_handleReplyBannerTap:(UITapGestureRecognizer *)gesture {

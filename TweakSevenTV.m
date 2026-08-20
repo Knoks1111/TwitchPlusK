@@ -755,7 +755,9 @@ static __weak UIView *s_activeNativeChatView = nil;
 // Écrire une réponse depuis ce panneau (poster vers Twitch) n'est PAS
 // encore implémenté — ça touche l'envoi WebSocket réel, prévu comme étape
 // séparée. Pour l'instant : consultation seule, fermeture via le bouton ✕.
-static const CGFloat kS7TVReplyThreadHeaderHeight = 45.0; // titre + séparateur, voir contraintes ci-dessous
+static const CGFloat kS7TVReplyThreadTitleHeight = 40.0;   // ligne titre "Fil" + bouton fermer
+static const CGFloat kS7TVReplyThreadSeparatorHeight = 1.0;
+static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 
 @interface S7TVReplyThreadPanel : NSObject <SevenTVChatCustomViewDelegate>
 + (instancetype)sharedPanel;
@@ -770,8 +772,17 @@ static const CGFloat kS7TVReplyThreadHeaderHeight = 45.0; // titre + séparateur
 
 @interface S7TVReplyThreadPanel ()
 @property (nonatomic, weak) UIView *containerView;
-@property (nonatomic, strong) SevenTVChatCustomView *threadChatView;
-@property (nonatomic, strong) S7TVChatMessageStore *threadStore;
+// Message racine, ÉPINGLÉ en haut, jamais scrollable — sa propre
+// SevenTVChatCustomView contient TOUJOURS exactement 0 ou 1 message, donc
+// sa table ne peut physiquement pas scroller (contentSize == bounds une
+// fois la hauteur ajustée au contenu, voir s7tv_layoutPanelContent).
+@property (nonatomic, strong) SevenTVChatCustomView *rootChatView;
+@property (nonatomic, strong) S7TVChatMessageStore *rootStore;
+@property (nonatomic, strong) NSLayoutConstraint *rootChatViewHeightConstraint;
+// Réponses du fil (racine exclue), scrollables normalement (comportement
+// UITableView natif, rien à faire de spécial).
+@property (nonatomic, strong) SevenTVChatCustomView *repliesChatView;
+@property (nonatomic, strong) S7TVChatMessageStore *repliesStore;
 @property (nonatomic, copy) NSString *currentThreadRootID;
 @end
 
@@ -794,7 +805,7 @@ static const CGFloat kS7TVReplyThreadHeaderHeight = 45.0; // titre + séparateur
     [self.containerView removeFromSuperview];
 
     UIView *container = [[UIView alloc] init];
-    container.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.97];
+    container.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0]; // opaque (pas 0.97) : évite tout effet de transparence qui laissait deviner le chat derrière
     container.layer.cornerRadius = 14;
     container.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
     container.clipsToBounds = YES;
@@ -817,40 +828,66 @@ static const CGFloat kS7TVReplyThreadHeaderHeight = 45.0; // titre + séparateur
            forControlEvents:UIControlEventTouchUpInside];
     [container addSubview:closeButton];
 
-    UIView *separator = [[UIView alloc] init];
-    separator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
-    separator.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:separator];
+    UIView *topSeparator = [[UIView alloc] init];
+    topSeparator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
+    topSeparator.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:topSeparator];
 
-    self.threadStore = [S7TVChatMessageStore new];
-    self.threadChatView = [[SevenTVChatCustomView alloc] initWithStore:self.threadStore];
-    // Comportement Twitch (voir capture PC) : à l'INTÉRIEUR du panneau Fil,
-    // aucun message n'affiche son propre bandeau "Répond à @X" — le
-    // contexte est déjà donné par le panneau lui-même. Sans ça, le message
-    // racine (1er du fil) affichait aussi son bandeau et perdait sa place
-    // de "rendu basique en entier" en haut du panneau.
-    self.threadChatView.showsReplyBanners = NO;
-    self.threadChatView.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:self.threadChatView];
+    // ── Racine épinglée (jamais scrollable) ──────────────────────────────
+    self.rootStore = [S7TVChatMessageStore new];
+    self.rootChatView = [[SevenTVChatCustomView alloc] initWithStore:self.rootStore];
+    self.rootChatView.showsReplyBanners = NO; // voir commentaire showsReplyBanners dans SevenTVChatCustomView.h
+    self.rootChatView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.rootChatView.userInteractionEnabled = NO; // épinglée = pas de scroll possible, pas la peine d'intercepter les touches
+    [container addSubview:self.rootChatView];
+
+    // Léger fond distinct pour lire "racine" comme un bloc titre séparé des
+    // réponses en dessous, sans casser le thème sombre existant.
+    self.rootChatView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.04];
+
+    UIView *midSeparator = [[UIView alloc] init];
+    midSeparator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    midSeparator.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:midSeparator];
+
+    // ── Réponses scrollables ──────────────────────────────────────────────
+    self.repliesStore = [S7TVChatMessageStore new];
+    self.repliesChatView = [[SevenTVChatCustomView alloc] initWithStore:self.repliesStore];
+    self.repliesChatView.showsReplyBanners = NO;
+    self.repliesChatView.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:self.repliesChatView];
+
+    self.rootChatViewHeightConstraint =
+        [self.rootChatView.heightAnchor constraintEqualToConstant:0];
 
     [NSLayoutConstraint activateConstraints:@[
         [title.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
-        [title.topAnchor constraintEqualToAnchor:container.topAnchor constant:12],
+        [title.centerYAnchor constraintEqualToAnchor:container.topAnchor constant:kS7TVReplyThreadTitleHeight / 2],
 
         [closeButton.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8],
         [closeButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
         [closeButton.widthAnchor constraintEqualToConstant:32],
         [closeButton.heightAnchor constraintEqualToConstant:32],
 
-        [separator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [separator.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        [separator.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:10],
-        [separator.heightAnchor constraintEqualToConstant:1],
+        [topSeparator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [topSeparator.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [topSeparator.topAnchor constraintEqualToAnchor:container.topAnchor constant:kS7TVReplyThreadTitleHeight],
+        [topSeparator.heightAnchor constraintEqualToConstant:kS7TVReplyThreadSeparatorHeight],
 
-        [self.threadChatView.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [self.threadChatView.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        [self.threadChatView.topAnchor constraintEqualToAnchor:separator.bottomAnchor],
-        [self.threadChatView.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-8],
+        [self.rootChatView.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [self.rootChatView.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [self.rootChatView.topAnchor constraintEqualToAnchor:topSeparator.bottomAnchor],
+        self.rootChatViewHeightConstraint,
+
+        [midSeparator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [midSeparator.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [midSeparator.topAnchor constraintEqualToAnchor:self.rootChatView.bottomAnchor],
+        [midSeparator.heightAnchor constraintEqualToConstant:kS7TVReplyThreadSeparatorHeight],
+
+        [self.repliesChatView.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [self.repliesChatView.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [self.repliesChatView.topAnchor constraintEqualToAnchor:midSeparator.bottomAnchor],
+        [self.repliesChatView.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-kS7TVReplyThreadBottomPadding],
     ]];
 }
 
@@ -858,13 +895,91 @@ static const CGFloat kS7TVReplyThreadHeaderHeight = 45.0; // titre + séparateur
     [self hide];
 }
 
+// Reconstruit la racine même si elle a été purgée du store principal
+// (chaîne à fort trafic, limite FIFO) : reply-parent-user-login/display-name
+// et reply-parent-msg-body sont dupliqués par Twitch sur CHAQUE réponse du
+// fil, donc toujours disponibles même sans le message d'origine en mémoire.
+// Pas d'emotes/badges dans ce cas précis (on n'a que le texte brut), mais
+// JAMAIS de racine manquante à l'écran — c'est le point que tu as signalé.
+- (S7TVChatMessage *)s7tv_resolveRootMessageForThreadRootID:(NSString *)threadRootID
+                                         anyMessageInThread:(nullable S7TVChatMessage *)anyMessage {
+    S7TVChatMessageStore *mainStore = [SevenTVManager sharedManager].chatMessageStore;
+    S7TVChatMessage *root = [mainStore messageWithID:threadRootID];
+    if (root) return root;
+    if (!anyMessage.replyParentUsername.length) return nil; // rien à reconstruire (cas quasi impossible : voir s7tv_parsePRIVMSG, replyParentUsername toujours rempli en même temps que replyThreadRootID)
+
+    S7TVChatMessage *fallback =
+        [[S7TVChatMessage alloc] initWithMessageID:threadRootID
+                                          timestamp:anyMessage.timestamp
+                                       authorUserID:@""
+                                  authorDisplayName:anyMessage.replyParentUsername
+                                            rawText:anyMessage.replyParentBodyPreview ?: @""];
+    fallback.tokens = [SevenTVChatTokenizer tokenizeText:fallback.rawText providers:@[]];
+    return fallback;
+}
+
 - (void)s7tv_reloadThreadMessages {
     if (!self.currentThreadRootID.length) return;
     S7TVChatMessageStore *mainStore = [SevenTVManager sharedManager].chatMessageStore;
     NSArray<S7TVChatMessage *> *threadMessages =
         [mainStore messagesForThreadRootID:self.currentThreadRootID];
-    [self.threadStore seedReadOnlyWithMessages:threadMessages];
-    [self.threadChatView reloadMessages];
+
+    // threadMessages inclut déjà la racine EN PREMIER si elle est encore en
+    // mémoire (voir -messagesForThreadRootID:) — on la retire d'ici pour la
+    // traiter séparément (épinglée), et on s'en sert aussi comme source pour
+    // reconstruire la racine si elle manque (n'importe quel message du fil
+    // porte les mêmes reply-parent-*).
+    NSMutableArray<S7TVChatMessage *> *replies = [threadMessages mutableCopy];
+    S7TVChatMessage *rootFromMainStore = [mainStore messageWithID:self.currentThreadRootID];
+    if (rootFromMainStore && replies.count && replies.firstObject == rootFromMainStore) {
+        [replies removeObjectAtIndex:0];
+    }
+
+    S7TVChatMessage *root =
+        [self s7tv_resolveRootMessageForThreadRootID:self.currentThreadRootID
+                                    anyMessageInThread:replies.firstObject ?: rootFromMainStore];
+
+    [self.rootStore seedReadOnlyWithMessages:root ? @[root] : @[]];
+    [self.rootChatView reloadMessages];
+    [self.repliesStore seedReadOnlyWithMessages:replies];
+    [self.repliesChatView reloadMessages];
+}
+
+// Calcule les hauteurs réelles (racine épinglée + réponses) et positionne le
+// panneau. Basé sur les bounds de la WINDOW plutôt que sur ceux de la vraie
+// vue de chat : cette dernière peut être plus grande que la zone
+// effectivement visible à l'écran (scroll, hiérarchie imbriquée), ce qui
+// causait le chevauchement constaté avec le chat au-dessus.
+- (void)s7tv_layoutPanelContentInWindow:(UIWindow *)window {
+    CGFloat width = window.bounds.size.width;
+    CGFloat maxTotalHeight = window.bounds.size.height * 0.55;
+
+    CGFloat chromeHeight = kS7TVReplyThreadTitleHeight + kS7TVReplyThreadSeparatorHeight * 2
+                          + kS7TVReplyThreadBottomPadding;
+    CGFloat maxContentHeight = MAX(maxTotalHeight - chromeHeight, 60);
+
+    // Racine : jamais coupée. On lui laisse d'abord toute la place possible
+    // pour mesurer sa vraie hauteur ; si jamais elle dépassait à elle seule
+    // maxContentHeight (message très long), on la borne quand même à
+    // maxContentHeight plutôt que de faire disparaître les réponses, mais on
+    // ne tronque JAMAIS le texte lui-même (self-sizing cell, pas de
+    // troncature) — seule la fenêtre de scroll de la table racine
+    // apparaîtrait dans ce cas extrême, ce qui reste conforme à "jamais de
+    // texte coupé".
+    self.rootChatView.frame = CGRectMake(0, 0, width, maxContentHeight);
+    CGFloat rootHeight = MIN([self.rootChatView s7tvContentHeight], maxContentHeight);
+    if (rootHeight <= 0) rootHeight = 0; // pas de racine du tout (cas extrême, cf. s7tv_resolveRootMessageForThreadRootID:)
+    self.rootChatViewHeightConstraint.constant = rootHeight;
+
+    CGFloat remainingForReplies = MAX(maxContentHeight - rootHeight, 44);
+    self.repliesChatView.frame = CGRectMake(0, 0, width, remainingForReplies);
+    CGFloat repliesContentHeight = [self.repliesChatView s7tvContentHeight];
+    CGFloat repliesHeight = MIN(MAX(repliesContentHeight, 0), remainingForReplies);
+
+    CGFloat totalHeight = chromeHeight + rootHeight + repliesHeight;
+    totalHeight = MIN(MAX(totalHeight, chromeHeight + 44), maxTotalHeight);
+
+    self.containerView.frame = CGRectMake(0, window.bounds.size.height - totalHeight, width, totalHeight);
 }
 
 - (void)showForThreadRootID:(NSString *)threadRootID {
@@ -876,22 +991,9 @@ static const CGFloat kS7TVReplyThreadHeaderHeight = 45.0; // titre + séparateur
     [self s7tv_ensureContainerInWindow:window];
     self.currentThreadRootID = threadRootID;
     [self s7tv_reloadThreadMessages];
+    [self.containerView layoutIfNeeded]; // applique les contraintes AVANT de mesurer le contenu
+    [self s7tv_layoutPanelContentInWindow:window];
 
-    CGRect hostFrameInWindow = [hostChatView convertRect:hostChatView.bounds toView:window];
-    CGFloat width     = hostFrameInWindow.size.width;
-    CGFloat maxHeight = hostFrameInWindow.size.height * 0.7;
-
-    // Même technique que le fake chat du picker (voir 7tv-picker-controler.m)
-    // : fixer la largeur d'abord pour que le contenu calcule son vrai
-    // wrapping, puis lire s7tvContentHeight plutôt qu'une hauteur fixe.
-    self.threadChatView.frame = CGRectMake(0, 0, width, maxHeight);
-    CGFloat contentHeight = [self.threadChatView s7tvContentHeight];
-    CGFloat height = MIN(MAX(contentHeight + kS7TVReplyThreadHeaderHeight + 8, 90), maxHeight);
-
-    self.containerView.frame = CGRectMake(
-        hostFrameInWindow.origin.x,
-        hostFrameInWindow.origin.y + hostFrameInWindow.size.height - height,
-        width, height);
     self.containerView.hidden = NO;
     [window bringSubviewToFront:self.containerView];
 }
@@ -903,7 +1005,9 @@ static const CGFloat kS7TVReplyThreadHeaderHeight = 45.0; // titre + séparateur
 
 - (void)refreshIfNeeded {
     if (!self.currentThreadRootID.length || self.containerView.hidden) return;
+    UIWindow *window = self.containerView.window;
     [self s7tv_reloadThreadMessages];
+    if (window) [self s7tv_layoutPanelContentInWindow:window];
 }
 
 @end

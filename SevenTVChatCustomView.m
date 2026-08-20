@@ -554,6 +554,10 @@
 }
 
 - (void)reloadMessages {
+    [self reloadMessagesWithCompletion:nil];
+}
+
+- (void)reloadMessagesWithCompletion:(void (^)(void))completion {
     NSAssert([NSThread isMainThread],
              @"reloadMessages doit être appelé depuis le main thread (touche UIKit)");
 
@@ -612,6 +616,7 @@
     __weak typeof(self) weakSelf = self;
     [self.dataSource applySnapshot:snapshot animatingDifferences:NO completion:^{
         [weakSelf s7tv_scrollToBottomIfNeeded:wasNearBottom];
+        if (completion) completion();
     }];
 }
 

@@ -763,7 +763,13 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 + (instancetype)sharedPanel;
 // Reçoit directement le tap depuis la vue de chat réelle — voir l'assignation
 // de .delegate sur customView dans s7tv_applyChatCustomTest ci-dessus.
-- (void)showForThreadRootID:(NSString *)threadRootID;
+// tappedMessageID : garde en mémoire le message précis sur lequel on a tapé
+// (voir pendingReplyTargetMessageID) — c'est LUI la cible de la réponse,
+// pas la racine du fil (les deux sont différents dès que le fil a plus d'un
+// message). Pas encore utilisé pour pré-remplir un champ de saisie (input
+// pas encore implémenté), mais déjà stocké pour ne pas avoir à refaire cette
+// plomberie plus tard.
+- (void)showForThreadRootID:(NSString *)threadRootID tappedMessageID:(NSString *)tappedMessageID;
 - (void)hide;
 // Appelé après chaque reload du chat principal (voir
 // s7tv_reloadActiveChatCustomView) — no-op si le panneau est fermé.
@@ -790,6 +796,10 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 @property (nonatomic, strong) SevenTVChatCustomView *repliesChatView;
 @property (nonatomic, strong) S7TVChatMessageStore *repliesStore;
 @property (nonatomic, copy) NSString *currentThreadRootID;
+// Le message précis sur lequel l'utilisateur a tapé pour ouvrir ce fil —
+// deviendra la cible pré-remplie de la réponse une fois l'input implémenté.
+// Distinct de currentThreadRootID (voir showForThreadRootID:tappedMessageID:).
+@property (nonatomic, copy) NSString *pendingReplyTargetMessageID;
 @end
 
 @implementation S7TVReplyThreadPanel
@@ -802,8 +812,9 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 }
 
 - (void)chatCustomView:(SevenTVChatCustomView *)view
-    didTapReplyBannerForThreadRootID:(NSString *)threadRootID {
-    [self showForThreadRootID:threadRootID];
+    didTapReplyBannerForThreadRootID:(NSString *)threadRootID
+                       tappedMessageID:(NSString *)tappedMessageID {
+    [self showForThreadRootID:threadRootID tappedMessageID:tappedMessageID];
 }
 
 - (void)s7tv_ensureContainerInWindow:(UIWindow *)window {
@@ -994,7 +1005,7 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
         inputTopY = inputFrameInWindow.origin.y;
     }
 
-    CGFloat maxTotalHeight = inputTopY * 0.55;
+    CGFloat maxTotalHeight = inputTopY * 0.25;
 
     CGFloat chromeHeight = kS7TVReplyThreadTitleHeight + kS7TVReplyThreadSeparatorHeight * 2
                           + kS7TVReplyThreadBottomPadding;
@@ -1024,7 +1035,7 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     self.containerView.frame = CGRectMake(0, inputTopY - totalHeight, width, totalHeight);
 }
 
-- (void)showForThreadRootID:(NSString *)threadRootID {
+- (void)showForThreadRootID:(NSString *)threadRootID tappedMessageID:(NSString *)tappedMessageID {
     if (!threadRootID.length) return;
     UIView *hostChatView = s_activeChatCustomView;
     UIWindow *window = hostChatView.window;
@@ -1033,6 +1044,7 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     [self s7tv_ensureContainerInWindow:window];
     self.titleLabel.text = L(@"chat_reply_thread_panel_title"); // relu à chaque ouverture, voir commentaire sur titleLabel
     self.currentThreadRootID = threadRootID;
+    self.pendingReplyTargetMessageID = tappedMessageID;
     [self s7tv_reloadThreadMessages];
     [self.containerView layoutIfNeeded]; // applique les contraintes AVANT de mesurer le contenu
     [self s7tv_layoutPanelContentInWindow:window];
@@ -1044,6 +1056,7 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 - (void)hide {
     self.containerView.hidden = YES;
     self.currentThreadRootID = nil;
+    self.pendingReplyTargetMessageID = nil;
 }
 
 - (void)refreshIfNeeded {

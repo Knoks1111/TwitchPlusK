@@ -946,13 +946,22 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 }
 
 // Calcule les hauteurs réelles (racine épinglée + réponses) et positionne le
-// panneau. Basé sur les bounds de la WINDOW plutôt que sur ceux de la vraie
-// vue de chat : cette dernière peut être plus grande que la zone
-// effectivement visible à l'écran (scroll, hiérarchie imbriquée), ce qui
-// causait le chevauchement constaté avec le chat au-dessus.
+// panneau juste au-dessus de la VRAIE barre de saisie Twitch
+// (s7tv_findChatInputView, déjà utilisée ailleurs dans ce fichier — même
+// technique que le fake chat du picker dans 7tv-picker-controler.m).
+// Erreur précédente : ancrer sur window.bounds.size.height (bas brut de
+// l'écran) plaçait le panneau SOUS la barre de saisie au lieu d'au-dessus.
 - (void)s7tv_layoutPanelContentInWindow:(UIWindow *)window {
     CGFloat width = window.bounds.size.width;
-    CGFloat maxTotalHeight = window.bounds.size.height * 0.55;
+
+    UIView *inputView = s7tv_findChatInputView();
+    CGFloat inputTopY = window.bounds.size.height; // repli si la barre de saisie est introuvable (cas extrême)
+    if (inputView && inputView.window == window) {
+        CGRect inputFrameInWindow = [inputView convertRect:inputView.bounds toView:window];
+        inputTopY = inputFrameInWindow.origin.y;
+    }
+
+    CGFloat maxTotalHeight = inputTopY * 0.55;
 
     CGFloat chromeHeight = kS7TVReplyThreadTitleHeight + kS7TVReplyThreadSeparatorHeight * 2
                           + kS7TVReplyThreadBottomPadding;
@@ -979,7 +988,7 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     CGFloat totalHeight = chromeHeight + rootHeight + repliesHeight;
     totalHeight = MIN(MAX(totalHeight, chromeHeight + 44), maxTotalHeight);
 
-    self.containerView.frame = CGRectMake(0, window.bounds.size.height - totalHeight, width, totalHeight);
+    self.containerView.frame = CGRectMake(0, inputTopY - totalHeight, width, totalHeight);
 }
 
 - (void)showForThreadRootID:(NSString *)threadRootID {

@@ -755,7 +755,7 @@ static __weak UIView *s_activeNativeChatView = nil;
 // Écrire une réponse depuis ce panneau (poster vers Twitch) n'est PAS
 // encore implémenté — ça touche l'envoi WebSocket réel, prévu comme étape
 // séparée. Pour l'instant : consultation seule, fermeture via le bouton ✕.
-static const CGFloat kS7TVReplyThreadTitleHeight = 40.0;   // ligne titre "Fil" + bouton fermer
+static const CGFloat kS7TVReplyThreadTitleHeight = 26.0;   // ligne titre "Fil" + bouton fermer — resserré pour mobile
 static const CGFloat kS7TVReplyThreadSeparatorHeight = 1.0;
 static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 
@@ -815,13 +815,16 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 
     UILabel *title = [[UILabel alloc] init];
     title.text = L(@"chat_reply_thread_panel_title");
-    title.font = [UIFont boldSystemFontOfSize:14];
-    title.textColor = [UIColor whiteColor];
+    title.font = [UIFont boldSystemFontOfSize:12];
+    title.textColor = [UIColor colorWithWhite:1.0 alpha:0.85];
     title.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:title];
 
     UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [closeButton setImage:[UIImage systemImageNamed:@"xmark"] forState:UIControlStateNormal];
+    UIImageSymbolConfiguration *closeIconConfig =
+        [UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightSemibold];
+    [closeButton setImage:[UIImage systemImageNamed:@"xmark" withConfiguration:closeIconConfig]
+                  forState:UIControlStateNormal];
     closeButton.tintColor = [UIColor colorWithWhite:1.0 alpha:0.6];
     closeButton.translatesAutoresizingMaskIntoConstraints = NO;
     [closeButton addTarget:self action:@selector(s7tv_closeTapped)
@@ -854,6 +857,10 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     self.repliesStore = [S7TVChatMessageStore new];
     self.repliesChatView = [[SevenTVChatCustomView alloc] initWithStore:self.repliesStore];
     self.repliesChatView.showsReplyBanners = NO;
+    // Décalage + barre grise continue à gauche pour bien distinguer chaque
+    // réponse de la racine épinglée au-dessus (fond distinct, voir
+    // rootChatView.backgroundColor) — demande explicite.
+    self.repliesChatView.usesThreadReplyIndent = YES;
     self.repliesChatView.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:self.repliesChatView];
 
@@ -861,13 +868,13 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
         [self.rootChatView.heightAnchor constraintEqualToConstant:0];
 
     [NSLayoutConstraint activateConstraints:@[
-        [title.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [title.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:12],
         [title.centerYAnchor constraintEqualToAnchor:container.topAnchor constant:kS7TVReplyThreadTitleHeight / 2],
 
-        [closeButton.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8],
+        [closeButton.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-6],
         [closeButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
-        [closeButton.widthAnchor constraintEqualToConstant:32],
-        [closeButton.heightAnchor constraintEqualToConstant:32],
+        [closeButton.widthAnchor constraintEqualToConstant:26],
+        [closeButton.heightAnchor constraintEqualToConstant:26],
 
         [topSeparator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
         [topSeparator.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],

@@ -44,6 +44,15 @@ NS_ASSUME_NONNULL_BEGIN
 // principal, où il reste indispensable).
 @property (nonatomic, assign) BOOL showsReplyBanners;
 
+// NO par défaut (chat principal). YES uniquement pour la sous-vue
+// "réponses" du panneau Fil (voir S7TVReplyThreadPanel, TweakSevenTV.m) :
+// décale chaque message vers la droite avec une barre grise verticale
+// continue à gauche, pour les distinguer visuellement du message racine
+// épinglé au-dessus (rendu par une AUTRE instance de cette classe, sans ce
+// flag). N'a de sens que pour une vue qui n'affiche QUE des réponses —
+// jamais utilisé sur le chat principal.
+@property (nonatomic, assign) BOOL usesThreadReplyIndent;
+
 - (instancetype)initWithStore:(S7TVChatMessageStore *)store;
 
 // Recharge l'affichage depuis le store. Phase 1c fait un reload complet à

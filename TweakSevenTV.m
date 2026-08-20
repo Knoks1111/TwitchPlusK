@@ -332,6 +332,24 @@ static UIView *s7tv_findChatInputView(void) {
 // binding SwiftUI côté Twitch, paste: déclenche le pipeline complet.
 // No-op si le texte commence déjà par cette mention (évite d'empiler les @
 // si on rouvre le même fil plusieurs fois de suite).
+// Insère "@pseudo " au tout DÉBUT du texte SANS ouvrir le clavier — pas de
+// becomeFirstResponder (contrairement au picker d'emotes, où le textView
+// était déjà premier répondant puisque le clavier était déjà ouvert à ce
+// moment-là). Ici on tape la flèche depuis le panneau Fil : le clavier est
+// fermé, et le faire apparaître via becomeFirstResponder posait 2 problèmes
+// distincts, tous deux corrigés en le retirant :
+//   1. Le panneau Fil ne se repositionne pas quand le clavier apparaît (pas
+//      d'observer sur les notifications clavier) → il finissait recouvert.
+//   2. becomeFirstResponder établit la session clavier de façon pas garantie
+//      synchrone sur ce bridge SwiftUI — enchaîner selectedRange/paste juste
+//      après pouvait s'exécuter avant que la session soit prête → no-op
+//      silencieux (rien ne s'écrivait).
+//
+// Mutation directe de .text (plus de paste:/pasteboard, plus fiable et plus
+// simple) + notification manuelle de changement : c'est CETTE notification
+// (pas paste: en tant que tel) qui prévient le binding SwiftUI côté Twitch —
+// déjà présente comme étape obligatoire après insertText: dans la version
+// précédente, donc le mécanisme réellement nécessaire, indépendant du focus.
 static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
     if (!username.length) return;
     UIView *inputRoot = s7tv_findChatInputView();
@@ -339,15 +357,12 @@ static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
 
     UITextView  *textView  = nil;
     UITextField *textField = nil;
-    id<UIKeyInput> keyInput = nil;
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:inputRoot];
     while (queue.count > 0) {
         UIView *v = queue.firstObject; [queue removeObjectAtIndex:0];
         [queue addObjectsFromArray:v.subviews];
         if (!textView  && [v isKindOfClass:[UITextView class]])  textView  = (UITextView *)v;
         if (!textField && [v isKindOfClass:[UITextField class]]) textField = (UITextField *)v;
-        if (!keyInput  && [v conformsToProtocol:@protocol(UIKeyInput)]
-                       && ![v isKindOfClass:[UIButton class]])   keyInput  = (id<UIKeyInput>)v;
     }
 
     NSString *mention = [NSString stringWithFormat:@"@%@ ", username];
@@ -356,57 +371,38 @@ static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
         NSString *current = textView.text ?: @"";
         if ([current hasPrefix:mention]) return; // déjà présent
 
-        [textView becomeFirstResponder];
-        textView.selectedRange = NSMakeRange(0, 0); // tout début, pas la fin comme pour les emotes
+        textView.text = [mention stringByAppendingString:current];
+        textView.selectedRange = NSMakeRange(mention.length, 0); // curseur juste après la mention
 
-        UIPasteboard *pb = [UIPasteboard generalPasteboard];
-        NSString *savedString = pb.string;
-        pb.string = mention;
-
-        if ([textView respondsToSelector:@selector(paste:)]) {
-            [textView paste:nil];
-        } else {
-            [textView insertText:mention];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:UITextViewTextDidChangeNotification
+                          object:textView];
+        if ([textView.delegate respondsToSelector:@selector(textViewDidChange:)]) {
+            [textView.delegate textViewDidChange:textView];
         }
-
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            pb.string = savedString ?: @"";
-        });
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:UITextViewTextDidChangeNotification
-                              object:textView];
-            if ([textView.delegate respondsToSelector:@selector(textViewDidChange:)]) {
-                [textView.delegate textViewDidChange:textView];
-            }
-        });
     } else if (textField) {
         NSString *current = textField.text ?: @"";
         if ([current hasPrefix:mention]) return;
-        [textField becomeFirstResponder];
-        textField.selectedTextRange = [textField textRangeFromPosition:textField.beginningOfDocument
-                                                              toPosition:textField.beginningOfDocument];
-        [(id<UIKeyInput>)textField insertText:mention];
-    } else if (keyInput) {
-        // Pas de garantie de positionnement en tout début ici (pas d'API
-        // UIKeyInput générique pour ça) — best-effort, cas rare en pratique.
-        [(UIView *)keyInput becomeFirstResponder];
-        [(id<UIKeyInput>)keyInput insertText:mention];
+
+        textField.text = [mention stringByAppendingString:current];
+
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:UITextFieldTextDidChangeNotification
+                          object:textField];
+        if ([textField.delegate respondsToSelector:@selector(textFieldDidChangeSelection:)]) {
+            [textField.delegate textFieldDidChangeSelection:textField];
+        }
     }
 }
 
-// Symétrique de s7tv_insertMentionAtStartOfChatInput ci-dessus — retire "@pseudo "
-// du DÉBUT du texte (utilisé par le bouton "Annuler" du panneau Fil, voir
+// Symétrique de s7tv_insertMentionAtStartOfChatInput ci-dessus — retire
+// "@pseudo " du DÉBUT du texte (bouton "Annuler" du panneau Fil, voir
 // S7TVReplyThreadPanel.s7tv_cancelReplyTargetTapped). No-op si le texte ne
 // commence PAS (ou plus) par cette mention précise (l'utilisateur a pu
 // éditer le texte entre-temps — on ne touche à rien dans ce cas plutôt que
-// de risquer de couper un texte qu'il a écrit lui-même).
-//
-// deleteBackward (UIKeyInput) sur une sélection non-vide supprime toute la
-// sélection en un appel — plus fiable qu'un insertText:@"" (jamais testé
-// avec succès sur ce bridge SwiftUI, voir commentaire sur paste: plus haut).
+// de risquer de couper un texte qu'il a écrit lui-même). Même principe que
+// l'insertion : mutation directe + notification manuelle, pas de
+// becomeFirstResponder.
 static void s7tv_removeMentionFromStartOfChatInput(NSString *username) {
     if (!username.length) return;
     UIView *inputRoot = s7tv_findChatInputView();
@@ -428,28 +424,26 @@ static void s7tv_removeMentionFromStartOfChatInput(NSString *username) {
         NSString *current = textView.text ?: @"";
         if (![current hasPrefix:mention]) return;
 
-        [textView becomeFirstResponder];
-        textView.selectedRange = NSMakeRange(0, mention.length);
-        [textView deleteBackward];
+        textView.text = [current substringFromIndex:mention.length];
+        textView.selectedRange = NSMakeRange(0, 0);
 
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:UITextViewTextDidChangeNotification
-                              object:textView];
-            if ([textView.delegate respondsToSelector:@selector(textViewDidChange:)]) {
-                [textView.delegate textViewDidChange:textView];
-            }
-        });
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:UITextViewTextDidChangeNotification
+                          object:textView];
+        if ([textView.delegate respondsToSelector:@selector(textViewDidChange:)]) {
+            [textView.delegate textViewDidChange:textView];
+        }
     } else if (textField) {
         NSString *current = textField.text ?: @"";
         if (![current hasPrefix:mention]) return;
 
-        [textField becomeFirstResponder];
-        UITextPosition *start = textField.beginningOfDocument;
-        UITextPosition *end = [textField positionFromPosition:start offset:mention.length];
-        if (end) {
-            textField.selectedTextRange = [textField textRangeFromPosition:start toPosition:end];
-            [(id<UIKeyInput>)textField deleteBackward];
+        textField.text = [current substringFromIndex:mention.length];
+
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:UITextFieldTextDidChangeNotification
+                          object:textField];
+        if ([textField.delegate respondsToSelector:@selector(textFieldDidChangeSelection:)]) {
+            [textField.delegate textFieldDidChangeSelection:textField];
         }
     }
 }
@@ -1180,8 +1174,20 @@ static const CGFloat kS7TVReplyTargetBarHeight = 34.0; // barre "Répondre à @X
     return fallback;
 }
 
-- (void)s7tv_reloadThreadMessages {
-    if (!self.currentThreadRootID.length) return;
+// completion : appelé une fois que rootChatView ET repliesChatView ont
+// RÉELLEMENT appliqué leur contenu (pas juste "reloadMessages a été
+// appelé") — les deux passent par reloadMessagesWithCompletion:, dont le
+// completion ne se déclenche qu'après que le diffable data source ait fini
+// d'appliquer sa snapshot (asynchrone même sans animation, voir
+// SevenTVChatCustomView.m). Mesurer le contenu (s7tvContentHeight) avant
+// que ce completion soit passé lit une hauteur pas encore à jour — c'était
+// la cause du clignotement à l'ouverture (panneau dimensionné sur un
+// contenu vide, corrigé seulement au refresh suivant).
+- (void)s7tv_reloadThreadMessagesWithCompletion:(void (^)(void))completion {
+    if (!self.currentThreadRootID.length) {
+        if (completion) completion();
+        return;
+    }
     S7TVChatMessageStore *mainStore = [SevenTVManager sharedManager].chatMessageStore;
     NSArray<S7TVChatMessage *> *threadMessages =
         [mainStore messagesForThreadRootID:self.currentThreadRootID];
@@ -1202,9 +1208,31 @@ static const CGFloat kS7TVReplyTargetBarHeight = 34.0; // barre "Répondre à @X
                                     anyMessageInThread:replies.firstObject ?: rootFromMainStore];
 
     [self.rootStore seedReadOnlyWithMessages:root ? @[root] : @[]];
-    [self.rootChatView reloadMessages];
     [self.repliesStore seedReadOnlyWithMessages:replies];
-    [self.repliesChatView reloadMessages];
+
+    // Les deux reload sont indépendants (2 tables séparées) — on attend que
+    // les DEUX aient fini avant d'appeler completion, sinon on mesurerait la
+    // racine correctement mais les réponses pas encore, ou l'inverse.
+    __block BOOL rootDone = NO;
+    __block BOOL repliesDone = NO;
+    void (^maybeFinish)(void) = ^{
+        if (rootDone && repliesDone && completion) completion();
+    };
+
+    [self.rootChatView reloadMessagesWithCompletion:^{
+        rootDone = YES;
+        maybeFinish();
+    }];
+    [self.repliesChatView reloadMessagesWithCompletion:^{
+        repliesDone = YES;
+        maybeFinish();
+    }];
+}
+
+// Conservé pour refreshIfNeeded (pas besoin d'attendre la complétion là où
+// on ne redimensionne pas juste après — voir plus bas).
+- (void)s7tv_reloadThreadMessages {
+    [self s7tv_reloadThreadMessagesWithCompletion:nil];
 }
 
 // Calcule les hauteurs réelles (racine épinglée + réponses) et positionne le
@@ -1280,12 +1308,21 @@ static const CGFloat kS7TVReplyTargetBarHeight = 34.0; // barre "Répondre à @X
     self.replyTargetBarView.hidden = YES;
     self.replyTargetBarHeightConstraint.constant = 0;
 
-    [self s7tv_reloadThreadMessages];
-    [self.containerView layoutIfNeeded]; // applique les contraintes AVANT de mesurer le contenu
-    [self s7tv_layoutPanelContentInWindow:window];
+    // Le contenu doit être RÉELLEMENT appliqué (pas juste "reload appelé")
+    // avant de mesurer sa hauteur — sinon le panneau se dimensionne sur du
+    // vide et se corrige seulement au refresh suivant (clignotement
+    // visible à l'ouverture, corrigé ici).
+    __weak typeof(self) weakSelf = self;
+    [self s7tv_reloadThreadMessagesWithCompletion:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.containerView.window != window) return; // fermé/changé entre-temps
 
-    self.containerView.hidden = NO;
-    [window bringSubviewToFront:self.containerView];
+        [strongSelf.containerView layoutIfNeeded]; // applique les contraintes AVANT de mesurer le contenu
+        [strongSelf s7tv_layoutPanelContentInWindow:window];
+
+        strongSelf.containerView.hidden = NO;
+        [window bringSubviewToFront:strongSelf.containerView];
+    }];
 }
 
 // Tap sur le bouton flèche d'UN message précis (racine ou réponse) — voir
@@ -1341,8 +1378,12 @@ static const CGFloat kS7TVReplyTargetBarHeight = 34.0; // barre "Répondre à @X
 - (void)refreshIfNeeded {
     if (!self.currentThreadRootID.length || self.containerView.hidden) return;
     UIWindow *window = self.containerView.window;
-    [self s7tv_reloadThreadMessages];
-    if (window) [self s7tv_layoutPanelContentInWindow:window];
+    __weak typeof(self) weakSelf = self;
+    [self s7tv_reloadThreadMessagesWithCompletion:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || !window || strongSelf.containerView.hidden) return;
+        [strongSelf s7tv_layoutPanelContentInWindow:window];
+    }];
 }
 
 @end

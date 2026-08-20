@@ -82,6 +82,14 @@ NS_ASSUME_NONNULL_BEGIN
 // justifiera, pas avant d'avoir un rendu qui marche.
 - (void)reloadMessages;
 
+// Identique, mais appelle completion une fois le contenu RÉELLEMENT appliqué
+// à la table (après le applySnapshot: interne, qui est asynchrone même avec
+// animatingDifferences:NO). À utiliser quand on doit mesurer le contenu
+// juste après (s7tvContentHeight) — mesurer immédiatement après
+// -reloadMessages simple lit une hauteur pas encore à jour. Voir
+// S7TVReplyThreadPanel dans TweakSevenTV.m.
+- (void)reloadMessagesWithCompletion:(void (^ _Nullable)(void))completion;
+
 // Hauteur réelle du contenu (tableView.contentSize.height, cellules
 // self-sizing incluses). Force un layout complet (largeur → recalcul des
 // cellules si besoin, cf. -layoutSubviews) avant de lire la valeur — donc

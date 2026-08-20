@@ -772,6 +772,12 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 
 @interface S7TVReplyThreadPanel ()
 @property (nonatomic, weak) UIView *containerView;
+// Référence gardée pour rafraîchir le texte à chaque ouverture (voir
+// s7tv_closeTapped... non, voir showForThreadRootID:) — sans ça, le titre
+// restait figé dans la langue active AU MOMENT de la création du panneau
+// (une seule fois, panneau réutilisé ensuite), donc un changement de langue
+// en cours de session ne se voyait qu'après un restart de l'app.
+@property (nonatomic, weak) UILabel *titleLabel;
 // Message racine, ÉPINGLÉ en haut, jamais scrollable — sa propre
 // SevenTVChatCustomView contient TOUJOURS exactement 0 ou 1 message, donc
 // sa table ne peut physiquement pas scroller (contentSize == bounds une
@@ -815,15 +821,21 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 
     UIImageView *titleIcon = [[UIImageView alloc] init];
     UIImageSymbolConfiguration *titleIconConfig =
-        [UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
-    titleIcon.image = [UIImage systemImageNamed:@"bubble.left.and.bubble.right"
+        [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightMedium];
+    // bubble.left.and.bubble.right est un symbole large (pas carré) — forcé
+    // dans un cadre carré en mode étirement par défaut, ça l'écrasait.
+    // bubble.left.fill est quasi carré, aspectFit garde ses proportions
+    // dans tous les cas même si la police système change la forme exacte.
+    titleIcon.image = [UIImage systemImageNamed:@"bubble.left.fill"
                              withConfiguration:titleIconConfig];
+    titleIcon.contentMode = UIViewContentModeScaleAspectFit;
     titleIcon.tintColor = [UIColor colorWithWhite:1.0 alpha:0.7];
     titleIcon.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:titleIcon];
 
     UILabel *title = [[UILabel alloc] init];
     title.text = L(@"chat_reply_thread_panel_title");
+    self.titleLabel = title;
     title.font = [UIFont boldSystemFontOfSize:12];
     title.textColor = [UIColor colorWithWhite:1.0 alpha:0.85];
     title.translatesAutoresizingMaskIntoConstraints = NO;
@@ -879,8 +891,8 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     [NSLayoutConstraint activateConstraints:@[
         [titleIcon.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:12],
         [titleIcon.centerYAnchor constraintEqualToAnchor:container.topAnchor constant:kS7TVReplyThreadTitleHeight / 2],
-        [titleIcon.widthAnchor constraintEqualToConstant:14],
-        [titleIcon.heightAnchor constraintEqualToConstant:14],
+        [titleIcon.widthAnchor constraintEqualToConstant:15],
+        [titleIcon.heightAnchor constraintEqualToConstant:15],
 
         [title.leadingAnchor constraintEqualToAnchor:titleIcon.trailingAnchor constant:6],
         [title.centerYAnchor constraintEqualToAnchor:container.topAnchor constant:kS7TVReplyThreadTitleHeight / 2],
@@ -1019,6 +1031,7 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     if (!hostChatView || !window) return;
 
     [self s7tv_ensureContainerInWindow:window];
+    self.titleLabel.text = L(@"chat_reply_thread_panel_title"); // relu à chaque ouverture, voir commentaire sur titleLabel
     self.currentThreadRootID = threadRootID;
     [self s7tv_reloadThreadMessages];
     [self.containerView layoutIfNeeded]; // applique les contraintes AVANT de mesurer le contenu

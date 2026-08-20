@@ -254,7 +254,10 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"chat_reply_banner_format":        @[@"Répond à @%@ : %@", @"Replying to @%@: %@"],
         @"chat_reply_thread_panel_title":   @[@"Fil", @"Thread"],
         // %@ = pseudo de la cible sélectionnée (bouton flèche sur un message)
-        @"chat_reply_target_bar_format":    @[@"Répondre à @%@", @"Reply to @%@"],
+        // Préfixe seul — @pseudo et le séparateur sont ajoutés en gras via
+        // NSAttributedString côté code (voir s7tv_selectReplyTarget:username:
+        // dans TweakSevenTV.m), pas via ce format string.
+        @"chat_reply_target_bar_prefix":    @[@"Réponse à ", @"Reply to "],
         @"chat_reply_cancel_button":        @[@"Annuler", @"Cancel"],
         // Petit badge en haut à droite d'un message qui cite le viewer
         // connecté (voir S7TVChatCustomView.m,

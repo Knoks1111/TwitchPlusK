@@ -353,7 +353,10 @@ static UIView *s7tv_findChatInputView(void) {
 static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
     if (!username.length) return;
     UIView *inputRoot = s7tv_findChatInputView();
-    if (!inputRoot) return;
+    if (!inputRoot) {
+        [[SevenTVManager sharedManager] log:@"[ChatCustom] ⚠️ mention: ChatInputView introuvable"];
+        return;
+    }
 
     UITextView  *textView  = nil;
     UITextField *textField = nil;
@@ -365,14 +368,34 @@ static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
         if (!textField && [v isKindOfClass:[UITextField class]]) textField = (UITextField *)v;
     }
 
+    [[SevenTVManager sharedManager] log:
+        [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: textView=%@ (class=%@) textField=%@",
+            textView ? @"trouvé" : @"nil",
+            NSStringFromClass([textView class]) ?: @"—",
+            textField ? @"trouvé" : @"nil"]];
+
     NSString *mention = [NSString stringWithFormat:@"@%@ ", username];
 
     if (textView) {
         NSString *current = textView.text ?: @"";
-        if ([current hasPrefix:mention]) return; // déjà présent
+        [[SevenTVManager sharedManager] log:
+            [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: texte AVANT = %@ | delegate=%@ (class=%@) répond à textViewDidChange:=%@",
+                current.length ? current : @"(vide)",
+                textView.delegate ? @"présent" : @"nil",
+                NSStringFromClass([textView.delegate class]) ?: @"—",
+                [textView.delegate respondsToSelector:@selector(textViewDidChange:)] ? @"OUI" : @"NON"]];
+
+        if ([current hasPrefix:mention]) {
+            [[SevenTVManager sharedManager] log:@"[ChatCustom] 🔍 mention: déjà présente, no-op"];
+            return;
+        }
 
         textView.text = [mention stringByAppendingString:current];
         textView.selectedRange = NSMakeRange(mention.length, 0); // curseur juste après la mention
+
+        [[SevenTVManager sharedManager] log:
+            [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: texte APRÈS assignation .text = %@",
+                textView.text.length ? textView.text : @"(vide — l'assignation elle-même n'a rien fait)"]];
 
         [[NSNotificationCenter defaultCenter]
             postNotificationName:UITextViewTextDidChangeNotification
@@ -380,6 +403,10 @@ static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
         if ([textView.delegate respondsToSelector:@selector(textViewDidChange:)]) {
             [textView.delegate textViewDidChange:textView];
         }
+
+        [[SevenTVManager sharedManager] log:
+            [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: texte APRÈS notification+delegate = %@",
+                textView.text.length ? textView.text : @"(vide)"]];
     } else if (textField) {
         NSString *current = textField.text ?: @"";
         if ([current hasPrefix:mention]) return;
@@ -392,6 +419,8 @@ static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
         if ([textField.delegate respondsToSelector:@selector(textFieldDidChangeSelection:)]) {
             [textField.delegate textFieldDidChangeSelection:textField];
         }
+    } else {
+        [[SevenTVManager sharedManager] log:@"[ChatCustom] ⚠️ mention: ni UITextView ni UITextField trouvé dans ChatInputView"];
     }
 }
 
@@ -888,6 +917,30 @@ static const CGFloat kS7TVReplyThreadSeparatorHeight = 1.0;
 static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 static const CGFloat kS7TVReplyTargetBarHeight = 34.0; // barre "Répondre à @X · Annuler", masquée (0) tant qu'aucune cible n'est choisie
 
+// Construit "Réponse à @pseudo   •   " avec le pseudo ET le séparateur en
+// gras, le reste normal — "annuler" reste un UIButton séparé juste après
+// (voir replyBar dans s7tv_ensureContainerInWindow:), pas inclus ici.
+static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
+    NSDictionary *regularAttrs = @{
+        NSFontAttributeName: [UIFont systemFontOfSize:12],
+        NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:0.6],
+    };
+    NSDictionary *boldAttrs = @{
+        NSFontAttributeName: [UIFont boldSystemFontOfSize:12],
+        NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:0.85],
+    };
+
+    NSMutableAttributedString *result =
+        [[NSMutableAttributedString alloc] initWithString:L(@"chat_reply_target_bar_prefix")
+                                                 attributes:regularAttrs];
+    [result appendAttributedString:
+        [[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"@%@", username]
+                                          attributes:boldAttrs]];
+    [result appendAttributedString:
+        [[NSAttributedString alloc] initWithString:@"   •   " attributes:boldAttrs]];
+    return result;
+}
+
 @interface S7TVReplyThreadPanel : NSObject <SevenTVChatCustomViewDelegate>
 + (instancetype)sharedPanel;
 // Reçoit directement le tap depuis la vue de chat réelle — voir l'assignation
@@ -1335,7 +1388,7 @@ static const CGFloat kS7TVReplyTargetBarHeight = 34.0; // barre "Répondre à @X
 
     self.selectedReplyTargetMessageID = messageID;
     self.selectedReplyTargetUsername = username;
-    self.replyTargetBarLabel.text = [NSString stringWithFormat:L(@"chat_reply_target_bar_format"), username];
+    self.replyTargetBarLabel.attributedText = s7tv_buildReplyTargetBarText(username);
     self.replyTargetBarView.hidden = NO;
     self.replyTargetBarHeightConstraint.constant = kS7TVReplyTargetBarHeight;
 

@@ -54,6 +54,15 @@
 // plus bas) : la cellule ne connaît pas SevenTVChatCustomView, juste ce
 // qu'on lui donne au moment de la configuration (voir s7tv_cellForMessageID:).
 @property (nonatomic, copy, nullable) void (^onReplyBannerTap)(void);
+// ── Barre "fil de discussion" (panneau Fil, réponses uniquement) ───────
+// Barre grise verticale pleine hauteur de cellule (contentView.top →
+// contentView.bottom, sans marge) : comme les cellules se touchent sans
+// espacement (separatorStyle none, pas de spacing inter-cellule), les
+// barres de cellules consécutives se prolongent visuellement en une seule
+// ligne continue — effet "fil" façon Reddit/Discord, sans rien de plus à
+// faire côté layout. Masquée par défaut (chat principal) — voir
+// SevenTVChatCustomView.usesThreadReplyIndent.
+@property (nonatomic, strong) UIView *threadBarView;
 @end
 
 @implementation S7TVChatCustomCell
@@ -109,6 +118,12 @@
             [[UITapGestureRecognizer alloc] initWithTarget:self
                                                       action:@selector(s7tv_handleReplyBannerTap:)]];
         [self.contentView addSubview:_replyBannerLabel];
+
+        _threadBarView = [[UIView alloc] init];
+        _threadBarView.translatesAutoresizingMaskIntoConstraints = NO;
+        _threadBarView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.22];
+        _threadBarView.hidden = YES;
+        [self.contentView addSubview:_threadBarView];
 
         _systemAccentBarWidthConstraint =
             [_systemAccentBar.widthAnchor constraintEqualToConstant:0];
@@ -173,6 +188,11 @@
             _messageLabelTopConstraint,
             _messageLabelBottomConstraint,
             [_messageLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8],
+
+            [_threadBarView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:6],
+            [_threadBarView.widthAnchor constraintEqualToConstant:2],
+            [_threadBarView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+            [_threadBarView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
         ]];
     }
     return self;
@@ -259,6 +279,19 @@
     self.messageLabelTopToBannerConstraint.active = isReply;
 }
 
+// enabled : décale le contenu vers la droite (16 = 8 marge de base + 8 pour
+// laisser respirer la barre) et affiche la barre grise continue. Appelé
+// APRÈS s7tv_configureSystemAccentWithColor:... (qui pose la valeur de base
+// 8/31 selon isSystem) — écrase volontairement cette valeur plutôt que de
+// l'additionner : dans le panneau Fil, les réponses sont quasi toujours des
+// messages normaux, ce cas simplifié suffit.
+- (void)s7tv_setThreadIndentEnabled:(BOOL)enabled {
+    self.threadBarView.hidden = !enabled;
+    if (enabled) {
+        self.messageLabelLeadingConstraint.constant = 16.0;
+    }
+}
+
 - (void)s7tv_handleReplyBannerTap:(UITapGestureRecognizer *)gesture {
     if (self.onReplyBannerTap) self.onReplyBannerTap();
 }
@@ -322,6 +355,7 @@
         _cachedContentWidth = 0;
         _isPinnedToBottom = YES;
         _showsReplyBanners = YES;
+        _usesThreadReplyIndent = NO;
 
         _tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
         _tableView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -628,6 +662,8 @@
             [strongSelf.delegate chatCustomView:strongSelf didTapReplyBannerForThreadRootID:threadRootID];
         }
     } : nil;
+
+    [cell s7tv_setThreadIndentEnabled:self.usesThreadReplyIndent];
 
     if (animatedEmotes.count > 0) {
         NSMutableSet<NSString *> *animationKeys = [NSMutableSet setWithCapacity:animatedEmotes.count];

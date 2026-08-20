@@ -20,17 +20,23 @@ NS_ASSUME_NONNULL_BEGIN
 @class SevenTVChatCustomView;
 
 // Notifie l'hôte (le vrai chat, PAS ce composant) quand l'utilisateur tape
-// sur le bandeau "Répond à @X" d'un message. Cette vue ne présente jamais
-// elle-même le panneau "Fil" — même principe que le panneau des
-// tailles/fake chat du picker, géré par son controller hôte plutôt que par
-// le composant enfant.
+// sur un message qui répond à quelqu'un (bandeau OU message lui-même — voir
+// s7tv_handleTap: dans le .m). Cette vue ne présente jamais elle-même le
+// panneau "Fil" — même principe que le panneau des tailles/fake chat du
+// picker, géré par son controller hôte plutôt que par le composant enfant.
 @protocol SevenTVChatCustomViewDelegate <NSObject>
 @optional
 // threadRootID = toujours la racine du fil (S7TVChatMessage.replyThreadRootID),
 // jamais le parent immédiat — c'est cet id qu'il faut passer à
 // -[S7TVChatMessageStore messagesForThreadRootID:] pour peupler le panneau.
+// tappedMessageID = l'id du message SPÉCIFIQUE sur lequel l'utilisateur a
+// tapé (pas forcément la racine — un fil a plusieurs messages) : c'est CE
+// message-là qui doit devenir la cible pré-remplie de la réponse dans le
+// panneau, PAS son parent (voir S7TVChatMessage.replyParentMessageID, qui
+// reste distinct de threadRootID et sert uniquement au regroupement).
 - (void)chatCustomView:(SevenTVChatCustomView *)view
-    didTapReplyBannerForThreadRootID:(NSString *)threadRootID;
+    didTapReplyBannerForThreadRootID:(NSString *)threadRootID
+                       tappedMessageID:(NSString *)tappedMessageID;
 @end
 
 @interface SevenTVChatCustomView : UIView

@@ -74,18 +74,6 @@
         self.backgroundColor = [UIColor clearColor];
         self.selectionStyle  = UITableViewCellSelectionStyleNone;
 
-        // Toute la cellule ouvre le fil quand le message est une réponse
-        // (onReplyBannerTap nil sinon → no-op) — pas juste le petit bandeau
-        // "Répond à @X". Ajouté sur contentView (pas messageLabel) pour
-        // couvrir toute la surface, y compris la marge/le padding autour du
-        // texte. cancelsTouchesInBegan=NO : laisse le tap sur un lien dans
-        // messageLabel (s7tv_handleTap:) se déclencher normalement en plus.
-        UITapGestureRecognizer *wholeCellTap =
-            [[UITapGestureRecognizer alloc] initWithTarget:self
-                                                      action:@selector(s7tv_handleWholeCellTap:)];
-        wholeCellTap.cancelsTouchesInView = NO;
-        [self.contentView addGestureRecognizer:wholeCellTap];
-
         _messageLabel = [[UILabel alloc] init];
         _messageLabel.numberOfLines = 0;
         _messageLabel.lineBreakMode = NSLineBreakByWordWrapping;
@@ -304,40 +292,46 @@
     }
 }
 
-- (void)s7tv_handleWholeCellTap:(UITapGestureRecognizer *)gesture {
-    if (self.onReplyBannerTap) self.onReplyBannerTap();
-}
-
 - (void)s7tv_handleReplyBannerTap:(UITapGestureRecognizer *)gesture {
     if (self.onReplyBannerTap) self.onReplyBannerTap();
 }
 
+// Gère 2 choses sur le MÊME geste : ouvrir un lien tapé (comportement
+// existant), ET — nouveau — ouvrir le fil si le message est une réponse et
+// qu'aucun lien n'a été tapé à cet endroit précis. messageLabel est ancré
+// quasi bord à bord dans la cellule (leading/trailing/top/bottom constants
+// de quelques points), donc "taper le message" revient en pratique à taper
+// messageLabel — pas besoin d'un geste séparé sur contentView (qui, lui, ne
+// se déclenchait pas de façon fiable, retiré).
 - (void)s7tv_handleTap:(UITapGestureRecognizer *)gesture {
     NSAttributedString *attributedText = self.messageLabel.attributedText;
-    if (!attributedText.length) return;
+    if (attributedText.length) {
+        NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
+        NSTextStorage *textStorage = [[NSTextStorage alloc] initWithAttributedString:attributedText];
+        [textStorage addLayoutManager:layoutManager];
 
-    NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
-    NSTextStorage *textStorage = [[NSTextStorage alloc] initWithAttributedString:attributedText];
-    [textStorage addLayoutManager:layoutManager];
+        NSTextContainer *textContainer = [[NSTextContainer alloc] initWithSize:self.messageLabel.bounds.size];
+        textContainer.lineFragmentPadding = 0;
+        textContainer.lineBreakMode = self.messageLabel.lineBreakMode;
+        textContainer.maximumNumberOfLines = self.messageLabel.numberOfLines;
+        [layoutManager addTextContainer:textContainer];
 
-    NSTextContainer *textContainer = [[NSTextContainer alloc] initWithSize:self.messageLabel.bounds.size];
-    textContainer.lineFragmentPadding = 0;
-    textContainer.lineBreakMode = self.messageLabel.lineBreakMode;
-    textContainer.maximumNumberOfLines = self.messageLabel.numberOfLines;
-    [layoutManager addTextContainer:textContainer];
+        CGPoint tapPoint = [gesture locationInView:self.messageLabel];
+        NSUInteger charIndex = [layoutManager characterIndexForPoint:tapPoint
+                                                       inTextContainer:textContainer
+                              fractionOfDistanceBetweenInsertionPoints:NULL];
+        if (charIndex < attributedText.length) {
+            id linkValue = [attributedText attribute:NSLinkAttributeName atIndex:charIndex effectiveRange:NULL];
+            NSURL *url = [linkValue isKindOfClass:[NSURL class]] ? linkValue : nil;
+            if (!url && [linkValue isKindOfClass:[NSString class]]) url = [NSURL URLWithString:linkValue];
+            if (url) {
+                [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+                return; // un lien tapé prend le dessus, pas d'ouverture de fil en plus
+            }
+        }
+    }
 
-    CGPoint tapPoint = [gesture locationInView:self.messageLabel];
-    NSUInteger charIndex = [layoutManager characterIndexForPoint:tapPoint
-                                                   inTextContainer:textContainer
-                          fractionOfDistanceBetweenInsertionPoints:NULL];
-    if (charIndex >= attributedText.length) return;
-
-    id linkValue = [attributedText attribute:NSLinkAttributeName atIndex:charIndex effectiveRange:NULL];
-    NSURL *url = [linkValue isKindOfClass:[NSURL class]] ? linkValue : nil;
-    if (!url && [linkValue isKindOfClass:[NSString class]]) url = [NSURL URLWithString:linkValue];
-    if (!url) return;
-
-    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+    if (self.onReplyBannerTap) self.onReplyBannerTap();
 }
 
 @end
@@ -670,12 +664,15 @@
                                      bodyPreview:isReply ? msg.replyParentBodyPreview : nil];
 
     NSString *threadRootID = self.showsReplyBanners ? msg.replyThreadRootID : nil;
+    NSString *tappedMessageID = msg.messageID;
     __weak typeof(self) weakSelfForReply = self;
     cell.onReplyBannerTap = threadRootID.length ? ^{
         __strong typeof(weakSelfForReply) strongSelf = weakSelfForReply;
         if (!strongSelf) return;
-        if ([strongSelf.delegate respondsToSelector:@selector(chatCustomView:didTapReplyBannerForThreadRootID:)]) {
-            [strongSelf.delegate chatCustomView:strongSelf didTapReplyBannerForThreadRootID:threadRootID];
+        if ([strongSelf.delegate respondsToSelector:@selector(chatCustomView:didTapReplyBannerForThreadRootID:tappedMessageID:)]) {
+            [strongSelf.delegate chatCustomView:strongSelf
+              didTapReplyBannerForThreadRootID:threadRootID
+                                 tappedMessageID:tappedMessageID];
         }
     } : nil;
 

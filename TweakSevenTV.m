@@ -320,6 +320,140 @@ static UIView *s7tv_findChatInputView(void) {
     return nil;
 }
 
+// Insère "@pseudo " au tout DÉBUT du texte de la barre de saisie native
+// (pas au curseur comme le picker d'emotes le fait pour les noms d'emotes)
+// — utilisé pour le panneau Fil : à défaut d'un vrai tag reply-parent-msg-id
+// (touche l'envoi WebSocket réel, gardé de côté pour l'instant), on @
+// mentionne au moins la personne visée automatiquement, pour continuer la
+// conversation sans taper le pseudo à la main.
+//
+// Même technique que 7tv-picker-controler.m (paste: sur le UITextView) :
+// insertText: seul modifie le buffer UITextInput mais ne notifie pas le
+// binding SwiftUI côté Twitch, paste: déclenche le pipeline complet.
+// No-op si le texte commence déjà par cette mention (évite d'empiler les @
+// si on rouvre le même fil plusieurs fois de suite).
+static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
+    if (!username.length) return;
+    UIView *inputRoot = s7tv_findChatInputView();
+    if (!inputRoot) return;
+
+    UITextView  *textView  = nil;
+    UITextField *textField = nil;
+    id<UIKeyInput> keyInput = nil;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:inputRoot];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject; [queue removeObjectAtIndex:0];
+        [queue addObjectsFromArray:v.subviews];
+        if (!textView  && [v isKindOfClass:[UITextView class]])  textView  = (UITextView *)v;
+        if (!textField && [v isKindOfClass:[UITextField class]]) textField = (UITextField *)v;
+        if (!keyInput  && [v conformsToProtocol:@protocol(UIKeyInput)]
+                       && ![v isKindOfClass:[UIButton class]])   keyInput  = (id<UIKeyInput>)v;
+    }
+
+    NSString *mention = [NSString stringWithFormat:@"@%@ ", username];
+
+    if (textView) {
+        NSString *current = textView.text ?: @"";
+        if ([current hasPrefix:mention]) return; // déjà présent
+
+        [textView becomeFirstResponder];
+        textView.selectedRange = NSMakeRange(0, 0); // tout début, pas la fin comme pour les emotes
+
+        UIPasteboard *pb = [UIPasteboard generalPasteboard];
+        NSString *savedString = pb.string;
+        pb.string = mention;
+
+        if ([textView respondsToSelector:@selector(paste:)]) {
+            [textView paste:nil];
+        } else {
+            [textView insertText:mention];
+        }
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            pb.string = savedString ?: @"";
+        });
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:UITextViewTextDidChangeNotification
+                              object:textView];
+            if ([textView.delegate respondsToSelector:@selector(textViewDidChange:)]) {
+                [textView.delegate textViewDidChange:textView];
+            }
+        });
+    } else if (textField) {
+        NSString *current = textField.text ?: @"";
+        if ([current hasPrefix:mention]) return;
+        [textField becomeFirstResponder];
+        textField.selectedTextRange = [textField textRangeFromPosition:textField.beginningOfDocument
+                                                              toPosition:textField.beginningOfDocument];
+        [(id<UIKeyInput>)textField insertText:mention];
+    } else if (keyInput) {
+        // Pas de garantie de positionnement en tout début ici (pas d'API
+        // UIKeyInput générique pour ça) — best-effort, cas rare en pratique.
+        [(UIView *)keyInput becomeFirstResponder];
+        [(id<UIKeyInput>)keyInput insertText:mention];
+    }
+}
+
+// Symétrique de s7tv_insertMentionAtStartOfChatInput ci-dessus — retire "@pseudo "
+// du DÉBUT du texte (utilisé par le bouton "Annuler" du panneau Fil, voir
+// S7TVReplyThreadPanel.s7tv_cancelReplyTargetTapped). No-op si le texte ne
+// commence PAS (ou plus) par cette mention précise (l'utilisateur a pu
+// éditer le texte entre-temps — on ne touche à rien dans ce cas plutôt que
+// de risquer de couper un texte qu'il a écrit lui-même).
+//
+// deleteBackward (UIKeyInput) sur une sélection non-vide supprime toute la
+// sélection en un appel — plus fiable qu'un insertText:@"" (jamais testé
+// avec succès sur ce bridge SwiftUI, voir commentaire sur paste: plus haut).
+static void s7tv_removeMentionFromStartOfChatInput(NSString *username) {
+    if (!username.length) return;
+    UIView *inputRoot = s7tv_findChatInputView();
+    if (!inputRoot) return;
+
+    UITextView  *textView  = nil;
+    UITextField *textField = nil;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:inputRoot];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject; [queue removeObjectAtIndex:0];
+        [queue addObjectsFromArray:v.subviews];
+        if (!textView  && [v isKindOfClass:[UITextView class]])  textView  = (UITextView *)v;
+        if (!textField && [v isKindOfClass:[UITextField class]]) textField = (UITextField *)v;
+    }
+
+    NSString *mention = [NSString stringWithFormat:@"@%@ ", username];
+
+    if (textView) {
+        NSString *current = textView.text ?: @"";
+        if (![current hasPrefix:mention]) return;
+
+        [textView becomeFirstResponder];
+        textView.selectedRange = NSMakeRange(0, mention.length);
+        [textView deleteBackward];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:UITextViewTextDidChangeNotification
+                              object:textView];
+            if ([textView.delegate respondsToSelector:@selector(textViewDidChange:)]) {
+                [textView.delegate textViewDidChange:textView];
+            }
+        });
+    } else if (textField) {
+        NSString *current = textField.text ?: @"";
+        if (![current hasPrefix:mention]) return;
+
+        [textField becomeFirstResponder];
+        UITextPosition *start = textField.beginningOfDocument;
+        UITextPosition *end = [textField positionFromPosition:start offset:mention.length];
+        if (end) {
+            textField.selectedTextRange = [textField textRangeFromPosition:start toPosition:end];
+            [(id<UIKeyInput>)textField deleteBackward];
+        }
+    }
+}
+
 // DIAGNOSTIC — recense TOUTES les instances de Twitch.ChatInputView
 // actuellement en mémoire (pas seulement la première trouvée), avec leur
 // fenêtre et leur état isKeyWindow/hidden. Sert à vérifier l'hypothèse
@@ -758,6 +892,7 @@ static __weak UIView *s_activeNativeChatView = nil;
 static const CGFloat kS7TVReplyThreadTitleHeight = 26.0;   // ligne titre "Fil" + bouton fermer — resserré pour mobile
 static const CGFloat kS7TVReplyThreadSeparatorHeight = 1.0;
 static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
+static const CGFloat kS7TVReplyTargetBarHeight = 34.0; // barre "Répondre à @X · Annuler", masquée (0) tant qu'aucune cible n'est choisie
 
 @interface S7TVReplyThreadPanel : NSObject <SevenTVChatCustomViewDelegate>
 + (instancetype)sharedPanel;
@@ -796,10 +931,26 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 @property (nonatomic, strong) SevenTVChatCustomView *repliesChatView;
 @property (nonatomic, strong) S7TVChatMessageStore *repliesStore;
 @property (nonatomic, copy) NSString *currentThreadRootID;
-// Le message précis sur lequel l'utilisateur a tapé pour ouvrir ce fil —
-// deviendra la cible pré-remplie de la réponse une fois l'input implémenté.
-// Distinct de currentThreadRootID (voir showForThreadRootID:tappedMessageID:).
+// Le message sur lequel l'utilisateur a tapé pour OUVRIR ce fil — gardé en
+// mémoire mais N'EST PLUS auto-sélectionné comme cible (voir demande :
+// aucune sélection automatique à l'ouverture, l'utilisateur choisit
+// explicitement via le bouton flèche sur le message de son choix).
 @property (nonatomic, copy) NSString *pendingReplyTargetMessageID;
+
+// ── Sélection de cible de réponse (bouton flèche par message) ──────────
+// Non-nil uniquement quand l'utilisateur a explicitement tapé le bouton
+// flèche d'un message — voir s7tv_selectReplyTarget:username:. C'est LÀ
+// (pas à l'ouverture) que la mention @X s'insère dans la barre de saisie.
+@property (nonatomic, copy) NSString *selectedReplyTargetMessageID;
+@property (nonatomic, copy) NSString *selectedReplyTargetUsername;
+// Barre du bas "Répondre à @X · Annuler" — masquée tant qu'aucune cible
+// n'est sélectionnée. Hauteur pilotée par replyTargetBarHeightConstraint
+// (0 = masquée) plutôt qu'un simple .hidden, pour que
+// s7tv_layoutPanelContentInWindow: puisse recalculer la hauteur totale du
+// panneau en conséquence (la barre prend de la place quand elle apparaît).
+@property (nonatomic, weak) UIView *replyTargetBarView;
+@property (nonatomic, weak) UILabel *replyTargetBarLabel;
+@property (nonatomic, strong) NSLayoutConstraint *replyTargetBarHeightConstraint;
 @end
 
 @implementation S7TVReplyThreadPanel
@@ -873,7 +1024,12 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     self.rootChatView = [[SevenTVChatCustomView alloc] initWithStore:self.rootStore];
     self.rootChatView.showsReplyBanners = NO; // voir commentaire showsReplyBanners dans SevenTVChatCustomView.h
     self.rootChatView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.rootChatView.userInteractionEnabled = NO; // épinglée = pas de scroll possible, pas la peine d'intercepter les touches
+    // userInteractionEnabled reste YES (pas de = NO ici) : le bouton de
+    // sélection de cible (showsReplyTargetButton ci-dessous) doit rester
+    // tapable même sur la racine — on peut répondre au tout premier message
+    // du fil aussi. Aucun risque de scroll accidentel : sa hauteur est
+    // toujours exactement calée sur son contenu (0 ou 1 message), rien à
+    // scroller physiquement même avec les interactions actives.
     [container addSubview:self.rootChatView];
 
     // Léger fond distinct pour lire "racine" comme un bloc titre séparé des
@@ -895,6 +1051,51 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     self.repliesChatView.usesThreadReplyIndent = YES;
     self.repliesChatView.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:self.repliesChatView];
+
+    // ── Bouton "répondre à ce message", sur CHAQUE message (racine incluse) ──
+    self.rootChatView.showsReplyTargetButton = YES;
+    self.repliesChatView.showsReplyTargetButton = YES;
+    __weak typeof(self) weakSelfForTarget = self;
+    void (^targetSelectedHandler)(NSString *, NSString *) = ^(NSString *messageID, NSString *username) {
+        [weakSelfForTarget s7tv_selectReplyTarget:messageID username:username];
+    };
+    self.rootChatView.onReplyTargetSelected = targetSelectedHandler;
+    self.repliesChatView.onReplyTargetSelected = targetSelectedHandler;
+
+    // ── Barre du bas "Répondre à @X · Annuler" ──────────────────────────
+    // Masquée par défaut (hauteur 0 via replyTargetBarHeightConstraint) tant
+    // qu'aucune cible n'est sélectionnée — voir s7tv_selectReplyTarget:username:
+    // et s7tv_cancelReplyTargetTapped.
+    UIView *replyBar = [[UIView alloc] init];
+    replyBar.translatesAutoresizingMaskIntoConstraints = NO;
+    replyBar.clipsToBounds = YES; // évite que le contenu déborde pendant l'anim de hauteur 0→visible
+    [container addSubview:replyBar];
+    self.replyTargetBarView = replyBar;
+
+    UIView *replyBarSeparator = [[UIView alloc] init];
+    replyBarSeparator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.1];
+    replyBarSeparator.translatesAutoresizingMaskIntoConstraints = NO;
+    [replyBar addSubview:replyBarSeparator];
+
+    UILabel *replyBarLabel = [[UILabel alloc] init];
+    replyBarLabel.font = [UIFont systemFontOfSize:12];
+    replyBarLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.6];
+    replyBarLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [replyBar addSubview:replyBarLabel];
+    self.replyTargetBarLabel = replyBarLabel;
+
+    UIButton *cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [cancelButton setTitle:L(@"chat_reply_cancel_button") forState:UIControlStateNormal];
+    cancelButton.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    [cancelButton setTitleColor:[UIColor colorWithRed:0.65 green:0.45 blue:1.0 alpha:1.0]
+                        forState:UIControlStateNormal]; // accent violet 7TV, cohérent avec le reste du tweak
+    cancelButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [cancelButton addTarget:self action:@selector(s7tv_cancelReplyTargetTapped)
+            forControlEvents:UIControlEventTouchUpInside];
+    [replyBar addSubview:cancelButton];
+
+    self.replyTargetBarHeightConstraint =
+        [replyBar.heightAnchor constraintEqualToConstant:0];
 
     self.rootChatViewHeightConstraint =
         [self.rootChatView.heightAnchor constraintEqualToConstant:0];
@@ -931,7 +1132,24 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
         [self.repliesChatView.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
         [self.repliesChatView.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
         [self.repliesChatView.topAnchor constraintEqualToAnchor:midSeparator.bottomAnchor],
-        [self.repliesChatView.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-kS7TVReplyThreadBottomPadding],
+        [self.repliesChatView.bottomAnchor constraintEqualToAnchor:replyBar.topAnchor],
+
+        [replyBar.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [replyBar.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [replyBar.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-kS7TVReplyThreadBottomPadding],
+        self.replyTargetBarHeightConstraint,
+
+        [replyBarSeparator.leadingAnchor constraintEqualToAnchor:replyBar.leadingAnchor],
+        [replyBarSeparator.trailingAnchor constraintEqualToAnchor:replyBar.trailingAnchor],
+        [replyBarSeparator.topAnchor constraintEqualToAnchor:replyBar.topAnchor],
+        [replyBarSeparator.heightAnchor constraintEqualToConstant:kS7TVReplyThreadSeparatorHeight],
+
+        [replyBarLabel.leadingAnchor constraintEqualToAnchor:replyBar.leadingAnchor constant:12],
+        [replyBarLabel.centerYAnchor constraintEqualToAnchor:replyBar.centerYAnchor constant:2], // +2 : compense visuellement la présence du séparateur juste au-dessus
+
+        [cancelButton.leadingAnchor constraintEqualToAnchor:replyBarLabel.trailingAnchor constant:8],
+        [cancelButton.centerYAnchor constraintEqualToAnchor:replyBarLabel.centerYAnchor],
+        [cancelButton.trailingAnchor constraintLessThanOrEqualToAnchor:replyBar.trailingAnchor constant:-12],
     ]];
 }
 
@@ -1007,8 +1225,14 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 
     CGFloat maxTotalHeight = inputTopY * 0.25;
 
+    // replyTargetBarHeightConstraint.constant vaut déjà 0 (masquée) ou
+    // kS7TVReplyTargetBarHeight (visible) au moment où cette fonction est
+    // appelée — s7tv_selectReplyTarget:/s7tv_cancelReplyTargetTapped la
+    // règlent AVANT d'appeler ce recalcul.
+    CGFloat replyBarHeight = self.replyTargetBarHeightConstraint.constant;
+
     CGFloat chromeHeight = kS7TVReplyThreadTitleHeight + kS7TVReplyThreadSeparatorHeight * 2
-                          + kS7TVReplyThreadBottomPadding;
+                          + kS7TVReplyThreadBottomPadding + replyBarHeight;
     CGFloat maxContentHeight = MAX(maxTotalHeight - chromeHeight, 60);
 
     // Racine : jamais coupée. On lui laisse d'abord toute la place possible
@@ -1045,6 +1269,17 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     self.titleLabel.text = L(@"chat_reply_thread_panel_title"); // relu à chaque ouverture, voir commentaire sur titleLabel
     self.currentThreadRootID = threadRootID;
     self.pendingReplyTargetMessageID = tappedMessageID;
+
+    // Aucune sélection automatique : le panneau s'ouvre en pure
+    // consultation, l'utilisateur choisit explicitement une cible via le
+    // bouton flèche sur le message de son choix (voir
+    // s7tv_selectReplyTarget:username: plus bas) — demande explicite,
+    // l'auto-insertion précédente gênait quand on ouvrait juste pour lire.
+    self.selectedReplyTargetMessageID = nil;
+    self.selectedReplyTargetUsername = nil;
+    self.replyTargetBarView.hidden = YES;
+    self.replyTargetBarHeightConstraint.constant = 0;
+
     [self s7tv_reloadThreadMessages];
     [self.containerView layoutIfNeeded]; // applique les contraintes AVANT de mesurer le contenu
     [self s7tv_layoutPanelContentInWindow:window];
@@ -1053,10 +1288,54 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
     [window bringSubviewToFront:self.containerView];
 }
 
+// Tap sur le bouton flèche d'UN message précis (racine ou réponse) — voir
+// SevenTVChatCustomView.onReplyTargetSelected. Insertion IMMÉDIATE de la
+// mention, pas de confirmation supplémentaire : si l'utilisateur tape la
+// flèche, c'est qu'il veut répondre à cette personne. La barre du bas ne
+// sert qu'à visualiser la sélection en cours et à l'annuler si besoin.
+- (void)s7tv_selectReplyTarget:(NSString *)messageID username:(NSString *)username {
+    if (!messageID.length || !username.length) return;
+
+    self.selectedReplyTargetMessageID = messageID;
+    self.selectedReplyTargetUsername = username;
+    self.replyTargetBarLabel.text = [NSString stringWithFormat:L(@"chat_reply_target_bar_format"), username];
+    self.replyTargetBarView.hidden = NO;
+    self.replyTargetBarHeightConstraint.constant = kS7TVReplyTargetBarHeight;
+
+    s7tv_insertMentionAtStartOfChatInput(username);
+
+    UIWindow *window = self.containerView.window;
+    if (window) [self s7tv_layoutPanelContentInWindow:window]; // la hauteur totale du panneau change (barre en plus)
+}
+
+- (void)s7tv_cancelReplyTargetTapped {
+    NSString *username = self.selectedReplyTargetUsername;
+    self.selectedReplyTargetMessageID = nil;
+    self.selectedReplyTargetUsername = nil;
+    self.replyTargetBarView.hidden = YES;
+    self.replyTargetBarHeightConstraint.constant = 0;
+
+    // Retire aussi la mention de la barre de saisie — demande explicite :
+    // "Annuler" doit annuler visuellement ET dans le texte, pas juste
+    // masquer la barre du panneau en laissant un texte orphelin.
+    if (username.length) s7tv_removeMentionFromStartOfChatInput(username);
+
+    UIWindow *window = self.containerView.window;
+    if (window) [self s7tv_layoutPanelContentInWindow:window];
+}
+
 - (void)hide {
     self.containerView.hidden = YES;
     self.currentThreadRootID = nil;
     self.pendingReplyTargetMessageID = nil;
+    // Referme aussi la sélection en cours (état du panneau), mais NE touche
+    // PAS au texte déjà tapé dans la barre de saisie — fermer le panneau
+    // n'est pas un "annuler", l'utilisateur peut vouloir garder sa mention
+    // et continuer/envoyer manuellement.
+    self.selectedReplyTargetMessageID = nil;
+    self.selectedReplyTargetUsername = nil;
+    self.replyTargetBarView.hidden = YES;
+    self.replyTargetBarHeightConstraint.constant = 0;
 }
 
 - (void)refreshIfNeeded {

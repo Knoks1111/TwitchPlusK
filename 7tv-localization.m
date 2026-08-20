@@ -253,6 +253,9 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // s7tv_configureReplyBannerWithUsername:bodyPreview:).
         @"chat_reply_banner_format":        @[@"Répond à @%@ : %@", @"Replying to @%@: %@"],
         @"chat_reply_thread_panel_title":   @[@"Fil", @"Thread"],
+        // %@ = pseudo de la cible sélectionnée (bouton flèche sur un message)
+        @"chat_reply_target_bar_format":    @[@"Répondre à @%@", @"Reply to @%@"],
+        @"chat_reply_cancel_button":        @[@"Annuler", @"Cancel"],
         // Petit badge en haut à droite d'un message qui cite le viewer
         // connecté (voir S7TVChatCustomView.m,
         // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:mentionBadgeText:).

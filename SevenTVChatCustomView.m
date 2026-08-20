@@ -54,6 +54,17 @@
 // plus bas) : la cellule ne connaît pas SevenTVChatCustomView, juste ce
 // qu'on lui donne au moment de la configuration (voir s7tv_cellForMessageID:).
 @property (nonatomic, copy, nullable) void (^onReplyBannerTap)(void);
+// ── Bouton "répondre à ce message" (panneau Fil uniquement) ────────────
+// Icône à droite de la cellule, tap immédiat = sélectionne CE message comme
+// cible (pas de confirmation supplémentaire, voir onReplySelectTap). Séparé
+// de onReplyBannerTap : deux contextes différents — celui-ci sert
+// exclusivement DANS le panneau Fil pour choisir à qui répondre parmi les
+// messages déjà affichés, l'autre sert à OUVRIR le panneau depuis le chat
+// principal. Invisible par défaut, activé par
+// SevenTVChatCustomView.showsReplyTargetButton.
+@property (nonatomic, strong) UIButton *replyTargetButton;
+@property (nonatomic, strong) NSLayoutConstraint *messageLabelTrailingConstraint;
+@property (nonatomic, copy, nullable) void (^onReplySelectTap)(void);
 // ── Barre "fil de discussion" (panneau Fil, réponses uniquement) ───────
 // Barre grise verticale pleine hauteur de cellule (contentView.top →
 // contentView.bottom, sans marge) : comme les cellules se touchent sans
@@ -125,6 +136,19 @@
         _threadBarView.hidden = YES;
         [self.contentView addSubview:_threadBarView];
 
+        _replyTargetButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        UIImageSymbolConfiguration *replyTargetIconConfig =
+            [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightMedium];
+        [_replyTargetButton setImage:[UIImage systemImageNamed:@"arrowshape.turn.up.left"
+                                          withConfiguration:replyTargetIconConfig]
+                              forState:UIControlStateNormal];
+        _replyTargetButton.tintColor = [UIColor colorWithWhite:1.0 alpha:0.55];
+        _replyTargetButton.translatesAutoresizingMaskIntoConstraints = NO;
+        _replyTargetButton.hidden = YES;
+        [_replyTargetButton addTarget:self action:@selector(s7tv_handleReplyTargetTap:)
+                      forControlEvents:UIControlEventTouchUpInside];
+        [self.contentView addSubview:_replyTargetButton];
+
         _systemAccentBarWidthConstraint =
             [_systemAccentBar.widthAnchor constraintEqualToConstant:0];
         _systemAccentBarRightWidthConstraint =
@@ -157,6 +181,9 @@
             [_messageLabel.topAnchor constraintEqualToAnchor:_replyBannerLabel.bottomAnchor constant:4];
         _messageLabelTopToBannerConstraint.active = NO;
 
+        _messageLabelTrailingConstraint =
+            [_messageLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8];
+
         [NSLayoutConstraint activateConstraints:@[
             [_systemAccentBar.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
             [_systemAccentBar.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
@@ -187,12 +214,17 @@
             _messageLabelLeadingConstraint,
             _messageLabelTopConstraint,
             _messageLabelBottomConstraint,
-            [_messageLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8],
+            _messageLabelTrailingConstraint,
 
             [_threadBarView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
             [_threadBarView.widthAnchor constraintEqualToConstant:3],
             [_threadBarView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
             [_threadBarView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+
+            [_replyTargetButton.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-6],
+            [_replyTargetButton.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+            [_replyTargetButton.widthAnchor constraintEqualToConstant:26],
+            [_replyTargetButton.heightAnchor constraintEqualToConstant:26],
         ]];
     }
     return self;
@@ -290,6 +322,18 @@
     if (enabled) {
         self.messageLabelLeadingConstraint.constant = 16.0;
     }
+}
+
+// enabled : affiche le bouton flèche à droite et réduit la largeur dispo du
+// texte du message pour lui laisser la place (34 = 8 marge de base + ~26
+// pour le bouton). Même logique de bascule que s7tv_setThreadIndentEnabled:.
+- (void)s7tv_setReplyTargetButtonEnabled:(BOOL)enabled {
+    self.replyTargetButton.hidden = !enabled;
+    self.messageLabelTrailingConstraint.constant = enabled ? -34.0 : -8.0;
+}
+
+- (void)s7tv_handleReplyTargetTap:(UIButton *)sender {
+    if (self.onReplySelectTap) self.onReplySelectTap();
 }
 
 - (void)s7tv_handleReplyBannerTap:(UITapGestureRecognizer *)gesture {
@@ -677,6 +721,16 @@
     } : nil;
 
     [cell s7tv_setThreadIndentEnabled:self.usesThreadReplyIndent];
+
+    [cell s7tv_setReplyTargetButtonEnabled:self.showsReplyTargetButton];
+    NSString *targetMessageID = msg.messageID;
+    NSString *targetAuthor = msg.authorDisplayName;
+    __weak typeof(self) weakSelfForTarget = self;
+    cell.onReplySelectTap = self.showsReplyTargetButton ? ^{
+        __strong typeof(weakSelfForTarget) strongSelf = weakSelfForTarget;
+        if (!strongSelf || !strongSelf.onReplyTargetSelected) return;
+        strongSelf.onReplyTargetSelected(targetMessageID, targetAuthor);
+    } : nil;
 
     if (animatedEmotes.count > 0) {
         NSMutableSet<NSString *> *animationKeys = [NSMutableSet setWithCapacity:animatedEmotes.count];

@@ -59,6 +59,21 @@ NS_ASSUME_NONNULL_BEGIN
 // jamais utilisé sur le chat principal.
 @property (nonatomic, assign) BOOL usesThreadReplyIndent;
 
+// NO par défaut. YES uniquement sur les 2 sous-vues (racine + réponses) du
+// panneau Fil : affiche un bouton flèche à droite de CHAQUE message,
+// permettant de le désigner comme cible de réponse (voir
+// onReplyTargetSelected juste en dessous). N'a de sens que dans ce contexte
+// précis — jamais utilisé sur le chat principal.
+@property (nonatomic, assign) BOOL showsReplyTargetButton;
+
+// Appelé quand l'utilisateur tape le bouton de sélection de cible d'UN
+// message (messageID + authorDisplayName de ce message précis). Bloc plutôt
+// que le protocole delegate ci-dessus : contrairement au bandeau reply (qui
+// vise un hôte générique quelconque), ce bouton n'a de sens que pour les 2
+// sous-vues du panneau Fil, qui les possèdent déjà directement — pas besoin
+// d'indirection supplémentaire par un protocole.
+@property (nonatomic, copy, nullable) void (^onReplyTargetSelected)(NSString *messageID, NSString *authorDisplayName);
+
 - (instancetype)initWithStore:(S7TVChatMessageStore *)store;
 
 // Recharge l'affichage depuis le store. Phase 1c fait un reload complet à

@@ -358,33 +358,59 @@ static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
         return;
     }
 
-    UITextView  *textView  = nil;
+    // Le 1er UITextView trouvé n'est pas forcément le bon (logs du
+    // 20/08 : trouvé mais delegate=nil → probablement une vue décorative/
+    // interne à UIKit, pas celle liée au binding SwiftUI de Twitch). On
+    // liste TOUS les candidats et on privilégie celui qui a un delegate —
+    // signal fort que c'est la vraie vue interactive.
+    NSMutableArray<UITextView *> *allTextViews = [NSMutableArray array];
     UITextField *textField = nil;
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:inputRoot];
     while (queue.count > 0) {
         UIView *v = queue.firstObject; [queue removeObjectAtIndex:0];
         [queue addObjectsFromArray:v.subviews];
-        if (!textView  && [v isKindOfClass:[UITextView class]])  textView  = (UITextView *)v;
+        if ([v isKindOfClass:[UITextView class]]) [allTextViews addObject:(UITextView *)v];
         if (!textField && [v isKindOfClass:[UITextField class]]) textField = (UITextField *)v;
     }
 
     [[SevenTVManager sharedManager] log:
-        [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: textView=%@ (class=%@) textField=%@",
-            textView ? @"trouvé" : @"nil",
-            NSStringFromClass([textView class]) ?: @"—",
-            textField ? @"trouvé" : @"nil"]];
+        [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: %lu UITextView candidat(s), textField=%@",
+            (unsigned long)allTextViews.count, textField ? @"trouvé" : @"nil"]];
+    for (UITextView *tv in allTextViews) {
+        [[SevenTVManager sharedManager] log:
+            [NSString stringWithFormat:@"[ChatCustom] 🔍   candidat frame=%@ hidden=%@ alpha=%.2f delegate=%@ texte=%@",
+                NSStringFromCGRect(tv.frame),
+                tv.hidden ? @"OUI" : @"NON",
+                tv.alpha,
+                tv.delegate ? NSStringFromClass([tv.delegate class]) : @"nil",
+                tv.text.length ? tv.text : @"(vide)"]];
+    }
+
+    UITextView *textView = nil;
+    for (UITextView *tv in allTextViews) {
+        if (tv.delegate != nil) { textView = tv; break; }
+    }
+    if (!textView) {
+        // Repli : aucun candidat n'a de delegate — on prend le premier
+        // visible avec une frame non nulle plutôt que le tout premier trouvé
+        // à l'aveugle (meilleure chance que ce soit le vrai).
+        for (UITextView *tv in allTextViews) {
+            if (!tv.hidden && tv.alpha > 0.01 && !CGRectIsEmpty(tv.frame)) { textView = tv; break; }
+        }
+    }
+    if (!textView) textView = allTextViews.firstObject;
+
+    if (textView) {
+        [[SevenTVManager sharedManager] log:
+            [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: candidat RETENU frame=%@ delegate=%@",
+                NSStringFromCGRect(textView.frame),
+                textView.delegate ? NSStringFromClass([textView.delegate class]) : @"nil"]];
+    }
 
     NSString *mention = [NSString stringWithFormat:@"@%@ ", username];
 
     if (textView) {
         NSString *current = textView.text ?: @"";
-        [[SevenTVManager sharedManager] log:
-            [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: texte AVANT = %@ | delegate=%@ (class=%@) répond à textViewDidChange:=%@",
-                current.length ? current : @"(vide)",
-                textView.delegate ? @"présent" : @"nil",
-                NSStringFromClass([textView.delegate class]) ?: @"—",
-                [textView.delegate respondsToSelector:@selector(textViewDidChange:)] ? @"OUI" : @"NON"]];
-
         if ([current hasPrefix:mention]) {
             [[SevenTVManager sharedManager] log:@"[ChatCustom] 🔍 mention: déjà présente, no-op"];
             return;
@@ -392,10 +418,6 @@ static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
 
         textView.text = [mention stringByAppendingString:current];
         textView.selectedRange = NSMakeRange(mention.length, 0); // curseur juste après la mention
-
-        [[SevenTVManager sharedManager] log:
-            [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: texte APRÈS assignation .text = %@",
-                textView.text.length ? textView.text : @"(vide — l'assignation elle-même n'a rien fait)"]];
 
         [[NSNotificationCenter defaultCenter]
             postNotificationName:UITextViewTextDidChangeNotification

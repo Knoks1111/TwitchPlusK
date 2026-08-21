@@ -1351,7 +1351,8 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                     // abonnements Twitch grâce à redemption.id utilisé comme
                     // messageID.
                     for (S7TVChatMessage *rewardMessage in
-                         s7tv_channelPointMessagesFromWebSocketText(textToProcess)) {
+                         s7tv_channelPointMessagesFromWebSocketText(textToProcess,
+                                                                     s7tv_emoteProviders())) {
                         [[SevenTVManager sharedManager].chatMessageStore
                             addMessage:rewardMessage];
                         addedMessage = YES;

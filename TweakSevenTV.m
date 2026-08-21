@@ -744,6 +744,10 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 // (une seule fois, panneau réutilisé ensuite), donc un changement de langue
 // en cours de session ne se voyait qu'après un restart de l'app.
 @property (nonatomic, weak) UILabel *titleLabel;
+// Même souci que titleLabel ci-dessus, même fix : le titre du bouton n'était
+// posé qu'à la création du panneau (une seule fois) — jamais relu, donc
+// figé dans la langue active à ce moment-là.
+@property (nonatomic, weak) UIButton *cancelButton;
 // Message racine, ÉPINGLÉ en haut, jamais scrollable — sa propre
 // SevenTVChatCustomView contient TOUJOURS exactement 0 ou 1 message, donc
 // sa table ne peut physiquement pas scroller (contentSize == bounds une
@@ -924,6 +928,7 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     cancelButton.translatesAutoresizingMaskIntoConstraints = NO;
     [cancelButton addTarget:self action:@selector(s7tv_cancelReplyTargetTapped)
             forControlEvents:UIControlEventTouchUpInside];
+    self.cancelButton = cancelButton;
     [replyBar addSubview:cancelButton];
 
     self.replyTargetBarHeightConstraint =
@@ -1133,6 +1138,7 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 
     [self s7tv_ensureContainerInWindow:window];
     self.titleLabel.text = L(@"chat_reply_thread_panel_title"); // relu à chaque ouverture, voir commentaire sur titleLabel
+    [self.cancelButton setTitle:L(@"chat_reply_cancel_button") forState:UIControlStateNormal];
     self.currentThreadRootID = threadRootID;
     self.pendingReplyTargetMessageID = tappedMessageID;
 

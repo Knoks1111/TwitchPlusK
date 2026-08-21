@@ -106,13 +106,15 @@ static const char kS7TVRowKeyTag = 0;
 // à la volée que sizeRowLabels ci-dessus.
 @property (nonatomic, weak) UILabel *colorsSectionLabel;
 @property (nonatomic, weak) UILabel *colorsToggleLabel;
-// Ligne unique "vous êtes mentionné" (toggle + couleur combinés, voir
-// _buildSelfMentionSectionInScrollView:...) — pas besoin de dictionnaires
-// comme colorWells/colorRowLabels puisqu'il n'y a qu'une seule ligne, pas
-// plusieurs clés à indexer.
+// Lignes de highlights (toggle + couleur combinés) : mention du viewer et
+// premier message. Elles partagent le même constructeur pour garantir le
+// même rendu et le même placement des contrôles.
 @property (nonatomic, weak) UISwitch *selfMentionSwitch;
 @property (nonatomic, weak) UIColorWell *selfMentionColorWell;
 @property (nonatomic, weak) UILabel *selfMentionRowLabel;
+@property (nonatomic, weak) UISwitch *firstMessageSwitch;
+@property (nonatomic, weak) UIColorWell *firstMessageColorWell;
+@property (nonatomic, weak) UILabel *firstMessageRowLabel;
 @property (nonatomic, weak) UILabel *moderationSectionLabel;
 @property (nonatomic, weak) UILabel *deletedPreviewLabel;
 @property (nonatomic, weak) UISegmentedControl *deletedPreviewControl;
@@ -280,6 +282,10 @@ static const char kS7TVRowKeyTag = 0;
                                                       width:frame.size.width
                                                   textColor:textColor subColor:subColor
                                                    sepColor:sepColor accent:accent];
+    appearanceY = [self _buildFirstMessageSectionInScrollView:appearanceCategory atY:appearanceY
+                                                       width:frame.size.width
+                                                   textColor:textColor subColor:subColor
+                                                    sepColor:sepColor accent:accent];
     appearanceCategory.contentSize = CGSizeMake(frame.size.width, appearanceY);
 
     CGFloat moderationY = 8.0;
@@ -411,6 +417,7 @@ static const char kS7TVRowKeyTag = 0;
     }];
     self.colorsSectionLabel.text = L(@"sizes_colors_section_title");
     self.colorsToggleLabel.text  = L(@"sizes_colors_toggle_label");
+    self.firstMessageRowLabel.text = L(@"sizes_first_message_row_label");
 
     NSDictionary<NSString *, NSString *> *colorLabelKeys = @{
         @"subResubAccentColor": @"sizes_color_sub_resub",
@@ -584,27 +591,27 @@ static const char kS7TVRowKeyTag = 0;
     return y + 8;
 }
 
-#pragma mark - Ligne "Vous êtes mentionné" (toggle + couleur, 1 seule ligne)
-//
-// Fondue dans la section Couleurs des messages système ci-dessus (même
-// catégorie que sub/prime/gift) plutôt que d'avoir sa propre section — pas
-// de titre ici, cette méthode ne fait qu'ajouter une ligne de plus à la
-// suite de _buildSystemColorsSectionInScrollView: (voir l'appel chaîné dans
-// buildInView:). Une seule ligne suffit puisqu'il n'y a qu'un seul type de
-// highlight à régler : label, reset, switch, colorwell, dans cet ordre de
-// droite à gauche. Même style (police, tailles de contrôles, comportement
-// grisé quand désactivé) que les lignes de la section Couleurs pour rester
-// cohérent visuellement.
-- (CGFloat)_buildSelfMentionSectionInScrollView:(UIScrollView *)scrollView
-                                             atY:(CGFloat)y
-                                           width:(CGFloat)width
-                                       textColor:(UIColor *)textColor
-                                        subColor:(UIColor *)subColor
-                                        sepColor:(UIColor *)sepColor
-                                          accent:(UIColor *)accent {
-    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
-    BOOL enabled = cfg.selfMentionHighlightEnabled;
+#pragma mark - Lignes de highlights (toggle + couleur)
 
+// Constructeur commun à « Vous êtes mentionné » et « Premier message ».
+// Ces deux états utilisent exactement le même composant dans le chat ; leur
+// réglage doit donc rester lui aussi identique, hors libellé/couleur/actions.
+- (CGFloat)_buildHighlightRowInScrollView:(UIScrollView *)scrollView
+                                      atY:(CGFloat)y
+                                    width:(CGFloat)width
+                                textColor:(UIColor *)textColor
+                                 subColor:(UIColor *)subColor
+                                 sepColor:(UIColor *)sepColor
+                                   accent:(UIColor *)accent
+                                 labelKey:(NSString *)labelKey
+                                  enabled:(BOOL)enabled
+                                    color:(UIColor *)color
+                             toggleAction:(SEL)toggleAction
+                              colorAction:(SEL)colorAction
+                              resetAction:(SEL)resetAction
+                                switchOut:(UISwitch * __autoreleasing *)switchOut
+                                  wellOut:(UIColorWell * __autoreleasing *)wellOut
+                                 labelOut:(UILabel * __autoreleasing *)labelOut {
     UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, width, 44)];
     row.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
@@ -617,11 +624,10 @@ static const char kS7TVRowKeyTag = 0;
         CGRectMake(12, 12, resetLeft - 12 - 8, 20)];
     nameLbl.font = [UIFont systemFontOfSize:13];
     nameLbl.textColor = enabled ? textColor : subColor;
-    nameLbl.text = L(@"sizes_self_mention_row_label");
+    nameLbl.text = L(labelKey);
     nameLbl.lineBreakMode = NSLineBreakByTruncatingTail;
     nameLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [row addSubview:nameLbl];
-    self.selfMentionRowLabel = nameLbl;
 
     UIButton *resetBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     resetBtn.frame = CGRectMake(resetLeft, 8, resetW, 28);
@@ -631,7 +637,7 @@ static const char kS7TVRowKeyTag = 0;
     [resetBtn setImage:[UIImage systemImageNamed:@"arrow.counterclockwise" withConfiguration:rCfg]
               forState:UIControlStateNormal];
     resetBtn.tintColor = subColor;
-    [resetBtn addTarget:self action:@selector(_selfMentionResetTapped:)
+    [resetBtn addTarget:self action:resetAction
         forControlEvents:UIControlEventTouchUpInside];
     [row addSubview:resetBtn];
 
@@ -640,20 +646,22 @@ static const char kS7TVRowKeyTag = 0;
     sw.on = enabled;
     sw.frame = CGRectMake(switchLeft, 6, switchW, 31);
     sw.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-    [sw addTarget:self action:@selector(_selfMentionToggleChanged:)
+    [sw addTarget:self action:toggleAction
    forControlEvents:UIControlEventValueChanged];
     [row addSubview:sw];
-    self.selfMentionSwitch = sw;
 
     UIColorWell *well = [[UIColorWell alloc] initWithFrame:CGRectMake(wellLeft, 4, wellW, wellW)];
-    well.selectedColor = cfg.selfMentionHighlightColor;
+    well.selectedColor = color;
     well.supportsAlpha = NO;
     well.enabled = enabled;
     well.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-    [well addTarget:self action:@selector(_selfMentionColorWellChanged:)
+    [well addTarget:self action:colorAction
    forControlEvents:UIControlEventValueChanged];
     [row addSubview:well];
-    self.selfMentionColorWell = well;
+
+    if (switchOut) *switchOut = sw;
+    if (wellOut) *wellOut = well;
+    if (labelOut) *labelOut = nameLbl;
 
     [scrollView addSubview:row];
     y += 44;
@@ -664,6 +672,60 @@ static const char kS7TVRowKeyTag = 0;
     [scrollView addSubview:rowSep];
 
     return y + 8;
+}
+
+- (CGFloat)_buildSelfMentionSectionInScrollView:(UIScrollView *)scrollView
+                                             atY:(CGFloat)y
+                                           width:(CGFloat)width
+                                       textColor:(UIColor *)textColor
+                                        subColor:(UIColor *)subColor
+                                        sepColor:(UIColor *)sepColor
+                                          accent:(UIColor *)accent {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    UISwitch *sw = nil;
+    UIColorWell *well = nil;
+    UILabel *label = nil;
+    CGFloat nextY = [self _buildHighlightRowInScrollView:scrollView atY:y width:width
+                                               textColor:textColor subColor:subColor
+                                                sepColor:sepColor accent:accent
+                                                labelKey:@"sizes_self_mention_row_label"
+                                                 enabled:cfg.selfMentionHighlightEnabled
+                                                   color:cfg.selfMentionHighlightColor
+                                            toggleAction:@selector(_selfMentionToggleChanged:)
+                                             colorAction:@selector(_selfMentionColorWellChanged:)
+                                             resetAction:@selector(_selfMentionResetTapped:)
+                                               switchOut:&sw wellOut:&well labelOut:&label];
+    self.selfMentionSwitch = sw;
+    self.selfMentionColorWell = well;
+    self.selfMentionRowLabel = label;
+    return nextY;
+}
+
+- (CGFloat)_buildFirstMessageSectionInScrollView:(UIScrollView *)scrollView
+                                              atY:(CGFloat)y
+                                            width:(CGFloat)width
+                                        textColor:(UIColor *)textColor
+                                         subColor:(UIColor *)subColor
+                                         sepColor:(UIColor *)sepColor
+                                           accent:(UIColor *)accent {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    UISwitch *sw = nil;
+    UIColorWell *well = nil;
+    UILabel *label = nil;
+    CGFloat nextY = [self _buildHighlightRowInScrollView:scrollView atY:y width:width
+                                               textColor:textColor subColor:subColor
+                                                sepColor:sepColor accent:accent
+                                                labelKey:@"sizes_first_message_row_label"
+                                                 enabled:cfg.showFirstMessageBadge
+                                                   color:cfg.firstMessageHighlightColor
+                                            toggleAction:@selector(_firstMessageToggleChanged:)
+                                             colorAction:@selector(_firstMessageColorWellChanged:)
+                                             resetAction:@selector(_firstMessageResetTapped:)
+                                               switchOut:&sw wellOut:&well labelOut:&label];
+    self.firstMessageSwitch = sw;
+    self.firstMessageColorWell = well;
+    self.firstMessageRowLabel = label;
+    return nextY;
 }
 
 - (void)_selfMentionToggleChanged:(UISwitch *)sw {
@@ -693,6 +755,32 @@ static const char kS7TVRowKeyTag = 0;
     self.selfMentionColorWell.enabled = YES;
     self.selfMentionSwitch.on = YES;
     self.selfMentionRowLabel.textColor = self.panelTextColor;
+    [self.fakeChatView reloadMessages];
+}
+
+- (void)_firstMessageToggleChanged:(UISwitch *)sw {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    cfg.showFirstMessageBadge = sw.on;
+    self.firstMessageColorWell.enabled = sw.on;
+    self.firstMessageRowLabel.textColor = sw.on ? self.panelTextColor : self.panelSubColor;
+    [self.fakeChatView reloadMessages];
+}
+
+- (void)_firstMessageColorWellChanged:(UIColorWell *)well {
+    if (!well.selectedColor) return;
+    [[SevenTVChatAppearanceConfig sharedConfig] setColor:well.selectedColor
+                                              forColorKey:@"firstMessageHighlightColor"];
+    [self.fakeChatView reloadMessages];
+}
+
+- (void)_firstMessageResetTapped:(UIButton *)btn {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    [cfg resetColorKeyToDefault:@"firstMessageHighlightColor"];
+    cfg.showFirstMessageBadge = YES;
+    self.firstMessageColorWell.selectedColor = cfg.firstMessageHighlightColor;
+    self.firstMessageColorWell.enabled = YES;
+    self.firstMessageSwitch.on = YES;
+    self.firstMessageRowLabel.textColor = self.panelTextColor;
     [self.fakeChatView reloadMessages];
 }
 
@@ -1065,18 +1153,13 @@ static const char kS7TVRowKeyTag = 0;
     [chatView reloadMessages];
 }
 
-// 5 messages factices couvrant tous les réglages du panneau : emote 7TV +
-// emote Twitch native + badge + pseudo (normal), sub/resub, prime (24e mois,
-// comme la référence utilisateur), gift communautaire, et un message
-// supprimé (collapsed), directement testable au toucher dans la preview.
-// 7 messages factices couvrant tous les réglages du panneau, dans un ordre
+// Messages factices couvrant tous les réglages du panneau, dans un ordre
 // volontairement mélangé (pas juste "un de chaque type à la suite") pour se
 // rapprocher d'un vrai fil de chat : gift, normal (badge + emote 7TV + emote
 // Twitch native), sub avec commentaire (badge + emote 7TV dans le corps du
-// commentaire, pas seulement la bannière), normal (badge différent, texte
-// seul), mention de soi (highlight barre + fond, voir
-// selfMentionHighlightEnabled/Color), prime avec commentaire (badge + emote
-// 7TV), message supprimé (collapsed) et message supprimé révélé.
+// commentaire, pas seulement la bannière), normal, premier message, mention
+// de soi (highlights barre + fond configurables), prime avec commentaire,
+// puis messages supprimés replié et révélé.
 - (void)_populateFakeChatStore:(S7TVChatMessageStore *)store {
     NSDate *now = [NSDate date];
 
@@ -1160,6 +1243,20 @@ static const char kS7TVRowKeyTag = 0;
     normal2.authorColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.25 alpha:1.0];
     normal2.badgeIdentifiers = @[@"vip/1"];
     [store addMessage:normal2];
+
+    // Premier message — vraie donnée du modèle (isFirstMessage), afin que le
+    // toggle, la couleur et le reset du picker puissent être vérifiés en
+    // direct sur exactement le même renderer que le chat réel.
+    S7TVChatMessage *firstMessage = [[S7TVChatMessage alloc]
+        initWithMessageID:@"s7tv_preview_first_message"
+                 timestamp:now
+              authorUserID:@"s7tv_preview_u9"
+         authorDisplayName:L(@"preview_first_message_username")
+                   rawText:L(@"preview_first_message_text")];
+    firstMessage.authorColor = [UIColor colorWithRed:0.72 green:0.38 blue:0.90 alpha:1.0];
+    firstMessage.badgeIdentifiers = @[@"subscriber/3"];
+    firstMessage.isFirstMessage = YES;
+    [store addMessage:firstMessage];
 
     // Mention de soi-même — montre le highlight (barre d'accent + fond
     // teinté, voir SevenTVChatAppearanceConfig.selfMentionHighlightEnabled/

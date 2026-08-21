@@ -253,6 +253,12 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // selfMentionHighlightColor côté rendu — voir SevenTVChatCustomView.m.
 @property (nonatomic, assign) BOOL mentionsCurrentViewer;
 
+// Tag IRC Twitch `first-msg=1`. Indique le premier message de cet
+// utilisateur dans ce chat et pilote le bandeau FIRST MESSAGE du renderer.
+// Le flag reste dans le modèle même si l'affichage est désactivé afin que le
+// toggle puisse s'appliquer immédiatement sans reparsing ni reconnexion.
+@property (nonatomic, assign) BOOL isFirstMessage;
+
 // ── Réponses / fils de discussion ───────────────────────────────────────
 // Tags IRC reply-parent-* : Twitch les duplique sur CHAQUE message qui
 // répond, donc dispo directement ici même si le message parent n'est plus

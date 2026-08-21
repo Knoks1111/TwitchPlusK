@@ -82,6 +82,11 @@ NS_ASSUME_NONNULL_BEGIN
 // justifiera, pas avant d'avoir un rendu qui marche.
 - (void)reloadMessages;
 
+// Même mise à jour globale, avec animation des changements d'état. Réservée
+// aux mutations groupées de Phase 5 (timeout/ban/CLEARCHAT global) ; le flux
+// normal reste non animé pour préserver les performances à haut débit.
+- (void)reloadMessagesAnimated:(BOOL)animated;
+
 // Identique, mais appelle completion une fois le contenu RÉELLEMENT appliqué
 // à la table (après le applySnapshot: interne, qui est asynchrone même avec
 // animatingDifferences:NO). À utiliser quand on doit mesurer le contenu
@@ -89,6 +94,10 @@ NS_ASSUME_NONNULL_BEGIN
 // -reloadMessages simple lit une hauteur pas encore à jour. Voir
 // S7TVReplyThreadPanel dans TweakSevenTV.m.
 - (void)reloadMessagesWithCompletion:(void (^ _Nullable)(void))completion;
+
+// Recharge une seule cellule sans reconstruire/recharger tout le transcript.
+// Utilisée par CLEARMSG et par le tap collapsed <-> expanded.
+- (void)refreshMessageWithID:(NSString *)messageID animated:(BOOL)animated;
 
 // Hauteur réelle du contenu (tableView.contentSize.height, cellules
 // self-sizing incluses). Force un layout complet (largeur → recalcul des

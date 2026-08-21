@@ -221,6 +221,29 @@ static void s7tv_reloadActiveChatCustomView(void) {
     });
 }
 
+// Mutations groupées de modération : même snapshot global que ci-dessus,
+// mais avec transition visuelle. Jamais utilisé pour le flux IRC normal.
+static void s7tv_reloadActiveChatCustomViewAnimated(void) {
+    SevenTVChatCustomView *view = s_activeChatCustomView;
+    if (!view) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [view reloadMessagesAnimated:YES];
+        [[S7TVReplyThreadPanel sharedPanel] refreshIfNeeded];
+    });
+}
+
+// CLEARMSG ne touche qu'un message : recharge uniquement son item diffable
+// au lieu d'invalider les 300 messages potentiellement conservés en mémoire.
+static void s7tv_reloadActiveChatMessage(NSString *messageID) {
+    if (!messageID.length) return;
+    SevenTVChatCustomView *view = s_activeChatCustomView;
+    if (!view) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [view refreshMessageWithID:messageID animated:YES];
+        [[S7TVReplyThreadPanel sharedPanel] refreshIfNeeded];
+    });
+}
+
 // ── Batching (exigence transverse #3) ────────────────────────────────────────
 // Sur une chaîne à fort volume, un reload par message individuel devient
 // coûteux (chaque reload retraverse toute la table). On regroupe donc les
@@ -455,7 +478,7 @@ static BOOL s7tv_handleModerationEvent(NSString *ircLine) {
         }
         [store markMessageDeletedByID:targetMessageID completion:^{
             [mgr log:@"[ChatCustom] 🛡 CLEARMSG appliqué (message id=%@)", targetMessageID];
-            s7tv_reloadActiveChatCustomView();
+            s7tv_reloadActiveChatMessage(targetMessageID);
         }];
         return YES;
     }
@@ -465,7 +488,7 @@ static BOOL s7tv_handleModerationEvent(NSString *ircLine) {
         [store markAllMessagesDeletedForUserID:targetUserID completion:^{
             [mgr log:@"[ChatCustom] 🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@)",
                 targetUserID, trailing.length ? trailing : @"inconnu"];
-            s7tv_reloadActiveChatCustomView();
+            s7tv_reloadActiveChatCustomViewAnimated();
         }];
     } else if (trailing.length) {
         // Une cible textuelle sans id indique une ligne ciblée malformée.
@@ -476,7 +499,7 @@ static BOOL s7tv_handleModerationEvent(NSString *ircLine) {
     } else {
         [store markAllMessagesDeletedWithCompletion:^{
             [mgr log:@"[ChatCustom] 🛡 CLEARCHAT global appliqué"];
-            s7tv_reloadActiveChatCustomView();
+            s7tv_reloadActiveChatCustomViewAnimated();
         }];
     }
     return YES;
@@ -1473,7 +1496,7 @@ static NSMutableDictionary<NSNumber *, NSMutableData *> *s7tv_apolloBuffers(void
                         // touche PAS pendingClaimID, le cooldown fera réessayer.
                         [[SevenTVManager sharedManager]
                             log:@"🎁 Channel Points debug: mutation refusée par Twitch, nouvel essai dans %.0fs — %@",
-                            kS7TVClaimRetryCooldown, payloadDict];
+                            S7TVChannelPointsClaimRetryCooldown, payloadDict];
                     }
                 } else if (found && (!payload || [payload isKindOfClass:[NSNull class]])) {
                     // "data":{"claimCommunityPoints":null} — cas du
@@ -1482,7 +1505,7 @@ static NSMutableDictionary<NSNumber *, NSMutableData *> *s7tv_apolloBuffers(void
                     // le retry cooldown reprendre la main.
                     [[SevenTVManager sharedManager]
                         log:@"🎁 Channel Points debug: mutation rejetée par Twitch (claimCommunityPoints=null), nouvel essai dans %.0fs",
-                        kS7TVClaimRetryCooldown];
+                        S7TVChannelPointsClaimRetryCooldown];
                 }
             }
         }

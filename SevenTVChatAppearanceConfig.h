@@ -99,6 +99,13 @@ typedef NS_ENUM(NSInteger, S7TVDeletedMessageRevealMode) {
 @property (nonatomic, assign) BOOL selfMentionHighlightEnabled;
 @property (nonatomic, strong) UIColor *selfMentionHighlightColor;
 
+// --- Badge FIRST MESSAGE ---
+// Réutilise exactement le même composant visuel que le highlight de mention
+// (deux barres, fond teinté, petit libellé en haut à droite), avec son toggle
+// et sa couleur indépendants. Le modèle conserve toujours first-msg=1.
+@property (nonatomic, assign) BOOL showFirstMessageBadge;
+@property (nonatomic, strong) UIColor *firstMessageHighlightColor;
+
 // --- Messages supprimés / modération ---
 // Affiche la sanction IRC dans le placeholder replié (timeout avec durée
 // humaine, ou ban permanent). Le corps révélé peut être atténué, barré

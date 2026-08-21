@@ -201,6 +201,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // Ligne fondue dans la section ci-dessus (plus de section dédiée —
         // voir 7tv-picker-sizes.m, _buildSelfMentionSectionInScrollView:).
         @"sizes_self_mention_row_label":    @[@"Vous êtes mentionné", @"You're mentioned"],
+        @"sizes_first_message_row_label":   @[@"Premier message", @"First message"],
         @"sizes_moderation_section_title":  @[@"Messages supprimés", @"Deleted messages"],
         @"sizes_deleted_preview_label":     @[@"Preview", @"Preview"],
         @"sizes_deleted_preview_disabled":  @[@"Désactivé", @"Disabled"],
@@ -228,6 +229,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"preview_username_2":              @[@"Viewer_92", @"Viewer_92"],
         @"preview_username_3":              @[@"Modo_Chill", @"Modo_Chill"],
         @"preview_message_2":               @[@"quelqu'un a vu le dernier clip ?", @"anyone see the latest clip?"],
+        @"preview_first_message_username":  @[@"NouveauViewer", @"NewViewer"],
+        @"preview_first_message_text":      @[@"c'est mon premier message ici !", @"this is my first message here!"],
         @"preview_sub_comment":             @[@"trop hype ce stream", @"this stream is so hype"],
         @"preview_prime_comment":           @[@"24 mois, toujours là !", @"24 months, still here!"],
 
@@ -291,8 +294,9 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"chat_reply_cancel_button":        @[@"Annuler", @"Cancel"],
         // Petit badge en haut à droite d'un message qui cite le viewer
         // connecté (voir S7TVChatCustomView.m,
-        // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:mentionBadgeText:).
+        // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:highlightBadgeText:).
         @"mention_badge_label":              @[@"TE MENTIONNE", @"MENTIONS YOU"],
+        @"first_message_badge_label":        @[@"PREMIER MESSAGE", @"FIRST MESSAGE"],
 
         // ── Bannière "nouveaux messages" (chat custom) ────────────────────
         @"banner_new_messages_generic":     @[@"nouveaux messages", @"new messages"],

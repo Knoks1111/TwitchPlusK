@@ -61,6 +61,10 @@ static UIColor *S7TVDefaultGiftColor(void) {
 static UIColor *S7TVDefaultSelfMentionColor(void) {
     return [UIColor colorWithRed:0.92 green:0.23 blue:0.27 alpha:1.0];
 }
+// Violet/magenta du bandeau FIRST MESSAGE natif montré dans la référence.
+static UIColor *S7TVDefaultFirstMessageColor(void) {
+    return [UIColor colorWithRed:0.82 green:0.18 blue:0.86 alpha:1.0];
+}
 
 // ── Clés NSUserDefaults ──────────────────────────────────────────────────────
 static NSString *const kS7TVCfgEmote7TVSize           = @"s7tv_cfg_emote_7tv_size";
@@ -78,6 +82,8 @@ static NSString *const kS7TVCfgPrimeColor              = @"s7tv_cfg_color_prime"
 static NSString *const kS7TVCfgGiftColor               = @"s7tv_cfg_color_gift";
 static NSString *const kS7TVCfgSelfMentionEnabled       = @"s7tv_cfg_self_mention_enabled";
 static NSString *const kS7TVCfgSelfMentionColor         = @"s7tv_cfg_color_self_mention";
+static NSString *const kS7TVCfgFirstMessageEnabled      = @"s7tv_cfg_first_message_enabled";
+static NSString *const kS7TVCfgFirstMessageColor        = @"s7tv_cfg_color_first_message";
 static NSString *const kS7TVCfgShowModerationDetails    = @"s7tv_cfg_show_moderation_details";
 static NSString *const kS7TVCfgDeletedRevealMode        = @"s7tv_cfg_deleted_reveal_mode";
 static NSString *const kS7TVCfgDeletedMessageStyle      = @"s7tv_cfg_deleted_message_style";
@@ -145,6 +151,8 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     _giftAccentColor         = S7TVDefaultGiftColor();
     _selfMentionHighlightEnabled = YES;
     _selfMentionHighlightColor   = S7TVDefaultSelfMentionColor();
+    _showFirstMessageBadge       = YES;
+    _firstMessageHighlightColor  = S7TVDefaultFirstMessageColor();
     _showModerationDetails       = YES;
     _deletedMessageRevealMode    = kDefaultDeletedRevealMode;
     _deletedMessageStyle         = kDefaultDeletedMessageStyle;
@@ -194,6 +202,11 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     NSString *selfMentionHex = [prefs stringForKey:kS7TVCfgSelfMentionColor];
     UIColor *selfMentionColor = selfMentionHex ? S7TVColorFromHexString(selfMentionHex) : nil;
     if (selfMentionColor) _selfMentionHighlightColor = selfMentionColor;
+    if ([prefs objectForKey:kS7TVCfgFirstMessageEnabled] != nil)
+        _showFirstMessageBadge = [prefs boolForKey:kS7TVCfgFirstMessageEnabled];
+    NSString *firstMessageHex = [prefs stringForKey:kS7TVCfgFirstMessageColor];
+    UIColor *firstMessageColor = firstMessageHex ? S7TVColorFromHexString(firstMessageHex) : nil;
+    if (firstMessageColor) _firstMessageHighlightColor = firstMessageColor;
     if ([prefs objectForKey:kS7TVCfgShowModerationDetails] != nil)
         _showModerationDetails = [prefs boolForKey:kS7TVCfgShowModerationDetails];
     if ([prefs objectForKey:kS7TVCfgDeletedRevealMode] != nil) {
@@ -248,6 +261,8 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     [prefs setObject:S7TVColorToHexString(self.giftAccentColor)     forKey:kS7TVCfgGiftColor];
     [prefs setBool:self.selfMentionHighlightEnabled forKey:kS7TVCfgSelfMentionEnabled];
     [prefs setObject:S7TVColorToHexString(self.selfMentionHighlightColor) forKey:kS7TVCfgSelfMentionColor];
+    [prefs setBool:self.showFirstMessageBadge forKey:kS7TVCfgFirstMessageEnabled];
+    [prefs setObject:S7TVColorToHexString(self.firstMessageHighlightColor) forKey:kS7TVCfgFirstMessageColor];
     [prefs setBool:self.showModerationDetails forKey:kS7TVCfgShowModerationDetails];
     [prefs setInteger:self.deletedMessageRevealMode forKey:kS7TVCfgDeletedRevealMode];
     [prefs setInteger:self.deletedMessageStyle forKey:kS7TVCfgDeletedMessageStyle];
@@ -265,6 +280,12 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
 // Même garanties que setSystemMessageBackgroundsEnabled: ci-dessus.
 - (void)setSelfMentionHighlightEnabled:(BOOL)selfMentionHighlightEnabled {
     _selfMentionHighlightEnabled = selfMentionHighlightEnabled;
+    [self save];
+    [self s7tv_postDidChangeNotification];
+}
+
+- (void)setShowFirstMessageBadge:(BOOL)showFirstMessageBadge {
+    _showFirstMessageBadge = showFirstMessageBadge;
     [self save];
     [self s7tv_postDidChangeNotification];
 }
@@ -338,6 +359,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
         @"primeAccentColor":    @[S7TVDefaultPrimeColor(),    kS7TVCfgPrimeColor],
         @"giftAccentColor":     @[S7TVDefaultGiftColor(),     kS7TVCfgGiftColor],
         @"selfMentionHighlightColor": @[S7TVDefaultSelfMentionColor(), kS7TVCfgSelfMentionColor],
+        @"firstMessageHighlightColor": @[S7TVDefaultFirstMessageColor(), kS7TVCfgFirstMessageColor],
     };
 }
 
@@ -394,6 +416,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     }
     [prefs removeObjectForKey:kS7TVCfgSystemBGEnabled];
     [prefs removeObjectForKey:kS7TVCfgSelfMentionEnabled];
+    [prefs removeObjectForKey:kS7TVCfgFirstMessageEnabled];
     [prefs removeObjectForKey:kS7TVCfgShowModerationDetails];
     [prefs removeObjectForKey:kS7TVCfgDeletedRevealMode];
     [prefs removeObjectForKey:kS7TVCfgDeletedMessageStyle];

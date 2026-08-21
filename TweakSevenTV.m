@@ -795,6 +795,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     msg.tokens = s7tv_tokenizeMessageWithNativeEmotes(messageText, emotesTag);
     msg.twitchEmotesTag = emotesTag;
     msg.badgeIdentifiers = s7tv_parseBadgesTag(badgesTag);
+    msg.isFirstMessage = [s7tv_tagValue(tags, @"first-msg", @"0") isEqualToString:@"1"];
 
     // Détection self-mention : scan des tokens .mention déjà résolus par le
     // tokenizer (@pseudo ET pseudo nu — voir S7TVChatToken), comparés au

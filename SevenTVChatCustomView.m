@@ -13,6 +13,12 @@
 #import "SevenTVManager.h"
 #import <math.h>
 
+// Métadonnée privée posée uniquement sur le caractère d'attachement d'une
+// emote. Le hit-test de l'appui long récupère directement le token déjà
+// résolu, sans rescanner le texte ni réinterroger le provider.
+static NSString *const kS7TVChatEmoteTokenAttributeName = @"S7TVChatEmoteToken";
+static const NSInteger kS7TVChatEmotePreviewOverlayTag = 0x7E7E71;
+
 static BOOL s7tv_isDeletedMessage(S7TVChatMessage *msg) {
     return msg.state == S7TVChatMessageStateDeletedCollapsed ||
            msg.state == S7TVChatMessageStateDeletedExpanded;
@@ -378,6 +384,38 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     if (self.onReplyBannerTap) self.onReplyBannerTap();
 }
 
+- (NSUInteger)s7tv_characterIndexAtPointInMessageLabel:(CGPoint)point
+                                        requireGlyphHit:(BOOL)requireGlyphHit {
+    NSAttributedString *attributedText = self.messageLabel.attributedText;
+    if (!attributedText.length ||
+        !CGRectContainsPoint(self.messageLabel.bounds, point)) return NSNotFound;
+
+    NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
+    NSTextStorage *textStorage = [[NSTextStorage alloc] initWithAttributedString:attributedText];
+    [textStorage addLayoutManager:layoutManager];
+
+    NSTextContainer *textContainer =
+        [[NSTextContainer alloc] initWithSize:self.messageLabel.bounds.size];
+    textContainer.lineFragmentPadding = 0;
+    textContainer.lineBreakMode = self.messageLabel.lineBreakMode;
+    textContainer.maximumNumberOfLines = self.messageLabel.numberOfLines;
+    [layoutManager addTextContainer:textContainer];
+
+    CGFloat fraction = 0;
+    NSUInteger glyphIndex = [layoutManager glyphIndexForPoint:point
+                                              inTextContainer:textContainer
+                       fractionOfDistanceThroughGlyph:&fraction];
+    if (glyphIndex >= layoutManager.numberOfGlyphs) return NSNotFound;
+    if (requireGlyphHit) {
+        CGRect glyphRect = [layoutManager boundingRectForGlyphRange:NSMakeRange(glyphIndex, 1)
+                                                    inTextContainer:textContainer];
+        if (!CGRectContainsPoint(CGRectInset(glyphRect, -2.0, -2.0), point)) return NSNotFound;
+    }
+
+    NSUInteger characterIndex = [layoutManager characterIndexForGlyphAtIndex:glyphIndex];
+    return characterIndex < attributedText.length ? characterIndex : NSNotFound;
+}
+
 // Gère 2 choses sur le MÊME geste : ouvrir un lien tapé (comportement
 // existant), ET — nouveau — ouvrir le fil si le message est une réponse et
 // qu'aucun lien n'a été tapé à cet endroit précis. messageLabel est ancré
@@ -392,29 +430,16 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     }
 
     NSAttributedString *attributedText = self.messageLabel.attributedText;
-    if (attributedText.length) {
-        NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
-        NSTextStorage *textStorage = [[NSTextStorage alloc] initWithAttributedString:attributedText];
-        [textStorage addLayoutManager:layoutManager];
-
-        NSTextContainer *textContainer = [[NSTextContainer alloc] initWithSize:self.messageLabel.bounds.size];
-        textContainer.lineFragmentPadding = 0;
-        textContainer.lineBreakMode = self.messageLabel.lineBreakMode;
-        textContainer.maximumNumberOfLines = self.messageLabel.numberOfLines;
-        [layoutManager addTextContainer:textContainer];
-
-        CGPoint tapPoint = [gesture locationInView:self.messageLabel];
-        NSUInteger charIndex = [layoutManager characterIndexForPoint:tapPoint
-                                                       inTextContainer:textContainer
-                              fractionOfDistanceBetweenInsertionPoints:NULL];
-        if (charIndex < attributedText.length) {
-            id linkValue = [attributedText attribute:NSLinkAttributeName atIndex:charIndex effectiveRange:NULL];
-            NSURL *url = [linkValue isKindOfClass:[NSURL class]] ? linkValue : nil;
-            if (!url && [linkValue isKindOfClass:[NSString class]]) url = [NSURL URLWithString:linkValue];
-            if (url) {
-                [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-                return; // un lien tapé prend le dessus, pas d'ouverture de fil en plus
-            }
+    CGPoint tapPoint = [gesture locationInView:self.messageLabel];
+    NSUInteger charIndex = [self s7tv_characterIndexAtPointInMessageLabel:tapPoint
+                                                          requireGlyphHit:NO];
+    if (charIndex != NSNotFound) {
+        id linkValue = [attributedText attribute:NSLinkAttributeName atIndex:charIndex effectiveRange:NULL];
+        NSURL *url = [linkValue isKindOfClass:[NSURL class]] ? linkValue : nil;
+        if (!url && [linkValue isKindOfClass:[NSString class]]) url = [NSURL URLWithString:linkValue];
+        if (url) {
+            [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+            return; // un lien tapé prend le dessus, pas d'ouverture de fil en plus
         }
     }
 
@@ -439,6 +464,14 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 @property (nonatomic, assign) NSUInteger pendingNewMessagesCount;
 @property (nonatomic, strong) UIView *unseenMessagesBanner;
 @property (nonatomic, strong) UILabel *unseenMessagesBannerLabel;
+// Fiche compacte d'emote affichée au-dessus du chat après appui long.
+// Une seule par instance ; l'overlay plein écran intercepte le tap extérieur
+// afin de fermer proprement la fiche sans cliquer dans le chat derrière.
+@property (nonatomic, strong) UIControl *emotePreviewOverlay;
+@property (nonatomic, strong) S7TVChatToken *previewedEmoteToken;
+@property (nonatomic, weak) UIImageView *emotePreviewImageView;
+@property (nonatomic, weak) UIButton *emotePreviewFavoriteButton;
+- (void)s7tv_dismissEmotePreview;
 @end
 
 @implementation SevenTVChatCustomView
@@ -561,6 +594,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 }
 
 - (void)dealloc {
+    [self.emotePreviewOverlay removeFromSuperview];
     [[NSNotificationCenter defaultCenter] removeObserver:self
         name:UIDeviceOrientationDidChangeNotification object:nil];
     [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
@@ -589,6 +623,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 // on revérifie explicitement après chaque rotation, avec un court délai
 // pour laisser l'animation de rotation/repositionnement Twitch se stabiliser.
 - (void)s7tv_handleDeviceOrientationChange:(NSNotification *)note {
+    [self s7tv_dismissEmotePreview];
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -884,9 +919,155 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
 #pragma mark - UITableViewDelegate
 
+- (void)s7tv_dismissEmotePreview {
+    [self.emotePreviewOverlay removeFromSuperview];
+    self.emotePreviewOverlay = nil;
+    self.previewedEmoteToken = nil;
+    self.emotePreviewImageView = nil;
+    self.emotePreviewFavoriteButton = nil;
+}
+
+- (void)s7tv_refreshEmotePreviewFavoriteState {
+    NSString *emoteID = self.previewedEmoteToken.providerEmoteID;
+    BOOL favorited = [[SevenTVManager sharedManager] isEmoteFavorited:emoteID];
+    self.emotePreviewFavoriteButton.selected = favorited;
+    self.emotePreviewFavoriteButton.accessibilityLabel = favorited
+        ? L(@"chat_emote_remove_favorite") : L(@"chat_emote_add_favorite");
+}
+
+- (void)s7tv_togglePreviewedEmoteFavorite {
+    S7TVChatToken *token = self.previewedEmoteToken;
+    if (token.type != S7TVChatTokenTypeEmote7TV || !token.providerEmoteID.length) return;
+
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    BOOL wasFavorited = [manager isEmoteFavorited:token.providerEmoteID];
+    [manager setEmote:token.providerEmoteID favorited:!wasFavorited];
+    NSString *logFormat = wasFavorited ? @"💔 Favori retiré depuis le chat : %@"
+                                         : @"⭐ Favori ajouté depuis le chat : %@";
+    [manager log:logFormat, token.text ?: token.providerEmoteID];
+    [self s7tv_refreshEmotePreviewFavoriteState];
+
+    UINotificationFeedbackGenerator *feedback = [[UINotificationFeedbackGenerator alloc] init];
+    [feedback notificationOccurred:UINotificationFeedbackTypeSuccess];
+}
+
+- (void)s7tv_showEmotePreviewForToken:(S7TVChatToken *)token
+                        atWindowPoint:(CGPoint)windowPoint {
+    if (token.type != S7TVChatTokenTypeEmote7TV ||
+        !token.providerEmoteID.length || !token.resolvedEmote) return;
+
+    UIWindow *window = self.window;
+    if (!window) return;
+    [self s7tv_dismissEmotePreview];
+    [[window viewWithTag:kS7TVChatEmotePreviewOverlayTag] removeFromSuperview];
+
+    UIControl *overlay = [[UIControl alloc] initWithFrame:window.bounds];
+    overlay.tag = kS7TVChatEmotePreviewOverlayTag;
+    overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    overlay.backgroundColor = [UIColor colorWithWhite:0 alpha:0.10];
+    [overlay addTarget:self action:@selector(s7tv_dismissEmotePreview)
+      forControlEvents:UIControlEventTouchUpInside];
+    [window addSubview:overlay];
+    self.emotePreviewOverlay = overlay;
+    self.previewedEmoteToken = token;
+
+    const CGFloat cardWidth = 158.0;
+    const CGFloat cardHeight = 150.0;
+    UIEdgeInsets safeInsets = window.safeAreaInsets;
+    CGFloat minX = safeInsets.left + 8.0;
+    CGFloat maxX = window.bounds.size.width - safeInsets.right - cardWidth - 8.0;
+    CGFloat cardX = MIN(MAX(windowPoint.x - cardWidth * 0.5, minX), MAX(minX, maxX));
+    CGFloat minY = safeInsets.top + 8.0;
+    CGFloat maxY = window.bounds.size.height - safeInsets.bottom - cardHeight - 8.0;
+    CGFloat cardY = windowPoint.y - cardHeight - 12.0;
+    if (cardY < minY) cardY = windowPoint.y + 12.0;
+    cardY = MIN(MAX(cardY, minY), MAX(minY, maxY));
+
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(cardX, cardY, cardWidth, cardHeight)];
+    card.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+    card.layer.cornerRadius = 11.0;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.14].CGColor;
+    card.layer.shadowColor = [UIColor blackColor].CGColor;
+    card.layer.shadowOpacity = 0.35;
+    card.layer.shadowRadius = 8.0;
+    card.layer.shadowOffset = CGSizeMake(0, 4);
+    [overlay addSubview:card];
+
+    UIImageView *imageView = [[UIImageView alloc] init];
+    imageView.translatesAutoresizingMaskIntoConstraints = NO;
+    imageView.contentMode = UIViewContentModeScaleAspectFit;
+    [card addSubview:imageView];
+    self.emotePreviewImageView = imageView;
+
+    UILabel *nameLabel = [[UILabel alloc] init];
+    nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    nameLabel.text = token.text ?: @"";
+    nameLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    nameLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.90];
+    nameLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:nameLabel];
+
+    UIButton *favoriteButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    favoriteButton.translatesAutoresizingMaskIntoConstraints = NO;
+    UIImageSymbolConfiguration *starConfig =
+        [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold];
+    [favoriteButton setImage:[UIImage systemImageNamed:@"star" withConfiguration:starConfig]
+                    forState:UIControlStateNormal];
+    [favoriteButton setImage:[UIImage systemImageNamed:@"star.fill" withConfiguration:starConfig]
+                    forState:UIControlStateSelected];
+    favoriteButton.tintColor = [UIColor colorWithRed:0.65 green:0.45 blue:1.0 alpha:1.0];
+    favoriteButton.backgroundColor = [UIColor colorWithRed:0.65 green:0.45 blue:1.0 alpha:0.12];
+    favoriteButton.layer.cornerRadius = 15.0;
+    [favoriteButton addTarget:self action:@selector(s7tv_togglePreviewedEmoteFavorite)
+             forControlEvents:UIControlEventTouchUpInside];
+    [card addSubview:favoriteButton];
+    self.emotePreviewFavoriteButton = favoriteButton;
+
+    [NSLayoutConstraint activateConstraints:@[
+        [imageView.topAnchor constraintEqualToAnchor:card.topAnchor constant:10],
+        [imageView.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12],
+        [imageView.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12],
+        [imageView.heightAnchor constraintEqualToConstant:96],
+
+        [nameLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12],
+        [nameLabel.trailingAnchor constraintLessThanOrEqualToAnchor:favoriteButton.leadingAnchor constant:-8],
+        [nameLabel.centerYAnchor constraintEqualToAnchor:favoriteButton.centerYAnchor],
+
+        [favoriteButton.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10],
+        [favoriteButton.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8],
+        [favoriteButton.widthAnchor constraintEqualToConstant:30],
+        [favoriteButton.heightAnchor constraintEqualToConstant:30],
+    ]];
+
+    id<S7TVResolvedEmote> emote = token.resolvedEmote;
+    UIImage *previewImage = nil;
+    if (emote.isAnimated) {
+        previewImage = [[SevenTVEmoteAnimationEngine sharedEngine]
+            currentFrameForKey:emote.imageURL.absoluteString];
+    }
+    if (!previewImage) {
+        previewImage = [[SevenTVEmoteImageCache sharedCache] cachedImageForResolvedEmote:emote];
+    }
+    imageView.image = previewImage;
+    if (!previewImage) {
+        NSString *expectedEmoteID = [token.providerEmoteID copy];
+        __weak typeof(self) weakSelf = self;
+        [[SevenTVEmoteImageCache sharedCache] imageForResolvedEmote:emote
+            completion:^(UIImage * _Nullable image) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf ||
+                ![strongSelf.previewedEmoteToken.providerEmoteID isEqualToString:expectedEmoteID]) return;
+            strongSelf.emotePreviewImageView.image = image;
+        }];
+    }
+
+    [self s7tv_refreshEmotePreviewFavoriteState];
+    [window bringSubviewToFront:overlay];
+}
+
 - (void)s7tv_handleMessageLongPress:(UILongPressGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateBegan) return;
-    if (!self.onReplyTargetSelected) return;
 
     CGPoint point = [gesture locationInView:self.tableView];
     NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
@@ -894,6 +1075,28 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
     NSString *messageID = [self.dataSource itemIdentifierForIndexPath:indexPath];
     S7TVChatMessage *message = self.messagesByID[messageID];
+
+    S7TVChatCustomCell *cell = (S7TVChatCustomCell *)[self.tableView cellForRowAtIndexPath:indexPath];
+    CGPoint labelPoint = cell ? [gesture locationInView:cell.messageLabel] : CGPointZero;
+    NSUInteger characterIndex = cell
+        ? [cell s7tv_characterIndexAtPointInMessageLabel:labelPoint requireGlyphHit:YES]
+        : NSNotFound;
+    if (characterIndex != NSNotFound) {
+        S7TVChatToken *emoteToken = [cell.messageLabel.attributedText
+            attribute:kS7TVChatEmoteTokenAttributeName
+              atIndex:characterIndex
+       effectiveRange:NULL];
+        if ([emoteToken isKindOfClass:[S7TVChatToken class]]) {
+            CGPoint windowPoint = [gesture locationInView:self.window];
+            [self s7tv_showEmotePreviewForToken:emoteToken atWindowPoint:windowPoint];
+            UIImpactFeedbackGenerator *feedback =
+                [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+            [feedback impactOccurred];
+            return;
+        }
+    }
+
+    if (!self.onReplyTargetSelected) return;
     NSString *username = message.authorDisplayName;
     if (!messageID.length || !username.length) return;
 
@@ -1428,7 +1631,17 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
             CGFloat y = cfg.emoteVerticalOffset - 4.0;
             attachment.bounds = CGRectMake(0, y, targetWidth, targetHeight);
 
-            [result appendAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];
+            NSMutableAttributedString *attachmentText =
+                [[NSAttributedString attributedStringWithAttachment:attachment] mutableCopy];
+            // Le picker ne contient que les emotes 7TV : seules celles-ci
+            // exposent donc l'action Favori. Une emote Twitch native garde
+            // le comportement d'appui long normal (réponse à l'auteur).
+            if (token.type == S7TVChatTokenTypeEmote7TV && attachmentText.length > 0) {
+                [attachmentText addAttribute:kS7TVChatEmoteTokenAttributeName
+                                       value:token
+                                       range:NSMakeRange(0, attachmentText.length)];
+            }
+            [result appendAttributedString:attachmentText];
             continue;
         }
 

@@ -310,6 +310,10 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // Frontière historique/live affichée au JOIN du chat custom.
         @"chat_history_welcome_format":      @[@"Bienvenue sur le chat de %@ !", @"Welcome to %@'s chat!"],
         @"chat_history_new_messages":        @[@"Nouveautés", @"New messages"],
+        // %@ 1 = utilisateur, %@ 2 = titre exact reçu de Twitch. Les
+        // récompenses avec saisie affichent directement leur titre au-dessus
+        // du message et n'utilisent donc pas ce connecteur.
+        @"chat_channel_points_redeemed_format": @[@"%@ a récupéré : %@", @"%@ redeemed: %@"],
 
         // ── Verrouillage de rotation ──────────────────────────────────────
         @"lock_locked":                     @[@"Verrouillé", @"Locked"],

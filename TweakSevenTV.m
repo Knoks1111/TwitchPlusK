@@ -510,6 +510,21 @@ static NSString *s7tv_tagValue(NSDictionary<NSString *, NSString *> *tags,
     return v.length ? v : defaultValue;
 }
 
+// Conversion #RRGGBB partagée par les parseurs IRC et PubSub. Une valeur
+// absente ou invalide reste nil : le renderer appliquera son fallback.
+static UIColor * _Nullable s7tv_colorFromHexString(NSString *hex) {
+    if (![hex isKindOfClass:[NSString class]] || hex.length < 6) return nil;
+    NSString *digits = [hex hasPrefix:@"#"] ? [hex substringFromIndex:1] : hex;
+    if (digits.length != 6) return nil;
+    unsigned int rgb = 0;
+    NSScanner *scanner = [NSScanner scannerWithString:digits];
+    if (![scanner scanHexInt:&rgb] || !scanner.isAtEnd) return nil;
+    return [UIColor colorWithRed:((rgb >> 16) & 0xFF) / 255.0
+                           green:((rgb >> 8) & 0xFF) / 255.0
+                            blue:(rgb & 0xFF) / 255.0
+                           alpha:1.0];
+}
+
 // Décode l'échappement générique des valeurs de tags IRC (IRCv3 tag
 // escaping) : \s = espace, \: = point-virgule, \\ = backslash, \r, \n.
 // C'est ce qui manquait et causait l'affichage brut "Mais\sdu\sscoup\s..."
@@ -893,6 +908,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     NSString *colorHex     = s7tv_tagValue(tags, @"color", @"");
     NSString *emotesTag    = s7tv_tagValue(tags, @"emotes", @"");
     NSString *badgesTag    = s7tv_tagValue(tags, @"badges", @"");
+    NSString *customRewardID = s7tv_tagValue(tags, @"custom-reward-id", @"");
 
     // ── Réponses / fils de discussion ───────────────────────────────────
     // reply-parent-msg-id = message immédiatement au-dessus (juste pour le
@@ -912,6 +928,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
                                                      authorDisplayName:displayName
                                                                rawText:messageText];
     msg.isActionMessage = isActionMessage;
+    msg.channelPointRewardID = customRewardID.length ? customRewardID : nil;
     if (replyParentMsgID.length) {
         msg.replyParentMessageID   = replyParentMsgID;
         // reply-parent-user-login est le pseudo de connexion (minuscules,
@@ -926,18 +943,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
         msg.replyParentBodyPreview = s7tv_tagValue(tags, @"reply-parent-msg-body", @"");
         msg.replyThreadRootID = replyThreadRootID;
     }
-    if (colorHex.length >= 7) {
-        // Format "#RRGGBB" — parsing tolérant : couleur nil (fallback blanc
-        // côté rendu) si le hex ne parse pas plutôt que crasher.
-        unsigned int rgb = 0;
-        NSScanner *scanner = [NSScanner scannerWithString:[colorHex substringFromIndex:1]];
-        if ([scanner scanHexInt:&rgb]) {
-            msg.authorColor = [UIColor colorWithRed:((rgb >> 16) & 0xFF) / 255.0
-                                               green:((rgb >> 8)  & 0xFF) / 255.0
-                                                blue:(rgb         & 0xFF) / 255.0
-                                               alpha:1.0];
-        }
-    }
+    msg.authorColor = s7tv_colorFromHexString(colorHex);
 
     // Tokenisation à la construction, pas au rendu (Phase 2) : chaque emote
     // du message (7TV comme Twitch native) a déjà ses dimensions connues
@@ -1146,16 +1152,7 @@ static S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(NSString *ircLine) {
     msg.systemInfo   = info;
     msg.systemPhrase = s7tv_buildSystemMessagePhrase(info);
 
-    if (colorHex.length >= 7) {
-        unsigned int rgb = 0;
-        NSScanner *scanner = [NSScanner scannerWithString:[colorHex substringFromIndex:1]];
-        if ([scanner scanHexInt:&rgb]) {
-            msg.authorColor = [UIColor colorWithRed:((rgb >> 16) & 0xFF) / 255.0
-                                               green:((rgb >> 8)  & 0xFF) / 255.0
-                                                blue:(rgb         & 0xFF) / 255.0
-                                               alpha:1.0];
-        }
-    }
+    msg.authorColor = s7tv_colorFromHexString(colorHex);
 
     // Commentaire optionnel attaché (ex: resub avec message) — tokenisé
     // comme un message normal, rendu sous la bannière système (voir
@@ -1167,6 +1164,248 @@ static S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(NSString *ircLine) {
     msg.badgeIdentifiers = s7tv_parseBadgesTag(badgesTag);
 
     return msg;
+}
+
+
+// ────────────────────────────────────────────────────────────
+// MARK: - Récompenses de points de chaîne (PubSub reward-redeemed)
+// ────────────────────────────────────────────────────────────
+
+static id _Nullable s7tv_JSONValueForKeys(NSDictionary *dictionary,
+                                           NSArray<NSString *> *keys) {
+    if (![dictionary isKindOfClass:[NSDictionary class]]) return nil;
+    for (NSString *key in keys) {
+        id value = dictionary[key];
+        if (value && value != [NSNull null]) return value;
+    }
+    return nil;
+}
+
+static NSString *s7tv_JSONStringForKeys(NSDictionary *dictionary,
+                                        NSArray<NSString *> *keys) {
+    id value = s7tv_JSONValueForKeys(dictionary, keys);
+    if ([value isKindOfClass:[NSString class]]) return value;
+    if ([value isKindOfClass:[NSNumber class]]) return [value stringValue];
+    return @"";
+}
+
+static NSDictionary * _Nullable s7tv_JSONDictionaryForKeys(NSDictionary *dictionary,
+                                                            NSArray<NSString *> *keys) {
+    id value = s7tv_JSONValueForKeys(dictionary, keys);
+    return [value isKindOfClass:[NSDictionary class]] ? value : nil;
+}
+
+static NSInteger s7tv_JSONIntegerForKeys(NSDictionary *dictionary,
+                                         NSArray<NSString *> *keys) {
+    id value = s7tv_JSONValueForKeys(dictionary, keys);
+    return [value respondsToSelector:@selector(integerValue)] ? [value integerValue] : 0;
+}
+
+static BOOL s7tv_JSONBoolForKeys(NSDictionary *dictionary,
+                                 NSArray<NSString *> *keys) {
+    id value = s7tv_JSONValueForKeys(dictionary, keys);
+    return [value respondsToSelector:@selector(boolValue)] ? [value boolValue] : NO;
+}
+
+// Twitch alterne snake_case (PubSub) et camelCase (GQL) pour les mêmes
+// images. Cette sélection unique accepte les deux schémas, préfère le 2x
+// adapté à la petite icône du chat, puis retombe proprement sur 1x/4x.
+static NSString *s7tv_channelPointImageURLString(NSDictionary *image) {
+    return s7tv_JSONStringForKeys(image, @[
+        @"url_2x", @"url2x", @"url", @"url_1x", @"url1x", @"url_4x", @"url4x"
+    ]);
+}
+
+static NSURL * _Nullable s7tv_channelPointImageURL(NSDictionary *reward) {
+    NSDictionary *image = s7tv_JSONDictionaryForKeys(reward, @[@"image"]);
+    NSString *urlString = s7tv_channelPointImageURLString(image);
+    if (!urlString.length) {
+        NSDictionary *defaultImage = s7tv_JSONDictionaryForKeys(reward,
+            @[@"default_image", @"defaultImage"]);
+        urlString = s7tv_channelPointImageURLString(defaultImage);
+    }
+    return urlString.length ? [NSURL URLWithString:urlString] : nil;
+}
+
+static NSDate *s7tv_channelPointTimestamp(NSString *rawTimestamp) {
+    if (!rawTimestamp.length) return [NSDate date];
+    static NSISO8601DateFormatter *withFractions = nil;
+    static NSISO8601DateFormatter *withoutFractions = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        withFractions = [NSISO8601DateFormatter new];
+        withFractions.formatOptions = NSISO8601DateFormatWithInternetDateTime |
+                                      NSISO8601DateFormatWithFractionalSeconds;
+        withoutFractions = [NSISO8601DateFormatter new];
+        withoutFractions.formatOptions = NSISO8601DateFormatWithInternetDateTime;
+    });
+    NSDate *date = nil;
+    @synchronized (withFractions) {
+        date = [withFractions dateFromString:rawTimestamp];
+        if (!date) date = [withoutFractions dateFromString:rawTimestamp];
+    }
+    return date ?: [NSDate date];
+}
+
+// Une récompense avec saisie produit généralement deux transports pour le
+// même contenu : reward-redeemed (PubSub, riche en métadonnées) puis un
+// PRIVMSG custom-reward-id (IRC, riche en badges/emotes). On mémorise
+// brièvement le couple utilisateur/récompense déjà rendu par PubSub pour
+// supprimer uniquement son PRIVMSG compagnon, jamais le chat normal.
+static NSString *s7tv_channelPointCompanionKey(NSString *userID, NSString *rewardID) {
+    if (!userID.length || !rewardID.length) return @"";
+    return [NSString stringWithFormat:@"%@|%@", userID, rewardID];
+}
+
+static NSMutableDictionary<NSString *, NSDate *> *s7tv_recentChannelPointCompanions(void) {
+    static NSMutableDictionary<NSString *, NSDate *> *entries = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ entries = [NSMutableDictionary dictionary]; });
+    return entries;
+}
+
+static void s7tv_registerChannelPointCompanionToSuppress(NSString *userID,
+                                                          NSString *rewardID) {
+    NSString *key = s7tv_channelPointCompanionKey(userID, rewardID);
+    if (!key.length) return;
+    NSMutableDictionary *entries = s7tv_recentChannelPointCompanions();
+    @synchronized (entries) {
+        NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-8.0];
+        for (NSString *existingKey in [entries.allKeys copy]) {
+            if ([entries[existingKey] compare:cutoff] == NSOrderedAscending) {
+                [entries removeObjectForKey:existingKey];
+            }
+        }
+        entries[key] = [NSDate date];
+    }
+}
+
+static BOOL s7tv_shouldSuppressChannelPointCompanion(S7TVChatMessage *message) {
+    NSString *key = s7tv_channelPointCompanionKey(message.authorUserID,
+                                                   message.channelPointRewardID);
+    if (!key.length) return NO;
+    NSMutableDictionary *entries = s7tv_recentChannelPointCompanions();
+    @synchronized (entries) {
+        NSDate *date = entries[key];
+        return date && [[NSDate date] timeIntervalSinceDate:date] <= 8.0;
+    }
+}
+
+static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromRedemption(
+    NSDictionary *redemption) {
+    if (![redemption isKindOfClass:[NSDictionary class]]) return nil;
+
+    NSDictionary *reward = s7tv_JSONDictionaryForKeys(redemption, @[@"reward"]);
+    NSDictionary *user = s7tv_JSONDictionaryForKeys(redemption, @[@"user"]);
+    NSString *redemptionID = s7tv_JSONStringForKeys(redemption, @[@"id"]);
+    NSString *rewardID = s7tv_JSONStringForKeys(reward, @[@"id"]);
+    NSString *title = s7tv_JSONStringForKeys(reward, @[@"title"]);
+    if (!redemptionID.length || !rewardID.length || !title.length) return nil;
+
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    NSString *channelID = s7tv_JSONStringForKeys(redemption, @[@"channel_id", @"channelID"]);
+    if (!channelID.length) {
+        channelID = s7tv_JSONStringForKeys(reward, @[@"channel_id", @"channelID"]);
+    }
+    if (channelID.length && manager.currentChannelTwitchID.length &&
+        ![channelID isEqualToString:manager.currentChannelTwitchID]) {
+        return nil;
+    }
+
+    NSString *userID = s7tv_JSONStringForKeys(user, @[@"id"]);
+    NSString *displayName = s7tv_JSONStringForKeys(user, @[@"display_name", @"displayName"]);
+    if (!displayName.length) displayName = s7tv_JSONStringForKeys(user, @[@"login"]);
+    if (!displayName.length) displayName = @"???";
+
+    S7TVChannelPointRewardInfo *info = [S7TVChannelPointRewardInfo new];
+    info.rewardID = rewardID;
+    info.title = title;
+    info.prompt = s7tv_JSONStringForKeys(reward, @[@"prompt"]);
+    info.pricingType = s7tv_JSONStringForKeys(reward, @[@"pricing_type", @"pricingType"]);
+    info.cost = s7tv_JSONIntegerForKeys(reward, @[@"cost"]);
+    if (info.cost <= 0 && [info.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame) {
+        info.cost = s7tv_JSONIntegerForKeys(reward, @[@"bits_cost", @"bitsCost"]);
+    }
+    info.isUserInputRequired = s7tv_JSONBoolForKeys(reward,
+        @[@"is_user_input_required", @"isUserInputRequired"]);
+    NSString *userInput = s7tv_JSONStringForKeys(redemption,
+        @[@"user_input", @"userInput"]);
+    info.userInput = userInput.length ? userInput : nil;
+    info.accentColor = s7tv_colorFromHexString(s7tv_JSONStringForKeys(reward,
+        @[@"background_color", @"backgroundColor"]));
+    NSURL *rewardImageURL = s7tv_channelPointImageURL(reward);
+    if (rewardImageURL) info.imageURL = rewardImageURL;
+
+    NSString *rawTimestamp = s7tv_JSONStringForKeys(redemption,
+        @[@"redeemed_at", @"redeemedAt"]);
+    S7TVChatMessage *message = [[S7TVChatMessage alloc]
+        initWithMessageID:redemptionID
+                timestamp:s7tv_channelPointTimestamp(rawTimestamp)
+             authorUserID:userID ?: @""
+        authorDisplayName:displayName
+                  rawText:userInput ?: @""];
+    message.type = S7TVChatMessageTypeChannelPointRedemption;
+    message.channelPointRewardInfo = info;
+    message.channelPointRewardID = rewardID;
+    message.authorColor = [[SevenTVChatUserColorRegistry sharedRegistry]
+        colorForUsername:displayName];
+    if (userInput.length) {
+        message.tokens = s7tv_tokenizeMessageWithNativeEmotes(userInput, @"");
+        s7tv_registerChannelPointCompanionToSuppress(userID, rewardID);
+    }
+    return message;
+}
+
+static void s7tv_collectChannelPointMessages(id object,
+                                              NSMutableArray<S7TVChatMessage *> *messages) {
+    if ([object isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dictionary = object;
+        NSString *type = s7tv_JSONStringForKeys(dictionary, @[@"type"]);
+        if ([type isEqualToString:@"reward-redeemed"] ||
+            [type isEqualToString:@"reward_redeemed"]) {
+            NSDictionary *data = s7tv_JSONDictionaryForKeys(dictionary, @[@"data"]);
+            NSDictionary *redemption = s7tv_JSONDictionaryForKeys(data, @[@"redemption"]);
+            S7TVChatMessage *message = s7tv_channelPointMessageFromRedemption(redemption);
+            if (message) [messages addObject:message];
+            return;
+        }
+
+        [dictionary enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+            // L'enveloppe WebSocket Twitch place le vrai payload PubSub dans
+            // une chaîne JSON. On ne reparcourt comme JSON que ce champ afin
+            // de ne pas tenter de décoder chaque titre/prompt utilisateur.
+            if ([key isKindOfClass:[NSString class]] &&
+                [key caseInsensitiveCompare:@"pubsub"] == NSOrderedSame &&
+                [value isKindOfClass:[NSString class]]) {
+                NSData *nestedData = [value dataUsingEncoding:NSUTF8StringEncoding];
+                id nested = nestedData.length
+                    ? [NSJSONSerialization JSONObjectWithData:nestedData options:0 error:nil]
+                    : nil;
+                if (nested) s7tv_collectChannelPointMessages(nested, messages);
+            } else if ([value isKindOfClass:[NSDictionary class]] ||
+                       [value isKindOfClass:[NSArray class]]) {
+                s7tv_collectChannelPointMessages(value, messages);
+            }
+        }];
+    } else if ([object isKindOfClass:[NSArray class]]) {
+        for (id value in (NSArray *)object) {
+            s7tv_collectChannelPointMessages(value, messages);
+        }
+    }
+}
+
+static NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
+    NSString *text) {
+    if (![text containsString:@"reward-redeemed"] &&
+        ![text containsString:@"reward_redeemed"]) return @[];
+    NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
+    id root = data.length
+        ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]
+        : nil;
+    if (!root) return @[];
+    NSMutableArray<S7TVChatMessage *> *messages = [NSMutableArray array];
+    s7tv_collectChannelPointMessages(root, messages);
+    return messages;
 }
 
 
@@ -2041,6 +2280,17 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                     s7tv_logChannelPointWebSocketDiagnostic(textToProcess);
 
                     BOOL addedMessage = NO;
+                    // Les notifications PubSub sont des enveloppes JSON et
+                    // non des lignes IRC. Elles doivent être extraites avant
+                    // le split ci-dessous. Le store déduplique les deux
+                    // abonnements Twitch grâce à redemption.id utilisé comme
+                    // messageID.
+                    for (S7TVChatMessage *rewardMessage in
+                         s7tv_channelPointMessagesFromWebSocketText(textToProcess)) {
+                        [[SevenTVManager sharedManager].chatMessageStore
+                            addMessage:rewardMessage];
+                        addedMessage = YES;
+                    }
                     NSArray<NSString *> *ircLines = [textToProcess
                         componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
                     for (NSString *rawLine in ircLines) {
@@ -2064,6 +2314,44 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                         S7TVChatMessage *chatMsg = s7tv_parsePRIVMSG(ircLine);
                         if (!chatMsg) chatMsg = s7tv_parseUSERNOTICE(ircLine);
                         if (!chatMsg) continue;
+
+                        if (chatMsg.channelPointRewardID.length) {
+                            // PubSub et IRC arrivent presque simultanément,
+                            // parfois dans l'ordre inverse. Cette attente ne
+                            // touche QUE le PRIVMSG d'une récompense avec
+                            // saisie ; le chat ordinaire reste instantané.
+                            S7TVChatMessage *pendingRewardCompanion = chatMsg;
+                            S7TVChatMessageStore *rewardStore =
+                                [SevenTVManager sharedManager].chatMessageStore;
+                            NSUInteger rewardStoreGeneration = rewardStore.generation;
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                           (int64_t)(0.35 * NSEC_PER_SEC)),
+                                           dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                                // Un JOIN intervenu pendant les 350 ms a
+                                // reconstruit le store : ne jamais injecter
+                                // le message retardé de l'ancienne chaîne.
+                                if (rewardStore.generation != rewardStoreGeneration) return;
+                                if (s7tv_shouldSuppressChannelPointCompanion(
+                                        pendingRewardCompanion)) {
+                                    [rewardStore mergeChannelPointCompanionMessage:
+                                        pendingRewardCompanion completion:^(NSString *mergedID) {
+                                            if (mergedID.length) {
+                                                s7tv_reloadActiveChatMessage(mergedID);
+                                            } else if (rewardStore.generation == rewardStoreGeneration) {
+                                                // Filet de sécurité si le
+                                                // PubSub a été vu mais sa
+                                                // ligne n'a pas été stockée.
+                                                [rewardStore addMessage:pendingRewardCompanion];
+                                                s7tv_scheduleChatCustomReload();
+                                            }
+                                        }];
+                                    return;
+                                }
+                                [rewardStore addMessage:pendingRewardCompanion];
+                                s7tv_scheduleChatCustomReload();
+                            });
+                            continue;
+                        }
                         [[SevenTVManager sharedManager].chatMessageStore addMessage:chatMsg];
                         addedMessage = YES;
                     }

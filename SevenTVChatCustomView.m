@@ -367,6 +367,20 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     }
 }
 
+// Les utilisations de points reprennent la barre/fond des messages système,
+// mais pas leur icône SF Symbol : l'icône réelle de la récompense est déjà
+// affichée dans le texte, juste avant son coût. L'inset réduit évite donc un
+// trou vide à gauche tout en laissant respirer la barre.
+- (void)s7tv_configureChannelPointAccentWithColor:(nullable UIColor *)accentColor {
+    UIColor *resolvedColor = accentColor ?: [UIColor colorWithWhite:0.72 alpha:1.0];
+    [self s7tv_configureSystemAccentWithColor:resolvedColor
+                                      iconName:nil
+                             backgroundEnabled:NO
+                           highlightBadgeText:nil];
+    self.systemIconView.hidden = YES;
+    self.messageLabelLeadingConstraint.constant = 18.0;
+}
+
 // username nil/vide → pas une réponse, bandeau masqué, messageLabel reprend
 // sa position normale (top = contentView.top, pilotée par
 // s7tv_configureSystemAccentWithColor:...). Simplification connue : si un
@@ -1037,6 +1051,11 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     // accents système/mention : l'atténuation doit rester le signal visuel
     // prioritaire et ne pas être confondue avec un message encore actif.
     if (msg.state == S7TVChatMessageStateNormal &&
+        msg.type == S7TVChatMessageTypeChannelPointRedemption &&
+        msg.channelPointRewardInfo) {
+        [cell s7tv_configureChannelPointAccentWithColor:
+            msg.channelPointRewardInfo.accentColor];
+    } else if (msg.state == S7TVChatMessageStateNormal &&
         msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
         UIColor *accentColor; NSString *iconName;
         switch (msg.systemInfo.kind) {
@@ -1829,6 +1848,17 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
     }
 }
 
+static NSString *s7tv_channelPointCostString(NSInteger cost) {
+    NSNumberFormatter *formatter = [NSNumberFormatter new];
+    formatter.numberStyle = NSNumberFormatterDecimalStyle;
+    formatter.usesGroupingSeparator = YES;
+    formatter.maximumFractionDigits = 0;
+    formatter.locale = [S7TVLocalization shared].currentLanguage == S7TVLanguageFrench
+        ? [NSLocale localeWithLocaleIdentifier:@"fr_FR"]
+        : [NSLocale localeWithLocaleIdentifier:@"en_US"];
+    return [formatter stringFromNumber:@(MAX(0, cost))] ?: [@(MAX(0, cost)) stringValue];
+}
+
 - (NSAttributedString *)s7tv_buildAttributedStringForMessage:(S7TVChatMessage *)msg
                                        collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes
                                        collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes {
@@ -1859,6 +1889,21 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
         [self s7tv_appendNormalBodyForMessage:msg into:result
                         collectUncachedEmotes:outUncachedEmotes
                         collectAnimatedEmotes:outAnimatedEmotes];
+        s7tv_applyLineBreakParagraphStyle(result);
+        return result;
+    }
+
+    if (msg.type == S7TVChatMessageTypeChannelPointRedemption &&
+        msg.channelPointRewardInfo) {
+        [self s7tv_appendChannelPointBannerForMessage:msg
+                                                into:result
+                              collectUncachedEmotes:outUncachedEmotes];
+        if (msg.rawText.length) {
+            [result appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"]];
+            [self s7tv_appendNormalBodyForMessage:msg into:result
+                            collectUncachedEmotes:outUncachedEmotes
+                            collectAnimatedEmotes:outAnimatedEmotes];
+        }
         s7tv_applyLineBreakParagraphStyle(result);
         return result;
     }
@@ -1903,6 +1948,55 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
     [result appendAttributedString:[[NSAttributedString alloc]
         initWithString:[@" " stringByAppendingString:msg.systemPhrase ?: @""]
             attributes:@{NSFontAttributeName: bodyFont, NSForegroundColorAttributeName: bodyColor}]];
+}
+
+// Ligne générique calquée sur Twitch PC : titre fourni par Twitch, icône de
+// la récompense immédiatement avant le coût, puis éventuelle saisie rendue
+// comme un message normal sur la ligne suivante. Le seul texte local est le
+// connecteur grammatical pour les récompenses sans saisie.
+- (void)s7tv_appendChannelPointBannerForMessage:(S7TVChatMessage *)msg
+                                            into:(NSMutableAttributedString *)result
+                          collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes {
+    S7TVChannelPointRewardInfo *info = msg.channelPointRewardInfo;
+    if (!info) return;
+
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    UIFont *font = [UIFont systemFontOfSize:cfg.messageFontSize];
+    UIColor *color = [UIColor colorWithWhite:0.85 alpha:1.0];
+    NSString *header = nil;
+    if (info.isUserInputRequired) {
+        header = info.title ?: @"";
+    } else {
+        NSString *displayName = msg.authorDisplayName.length ? msg.authorDisplayName : @"???";
+        header = [NSString stringWithFormat:L(@"chat_channel_points_redeemed_format"),
+                                               displayName, info.title ?: @""];
+    }
+    [result appendAttributedString:[[NSAttributedString alloc]
+        initWithString:header
+            attributes:@{NSFontAttributeName: font,
+                         NSForegroundColorAttributeName: color}]];
+
+    if (info.imageURL.absoluteString.length) {
+        UIImage *image = [[SevenTVEmoteImageCache sharedCache]
+            cachedImageForResolvedEmote:info];
+        if (image) {
+            CGFloat side = MAX(12.0, cfg.messageFontSize * 1.05);
+            NSTextAttachment *attachment = [NSTextAttachment new];
+            attachment.image = image;
+            attachment.bounds = CGRectMake(0, -2.5, side, side);
+            [result appendAttributedString:[[NSAttributedString alloc] initWithString:@" "]];
+            [result appendAttributedString:
+                [NSAttributedString attributedStringWithAttachment:attachment]];
+        } else {
+            [outUncachedEmotes addObject:info];
+        }
+    }
+
+    NSString *cost = s7tv_channelPointCostString(info.cost);
+    [result appendAttributedString:[[NSAttributedString alloc]
+        initWithString:[@" " stringByAppendingString:cost]
+            attributes:@{NSFontAttributeName: font,
+                         NSForegroundColorAttributeName: color}]];
 }
 
 // Corps badges + pseudo + tokens — extrait de l'ancien

@@ -7,7 +7,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
-FOUNDATION_EXPORT NSString * _Nonnull const S7TVFavoritesDidChangeNotification;
+FOUNDATION_EXPORT NSString *const S7TVFavoritesDidChangeNotification;
 
 @class S7TVChatMessageStore;
 @class SevenTVChatCustomView;
@@ -263,6 +263,6 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // N'affecte PAS les favoris (s7tv_favorites), les badges, ni les préférences
 // de réglages.
 - (void)clearAllCaches;
-- (void)clearAllCachesWithCompletion:(nullable void (^)(NSUInteger clearedEmoteCount))completion;
+- (void)clearAllCachesWithCompletion:(void (^)(NSUInteger clearedEmoteCount))completion;
 
 @end

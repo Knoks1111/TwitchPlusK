@@ -13,13 +13,13 @@
 + (instancetype)sharedPanel;
 // Reçoit directement le tap depuis la vue de chat réelle — voir l'assignation
 // de .delegate sur customView dans s7tv_applyChatCustomTest (TweakSevenTV.m).
-// tappedMessageID : garde en mémoire le message précis sur lequel on a tapé
-// (voir pendingReplyTargetMessageID) — c'est LUI la cible de la réponse,
-// pas la racine du fil (les deux sont différents dès que le fil a plus d'un
-// message). Pas encore utilisé pour pré-remplir un champ de saisie (input
-// pas encore implémenté), mais déjà stocké pour ne pas avoir à refaire cette
-// plomberie plus tard.
+// tappedMessageID garde en mémoire le message précis ayant ouvert le fil,
+// distinct de sa racine. L'ouverture reste en mode consultation : seule une
+// sélection explicite (flèche ou appui long) préremplit la saisie Twitch.
 - (void)showForThreadRootID:(NSString *)threadRootID tappedMessageID:(NSString *)tappedMessageID;
+// Point d'entrée unique pour toute sélection de cible : flèche d'un thread
+// ou appui long dans le chat principal.
+- (void)selectReplyTargetForMessageID:(NSString *)messageID username:(NSString *)username;
 - (void)hide;
 // Appelé après chaque reload du chat principal (voir
 // s7tv_reloadActiveChatCustomView dans TweakSevenTV.m) — no-op si le

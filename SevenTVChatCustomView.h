@@ -66,12 +66,10 @@ NS_ASSUME_NONNULL_BEGIN
 // précis — jamais utilisé sur le chat principal.
 @property (nonatomic, assign) BOOL showsReplyTargetButton;
 
-// Appelé quand l'utilisateur tape le bouton de sélection de cible d'UN
-// message (messageID + authorDisplayName de ce message précis). Bloc plutôt
-// que le protocole delegate ci-dessus : contrairement au bandeau reply (qui
-// vise un hôte générique quelconque), ce bouton n'a de sens que pour les 2
-// sous-vues du panneau Fil, qui les possèdent déjà directement — pas besoin
-// d'indirection supplémentaire par un protocole.
+// Appelé lorsqu'un message devient une cible de réponse : bouton flèche dans
+// le panneau Fil OU appui long dans le chat principal. Les deux interactions
+// transmettent le même messageID + authorDisplayName et réutilisent ainsi un
+// unique pipeline de réponse côté hôte.
 @property (nonatomic, copy, nullable) void (^onReplyTargetSelected)(NSString *messageID, NSString *authorDisplayName);
 
 - (instancetype)initWithStore:(S7TVChatMessageStore *)store;

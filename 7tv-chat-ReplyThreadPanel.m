@@ -213,7 +213,7 @@ static const CGFloat kS7TVReplyTargetBarHeight = 34.0; // barre "Répondre à @X
 
 // Construit "Réponse à @pseudo   •   " avec le pseudo ET le séparateur en
 // gras, le reste normal — "annuler" reste un UIButton séparé juste après
-// (voir replyBar dans s7tv_ensureContainerInWindow:), pas inclus ici.
+// (voir s7tv_ensureReplyTargetBar), pas inclus ici.
 static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     NSDictionary *regularAttrs = @{
         NSFontAttributeName: [UIFont systemFontOfSize:12],
@@ -267,7 +267,7 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 
 // ── Sélection de cible de réponse (bouton flèche par message) ──────────
 // Non-nil uniquement quand l'utilisateur a explicitement tapé le bouton
-// flèche d'un message — voir s7tv_selectReplyTarget:username:. C'est LÀ
+// flèche d'un message — voir selectReplyTargetForMessageID:username:. C'est LÀ
 // (pas à l'ouverture) que la mention @X s'insère dans la barre de saisie.
 @property (nonatomic, copy) NSString *selectedReplyTargetMessageID;
 @property (nonatomic, copy) NSString *selectedReplyTargetUsername;
@@ -283,9 +283,15 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 // (0 = masquée) plutôt qu'un simple .hidden, pour que
 // s7tv_layoutPanelContentInWindow: puisse recalculer la hauteur totale du
 // panneau en conséquence (la barre prend de la place quand elle apparaît).
-@property (nonatomic, weak) UIView *replyTargetBarView;
+// Une seule et même barre est déplacée entre le panneau Fil et la fenêtre
+// principale selon l'origine de la réponse. On ne duplique donc ni son UI,
+// ni son état, ni ses actions.
+@property (nonatomic, strong) UIView *replyTargetBarView;
 @property (nonatomic, weak) UILabel *replyTargetBarLabel;
+@property (nonatomic, weak) UIView *threadReplyTargetBarHostView;
 @property (nonatomic, strong) NSLayoutConstraint *replyTargetBarHeightConstraint;
+@property (nonatomic, copy) NSArray<NSLayoutConstraint *> *standaloneReplyBarConstraints;
+- (void)s7tv_clearReplyTargetRemovingMention;
 @end
 
 @implementation S7TVReplyThreadPanel
@@ -301,6 +307,98 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     didTapReplyBannerForThreadRootID:(NSString *)threadRootID
                        tappedMessageID:(NSString *)tappedMessageID {
     [self showForThreadRootID:threadRootID tappedMessageID:tappedMessageID];
+}
+
+// Construit la barre de réponse une seule fois. Cette même instance est
+// hébergée soit dans le bas du panneau Fil, soit directement au-dessus de
+// la saisie Twitch pour une réponse initiée depuis le chat principal.
+- (void)s7tv_ensureReplyTargetBar {
+    if (self.replyTargetBarView) return;
+
+    UIView *replyBar = [[UIView alloc] init];
+    replyBar.clipsToBounds = YES;
+    replyBar.hidden = YES;
+    self.replyTargetBarView = replyBar;
+
+    UIView *separator = [[UIView alloc] init];
+    separator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.1];
+    separator.translatesAutoresizingMaskIntoConstraints = NO;
+    [replyBar addSubview:separator];
+
+    UILabel *label = [[UILabel alloc] init];
+    label.font = [UIFont systemFontOfSize:12];
+    label.textColor = [UIColor colorWithWhite:1.0 alpha:0.6];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [replyBar addSubview:label];
+    self.replyTargetBarLabel = label;
+
+    UIButton *cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [cancelButton setTitle:L(@"chat_reply_cancel_button") forState:UIControlStateNormal];
+    cancelButton.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    [cancelButton setTitleColor:[UIColor colorWithRed:0.65 green:0.45 blue:1.0 alpha:1.0]
+                        forState:UIControlStateNormal];
+    cancelButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [cancelButton addTarget:self action:@selector(s7tv_cancelReplyTargetTapped)
+            forControlEvents:UIControlEventTouchUpInside];
+    [replyBar addSubview:cancelButton];
+    self.cancelButton = cancelButton;
+
+    [NSLayoutConstraint activateConstraints:@[
+        [separator.leadingAnchor constraintEqualToAnchor:replyBar.leadingAnchor],
+        [separator.trailingAnchor constraintEqualToAnchor:replyBar.trailingAnchor],
+        [separator.topAnchor constraintEqualToAnchor:replyBar.topAnchor],
+        [separator.heightAnchor constraintEqualToConstant:kS7TVReplyThreadSeparatorHeight],
+
+        [label.leadingAnchor constraintEqualToAnchor:replyBar.leadingAnchor constant:12],
+        [label.centerYAnchor constraintEqualToAnchor:replyBar.centerYAnchor constant:2],
+
+        [cancelButton.leadingAnchor constraintEqualToAnchor:label.trailingAnchor constant:8],
+        [cancelButton.centerYAnchor constraintEqualToAnchor:label.centerYAnchor],
+        [cancelButton.trailingAnchor constraintLessThanOrEqualToAnchor:replyBar.trailingAnchor constant:-12],
+    ]];
+}
+
+- (void)s7tv_attachReplyTargetBarToThreadHost {
+    UIView *host = self.threadReplyTargetBarHostView;
+    if (!host) return;
+    [self s7tv_ensureReplyTargetBar];
+    [NSLayoutConstraint deactivateConstraints:self.standaloneReplyBarConstraints ?: @[]];
+    self.standaloneReplyBarConstraints = nil;
+    [self.replyTargetBarView removeFromSuperview];
+    self.replyTargetBarView.translatesAutoresizingMaskIntoConstraints = YES;
+    self.replyTargetBarView.backgroundColor = [UIColor clearColor];
+    self.replyTargetBarView.layer.cornerRadius = 0;
+    self.replyTargetBarView.frame = host.bounds;
+    self.replyTargetBarView.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [host addSubview:self.replyTargetBarView];
+}
+
+- (void)s7tv_showStandaloneReplyTargetBarInWindow:(UIWindow *)window {
+    if (!window) return;
+    [self s7tv_ensureReplyTargetBar];
+    [NSLayoutConstraint deactivateConstraints:self.standaloneReplyBarConstraints ?: @[]];
+    [self.replyTargetBarView removeFromSuperview];
+    self.replyTargetBarView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.replyTargetBarView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+    self.replyTargetBarView.layer.cornerRadius = 10;
+    self.replyTargetBarView.layer.maskedCorners =
+        kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+
+    [window addSubview:self.replyTargetBarView];
+    UIView *inputView = s7tv_findChatInputView();
+    NSLayoutYAxisAnchor *bottomAnchor = (inputView && inputView.window == window)
+        ? inputView.topAnchor
+        : window.safeAreaLayoutGuide.bottomAnchor;
+    self.standaloneReplyBarConstraints = @[
+        [self.replyTargetBarView.leadingAnchor constraintEqualToAnchor:window.leadingAnchor],
+        [self.replyTargetBarView.trailingAnchor constraintEqualToAnchor:window.trailingAnchor],
+        [self.replyTargetBarView.bottomAnchor constraintEqualToAnchor:bottomAnchor],
+        [self.replyTargetBarView.heightAnchor constraintEqualToConstant:kS7TVReplyTargetBarHeight],
+    ];
+    [NSLayoutConstraint activateConstraints:self.standaloneReplyBarConstraints];
+    self.replyTargetBarView.hidden = NO;
+    [window bringSubviewToFront:self.replyTargetBarView];
 }
 
 - (void)s7tv_ensureContainerInWindow:(UIWindow *)window {
@@ -392,46 +490,27 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     self.repliesChatView.showsReplyTargetButton = YES;
     __weak typeof(self) weakSelfForTarget = self;
     void (^targetSelectedHandler)(NSString *, NSString *) = ^(NSString *messageID, NSString *username) {
-        [weakSelfForTarget s7tv_selectReplyTarget:messageID username:username];
+        [weakSelfForTarget selectReplyTargetForMessageID:messageID username:username];
     };
     self.rootChatView.onReplyTargetSelected = targetSelectedHandler;
     self.repliesChatView.onReplyTargetSelected = targetSelectedHandler;
 
     // ── Barre du bas "Répondre à @X · Annuler" ──────────────────────────
     // Masquée par défaut (hauteur 0 via replyTargetBarHeightConstraint) tant
-    // qu'aucune cible n'est sélectionnée — voir s7tv_selectReplyTarget:username:
+    // qu'aucune cible n'est sélectionnée — voir selectReplyTargetForMessageID:username:
     // et s7tv_cancelReplyTargetTapped.
-    UIView *replyBar = [[UIView alloc] init];
-    replyBar.translatesAutoresizingMaskIntoConstraints = NO;
-    replyBar.clipsToBounds = YES; // évite que le contenu déborde pendant l'anim de hauteur 0→visible
-    [container addSubview:replyBar];
-    self.replyTargetBarView = replyBar;
-
-    UIView *replyBarSeparator = [[UIView alloc] init];
-    replyBarSeparator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.1];
-    replyBarSeparator.translatesAutoresizingMaskIntoConstraints = NO;
-    [replyBar addSubview:replyBarSeparator];
-
-    UILabel *replyBarLabel = [[UILabel alloc] init];
-    replyBarLabel.font = [UIFont systemFontOfSize:12];
-    replyBarLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.6];
-    replyBarLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [replyBar addSubview:replyBarLabel];
-    self.replyTargetBarLabel = replyBarLabel;
-
-    UIButton *cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [cancelButton setTitle:L(@"chat_reply_cancel_button") forState:UIControlStateNormal];
-    cancelButton.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-    [cancelButton setTitleColor:[UIColor colorWithRed:0.65 green:0.45 blue:1.0 alpha:1.0]
-                        forState:UIControlStateNormal]; // accent violet 7TV, cohérent avec le reste du tweak
-    cancelButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [cancelButton addTarget:self action:@selector(s7tv_cancelReplyTargetTapped)
-            forControlEvents:UIControlEventTouchUpInside];
-    self.cancelButton = cancelButton;
-    [replyBar addSubview:cancelButton];
+    // Hôte vide dont seule la hauteur participe au layout du panneau. La
+    // barre réelle est une instance unique, déplacée ici uniquement quand
+    // la réponse provient du panneau Fil.
+    UIView *replyBarHost = [[UIView alloc] init];
+    replyBarHost.translatesAutoresizingMaskIntoConstraints = NO;
+    replyBarHost.clipsToBounds = YES;
+    [container addSubview:replyBarHost];
+    self.threadReplyTargetBarHostView = replyBarHost;
+    [self s7tv_attachReplyTargetBarToThreadHost];
 
     self.replyTargetBarHeightConstraint =
-        [replyBar.heightAnchor constraintEqualToConstant:0];
+        [replyBarHost.heightAnchor constraintEqualToConstant:0];
 
     self.rootChatViewHeightConstraint =
         [self.rootChatView.heightAnchor constraintEqualToConstant:0];
@@ -468,24 +547,12 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
         [self.repliesChatView.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
         [self.repliesChatView.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
         [self.repliesChatView.topAnchor constraintEqualToAnchor:midSeparator.bottomAnchor],
-        [self.repliesChatView.bottomAnchor constraintEqualToAnchor:replyBar.topAnchor],
+        [self.repliesChatView.bottomAnchor constraintEqualToAnchor:replyBarHost.topAnchor],
 
-        [replyBar.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [replyBar.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        [replyBar.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-kS7TVReplyThreadBottomPadding],
+        [replyBarHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [replyBarHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [replyBarHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-kS7TVReplyThreadBottomPadding],
         self.replyTargetBarHeightConstraint,
-
-        [replyBarSeparator.leadingAnchor constraintEqualToAnchor:replyBar.leadingAnchor],
-        [replyBarSeparator.trailingAnchor constraintEqualToAnchor:replyBar.trailingAnchor],
-        [replyBarSeparator.topAnchor constraintEqualToAnchor:replyBar.topAnchor],
-        [replyBarSeparator.heightAnchor constraintEqualToConstant:kS7TVReplyThreadSeparatorHeight],
-
-        [replyBarLabel.leadingAnchor constraintEqualToAnchor:replyBar.leadingAnchor constant:12],
-        [replyBarLabel.centerYAnchor constraintEqualToAnchor:replyBar.centerYAnchor constant:2], // +2 : compense visuellement la présence du séparateur juste au-dessus
-
-        [cancelButton.leadingAnchor constraintEqualToAnchor:replyBarLabel.trailingAnchor constant:8],
-        [cancelButton.centerYAnchor constraintEqualToAnchor:replyBarLabel.centerYAnchor],
-        [cancelButton.trailingAnchor constraintLessThanOrEqualToAnchor:replyBar.trailingAnchor constant:-12],
     ]];
 }
 
@@ -597,7 +664,7 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 
     // replyTargetBarHeightConstraint.constant vaut déjà 0 (masquée) ou
     // kS7TVReplyTargetBarHeight (visible) au moment où cette fonction est
-    // appelée — s7tv_selectReplyTarget:/s7tv_cancelReplyTargetTapped la
+    // appelée — selectReplyTargetForMessageID:/s7tv_cancelReplyTargetTapped la
     // règlent AVANT d'appeler ce recalcul.
     CGFloat replyBarHeight = self.replyTargetBarHeightConstraint.constant;
 
@@ -636,6 +703,7 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     if (!hostChatView || !window) return;
 
     [self s7tv_ensureContainerInWindow:window];
+    [self s7tv_attachReplyTargetBarToThreadHost];
     self.titleLabel.text = L(@"chat_reply_thread_panel_title"); // relu à chaque ouverture, voir commentaire sur titleLabel
     [self.cancelButton setTitle:L(@"chat_reply_cancel_button") forState:UIControlStateNormal];
     self.currentThreadRootID = threadRootID;
@@ -644,18 +712,11 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     // Aucune sélection automatique : le panneau s'ouvre en pure
     // consultation, l'utilisateur choisit explicitement une cible via le
     // bouton flèche sur le message de son choix (voir
-    // s7tv_selectReplyTarget:username: plus bas) — demande explicite,
+    // selectReplyTargetForMessageID:username: plus bas) — demande explicite,
     // l'auto-insertion précédente gênait quand on ouvrait juste pour lire.
     // Si une mention d'une sélection précédente traînait encore (fil rouvert
     // sans être passé par -hide entre-temps), on la nettoie aussi.
-    if (self.lastInsertedMentionText.length) {
-        s7tv_removeExactPrefixFromChatInput(self.lastInsertedMentionText);
-        self.lastInsertedMentionText = nil;
-    }
-    self.selectedReplyTargetMessageID = nil;
-    self.selectedReplyTargetUsername = nil;
-    self.replyTargetBarView.hidden = YES;
-    self.replyTargetBarHeightConstraint.constant = 0;
+    [self s7tv_clearReplyTargetRemovingMention];
 
     // Le contenu doit être RÉELLEMENT appliqué (pas juste "reload appelé")
     // avant de mesurer sa hauteur — sinon le panneau se dimensionne sur du
@@ -679,47 +740,65 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 // mention, pas de confirmation supplémentaire : si l'utilisateur tape la
 // flèche, c'est qu'il veut répondre à cette personne. La barre du bas ne
 // sert qu'à visualiser la sélection en cours et à l'annuler si besoin.
-- (void)s7tv_selectReplyTarget:(NSString *)messageID username:(NSString *)username {
+- (void)selectReplyTargetForMessageID:(NSString *)messageID username:(NSString *)username {
     if (!messageID.length || !username.length) return;
 
-    // Si une mention précédente était déjà insérée (l'utilisateur tape une
-    // AUTRE flèche sans avoir annulé la précédente), on la retire d'abord —
-    // sinon on empile les mentions et on finit par @ plusieurs personnes.
-    if (self.lastInsertedMentionText.length) {
-        s7tv_removeExactPrefixFromChatInput(self.lastInsertedMentionText);
-        self.lastInsertedMentionText = nil;
-    }
+    // Un changement de cible passe par le même nettoyage qu'« Annuler » :
+    // l'ancien préfixe exact est retiré avant d'insérer le nouveau.
+    [self s7tv_clearReplyTargetRemovingMention];
 
     self.selectedReplyTargetMessageID = messageID;
     self.selectedReplyTargetUsername = username;
+    [self s7tv_ensureReplyTargetBar];
+    [self.cancelButton setTitle:L(@"chat_reply_cancel_button") forState:UIControlStateNormal];
     self.replyTargetBarLabel.attributedText = s7tv_buildReplyTargetBarText(username);
-    self.replyTargetBarView.hidden = NO;
-    self.replyTargetBarHeightConstraint.constant = kS7TVReplyTargetBarHeight;
+
+    BOOL threadPanelIsVisible = self.currentThreadRootID.length > 0 &&
+        self.containerView.window && !self.containerView.hidden;
+    if (threadPanelIsVisible) {
+        [self s7tv_attachReplyTargetBarToThreadHost];
+        self.replyTargetBarHeightConstraint.constant = kS7TVReplyTargetBarHeight;
+        self.replyTargetBarView.hidden = NO;
+    } else {
+        self.replyTargetBarHeightConstraint.constant = 0;
+        SevenTVChatCustomView *chatView = s7tv_activeChatCustomView();
+        UIWindow *window = chatView.window;
+        [self s7tv_showStandaloneReplyTargetBarInWindow:window];
+    }
 
     self.lastInsertedMentionText = s7tv_insertMentionAtStartOfChatInput(username);
 
-    UIWindow *window = self.containerView.window;
-    if (window) [self s7tv_layoutPanelContentInWindow:window]; // la hauteur totale du panneau change (barre en plus)
+    if (threadPanelIsVisible) {
+        [self s7tv_layoutPanelContentInWindow:self.containerView.window];
+    }
 }
 
-- (void)s7tv_cancelReplyTargetTapped {
+- (void)s7tv_clearReplyTargetRemovingMention {
     self.selectedReplyTargetMessageID = nil;
     self.selectedReplyTargetUsername = nil;
     self.replyTargetBarView.hidden = YES;
     self.replyTargetBarHeightConstraint.constant = 0;
 
-    // Retire aussi la mention de la barre de saisie — demande explicite :
-    // "Annuler" doit annuler visuellement ET dans le texte, pas juste
-    // masquer la barre du panneau en laissant un texte orphelin. On retire
-    // le texte EXACT inséré (déjà transformé par Twitch), pas une
-    // reconstruction depuis le pseudo.
     if (self.lastInsertedMentionText.length) {
         s7tv_removeExactPrefixFromChatInput(self.lastInsertedMentionText);
         self.lastInsertedMentionText = nil;
     }
 
+    // Hors panneau Fil, la barre est directement dans UIWindow : on la
+    // retire totalement pour qu'une vue masquée n'intercepte jamais les taps.
+    if (self.replyTargetBarView.superview != self.threadReplyTargetBarHostView) {
+        [NSLayoutConstraint deactivateConstraints:self.standaloneReplyBarConstraints ?: @[]];
+        self.standaloneReplyBarConstraints = nil;
+        [self.replyTargetBarView removeFromSuperview];
+    }
+}
+
+- (void)s7tv_cancelReplyTargetTapped {
     UIWindow *window = self.containerView.window;
-    if (window) [self s7tv_layoutPanelContentInWindow:window];
+    BOOL shouldRelayoutThread = self.currentThreadRootID.length > 0 &&
+        window && !self.containerView.hidden;
+    [self s7tv_clearReplyTargetRemovingMention];
+    if (shouldRelayoutThread) [self s7tv_layoutPanelContentInWindow:window];
 }
 
 - (void)hide {
@@ -729,14 +808,7 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     // Fermer le panneau retire aussi la mention en cours — demande
     // explicite : contrairement à la version précédente, fermer sans
     // "Annuler" doit quand même nettoyer le texte, pas le laisser en place.
-    if (self.lastInsertedMentionText.length) {
-        s7tv_removeExactPrefixFromChatInput(self.lastInsertedMentionText);
-        self.lastInsertedMentionText = nil;
-    }
-    self.selectedReplyTargetMessageID = nil;
-    self.selectedReplyTargetUsername = nil;
-    self.replyTargetBarView.hidden = YES;
-    self.replyTargetBarHeightConstraint.constant = 0;
+    [self s7tv_clearReplyTargetRemovingMention];
 }
 
 - (void)refreshIfNeeded {

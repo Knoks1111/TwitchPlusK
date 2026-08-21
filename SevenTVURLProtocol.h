@@ -15,7 +15,7 @@
 
 #import <Foundation/Foundation.h>
 
-FOUNDATION_EXPORT NSString *const S7TVEmoteCacheCountDidChangeNotification;
+FOUNDATION_EXPORT NSString * _Nonnull const S7TVEmoteCacheCountDidChangeNotification;
 
 @interface SevenTVURLProtocol : NSObject
 

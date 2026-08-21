@@ -7,7 +7,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
-FOUNDATION_EXPORT NSString *const S7TVFavoritesDidChangeNotification;
+FOUNDATION_EXPORT NSString * _Nonnull const S7TVFavoritesDidChangeNotification;
 
 @class S7TVChatMessageStore;
 @class SevenTVChatCustomView;

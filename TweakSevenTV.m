@@ -417,9 +417,6 @@ static NSString *s7tv_insertMentionAtStartOfChatInput(NSString *username) {
 
         NSString *finalText = textView.text ?: @"";
         NSInteger insertedLength = (NSInteger)finalText.length - (NSInteger)current.length;
-        [[SevenTVManager sharedManager] log:
-            [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: texte APRÈS = %@ (longueur insérée calculée = %ld)",
-                finalText.length ? finalText : @"(vide)", (long)insertedLength]];
 
         if (insertedLength <= 0 || insertedLength > (NSInteger)finalText.length) {
             return mention; // transformation imprévisible, repli sur le texte brut plutôt que planter
@@ -443,7 +440,6 @@ static NSString *s7tv_insertMentionAtStartOfChatInput(NSString *username) {
         return [finalText substringToIndex:insertedLength];
     }
 
-    [[SevenTVManager sharedManager] log:@"[ChatCustom] ⚠️ mention: ni UITextView ni UITextField trouvé dans ChatInputView"];
     return nil;
 }
 
@@ -656,234 +652,6 @@ static void s7tv_scanForChannelPointsLoop(void) {
     });
 }
 
-
-// ────────────────────────────────────────────────────────────
-// MARK: - Diagnostic Phase 0 : dump hiérarchie ChatTranscriptView
-// ────────────────────────────────────────────────────────────
-//
-// Objectif : identifier le view controller parent exact, la hiérarchie de
-// vues (Auto Layout / anchors), et si elle diffère entre mode normal,
-// théâtre, et Picture-in-Picture — sans Mac/LLDB/Reveal, uniquement via
-// le système de logs in-app existant (voir écran de logs → catégorie
-// "Chat Custom"). Lecture seule, aucune modification de comportement.
-
-static void s7tv_dumpChatHierarchy(UIView *chatView, NSString *reason) {
-    SevenTVManager *mgr = [SevenTVManager sharedManager];
-    [mgr log:@"[ChatCustom] 🏗 ── Dump hiérarchie (%@) ──────────────────", reason];
-
-    // Chaîne de superviews jusqu'à la fenêtre.
-    UIView *v = chatView;
-    NSInteger depth = 0;
-    while (v) {
-        [mgr log:@"[ChatCustom] 🏗 %@ superview[%ld] = %@ | frame=%@ | hidden=%@ | alpha=%.2f",
-            (depth == 0 ? @"→" : @"  "),
-            (long)depth,
-            NSStringFromClass([v class]),
-            NSStringFromCGRect(v.frame),
-            v.isHidden ? @"OUI" : @"NON",
-            v.alpha];
-        v = v.superview;
-        depth++;
-    }
-
-    // Fenêtre porteuse — distingue normal/théâtre (UIWindow standard) de PiP
-    // (Twitch.PictureInPictureWindow, déjà identifiée ailleurs dans ce fichier).
-    UIWindow *window = chatView.window;
-    [mgr log:@"[ChatCustom] 🏗 window = %@ | windowScene = %@",
-        window ? NSStringFromClass([window class]) : @"nil",
-        window.windowScene ? NSStringFromClass([window.windowScene class]) : @"nil"];
-
-    // Remonte la responder chain pour trouver le(s) UIViewController porteur(s).
-    UIResponder *r = chatView.nextResponder;
-    NSInteger vcDepth = 0;
-    while (r) {
-        if ([r isKindOfClass:[UIViewController class]]) {
-            UIViewController *vc = (UIViewController *)r;
-            [mgr log:@"[ChatCustom] 🏗 viewController[%ld] = %@ | parent=%@ | presentingVC=%@",
-                (long)vcDepth,
-                NSStringFromClass([vc class]),
-                vc.parentViewController ? NSStringFromClass([vc.parentViewController class]) : @"nil",
-                vc.presentingViewController ? NSStringFromClass([vc.presentingViewController class]) : @"nil"];
-            vcDepth++;
-        }
-        r = r.nextResponder;
-    }
-    if (vcDepth == 0) {
-        [mgr log:@"[ChatCustom] ⚠️ Aucun UIViewController trouvé dans la responder chain"];
-    }
-
-    [mgr log:@"[ChatCustom] 🏗 ── Fin dump (%@) ──────────────────", reason];
-}
-
-// ────────────────────────────────────────────────────────────
-// MARK: - Diagnostic Phase 1b : mesure des tailles réelles du rendu natif
-// ────────────────────────────────────────────────────────────
-//
-// Exigence transverse #1 du plan : les défauts de SevenTVChatAppearanceConfig
-// sont pour l'instant des estimations ("TODO mesure réelle"), pas les vraies
-// valeurs Twitch. Contrairement à s7tv_dumpChatHierarchy (qui remonte les
-// superviews), cette fonction DESCEND dans les subviews pour trouver les
-// UILabel/UIImageView réellement affichés dans une cellule de message et
-// logguer leur frame + police — lecture seule, aucune modification de
-// comportement. Uniquement via le système de logs in-app existant (catégorie
-// "Chat Custom"), pas besoin de Mac/LLDB/Reveal.
-
-// Twitch.MessageStringView n'a pas de UILabel enfant (constaté en dump réel :
-// la vue dessine son texte elle-même). Lire ses ivars bruts s'est révélé
-// risqué : les classes Swift exposent des encodages de type VIDES via
-// ivar_getTypeEncoding (constaté en dump réel : "()" partout, y compris sur
-// des BOOL/CGFloat/CGSize) — donc impossible de distinguer un ivar objet
-// d'un scalaire avant de le lire, et object_getIvar sur un scalaire peut
-// planter l'app (tentative de retain sur un pointeur invalide).
-//
-// Approche sûre à la place :
-//   1. view.layer — accesseur UIKit standard, toujours valide, zéro risque.
-//   2. class_copyPropertyList sur cette layer — introspection de métadonnées
-//      pure, aucun appel de méthode, zéro risque.
-//   3. Lecture de valeur via KVC (valueForKey:) UNIQUEMENT pour les
-//      propriétés dont l'attribut commence par "T@" (objet, encodage fiable
-//      pour les propriétés @objc déclarées, contrairement aux ivars bruts),
-//      protégée par @try/@catch.
-static void s7tv_dumpProperties(id obj, NSString *label) {
-    if (!obj) return;
-    SevenTVManager *mgr = [SevenTVManager sharedManager];
-    Class cls = [obj class];
-    unsigned int count = 0;
-    objc_property_t *props = class_copyPropertyList(cls, &count);
-    [mgr log:@"[ChatCustom] 🏗   ── Propriétés %@ (%@) — %u propriétés ──",
-        label, NSStringFromClass(cls), count];
-    for (unsigned int i = 0; i < count; i++) {
-        objc_property_t p = props[i];
-        const char *name = property_getName(p);
-        const char *attrs = property_getAttributes(p);
-        NSString *attrStr = attrs ? [NSString stringWithUTF8String:attrs] : @"";
-        NSString *valueDesc = @"(non-objet, ignoré)";
-        if ([attrStr hasPrefix:@"T@"]) {
-            @try {
-                id value = [obj valueForKey:[NSString stringWithUTF8String:name]];
-                if ([value isKindOfClass:[UIFont class]]) {
-                    UIFont *f = (UIFont *)value;
-                    valueDesc = [NSString stringWithFormat:@"UIFont %@ %.1fpt", f.fontName, f.pointSize];
-                } else if ([value isKindOfClass:[NSAttributedString class]]) {
-                    NSAttributedString *a = (NSAttributedString *)value;
-                    UIFont *f = a.length > 0
-                        ? [a attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] : nil;
-                    valueDesc = [NSString stringWithFormat:@"NSAttributedString len=%lu font=%@ %.1fpt",
-                        (unsigned long)a.length, f.fontName ?: @"?", f.pointSize];
-                } else if (value) {
-                    valueDesc = NSStringFromClass([value class]);
-                } else {
-                    valueDesc = @"nil";
-                }
-            } @catch (NSException *ex) {
-                valueDesc = [NSString stringWithFormat:@"<exception: %@>", ex.reason];
-            }
-        }
-        [mgr log:@"[ChatCustom] 🏗     %s (%@) = %@", name, attrStr, valueDesc];
-    }
-    free(props);
-
-    // .layer — très souvent, une vue qui dessine son propre contenu (comme
-    // ici) le fait via un CALayer custom défini par +layerClass. Zéro risque
-    // à lire view.layer (accesseur UIKit standard).
-    if ([obj isKindOfClass:[UIView class]]) {
-        CALayer *layer = ((UIView *)obj).layer;
-        if (layer && ![layer isMemberOfClass:[CALayer class]]) {
-            [mgr log:@"[ChatCustom] 🏗   layer réel = %@", NSStringFromClass([layer class])];
-            unsigned int lcount = 0;
-            objc_property_t *lprops = class_copyPropertyList([layer class], &lcount);
-            [mgr log:@"[ChatCustom] 🏗   ── Propriétés layer (%@) — %u propriétés ──",
-                NSStringFromClass([layer class]), lcount];
-            for (unsigned int i = 0; i < lcount; i++) {
-                const char *name = property_getName(lprops[i]);
-                const char *attrs = property_getAttributes(lprops[i]);
-                NSString *attrStr = attrs ? [NSString stringWithUTF8String:attrs] : @"";
-                NSString *valueDesc = @"(non-objet, ignoré)";
-                if ([attrStr hasPrefix:@"T@"]) {
-                    @try {
-                        id value = [layer valueForKey:[NSString stringWithUTF8String:name]];
-                        if ([value isKindOfClass:[UIFont class]]) {
-                            UIFont *f = (UIFont *)value;
-                            valueDesc = [NSString stringWithFormat:@"UIFont %@ %.1fpt", f.fontName, f.pointSize];
-                        } else if ([value isKindOfClass:[NSAttributedString class]]) {
-                            NSAttributedString *a = (NSAttributedString *)value;
-                            UIFont *f = a.length > 0
-                                ? [a attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] : nil;
-                            valueDesc = [NSString stringWithFormat:@"NSAttributedString len=%lu font=%@ %.1fpt",
-                                (unsigned long)a.length, f.fontName ?: @"?", f.pointSize];
-                        } else if (value) {
-                            valueDesc = NSStringFromClass([value class]);
-                        } else {
-                            valueDesc = @"nil";
-                        }
-                    } @catch (NSException *ex) {
-                        valueDesc = [NSString stringWithFormat:@"<exception: %@>", ex.reason];
-                    }
-                }
-                [mgr log:@"[ChatCustom] 🏗     %s (%@) = %@", name, attrStr, valueDesc];
-            }
-            free(lprops);
-        }
-    }
-}
-
-static void s7tv_dumpViewSubtree(UIView *view, NSString *indent, NSInteger maxDepth,
-                                  NSInteger *ivarDumpsRemaining) {
-    if (maxDepth <= 0) return;
-    SevenTVManager *mgr = [SevenTVManager sharedManager];
-
-    // Plafonné à 2 dumps d'ivars par appel (pas un par cellule visible) —
-    // largement assez pour comparer un message court et un message qui wrap
-    // sur plusieurs lignes, sans noyer les logs.
-    if ([NSStringFromClass([view class]) isEqualToString:@"Twitch.MessageStringView"] &&
-        ivarDumpsRemaining && *ivarDumpsRemaining > 0) {
-        (*ivarDumpsRemaining)--;
-        s7tv_dumpProperties(view, [NSString stringWithFormat:@"frame=%@", NSStringFromCGRect(view.frame)]);
-    }
-
-    if ([view isKindOfClass:[UILabel class]]) {
-        UILabel *lbl = (UILabel *)view;
-        [mgr log:@"[ChatCustom] 🏗 %@UILabel frame=%@ font=%@ %.1fpt texte=\"%@\"",
-            indent, NSStringFromCGRect(lbl.frame), lbl.font.fontName,
-            lbl.font.pointSize,
-            lbl.text.length > 24 ? [lbl.text substringToIndex:24] : (lbl.text ?: @"")];
-    } else if ([view isKindOfClass:[UIImageView class]]) {
-        UIImageView *iv = (UIImageView *)view;
-        [mgr log:@"[ChatCustom] 🏗 %@UIImageView frame=%@ imageSize=%@",
-            indent, NSStringFromCGRect(iv.frame), NSStringFromCGSize(iv.image.size)];
-    } else {
-        [mgr log:@"[ChatCustom] 🏗 %@%@ frame=%@",
-            indent, NSStringFromClass([view class]), NSStringFromCGRect(view.frame)];
-    }
-
-    NSString *childIndent = [indent stringByAppendingString:@"  "];
-    for (UIView *sub in view.subviews) {
-        s7tv_dumpViewSubtree(sub, childIndent, maxDepth - 1, ivarDumpsRemaining);
-    }
-}
-
-// Profondeur bornée à 8 : suffisant pour atteindre les UILabel/UIImageView
-// d'une cellule sans produire un dump illisible sur une hiérarchie profonde.
-// Délai avant appel (voir site d'appel) : au moment de didMoveToWindow, la
-// table est généralement encore vide — le temps de laisser au moins une
-// cellule de message se peupler avant de descendre l'arbre.
-static void s7tv_dumpNativeCellMetrics(UIView *chatView, NSString *reason) {
-    // One-shot par lancement d'app — ce dump est un outil de mesure ponctuel
-    // (Phase 1b), pas un diagnostic à rejouer en continu. Le laisser se
-    // redéclencher à chaque changement de chaîne (chaque didMoveToWindow)
-    // ajoute une traversée récursive + des appels valueForKey: à un moment
-    // où la vue peut être en cours de démontage (changement rapide de
-    // chaîne) — charge et risque inutiles une fois la mesure obtenue.
-    static BOOL s_alreadyDumped = NO;
-    if (s_alreadyDumped) return;
-    s_alreadyDumped = YES;
-
-    SevenTVManager *mgr = [SevenTVManager sharedManager];
-    [mgr log:@"[ChatCustom] 🏗 ── Mesure cellule native (%@) ──────────────────", reason];
-    NSInteger ivarDumpsRemaining = 2;
-    s7tv_dumpViewSubtree(chatView, @"", 8, &ivarDumpsRemaining);
-    [mgr log:@"[ChatCustom] 🏗 ── Fin mesure (%@) ──────────────────", reason];
-}
 
 // ── Test de validation Phase 0/1c (kill switch : Settings → Débogage) ───────
 //
@@ -2235,32 +2003,14 @@ static S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(NSString *ircLine) {
         }
     }
 
-    // ── Diagnostic Phase 0 : dump hiérarchie ChatTranscriptView ──────────────
-    // Lecture seule. Se redéclenche à chaque fois que la vue change de fenêtre
-    // (donc typiquement aussi lors d'un passage en PiP, où Twitch déplace ses
-    // vues vers Twitch.PictureInPictureWindow) — permet de comparer les 3
-    // contextes (normal/théâtre/PiP) directement depuis les logs in-app.
+    // Test de validation Phase 0 — gardé par le kill switch des Settings.
+    // Ne cible QUE l'instance réelle (superview == UIStackView, alpha=1
+    // sur toute la chaîne) — pas l'instance fantôme du pont SwiftUI
+    // (Twitch.ChatTranscriptViewRepresentable), qu'on laisse intacte.
     if ([selfClass isEqualToString:@"Twitch.ChatTranscriptView"] && self.window) {
-        s7tv_dumpChatHierarchy(self, @"didMoveToWindow");
-
-        // Test de validation Phase 0 — gardé par le kill switch des Settings.
-        // Ne cible QUE l'instance réelle (superview == UIStackView, alpha=1
-        // sur toute la chaîne) — pas l'instance fantôme du pont SwiftUI
-        // (Twitch.ChatTranscriptViewRepresentable), qu'on laisse intacte.
         if ([self.superview isKindOfClass:[UIStackView class]]) {
             s_activeNativeChatView = self;
             s7tv_applyChatCustomToggle();
-
-            // Mesure Phase 1b — délai 1s pour laisser au moins une cellule de
-            // message se peupler avant de descendre l'arbre des subviews.
-            __weak UIView *weakChatView = self;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                UIView *chatView = weakChatView;
-                if (chatView && chatView.window) {
-                    s7tv_dumpNativeCellMetrics(chatView, @"didMoveToWindow+1s");
-                }
-            });
         }
     }
 

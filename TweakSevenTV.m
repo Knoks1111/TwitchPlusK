@@ -45,8 +45,7 @@
 #import "SevenTVChatTokenizer.h"
 #import "SevenTVBadgeProvider.h"
 #import "7tv-chat-ReplyThreadPanel.h"
-// Cle NSUserDefaults Auto Collect Channel Points
-#define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
+#import "7tv-system-NativeBehaviorHooks.h"
 
 
 // ────────────────────────────────────────────────────────────
@@ -57,10 +56,6 @@ static const char kS7TVTextFieldTagged = 5;
 static const char kS7TVBitsHijacked    = 6;
 static const char kS7TVOrigSectionCount = 7;
 static const char kS7TVShareHijacked   = 8;   // verrou orientation
-static const char kS7TVChannelPointsPolling  = 9;  // marque une instance ChatInputView déjà sous polling
-
-// État global verrou d'orientation
-static BOOL s_orientationLocked             = NO;
 
 // Variable de compat : le Tap Logger (diagnostic de reverse-engineering du
 // picker natif Twitch) a été retiré de ce fichier, mais SevenTVManager.m
@@ -69,14 +64,13 @@ static BOOL s_orientationLocked             = NO;
 // ici pour ne pas casser ce pont. N'a plus aucun effet côté tweak : plus
 // aucun code de ce fichier ne la consulte.
 BOOL s_tapLogEnabled = NO;
-static UIInterfaceOrientationMask s_lockedOrientationMask = UIInterfaceOrientationMaskAll;
 
 
 // ────────────────────────────────────────────────────────────
 // MARK: - Helper swizzle
 // ────────────────────────────────────────────────────────────
 
-static void s7tv_swizzle(Class targetClass,
+void s7tv_swizzle(Class targetClass,
                          Class sourceClass,
                          SEL   original,
                          SEL   swizzled) {
@@ -133,106 +127,13 @@ static void s7tv_swizzle(Class targetClass,
 @end
 
 
-// ────────────────────────────────────────────────────────────
-// MARK: - Auto Collect Channel Points (module 100% autonome)
-// ────────────────────────────────────────────────────────────
-//
-// Volontairement indépendant de tout le reste du fichier (pas de swizzle
-// partagé avec le hijack Bits ou le verrou d'orientation, sauf le hook
-// GQL Apollo ci-dessous qui lui est indispensable).
-//
-// ARCHITECTURE FINALE (après plusieurs itérations, voir historique git
-// pour le détail des approches écartées — UI/valueForKey:, GlowView,
-// CALayer.animationKeys : toutes invalidées par des tests réels) :
-//
-//  1. s7tv_swizzle_apollo_gql() — hook sur Apollo.URLSessionClient
-//     (TwitchApollo.framework), le vrai client GraphQL de Twitch. Pilote
-//     ses requêtes via l'API DELEGATE de NSURLSession
-//     (-URLSession:dataTask:didReceiveData:/-URLSession:task:
-//     didCompleteWithError:), invisible à un swizzle sur les méthodes à
-//     completion handler de NSURLSession. Accumule les chunks par
-//     taskIdentifier et transmet le corps complet une fois assemblé.
-//
-//  2. s7tv_scanGQLResponseForChannelPointsClaim() — scanne chaque réponse
-//     gql.twitch.tv (gate rapide par octets avant tout parsing JSON) pour
-//     le champ `CommunityPoints.availableClaim` : non-null seulement
-//     quand un coffre est réclamable — c'est le booléen `showsClaim`
-//     interne de Twitch, mais exposé en JSON brut, donc indépendant de
-//     Swift/KVC/UI. Dès qu'un nouvel ID de coffre est détecté, déclenche
-//     IMMÉDIATEMENT (main thread) — pas d'attente du prochain tick.
-//
-//  3. s7tv_triggerChannelPointsClaimIfNeeded() — logique unique de
-//     déclenchement (dédup par ID, vérif pref utilisateur, appel natif).
-//     Appelle -[ChatInputView handleChannelPointsButtonTapped] (méthode
-//     @objc réelle, le vrai handler UIControl branché en target/action
-//     sur le bouton) — Twitch envoie alors lui-même la vraie mutation
-//     GraphQL authentifiée (ClaimChannelPointsMutation). On ne reconstruit
-//     jamais aucune requête réseau nous-mêmes.
-//
-//  4. s7tv_pollChannelPointsClaim()/s7tv_scanForChannelPointsLoop() —
-//     filet de sécurité silencieux (1.5s/2s) pour le seul cas où le
-//     déclenchement immédiat n'a pas trouvé de ChatInputView au bon
-//     moment (ex: stream encore en cours de chargement réseau).
-
-// État global : ID du dernier coffre détecté comme réclamable via GQL
-// (nil si aucun), et ID du dernier coffre effectivement déclenché, pour
-// dédupliquer sans dépendre d'un associated object sur une vue UI qui
-// n'est plus nécessaire à la détection. Protégé par @synchronized car
-// écrit depuis le thread réseau (completion handler NSURLSession) et lu
-// depuis le main thread (boucle de polling).
-static NSString *s_s7tvPendingChannelPointsClaimID = nil;
-
-// Dédup PAR COOLDOWN, pas permanente : on retente le même ID toutes les
-// kS7TVClaimRetryCooldown secondes tant que le GQL continue de le signaler
-// (voir s7tv_scanGQLResponseForChannelPointsClaim). Nécessaire car
-// performSelector peut s'exécuter "avec succès" (aucune exception) sans
-// que Twitch envoie réellement la mutation — observé en conditions réelles
-// juste après un lancement d'app : la ChatInputView existe déjà et répond
-// au sélecteur, mais son câblage interne (bindings Channel Points) n'est
-// pas encore prêt. Le seul signal fiable de succès réel est la
-// confirmation serveur (availableClaim redevient null) — donc tant qu'elle
-// n'arrive pas, on continue d'essayer plutôt que d'abandonner après une
-// tentative qui n'a peut-être rien fait.
-static NSString      *s_s7tvLastTriggeredChannelPointsClaimID = nil;
-static NSTimeInterval  s_s7tvLastTriggerAttemptTime = 0;
-static const NSTimeInterval kS7TVClaimRetryCooldown = 4.0;
-
-// Garde-fou anti-spam : plafond de tentatives par coffre. Sans lui, un
-// coffre dont le tap natif ne produit jamais de requête réseau (observé en
-// conditions réelles : handleChannelPointsButtonTapped exécuté sans
-// exception mais AUCUNE requête ClaimChannelPointsMutation envoyée sur 30+
-// tentatives) fait ouvrir/fermer en boucle le panneau de dépense des
-// Channel Points — Twitch route apparemment le tap vers cette action au
-// lieu du claim quand son état interne ne considère pas (encore, ou plus)
-// ce coffre comme actif, même si notre détection réseau externe (GQL/
-// PubSub) le signale toujours comme disponible. On abandonne après
-// kS7TVMaxRetryDuration secondes de tentatives infructueuses sur le MÊME
-// ID, et on efface pendingClaimID pour que le polling arrête de le
-// retenter — une détection ultérieure authentique du même ID (nouvel
-// événement GQL/PubSub) réarmera le compteur.
-static NSString      *s_s7tvClaimIDBeingTimed = nil;
-static NSTimeInterval  s_s7tvFirstAttemptTimeForCurrentClaim = 0;
-static const NSTimeInterval kS7TVMaxRetryDuration = 60.0;
-
-static void s7tv_setPendingChannelPointsClaimID(NSString *claimID) {
-    @synchronized ([SevenTVManager class]) {
-        s_s7tvPendingChannelPointsClaimID = [claimID copy];
-    }
-}
-
-static NSString *s7tv_getPendingChannelPointsClaimID(void) {
-    @synchronized ([SevenTVManager class]) {
-        return s_s7tvPendingChannelPointsClaimID;
-    }
-}
-
 // Recherche récursive d'une clé dans un JSON déjà parsé (NSDictionary/
 // NSArray imbriqués). `*found` distingue "clé absente" de "clé présente
 // mais valant null" — cette distinction compte : si la clé est absente,
 // cette réponse GQL ne concerne pas ChannelPointsQuery et on ne doit rien
 // en conclure ; si elle vaut explicitement null, c'est une confirmation
 // positive qu'il n'y a PAS de coffre en attente.
-static id s7tv_findValueForKeyRecursive(id json, NSString *key, BOOL *found) {
+id s7tv_findValueForKeyRecursive(id json, NSString *key, BOOL *found) {
     if ([json isKindOfClass:[NSDictionary class]]) {
         NSDictionary *dict = json;
         if (dict[key] != nil) {
@@ -250,51 +151,6 @@ static id s7tv_findValueForKeyRecursive(id json, NSString *key, BOOL *found) {
         }
     }
     return nil;
-}
-
-// Appelé sur CHAQUE réponse gql.twitch.tv interceptée (thread réseau).
-// Gate rapide par recherche d'octets bruts avant de payer le coût d'un
-// parsing JSON complet — la quasi-totalité des réponses GQL n'ont rien à
-// voir avec les Channel Points (chat, badges, métadonnées stream...).
-static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID); // forward decl, définie plus bas
-
-static void s7tv_scanGQLResponseForChannelPointsClaim(NSData *data) {
-    if (data.length == 0) return;
-
-    static NSData *s_needle = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        s_needle = [@"availableClaim" dataUsingEncoding:NSUTF8StringEncoding];
-    });
-    if ([data rangeOfData:s_needle options:0 range:NSMakeRange(0, data.length)].location == NSNotFound) {
-        return;
-    }
-
-    NSError *jsonError = nil;
-    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
-    if (jsonError || !json) return;
-
-    BOOL found = NO;
-    id claim = s7tv_findValueForKeyRecursive(json, @"availableClaim", &found);
-    if (!found) return;
-
-    if (!claim || [claim isKindOfClass:[NSNull class]]) {
-        s7tv_setPendingChannelPointsClaimID(nil);
-        return;
-    }
-
-    if ([claim isKindOfClass:[NSDictionary class]]) {
-        NSString *claimID = claim[@"id"];
-        if (!claimID.length) claimID = @"unknown";
-        s7tv_setPendingChannelPointsClaimID(claimID);
-
-        // Déclenchement immédiat (main thread) plutôt que d'attendre le
-        // prochain tick du polling de secours — latence minimale entre la
-        // détection réseau et la collecte réelle.
-        dispatch_async(dispatch_get_main_queue(), ^{
-            s7tv_triggerChannelPointsClaimIfNeeded(claimID);
-        });
-    }
 }
 
 // Cherche la première instance de Twitch.ChatInputView actuellement
@@ -320,176 +176,6 @@ UIView *s7tv_findChatInputView(void) {
     }
     return nil;
 }
-
-// DIAGNOSTIC — recense TOUTES les instances de Twitch.ChatInputView
-// actuellement en mémoire (pas seulement la première trouvée), avec leur
-// fenêtre et leur état isKeyWindow/hidden. Sert à vérifier l'hypothèse
-// qu'on puisse taper sur une instance orpheline/inactive quand plusieurs
-// coexistent (ex: transition PiP, changement d'écran). Appelé uniquement
-// juste avant un vrai tap (pas à chaque poll) pour rester peu bavard.
-static void s7tv_logAllChatInputViewInstances(void) {
-    NSMutableArray<UIView *> *allFound = [NSMutableArray array];
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        UIWindowScene *windowScene = (UIWindowScene *)scene;
-        for (UIWindow *window in windowScene.windows) {
-            NSMutableArray<UIView *> *bfs = [NSMutableArray arrayWithObject:window];
-            while (bfs.count > 0) {
-                UIView *v = bfs.firstObject;
-                [bfs removeObjectAtIndex:0];
-                if ([NSStringFromClass([v class]) isEqualToString:@"Twitch.ChatInputView"]) {
-                    [allFound addObject:v];
-                }
-                [bfs addObjectsFromArray:v.subviews];
-            }
-        }
-    }
-
-    if (allFound.count <= 1) {
-        [[SevenTVManager sharedManager]
-            log:@"🎁 Channel Points debug: %lu instance(s) de ChatInputView en mémoire", (unsigned long)allFound.count];
-        return;
-    }
-
-    NSMutableString *desc = [NSMutableString stringWithFormat:
-        @"🎁 Channel Points debug: %lu instances de ChatInputView trouvées simultanément :\n", (unsigned long)allFound.count];
-    for (UIView *v in allFound) {
-        [desc appendFormat:@"  - window=%@ isKeyWindow=%d hidden=%d alpha=%.2f frame=%@\n",
-            NSStringFromClass([v.window class]),
-            v.window.isKeyWindow,
-            v.hidden,
-            v.alpha,
-            NSStringFromCGRect(v.frame)];
-    }
-    [[SevenTVManager sharedManager] log:@"%@", desc];
-}
-
-// Logique unique de déclenchement, appelée à la fois immédiatement depuis
-// le hook réseau (cas normal, latence minimale) et depuis le polling de
-// secours (cas où aucune ChatInputView n'était encore trouvable au moment
-// de la détection réseau — ex: tout début de chargement du stream).
-// Dédup par COOLDOWN (pas permanente) : voir le commentaire sur
-// kS7TVClaimRetryCooldown plus haut — un performSelector "réussi" (aucune
-// exception) ne garantit pas qu'une vraie requête soit partie.
-static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
-    if (!claimID.length) return;
-
-    NSString *lastTriggeredClaimID;
-    NSTimeInterval lastAttemptTime;
-    @synchronized ([SevenTVManager class]) {
-        lastTriggeredClaimID = s_s7tvLastTriggeredChannelPointsClaimID;
-        lastAttemptTime = s_s7tvLastTriggerAttemptTime;
-    }
-    NSTimeInterval now = [NSDate date].timeIntervalSince1970;
-    BOOL recentlyAttemptedSameClaim = [claimID isEqualToString:lastTriggeredClaimID]
-        && (now - lastAttemptTime) < kS7TVClaimRetryCooldown;
-    if (recentlyAttemptedSameClaim) return;
-
-    // Plafond anti-spam : voir kS7TVMaxRetryDuration plus haut.
-    NSTimeInterval firstAttemptTime;
-    NSString *claimIDBeingTimed;
-    @synchronized ([SevenTVManager class]) {
-        claimIDBeingTimed = s_s7tvClaimIDBeingTimed;
-        firstAttemptTime = s_s7tvFirstAttemptTimeForCurrentClaim;
-    }
-    if (![claimID isEqualToString:claimIDBeingTimed]) {
-        // Nouveau coffre (ou premier essai) — on démarre le chrono.
-        @synchronized ([SevenTVManager class]) {
-            s_s7tvClaimIDBeingTimed = claimID;
-            s_s7tvFirstAttemptTimeForCurrentClaim = now;
-        }
-    } else if ((now - firstAttemptTime) > kS7TVMaxRetryDuration) {
-        [[SevenTVManager sharedManager]
-            log:@"⚠️ Channel Points: abandon après %.0fs de tentatives infructueuses (id=%@) — le tap natif ne produit aucune requête de claim, probablement ouverture du panneau de dépense côté Twitch",
-            kS7TVMaxRetryDuration, claimID];
-        s7tv_setPendingChannelPointsClaimID(nil); // stoppe le polling pour cet ID
-        @synchronized ([SevenTVManager class]) {
-            s_s7tvClaimIDBeingTimed = nil;
-            s_s7tvFirstAttemptTimeForCurrentClaim = 0;
-        }
-        return;
-    }
-
-    UIView *chatInputView = s7tv_findChatInputView();
-    if (!chatInputView || !chatInputView.window) return; // retentera au prochain déclencheur
-
-    s7tv_logAllChatInputViewInstances();
-
-    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    BOOL autoCollectEnabled = [prefs objectForKey:kTCLiveAutoCollectChannelPoints] != nil
-        ? [prefs boolForKey:kTCLiveAutoCollectChannelPoints]
-        : YES; // défaut ON, comme dans les réglages
-    if (!autoCollectEnabled) return;
-
-    SEL claimSel = NSSelectorFromString(@"handleChannelPointsButtonTapped");
-    if (![chatInputView respondsToSelector:claimSel]) {
-        [[SevenTVManager sharedManager]
-            log:@"Erreur Channel Points: sélecteur 'handleChannelPointsButtonTapped' introuvable sur ChatInputView"];
-        return;
-    }
-
-    // Marqué AVANT l'appel (évite un double-déclenchement immédiat si le
-    // hook réseau et le polling de secours se chevauchent), mais le
-    // cooldown ci-dessus permet un retry automatique si cette tentative
-    // s'avère infructueuse — pas de blocage définitif.
-    @synchronized ([SevenTVManager class]) {
-        s_s7tvLastTriggeredChannelPointsClaimID = claimID;
-        s_s7tvLastTriggerAttemptTime = now;
-    }
-
-    [[SevenTVManager sharedManager]
-        log:@"🎁 Channel Points: coffre réclamé automatiquement (id=%@) — chatInputView.window=%@ frame=%@",
-        claimID, NSStringFromClass([chatInputView.window class]), NSStringFromCGRect(chatInputView.frame)];
-    #pragma clang diagnostic push
-    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-    [chatInputView performSelector:claimSel];
-    #pragma clang diagnostic pop
-}
-
-// Filet de sécurité silencieux : re-tente toutes les 1.5s au cas où le
-// déclenchement immédiat depuis le hook réseau n'ait pas pu trouver de
-// ChatInputView au bon moment (ex: stream encore en train de charger).
-// Aucun log en fonctionnement normal — seul s7tv_triggerChannelPointsClaimIfNeeded
-// logue, et seulement en cas de collecte réelle ou d'erreur.
-static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
-    if (!chatInputView || !chatInputView.window) return;
-
-    NSString *pendingClaimID = s7tv_getPendingChannelPointsClaimID();
-    if (pendingClaimID.length > 0) {
-        s7tv_triggerChannelPointsClaimIfNeeded(pendingClaimID);
-    }
-
-    __weak UIView *weakChatInputView = chatInputView;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UIView *strongChatInputView = weakChatInputView;
-        if (strongChatInputView) {
-            s7tv_pollChannelPointsClaim(strongChatInputView);
-        }
-    });
-}
-
-// Boucle de fond permanente : cherche une ChatInputView pas encore sous
-// polling toutes les 2s. Tourne pour toute la durée de vie de l'app,
-// coût négligeable (un BFS peu profond sur la hiérarchie de fenêtres,
-// une fois toutes les 2 secondes). Silencieuse sauf à la découverte
-// effective d'une nouvelle instance.
-static void s7tv_scanForChannelPointsLoop(void) {
-    UIView *chatInputView = s7tv_findChatInputView();
-
-    if (chatInputView && !objc_getAssociatedObject(chatInputView, &kS7TVChannelPointsPolling)) {
-        objc_setAssociatedObject(chatInputView, &kS7TVChannelPointsPolling, @YES,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [[SevenTVManager sharedManager] log:@"🎁 Channel Points: ChatInputView trouvée — démarrage du polling"];
-        s7tv_pollChannelPointsClaim(chatInputView);
-    }
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        s7tv_scanForChannelPointsLoop();
-    });
-}
-
 
 // ── Test de validation Phase 0/1c (kill switch : Settings → Débogage) ───────
 //
@@ -1252,17 +938,17 @@ static S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(NSString *ircLine) {
                 // Icône cadenas
                 UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration
                     configurationWithPointSize:20 weight:UIImageSymbolWeightMedium];
-                NSString *sym = s_orientationLocked ? @"lock.rotation" : @"lock.rotation.open";
+                NSString *sym = s7tv_isOrientationLocked() ? @"lock.rotation" : @"lock.rotation.open";
                 UIImage *lockIcon = [UIImage systemImageNamed:sym withConfiguration:cfg];
 
                 for (NSNumber *st in @[@(UIControlStateNormal), @(UIControlStateHighlighted),
                                         @(UIControlStateSelected), @(UIControlStateDisabled)]) {
                     [shareBtn setImage:lockIcon forState:st.unsignedIntegerValue];
                 }
-                shareBtn.tintColor              = s_orientationLocked
+                shareBtn.tintColor              = s7tv_isOrientationLocked()
                     ? [UIColor colorWithRed:0.55 green:0.25 blue:0.95 alpha:1.0]
                     : [UIColor whiteColor];
-                shareBtn.accessibilityLabel      = s_orientationLocked
+                shareBtn.accessibilityLabel      = s7tv_isOrientationLocked()
                     ? L(@"a11y_unlock_orientation") : L(@"a11y_lock_orientation");
                 shareBtn.accessibilityIdentifier = @"s7tv_lock_button";
 
@@ -1828,84 +1514,6 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
 // MARK: - Hook NSURLSessionWebSocketTask (chat IRC Twitch)
 // ────────────────────────────────────────────────────────────
 
-// Parsing de l'événement PubSub "claim-available" (nouveau coffre qui
-// spawn en cours de session — PAS le cas déjà couvert par le GQL initial
-// au join de la chaîne). Format confirmé par capture réelle en conditions
-// de test sur les événements jumeaux "points-earned"/"claim-claimed" de la
-// même famille (classe Twitch.ChannelPoints.PubSub) :
-//   {"notification":{"pubsub":"{\"type\":\"claim-claimed\",\"data\":{...,\"claim\":{\"id\":\"...\"}}}"}}
-// Double encodage JSON : le champ "pubsub" est une STRING contenant du
-// JSON, pas un objet direct — on parse donc en deux temps.
-static void s7tv_scanWebSocketTextForChannelPointsClaimAvailable(NSString *text) {
-    if (!text.length) return;
-    if (![text containsString:@"claim-available"]) return; // gate rapide, évite un parsing JSON sur chaque trame WS
-
-    NSData *outerData = [text dataUsingEncoding:NSUTF8StringEncoding];
-    if (!outerData) return;
-
-    NSError *err = nil;
-    id outerJSON = [NSJSONSerialization JSONObjectWithData:outerData options:0 error:&err];
-    if (err || !outerJSON) return;
-
-    BOOL foundPubsubField = NO;
-    id pubsubValue = s7tv_findValueForKeyRecursive(outerJSON, @"pubsub", &foundPubsubField);
-    if (!foundPubsubField || ![pubsubValue isKindOfClass:[NSString class]]) return;
-
-    NSData *innerData = [(NSString *)pubsubValue dataUsingEncoding:NSUTF8StringEncoding];
-    if (!innerData) return;
-
-    id innerJSON = [NSJSONSerialization JSONObjectWithData:innerData options:0 error:&err];
-    if (err || ![innerJSON isKindOfClass:[NSDictionary class]]) return;
-
-    NSDictionary *innerDict = innerJSON;
-    if (![innerDict[@"type"] isEqualToString:@"claim-available"]) return;
-
-    BOOL foundClaim = NO;
-    id claim = s7tv_findValueForKeyRecursive(innerDict[@"data"], @"claim", &foundClaim);
-    if (!foundClaim || ![claim isKindOfClass:[NSDictionary class]]) return;
-
-    NSString *claimID = claim[@"id"];
-    if (!claimID.length) return;
-
-    // VÉRIFICATION CHANNEL_ID — probablement la vraie cause des échecs
-    // systématiques (0 requête/60s) observés sur certains coffres. Notre
-    // hook WebSocket est branché sur la classe concrète NSURLSessionWebSocketTask
-    // et capte donc TOUTES les connexions, tous channels confondus (y
-    // compris une souscription PubSub restée active pour une chaîne
-    // visitée plus tôt dans la session). Si l'événement concerne une
-    // chaîne différente de celle actuellement affichée, taper sur le
-    // bouton de la chaîne AFFICHÉE ne peut jamais réclamer un coffre
-    // d'une AUTRE chaîne — Twitch ouvre alors le panneau à la place,
-    // sans jamais envoyer de requête de claim, quel que soit le nombre de
-    // tentatives. Le champ existe et est déjà confirmé par capture réelle
-    // sur les événements jumeaux "claim-claimed"/"points-earned".
-    NSString *claimChannelID = claim[@"channel_id"];
-    NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
-    if (claimChannelID.length && currentChannelID.length
-        && ![claimChannelID isEqualToString:currentChannelID]) {
-        [[SevenTVManager sharedManager]
-            log:@"🎁 Channel Points debug: événement claim-available ignoré — channel_id=%@ ≠ chaîne actuelle=%@",
-            claimChannelID, currentChannelID];
-        return;
-    }
-
-    s7tv_setPendingChannelPointsClaimID(claimID);
-
-    // Délai volontaire avant la 1ère tentative (uniquement pour ce chemin
-    // PubSub) : on intercepte les octets bruts de la trame AVANT que le
-    // pipeline interne de Twitch (son propre observer ChannelPoints.PubSub
-    // sur cette même trame) ait eu le temps de mettre à jour l'état interne
-    // du bouton (showsClaim). Sans ce délai, handleChannelPointsButtonTapped
-    // ouvre le panneau de dépense au lieu de claim (0 requête réseau
-    // observée sur 30 tentatives en conditions réelles). Le chemin GQL (au
-    // join) n'a pas ce problème — l'état y est déjà cohérent dès la
-    // construction de la vue — donc pas de délai ajouté là-bas.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        s7tv_triggerChannelPointsClaimIfNeeded(claimID);
-    });
-}
-
 @interface NSURLSessionWebSocketTask (SevenTV)
 - (void)s7tv_receiveMessageWithCompletionHandler:
     (void (^)(NSURLSessionWebSocketMessage *, NSError *))completionHandler;
@@ -2349,294 +1957,6 @@ static void s7tv_swizzle_websocket(void) {
 }
 
 // ────────────────────────────────────────────────────────────
-// MARK: - Verrou d'orientation (bouton Share hijacké)
-// Approche : requestGeometryUpdate (iOS 16+) pour forcer l'orientation
-// de la scène au niveau système — c'est la seule API qui contrôle
-// réellement la rotation visuelle sur les apps SwiftUI modernes.
-// Combiné avec shouldAutorotate=NO pour bloquer UIKit en parallèle.
-// ────────────────────────────────────────────────────────────
-
-// ── Orientation verrouillée capturée au moment du lock ───────────────────────
-static UIInterfaceOrientation s_lockedOrientation = UIInterfaceOrientationUnknown;
-
-// ── Observer rotation physique ───────────────────────────────────────────────
-static id s_orientationObserver = nil;
-
-// ── Force la géométrie de toutes les scènes actives ─────────────────────────
-static void s7tv_forceSceneOrientation(UIInterfaceOrientationMask mask) {
-    // iOS 16+ : UIWindowScene requestGeometryUpdate:errorHandler:
-    // Appelé via objc_msgSend pour éviter les erreurs de header manquant dans le SDK Theos
-    SEL reqSel   = NSSelectorFromString(@"requestGeometryUpdate:errorHandler:");
-    Class prefsCls = NSClassFromString(@"UIWindowSceneGeometryPreferencesIOS");
-
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        UIWindowScene *ws = (UIWindowScene *)scene;
-
-        if (prefsCls && [ws respondsToSelector:reqSel]) {
-            id prefs = [[prefsCls alloc] initWithInterfaceOrientations:mask];
-            ((void(*)(id, SEL, id, id))objc_msgSend)(ws, reqSel, prefs, nil);
-        } else {
-            // Fallback iOS < 16 : setStatusBarOrientation:animated: (déprécié)
-            UIInterfaceOrientation target = UIInterfaceOrientationPortrait;
-            if (mask == UIInterfaceOrientationMaskLandscapeLeft)               target = UIInterfaceOrientationLandscapeLeft;
-            else if (mask == UIInterfaceOrientationMaskLandscapeRight)         target = UIInterfaceOrientationLandscapeRight;
-            else if (mask == UIInterfaceOrientationMaskPortraitUpsideDown)     target = UIInterfaceOrientationPortraitUpsideDown;
-            SEL fbSel = NSSelectorFromString(@"setStatusBarOrientation:animated:");
-            ((void(*)(id, SEL, UIInterfaceOrientation, BOOL))objc_msgSend)(
-                [UIApplication sharedApplication], fbSel, target, NO);
-        }
-    }
-}
-
-// ── Démarre l'observer qui journalise les rotations physiques ────────────────
-// Note : le blocage visuel est assuré par supportedInterfaceOrientationsForWindow:
-// On n'appelle plus requestGeometryUpdate ici — c'était lui qui causait le flash
-// "rotate puis snap back" en jouant une animation de retour inutile.
-static void s7tv_startOrientationObserver(void) {
-    if (s_orientationObserver) return;
-    [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
-    s_orientationObserver = [[NSNotificationCenter defaultCenter]
-        addObserverForName:UIDeviceOrientationDidChangeNotification
-                    object:nil
-                     queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *n) {
-        if (!s_orientationLocked) return;
-        [[SevenTVManager sharedManager] log:@"🔒 Rotation physique bloquée (verrou actif)"];
-    }];
-}
-
-static void s7tv_stopOrientationObserver(void) {
-    if (!s_orientationObserver) return;
-    [[NSNotificationCenter defaultCenter] removeObserver:s_orientationObserver];
-    s_orientationObserver = nil;
-    [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
-}
-
-// ── Toast ─────────────────────────────────────────────────────────────────────
-// Fenêtre dédiée au toast — niveau UIWindowLevelAlert pour passer au-dessus
-// du player Twitch qui tourne sur une fenêtre de niveau supérieur à Normal.
-static UIWindow *s_toastWindow = nil;
-
-static void s7tv_showOrientationToast(BOOL locked) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        // Trouver la UIWindowScene active
-        UIWindowScene *activeScene = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            if (scene.activationState == UISceneActivationStateForegroundActive) {
-                activeScene = (UIWindowScene *)scene;
-                break;
-            }
-        }
-        if (!activeScene) return;
-
-        // Créer une fenêtre dédiée au niveau Alert — au-dessus du player Twitch
-        UIWindow *toastWindow = [[UIWindow alloc] initWithWindowScene:activeScene];
-        toastWindow.windowLevel = UIWindowLevelAlert;
-        toastWindow.backgroundColor = [UIColor clearColor];
-        toastWindow.userInteractionEnabled = NO;
-        // Rootvc minimal pour pouvoir addSubview
-        UIViewController *rootVC = [[UIViewController alloc] init];
-        rootVC.view.backgroundColor = [UIColor clearColor];
-        toastWindow.rootViewController = rootVC;
-        toastWindow.hidden = NO;
-        s_toastWindow = toastWindow; // retain
-
-        UIView *container = toastWindow.rootViewController.view;
-        CGFloat winW = toastWindow.bounds.size.width;
-        CGFloat winH = toastWindow.bounds.size.height;
-
-        NSString *symbol = locked ? @"lock.rotation"      : @"lock.rotation.open";
-        NSString *label  = locked ? L(@"lock_locked") : L(@"lock_unlocked");
-
-        UIView *toast = [[UIView alloc] init];
-        toast.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.62];
-        toast.layer.cornerRadius = 14;
-        toast.layer.masksToBounds = YES;
-        toast.alpha = 0;
-        toast.translatesAutoresizingMaskIntoConstraints = NO;
-        [container addSubview:toast];
-
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration
-            configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
-        UIImage *icon = [UIImage systemImageNamed:symbol withConfiguration:cfg];
-        UIImageView *iconView = [[UIImageView alloc] initWithImage:icon];
-        iconView.tintColor   = locked
-            ? [UIColor colorWithRed:0.55 green:0.25 blue:0.95 alpha:1.0]
-            : [UIColor colorWithRed:0.6  green:0.6  blue:0.65 alpha:1.0];
-        iconView.contentMode = UIViewContentModeScaleAspectFit;
-        iconView.translatesAutoresizingMaskIntoConstraints = NO;
-        [toast addSubview:iconView];
-
-        UILabel *lbl = [[UILabel alloc] init];
-        lbl.text      = label;
-        lbl.font      = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-        lbl.textColor = [UIColor whiteColor];
-        lbl.translatesAutoresizingMaskIntoConstraints = NO;
-        [toast addSubview:lbl];
-
-        [NSLayoutConstraint activateConstraints:@[
-            [iconView.leadingAnchor  constraintEqualToAnchor:toast.leadingAnchor  constant:12],
-            [iconView.centerYAnchor  constraintEqualToAnchor:toast.centerYAnchor],
-            [iconView.widthAnchor    constraintEqualToConstant:18],
-            [iconView.heightAnchor   constraintEqualToConstant:18],
-            [lbl.leadingAnchor       constraintEqualToAnchor:iconView.trailingAnchor constant:8],
-            [lbl.trailingAnchor      constraintEqualToAnchor:toast.trailingAnchor    constant:-12],
-            [lbl.centerYAnchor       constraintEqualToAnchor:toast.centerYAnchor],
-            [toast.heightAnchor      constraintEqualToConstant:38],
-            [toast.centerXAnchor     constraintEqualToAnchor:container.centerXAnchor],
-            [toast.bottomAnchor      constraintEqualToAnchor:container.bottomAnchor constant:-(winH * 0.12)],
-        ]];
-
-        [container layoutIfNeeded];
-
-        [UIView animateWithDuration:0.25 animations:^{ toast.alpha = 1.0; } completion:^(BOOL f) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [UIView animateWithDuration:0.3 animations:^{ toast.alpha = 0; }
-                                 completion:^(BOOL ff) {
-                    [toast removeFromSuperview];
-                    s_toastWindow.hidden = YES;
-                    s_toastWindow = nil; // libérer
-                }];
-            });
-        }];
-    });
-}
-
-// ── Hook principal : UIApplication.supportedInterfaceOrientationsForWindow: ──
-// C'est le check système qui prime sur toutes les overrides Twitch dans les VCs.
-@interface UIApplication (S7TVOrientationLock)
-- (UIInterfaceOrientationMask)s7tv_supportedInterfaceOrientationsForWindow:(UIWindow *)window;
-@end
-@implementation UIApplication (S7TVOrientationLock)
-- (UIInterfaceOrientationMask)s7tv_supportedInterfaceOrientationsForWindow:(UIWindow *)window {
-    if (s_orientationLocked) return s_lockedOrientationMask;
-    return [self s7tv_supportedInterfaceOrientationsForWindow:window];
-}
-@end
-
-// ── Garde UIViewController au cas où (certains chemins UIKit passent par là) ──
-@interface UIViewController (S7TVOrientationLock)
-- (UIInterfaceOrientationMask)s7tv_supportedInterfaceOrientations;
-@end
-@implementation UIViewController (S7TVOrientationLock)
-- (UIInterfaceOrientationMask)s7tv_supportedInterfaceOrientations {
-    if (s_orientationLocked) return s_lockedOrientationMask;
-    return [self s7tv_supportedInterfaceOrientations];
-}
-@end
-
-@interface UIViewController (S7TVAutorotate)
-- (BOOL)s7tv_shouldAutorotate;
-@end
-@implementation UIViewController (S7TVAutorotate)
-- (BOOL)s7tv_shouldAutorotate {
-    if (s_orientationLocked) return NO;
-    return [self s7tv_shouldAutorotate];
-}
-@end
-
-// ── Action toggle ─────────────────────────────────────────────────────────────
-@interface SevenTVManager (OrientationLock)
-- (void)s7tv_toggleOrientationLock:(UIButton *)sender;
-@end
-@implementation SevenTVManager (OrientationLock)
-
-static void s7tv_install_orientation_swizzles(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        s7tv_swizzle([UIApplication class],
-                     [UIApplication class],
-                     @selector(supportedInterfaceOrientationsForWindow:),
-                     NSSelectorFromString(@"s7tv_supportedInterfaceOrientationsForWindow:"));
-        s7tv_swizzle([UIViewController class],
-                     [UIViewController class],
-                     @selector(supportedInterfaceOrientations),
-                     @selector(s7tv_supportedInterfaceOrientations));
-        s7tv_swizzle([UIViewController class],
-                     [UIViewController class],
-                     @selector(shouldAutorotate),
-                     @selector(s7tv_shouldAutorotate));
-        [[SevenTVManager sharedManager] log:@"✅ Swizzles verrou orientation installés (premier lock)"];
-    });
-}
-
-- (void)s7tv_toggleOrientationLock:(UIButton *)sender {
-    s_orientationLocked = !s_orientationLocked;
-
-    if (s_orientationLocked) {
-        // Installer les swizzles seulement maintenant, pas au lancement
-        s7tv_install_orientation_swizzles();
-
-        // Capturer l'orientation courante de la scène
-        UIWindowScene *activeScene = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] &&
-                scene.activationState == UISceneActivationStateForegroundActive) {
-                activeScene = (UIWindowScene *)scene;
-                break;
-            }
-        }
-        UIInterfaceOrientation current = activeScene
-            ? activeScene.interfaceOrientation
-            : UIInterfaceOrientationPortrait;
-
-        s_lockedOrientation = current;
-        switch (current) {
-            case UIInterfaceOrientationLandscapeLeft:
-                s_lockedOrientationMask = UIInterfaceOrientationMaskLandscapeLeft;  break;
-            case UIInterfaceOrientationLandscapeRight:
-                s_lockedOrientationMask = UIInterfaceOrientationMaskLandscapeRight; break;
-            case UIInterfaceOrientationPortraitUpsideDown:
-                s_lockedOrientationMask = UIInterfaceOrientationMaskPortraitUpsideDown; break;
-            default:
-                s_lockedOrientationMask = UIInterfaceOrientationMaskPortrait; break;
-        }
-
-        // Le mask est posé — supportedInterfaceOrientationsForWindow: bloque dès maintenant.
-        // On n'appelle PAS requestGeometryUpdate ici : l'utilisateur est déjà dans la bonne
-        // orientation, un appel inutile ouvre une fenêtre où la première rotation physique
-        // peut passer avant que le cycle de géométrie soit stabilisé.
-        s7tv_startOrientationObserver();
-        [self log:@"🔒 Orientation verrouillée (orientation=%ld)", (long)current];
-
-    } else {
-        s_lockedOrientationMask = UIInterfaceOrientationMaskAll;
-        s_lockedOrientation     = UIInterfaceOrientationUnknown;
-        s7tv_stopOrientationObserver();
-        // Libérer toutes les orientations → iOS reprend la main
-        s7tv_forceSceneOrientation(UIInterfaceOrientationMaskAll);
-        [UIViewController attemptRotationToDeviceOrientation];
-        [self log:@"🔓 Orientation déverrouillée"];
-    }
-
-    // Mettre à jour l'icône du bouton
-    UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:20 weight:UIImageSymbolWeightMedium];
-    NSString *sym = s_orientationLocked ? @"lock.rotation" : @"lock.rotation.open";
-    UIImage *icon = [UIImage systemImageNamed:sym withConfiguration:cfg];
-    UIColor *tint = s_orientationLocked
-        ? [UIColor colorWithRed:0.55 green:0.25 blue:0.95 alpha:1.0]
-        : [UIColor whiteColor];
-
-    for (NSNumber *st in @[@(UIControlStateNormal), @(UIControlStateHighlighted),
-                            @(UIControlStateSelected), @(UIControlStateDisabled)]) {
-        [sender setImage:icon forState:st.unsignedIntegerValue];
-    }
-    sender.tintColor = tint;
-
-    s7tv_showOrientationToast(s_orientationLocked);
-}
-
-@end
-
-static void s7tv_swizzle_orientation_lock(void) {
-    // Swizzles installés à la demande au premier lock, pas au lancement.
-}
-
-// ────────────────────────────────────────────────────────────
 // MARK: - Point d'entrée __attribute__((constructor))
 // ────────────────────────────────────────────────────────────
 
@@ -2700,8 +2020,8 @@ static void TwitchSevenTVInit(void) {
     // Section 7TV dans les paramètres Twitch
     s7tv_swizzle_account_menu();
 
-    // Auto Collect Channel Points — module 100% autonome (voir sa section
-    // dédiée plus haut dans ce fichier), aucune dépendance avec les
+    // Auto Collect Channel Points — module 100% autonome (voir
+    // 7tv-system-NativeBehaviorHooks.m), aucune dépendance avec les
     // swizzles ci-dessus. Démarré directement ici, pas via didMoveToWindow.
     s7tv_scanForChannelPointsLoop();
 

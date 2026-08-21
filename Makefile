@@ -27,6 +27,7 @@ TwitchPlusK_FILES = \
     SevenTVChatAppearanceConfig.m \
     SevenTVChatCustomView.m \
     7tv-chat-ReplyThreadPanel.m \
+    7tv-system-NativeBehaviorHooks.m \
     SevenTVEmoteProvider.m \
     SevenTVChatTokenizer.m \
     SevenTVEmoteImageCache.m \

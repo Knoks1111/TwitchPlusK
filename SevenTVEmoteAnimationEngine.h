@@ -78,6 +78,11 @@ NS_ASSUME_NONNULL_BEGIN
 // en willDisplayCell (cell reuse) — voir SevenTVChatCustomView.
 - (void)removeObserver:(id)observer;
 
+// Pendant un scroll du picker, conserve un mouvement fluide mais réduit de
+// moitié les redraws et le nombre de clés avancées simultanément. Aucun
+// décodage n'est piloté ici : le picker continue de le suspendre séparément.
+- (void)setScrollingPerformanceMode:(BOOL)enabled;
+
 // Retire toutes les frames décodées et arrête immédiatement les animations.
 - (void)clearAllCachedFrames;
 

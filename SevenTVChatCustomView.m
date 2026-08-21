@@ -1681,14 +1681,9 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
                 attachment.image = cachedImage;
             }
 
-            // Sens logique : positif = vers le haut, négatif = vers le bas
-            // — identique au picker/preview. Pas d'inversion de signe ici
-            // (contrairement à une version précédente) : dans les bounds
-            // d'un NSTextAttachment, augmenter y déplace vers le haut, donc
-            // le sens correspond déjà. Le -4.0 fixe est le rebase du zéro :
-            // à offset=0, l'emote est posée sur la ligne du bas (= l'ancien
-            // rendu par défaut, qui valait +4 sur l'ancienne échelle centrée).
-            CGFloat y = cfg.emoteVerticalOffset - 4.0;
+            // Valeur 1:1 du picker : -6 affiché signifie réellement y=-6
+            // dans les bounds, sans correction fixe ou échelle parallèle.
+            CGFloat y = cfg.emoteVerticalOffset;
             attachment.bounds = CGRectMake(0, y, targetWidth, targetHeight);
 
             NSMutableAttributedString *attachmentText =
@@ -1729,7 +1724,7 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
 
 - (void)s7tv_appendTimestampForMessage:(S7TVChatMessage *)msg
                                    into:(NSMutableAttributedString *)result {
-    if (!msg.timestamp) return;
+    if (!msg.isHistorical || !msg.timestamp) return;
     static NSDateFormatter *formatter;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{

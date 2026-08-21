@@ -75,6 +75,7 @@ static NSString *const kS7TVCfgMessageFontSize         = @"s7tv_cfg_message_font
 static NSString *const kS7TVCfgLineSpacing             = @"s7tv_cfg_line_spacing";
 static NSString *const kS7TVCfgUsernameMessageSpacing  = @"s7tv_cfg_username_message_spacing";
 static NSString *const kS7TVCfgEmoteVerticalOffset     = @"s7tv_cfg_emote_vertical_offset";
+static NSString *const kS7TVCfgEmoteOffsetRealMigrated = @"s7tv_cfg_emote_offset_real_v1_migrated";
 static NSString *const kS7TVCfgEmote7TVResolution      = @"s7tv_cfg_emote_7tv_resolution";
 static NSString *const kS7TVCfgSystemBGEnabled         = @"s7tv_cfg_system_bg_enabled";
 static NSString *const kS7TVCfgSubResubColor           = @"s7tv_cfg_color_sub_resub";
@@ -104,11 +105,9 @@ static const CGFloat kDefaultMessageFontSize        = 13.0;
 // comme avant, seule la compensation a changé.
 static const CGFloat kDefaultLineSpacing            = 2.0;  // défaut = rendu du picker à 6, compensé -4
 static const CGFloat kDefaultUsernameMessageSpacing = 4.0;  // TODO mesure réelle
-// 0 = rendu d'origine (emote posée sur la ligne du bas, ce qui correspondait
-// avant à +4 sur l'ancienne échelle). Sens logique : positif = vers le haut,
-// négatif = vers le bas. Le rebase de +4 vers 0 est appliqué au moment du
-// rendu (voir SevenTVChatCustomView.m et 7tv-picker-sizes.m), pas ici.
-static const CGFloat kDefaultEmoteVerticalOffset    = 0.0;
+// Valeur réelle transmise aux bounds de l'attachment : le picker et le rendu
+// utilisent désormais exactement le même nombre, sans rebase invisible.
+static const CGFloat kDefaultEmoteVerticalOffset    = -6.0;
 static const NSInteger kDefaultEmote7TVResolution   = 2;
 static const CGFloat kDefaultDeletedMessageOpacity  = 0.50;
 static const S7TVDeletedMessageStyle kDefaultDeletedMessageStyle = S7TVDeletedMessageStyleDimmed;
@@ -178,10 +177,22 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
         _lineSpacing = [prefs doubleForKey:kS7TVCfgLineSpacing];
     if ([prefs objectForKey:kS7TVCfgUsernameMessageSpacing] != nil)
         _usernameMessageSpacing = [prefs doubleForKey:kS7TVCfgUsernameMessageSpacing];
-    if ([prefs objectForKey:kS7TVCfgEmoteVerticalOffset] != nil)
-        _emoteVerticalOffset = [prefs doubleForKey:kS7TVCfgEmoteVerticalOffset];
-    if ([prefs objectForKey:kS7TVCfgEmote7TVResolution] != nil)
-        _emote7TVResolution = [prefs integerForKey:kS7TVCfgEmote7TVResolution];
+    if ([prefs objectForKey:kS7TVCfgEmoteVerticalOffset] != nil) {
+        CGFloat savedOffset = [prefs doubleForKey:kS7TVCfgEmoteVerticalOffset];
+        // Migration unique de l'ancien défaut affiché 0 vers le nouveau vrai
+        // défaut -6. Les valeurs personnalisées sont conservées telles quelles.
+        if (![prefs boolForKey:kS7TVCfgEmoteOffsetRealMigrated] &&
+            fabs(savedOffset) < 0.0001) {
+            savedOffset = kDefaultEmoteVerticalOffset;
+            [prefs setDouble:savedOffset forKey:kS7TVCfgEmoteVerticalOffset];
+        }
+        _emoteVerticalOffset = savedOffset;
+    }
+    [prefs setBool:YES forKey:kS7TVCfgEmoteOffsetRealMigrated];
+    if ([prefs objectForKey:kS7TVCfgEmote7TVResolution] != nil) {
+        NSInteger savedResolution = [prefs integerForKey:kS7TVCfgEmote7TVResolution];
+        _emote7TVResolution = MIN(4, MAX(1, savedResolution));
+    }
     if ([prefs objectForKey:kS7TVCfgSystemBGEnabled] != nil)
         _systemMessageBackgroundsEnabled = [prefs boolForKey:kS7TVCfgSystemBGEnabled];
 

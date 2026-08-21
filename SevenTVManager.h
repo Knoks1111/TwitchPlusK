@@ -221,7 +221,8 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // Retourne l'emote 7TV correspondant au nom, ou nil si pas trouvée
 - (SevenTVEmote *)emoteForName:(NSString *)name;
 
-// URL CDN pour une emote (taille 4x pour Retina)
+// URL CDN pour une emote à la résolution 1x/2x/3x/4x choisie dans les
+// réglages 7TV (2x par défaut).
 - (NSURL *)cdnURLForEmote:(SevenTVEmote *)emote;
 
 // --- UI ---

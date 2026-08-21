@@ -27,6 +27,12 @@ NS_ASSUME_NONNULL_BEGIN
 // réglages (Phase 6).
 extern NSString *const S7TVChatAppearanceConfigDidChangeNotification;
 
+typedef NS_ENUM(NSInteger, S7TVDeletedMessageStyle) {
+    S7TVDeletedMessageStyleDimmed = 0,
+    S7TVDeletedMessageStyleStrikethrough,
+    S7TVDeletedMessageStyleDimmedAndStrikethrough,
+};
+
 @interface SevenTVChatAppearanceConfig : NSObject
 
 + (instancetype)sharedConfig;
@@ -89,9 +95,11 @@ extern NSString *const S7TVChatAppearanceConfigDidChangeNotification;
 
 // --- Messages supprimés / modération ---
 // Affiche la sanction IRC dans le placeholder replié (timeout avec durée
-// humaine, ou ban permanent). Le corps révélé est atténué sans toucher
-// au pseudo ni aux badges ; son opacité est réglable de 0.25 à 1.0.
+// humaine, ou ban permanent). Le corps révélé peut être atténué, barré
+// ou les deux sans toucher au pseudo ni aux badges ; son opacité est
+// réglable de 0.25 à 1.0 pour les styles qui utilisent l'atténuation.
 @property (nonatomic, assign) BOOL showModerationDetails;
+@property (nonatomic, assign) S7TVDeletedMessageStyle deletedMessageStyle;
 @property (nonatomic, assign) CGFloat deletedMessageTextOpacity;
 
 // --- Persistance ---

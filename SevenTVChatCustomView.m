@@ -1171,6 +1171,20 @@ static NSString *s7tv_deletedPlaceholderForMessage(S7TVChatMessage *msg,
         : L(@"chat_deleted_message_placeholder");
 }
 
+static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
+                                       NSUInteger bodyStart,
+                                       S7TVChatMessage *msg,
+                                       SevenTVChatAppearanceConfig *cfg) {
+    if (msg.state != S7TVChatMessageStateDeletedExpanded ||
+        bodyStart >= result.length) return;
+    if (cfg.deletedMessageStyle == S7TVDeletedMessageStyleStrikethrough ||
+        cfg.deletedMessageStyle == S7TVDeletedMessageStyleDimmedAndStrikethrough) {
+        [result addAttribute:NSStrikethroughStyleAttributeName
+                       value:@(NSUnderlineStyleSingle)
+                       range:NSMakeRange(bodyStart, result.length - bodyStart)];
+    }
+}
+
 - (NSAttributedString *)s7tv_buildAttributedStringForMessage:(S7TVChatMessage *)msg
                                        collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes
                                        collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes {
@@ -1253,8 +1267,9 @@ static NSString *s7tv_deletedPlaceholderForMessage(S7TVChatMessage *msg,
     // réutilisé pour tous les chemins du corps ci-dessous (fallback sans
     // tokens, texte brut, emote non résolue, texte hors mention).
     BOOL isDeletedExpanded = (msg.state == S7TVChatMessageStateDeletedExpanded);
+    BOOL usesDimming = (cfg.deletedMessageStyle != S7TVDeletedMessageStyleStrikethrough);
     CGFloat deletedOpacity = MIN(1.0, MAX(0.25, cfg.deletedMessageTextOpacity));
-    UIColor *messageColor = isDeletedExpanded
+    UIColor *messageColor = (isDeletedExpanded && usesDimming)
         ? [UIColor colorWithWhite:1.0 alpha:deletedOpacity]
         : (msg.isActionMessage ? usernameColor : [UIColor whiteColor]);
 
@@ -1287,6 +1302,9 @@ static NSString *s7tv_deletedPlaceholderForMessage(S7TVChatMessage *msg,
         initWithString:[displayName stringByAppendingString:@": "]
             attributes:@{NSFontAttributeName: usernameFont,
                          NSForegroundColorAttributeName: usernameColor}]];
+    // Point de départ exact du corps : badges et pseudo sont volontairement
+    // exclus de tous les styles de suppression configurables.
+    NSUInteger messageBodyStart = result.length;
 
     if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
         [result appendAttributedString:[[NSAttributedString alloc]
@@ -1299,6 +1317,7 @@ static NSString *s7tv_deletedPlaceholderForMessage(S7TVChatMessage *msg,
     NSArray<S7TVChatToken *> *tokens = msg.tokens;
     if (!tokens.count) {
         s7tv_appendTextWithLinkDetection(result, msg.rawText ?: @"", messageFont, messageColor);
+        s7tv_applyDeletedBodyStyle(result, messageBodyStart, msg, cfg);
         return;
     }
 
@@ -1376,6 +1395,7 @@ static NSString *s7tv_deletedPlaceholderForMessage(S7TVChatMessage *msg,
 
         s7tv_appendTextWithLinkDetection(result, token.text ?: @"", messageFont, messageColor);
     }
+    s7tv_applyDeletedBodyStyle(result, messageBodyStart, msg, cfg);
 }
 
 @end

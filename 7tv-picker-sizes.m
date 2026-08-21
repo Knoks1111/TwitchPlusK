@@ -83,6 +83,8 @@ static const char kS7TVRowKeyTag = 0;
 @property (nonatomic, weak) UIColorWell *selfMentionColorWell;
 @property (nonatomic, weak) UILabel *selfMentionRowLabel;
 @property (nonatomic, weak) UILabel *moderationSectionLabel;
+@property (nonatomic, weak) UILabel *deletedStyleLabel;
+@property (nonatomic, weak) UISegmentedControl *deletedStyleControl;
 @property (nonatomic, weak) UILabel *moderationDetailsLabel;
 @property (nonatomic, weak) UISwitch *moderationDetailsSwitch;
 @property (nonatomic, weak) UILabel *deletedOpacityLabel;
@@ -302,6 +304,10 @@ static const char kS7TVRowKeyTag = 0;
 
     self.selfMentionRowLabel.text = L(@"sizes_self_mention_row_label");
     self.moderationSectionLabel.text = L(@"sizes_moderation_section_title");
+    self.deletedStyleLabel.text = L(@"sizes_deleted_style_label");
+    [self.deletedStyleControl setTitle:L(@"sizes_deleted_style_dimmed") forSegmentAtIndex:0];
+    [self.deletedStyleControl setTitle:L(@"sizes_deleted_style_struck") forSegmentAtIndex:1];
+    [self.deletedStyleControl setTitle:L(@"sizes_deleted_style_both") forSegmentAtIndex:2];
     self.moderationDetailsLabel.text = L(@"sizes_moderation_details_label");
     self.deletedOpacityLabel.text = L(@"sizes_deleted_opacity_label");
 
@@ -587,6 +593,52 @@ static const char kS7TVRowKeyTag = 0;
     self.moderationSectionLabel = sectionLabel;
     y += 26;
 
+    UIView *styleRow = [[UIView alloc] initWithFrame:CGRectMake(0, y, width, 64)];
+    styleRow.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    UILabel *styleLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 5, width - 56, 18)];
+    styleLabel.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    styleLabel.textColor = textColor;
+    styleLabel.text = L(@"sizes_deleted_style_label");
+    styleLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [styleRow addSubview:styleLabel];
+    self.deletedStyleLabel = styleLabel;
+
+    UIButton *styleReset = [UIButton buttonWithType:UIButtonTypeSystem];
+    styleReset.frame = CGRectMake(width - 40, 0, 28, 28);
+    styleReset.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    UIImageSymbolConfiguration *styleResetCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
+    [styleReset setImage:[UIImage systemImageNamed:@"arrow.counterclockwise" withConfiguration:styleResetCfg]
+                forState:UIControlStateNormal];
+    styleReset.tintColor = subColor;
+    [styleReset addTarget:self action:@selector(_deletedStyleResetTapped:)
+         forControlEvents:UIControlEventTouchUpInside];
+    [styleRow addSubview:styleReset];
+
+    UISegmentedControl *styleControl = [[UISegmentedControl alloc] initWithItems:@[
+        L(@"sizes_deleted_style_dimmed"),
+        L(@"sizes_deleted_style_struck"),
+        L(@"sizes_deleted_style_both"),
+    ]];
+    styleControl.frame = CGRectMake(12, 28, width - 24, 30);
+    styleControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    styleControl.selectedSegmentIndex = cfg.deletedMessageStyle;
+    styleControl.selectedSegmentTintColor = accent;
+    [styleControl setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]}
+                                forState:UIControlStateSelected];
+    [styleControl addTarget:self action:@selector(_deletedStyleChanged:)
+           forControlEvents:UIControlEventValueChanged];
+    [styleRow addSubview:styleControl];
+    self.deletedStyleControl = styleControl;
+
+    UIView *styleSep = [[UIView alloc] initWithFrame:CGRectMake(12, 63.5, width - 24, 0.5)];
+    styleSep.backgroundColor = sepColor;
+    styleSep.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [styleRow addSubview:styleSep];
+    [scrollView addSubview:styleRow];
+    y += 64;
+
     UIView *toggleRow = [[UIView alloc] initWithFrame:CGRectMake(0, y, width, 44)];
     toggleRow.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     const CGFloat switchW = 51, resetW = 28, gap = 6;
@@ -688,7 +740,30 @@ static const char kS7TVRowKeyTag = 0;
     opacitySep.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [opacityRow addSubview:opacitySep];
     [scrollView addSubview:opacityRow];
+    [self _updateDeletedOpacityControlsForStyle:cfg.deletedMessageStyle];
     return y + 68;
+}
+
+- (void)_updateDeletedOpacityControlsForStyle:(S7TVDeletedMessageStyle)style {
+    BOOL usesDimming = (style != S7TVDeletedMessageStyleStrikethrough);
+    self.deletedOpacitySlider.enabled = usesDimming;
+    self.deletedOpacityLabel.textColor = usesDimming ? self.panelTextColor : self.panelSubColor;
+    self.deletedOpacityValueLabel.alpha = usesDimming ? 1.0 : 0.45;
+}
+
+- (void)_deletedStyleChanged:(UISegmentedControl *)control {
+    S7TVDeletedMessageStyle style = (S7TVDeletedMessageStyle)control.selectedSegmentIndex;
+    [SevenTVChatAppearanceConfig sharedConfig].deletedMessageStyle = style;
+    [self _updateDeletedOpacityControlsForStyle:style];
+    [self.fakeChatView reloadMessages];
+}
+
+- (void)_deletedStyleResetTapped:(UIButton *)btn {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    cfg.deletedMessageStyle = S7TVDeletedMessageStyleDimmed;
+    self.deletedStyleControl.selectedSegmentIndex = S7TVDeletedMessageStyleDimmed;
+    [self _updateDeletedOpacityControlsForStyle:S7TVDeletedMessageStyleDimmed];
+    [self.fakeChatView reloadMessages];
 }
 
 - (void)_moderationDetailsChanged:(UISwitch *)sw {

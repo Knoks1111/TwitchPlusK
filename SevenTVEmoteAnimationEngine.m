@@ -65,6 +65,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 @property (nonatomic, assign) BOOL scrollingPerformanceMode;
 @property (nonatomic, assign) BOOL scrollingTickPhase;
 - (void)s7tv_pruneInactiveFrameSets;
+- (void)s7tv_pruneEmptyObserverKeys;
 @end
 
 @implementation SevenTVEmoteAnimationEngine
@@ -141,6 +142,20 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 - (void)addObserver:(id)observer keys:(NSSet<NSString *> *)keys redraw:(void (^)(void))redraw {
     NSAssert([NSThread isMainThread], @"SevenTVEmoteAnimationEngine: main thread uniquement");
     if (!observer || keys.count == 0) return;
+
+    // Rend l'API sûre même si un appelant réutilise une cellule sans faire le
+    // removeObserver: recommandé juste avant. Sans ce détachement, l'ancien
+    // key → observer restait vivant et pouvait consommer une place du throttle
+    // alors que l'emote n'était plus affichée.
+    NSMutableSet<NSString *> *previousKeys = [self.keysByObserver objectForKey:observer];
+    for (NSString *previousKey in previousKeys) {
+        NSHashTable *previousObservers = self.observersByKey[previousKey];
+        [previousObservers removeObject:observer];
+        if (previousObservers.count == 0) {
+            [self.observersByKey removeObjectForKey:previousKey];
+            [self.firstSeenAtByKey removeObjectForKey:previousKey];
+        }
+    }
 
     [self.keysByObserver setObject:[keys mutableCopy] forKey:observer];
     [self.redrawByObserver setObject:redraw forKey:observer];
@@ -242,6 +257,19 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     }
 }
 
+// Les NSHashTable d'observateurs sont faibles. Si UIKit détruit une vue sans
+// envoyer didEndDisplayingCell (fermeture/transitions rapides), la table peut
+// devenir vide toute seule mais sa clé reste dans observersByKey. On purge ces
+// clés avant chaque calcul de limite afin qu'une animation hors écran ne puisse
+// jamais voler l'une des places réservées aux emotes réellement visibles.
+- (void)s7tv_pruneEmptyObserverKeys {
+    for (NSString *key in [self.observersByKey.allKeys copy]) {
+        if (self.observersByKey[key].count > 0) continue;
+        [self.observersByKey removeObjectForKey:key];
+        [self.firstSeenAtByKey removeObjectForKey:key];
+    }
+}
+
 - (void)s7tv_notifyObserversOfKey:(NSString *)key {
     NSHashTable *observers = self.observersByKey[key];
     for (id observer in observers) {
@@ -253,6 +281,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 #pragma mark - CADisplayLink lifecycle
 
 - (void)s7tv_updateDisplayLinkState {
+    [self s7tv_pruneEmptyObserverKeys];
     BOOL shouldRun = self.observersByKey.count > 0;
     if (shouldRun && !self.displayLink) {
         self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(s7tv_tick:)];
@@ -273,7 +302,11 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 #pragma mark - Tick
 
 - (void)s7tv_tick:(CADisplayLink *)link {
-    if (self.observersByKey.count == 0) return;
+    [self s7tv_pruneEmptyObserverKeys];
+    if (self.observersByKey.count == 0) {
+        [self s7tv_updateDisplayLinkState];
+        return;
+    }
 
     NSTimeInterval elapsedStep = link.duration;
     if (self.scrollingPerformanceMode) {

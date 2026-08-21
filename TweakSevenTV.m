@@ -350,19 +350,15 @@ static UIView *s7tv_findChatInputView(void) {
 // (pas paste: en tant que tel) qui prévient le binding SwiftUI côté Twitch —
 // déjà présente comme étape obligatoire après insertText: dans la version
 // précédente, donc le mécanisme réellement nécessaire, indépendant du focus.
-static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
-    if (!username.length) return;
+// Cherche le UITextView/UITextField réellement interactif dans
+// ChatInputView. Le 1er UITextView trouvé n'est pas forcément le bon (logs
+// du 20/08 : un candidat avait delegate=nil → vue décorative interne à
+// UIKit, pas celle liée au binding SwiftUI de Twitch) — on liste tous les
+// candidats et on privilégie celui qui a un delegate.
+static UITextView *s7tv_findActiveChatTextView(UITextField * _Nullable * _Nullable outTextField) {
     UIView *inputRoot = s7tv_findChatInputView();
-    if (!inputRoot) {
-        [[SevenTVManager sharedManager] log:@"[ChatCustom] ⚠️ mention: ChatInputView introuvable"];
-        return;
-    }
+    if (!inputRoot) return nil;
 
-    // Le 1er UITextView trouvé n'est pas forcément le bon (logs du
-    // 20/08 : trouvé mais delegate=nil → probablement une vue décorative/
-    // interne à UIKit, pas celle liée au binding SwiftUI de Twitch). On
-    // liste TOUS les candidats et on privilégie celui qui a un delegate —
-    // signal fort que c'est la vraie vue interactive.
     NSMutableArray<UITextView *> *allTextViews = [NSMutableArray array];
     UITextField *textField = nil;
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:inputRoot];
@@ -372,49 +368,42 @@ static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
         if ([v isKindOfClass:[UITextView class]]) [allTextViews addObject:(UITextView *)v];
         if (!textField && [v isKindOfClass:[UITextField class]]) textField = (UITextField *)v;
     }
-
-    [[SevenTVManager sharedManager] log:
-        [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: %lu UITextView candidat(s), textField=%@",
-            (unsigned long)allTextViews.count, textField ? @"trouvé" : @"nil"]];
-    for (UITextView *tv in allTextViews) {
-        [[SevenTVManager sharedManager] log:
-            [NSString stringWithFormat:@"[ChatCustom] 🔍   candidat frame=%@ hidden=%@ alpha=%.2f delegate=%@ texte=%@",
-                NSStringFromCGRect(tv.frame),
-                tv.hidden ? @"OUI" : @"NON",
-                tv.alpha,
-                tv.delegate ? NSStringFromClass([tv.delegate class]) : @"nil",
-                tv.text.length ? tv.text : @"(vide)"]];
-    }
+    if (outTextField) *outTextField = textField;
 
     UITextView *textView = nil;
     for (UITextView *tv in allTextViews) {
         if (tv.delegate != nil) { textView = tv; break; }
     }
     if (!textView) {
-        // Repli : aucun candidat n'a de delegate — on prend le premier
-        // visible avec une frame non nulle plutôt que le tout premier trouvé
-        // à l'aveugle (meilleure chance que ce soit le vrai).
         for (UITextView *tv in allTextViews) {
             if (!tv.hidden && tv.alpha > 0.01 && !CGRectIsEmpty(tv.frame)) { textView = tv; break; }
         }
     }
     if (!textView) textView = allTextViews.firstObject;
+    return textView;
+}
 
-    if (textView) {
-        [[SevenTVManager sharedManager] log:
-            [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: candidat RETENU frame=%@ delegate=%@",
-                NSStringFromCGRect(textView.frame),
-                textView.delegate ? NSStringFromClass([textView.delegate class]) : @"nil"]];
-    }
+// Insère "@pseudo " au tout début du texte, SANS ouvrir le clavier (voir
+// commentaires plus haut sur becomeFirstResponder). Retourne le texte
+// RÉELLEMENT inséré tel qu'il apparaît après coup — Twitch transforme
+// automatiquement "@pseudo" en lien markdown "[@pseudo](https://t.me/pseudo)"
+// dès que son delegate traite le changement (confirmé par les logs), donc ce
+// n'est PAS le même texte que ce qu'on a écrit. On calcule ce texte par
+// différence de longueur (nouveau texte moins ancien texte = préfixe ajouté)
+// plutôt que de deviner le format transformé — c'est ce texte exact qu'il
+// faut mémoriser pour pouvoir le retirer proprement plus tard (voir
+// s7tv_removeExactPrefixFromChatInput ci-dessous). nil si rien n'a été
+// inséré (vue introuvable, ou la transformation a fait quelque chose
+// d'imprévisible qu'on ne peut pas retirer en confiance).
+static NSString *s7tv_insertMentionAtStartOfChatInput(NSString *username) {
+    if (!username.length) return nil;
 
+    UITextField *textField = nil;
+    UITextView *textView = s7tv_findActiveChatTextView(&textField);
     NSString *mention = [NSString stringWithFormat:@"@%@ ", username];
 
     if (textView) {
         NSString *current = textView.text ?: @"";
-        if ([current hasPrefix:mention]) {
-            [[SevenTVManager sharedManager] log:@"[ChatCustom] 🔍 mention: déjà présente, no-op"];
-            return;
-        }
 
         textView.text = [mention stringByAppendingString:current];
         textView.selectedRange = NSMakeRange(mention.length, 0); // curseur juste après la mention
@@ -426,12 +415,18 @@ static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
             [textView.delegate textViewDidChange:textView];
         }
 
+        NSString *finalText = textView.text ?: @"";
+        NSInteger insertedLength = (NSInteger)finalText.length - (NSInteger)current.length;
         [[SevenTVManager sharedManager] log:
-            [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: texte APRÈS notification+delegate = %@",
-                textView.text.length ? textView.text : @"(vide)"]];
+            [NSString stringWithFormat:@"[ChatCustom] 🔍 mention: texte APRÈS = %@ (longueur insérée calculée = %ld)",
+                finalText.length ? finalText : @"(vide)", (long)insertedLength]];
+
+        if (insertedLength <= 0 || insertedLength > (NSInteger)finalText.length) {
+            return mention; // transformation imprévisible, repli sur le texte brut plutôt que planter
+        }
+        return [finalText substringToIndex:insertedLength];
     } else if (textField) {
         NSString *current = textField.text ?: @"";
-        if ([current hasPrefix:mention]) return;
 
         textField.text = [mention stringByAppendingString:current];
 
@@ -441,41 +436,34 @@ static void s7tv_insertMentionAtStartOfChatInput(NSString *username) {
         if ([textField.delegate respondsToSelector:@selector(textFieldDidChangeSelection:)]) {
             [textField.delegate textFieldDidChangeSelection:textField];
         }
-    } else {
-        [[SevenTVManager sharedManager] log:@"[ChatCustom] ⚠️ mention: ni UITextView ni UITextField trouvé dans ChatInputView"];
+
+        NSString *finalText = textField.text ?: @"";
+        NSInteger insertedLength = (NSInteger)finalText.length - (NSInteger)current.length;
+        if (insertedLength <= 0 || insertedLength > (NSInteger)finalText.length) return mention;
+        return [finalText substringToIndex:insertedLength];
     }
+
+    [[SevenTVManager sharedManager] log:@"[ChatCustom] ⚠️ mention: ni UITextView ni UITextField trouvé dans ChatInputView"];
+    return nil;
 }
 
-// Symétrique de s7tv_insertMentionAtStartOfChatInput ci-dessus — retire
-// "@pseudo " du DÉBUT du texte (bouton "Annuler" du panneau Fil, voir
-// S7TVReplyThreadPanel.s7tv_cancelReplyTargetTapped). No-op si le texte ne
-// commence PAS (ou plus) par cette mention précise (l'utilisateur a pu
-// éditer le texte entre-temps — on ne touche à rien dans ce cas plutôt que
-// de risquer de couper un texte qu'il a écrit lui-même). Même principe que
-// l'insertion : mutation directe + notification manuelle, pas de
-// becomeFirstResponder.
-static void s7tv_removeMentionFromStartOfChatInput(NSString *username) {
-    if (!username.length) return;
-    UIView *inputRoot = s7tv_findChatInputView();
-    if (!inputRoot) return;
+// Retire exactement `exactPrefix` (tel que retourné par
+// s7tv_insertMentionAtStartOfChatInput — déjà transformé, pas le "@pseudo "
+// brut) du début du texte actuel. No-op si le texte ne commence plus par ce
+// préfixe précis (l'utilisateur a édité entre-temps) — on ne devine jamais,
+// on ne touche à rien plutôt que de risquer de couper un texte qu'il a écrit
+// lui-même.
+static void s7tv_removeExactPrefixFromChatInput(NSString *exactPrefix) {
+    if (!exactPrefix.length) return;
 
-    UITextView  *textView  = nil;
     UITextField *textField = nil;
-    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:inputRoot];
-    while (queue.count > 0) {
-        UIView *v = queue.firstObject; [queue removeObjectAtIndex:0];
-        [queue addObjectsFromArray:v.subviews];
-        if (!textView  && [v isKindOfClass:[UITextView class]])  textView  = (UITextView *)v;
-        if (!textField && [v isKindOfClass:[UITextField class]]) textField = (UITextField *)v;
-    }
-
-    NSString *mention = [NSString stringWithFormat:@"@%@ ", username];
+    UITextView *textView = s7tv_findActiveChatTextView(&textField);
 
     if (textView) {
         NSString *current = textView.text ?: @"";
-        if (![current hasPrefix:mention]) return;
+        if (![current hasPrefix:exactPrefix]) return;
 
-        textView.text = [current substringFromIndex:mention.length];
+        textView.text = [current substringFromIndex:exactPrefix.length];
         textView.selectedRange = NSMakeRange(0, 0);
 
         [[NSNotificationCenter defaultCenter]
@@ -486,9 +474,9 @@ static void s7tv_removeMentionFromStartOfChatInput(NSString *username) {
         }
     } else if (textField) {
         NSString *current = textField.text ?: @"";
-        if (![current hasPrefix:mention]) return;
+        if (![current hasPrefix:exactPrefix]) return;
 
-        textField.text = [current substringFromIndex:mention.length];
+        textField.text = [current substringFromIndex:exactPrefix.length];
 
         [[NSNotificationCenter defaultCenter]
             postNotificationName:UITextFieldTextDidChangeNotification
@@ -1012,6 +1000,13 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 // (pas à l'ouverture) que la mention @X s'insère dans la barre de saisie.
 @property (nonatomic, copy) NSString *selectedReplyTargetMessageID;
 @property (nonatomic, copy) NSString *selectedReplyTargetUsername;
+// Texte RÉELLEMENT inséré dans la barre de saisie, tel que renvoyé par
+// s7tv_insertMentionAtStartOfChatInput (déjà transformé par Twitch — ex:
+// "[@X](https://t.me/X) " plutôt que "@X " brut, voir cette fonction). C'est
+// CE texte exact qu'il faut retirer pour annuler proprement, jamais une
+// reconstruction devinée à partir du pseudo — la transformation n'est pas
+// prévisible depuis ici.
+@property (nonatomic, copy) NSString *lastInsertedMentionText;
 // Barre du bas "Répondre à @X · Annuler" — masquée tant qu'aucune cible
 // n'est sélectionnée. Hauteur pilotée par replyTargetBarHeightConstraint
 // (0 = masquée) plutôt qu'un simple .hidden, pour que
@@ -1378,6 +1373,12 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     // bouton flèche sur le message de son choix (voir
     // s7tv_selectReplyTarget:username: plus bas) — demande explicite,
     // l'auto-insertion précédente gênait quand on ouvrait juste pour lire.
+    // Si une mention d'une sélection précédente traînait encore (fil rouvert
+    // sans être passé par -hide entre-temps), on la nettoie aussi.
+    if (self.lastInsertedMentionText.length) {
+        s7tv_removeExactPrefixFromChatInput(self.lastInsertedMentionText);
+        self.lastInsertedMentionText = nil;
+    }
     self.selectedReplyTargetMessageID = nil;
     self.selectedReplyTargetUsername = nil;
     self.replyTargetBarView.hidden = YES;
@@ -1408,20 +1409,27 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 - (void)s7tv_selectReplyTarget:(NSString *)messageID username:(NSString *)username {
     if (!messageID.length || !username.length) return;
 
+    // Si une mention précédente était déjà insérée (l'utilisateur tape une
+    // AUTRE flèche sans avoir annulé la précédente), on la retire d'abord —
+    // sinon on empile les mentions et on finit par @ plusieurs personnes.
+    if (self.lastInsertedMentionText.length) {
+        s7tv_removeExactPrefixFromChatInput(self.lastInsertedMentionText);
+        self.lastInsertedMentionText = nil;
+    }
+
     self.selectedReplyTargetMessageID = messageID;
     self.selectedReplyTargetUsername = username;
     self.replyTargetBarLabel.attributedText = s7tv_buildReplyTargetBarText(username);
     self.replyTargetBarView.hidden = NO;
     self.replyTargetBarHeightConstraint.constant = kS7TVReplyTargetBarHeight;
 
-    s7tv_insertMentionAtStartOfChatInput(username);
+    self.lastInsertedMentionText = s7tv_insertMentionAtStartOfChatInput(username);
 
     UIWindow *window = self.containerView.window;
     if (window) [self s7tv_layoutPanelContentInWindow:window]; // la hauteur totale du panneau change (barre en plus)
 }
 
 - (void)s7tv_cancelReplyTargetTapped {
-    NSString *username = self.selectedReplyTargetUsername;
     self.selectedReplyTargetMessageID = nil;
     self.selectedReplyTargetUsername = nil;
     self.replyTargetBarView.hidden = YES;
@@ -1429,8 +1437,13 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 
     // Retire aussi la mention de la barre de saisie — demande explicite :
     // "Annuler" doit annuler visuellement ET dans le texte, pas juste
-    // masquer la barre du panneau en laissant un texte orphelin.
-    if (username.length) s7tv_removeMentionFromStartOfChatInput(username);
+    // masquer la barre du panneau en laissant un texte orphelin. On retire
+    // le texte EXACT inséré (déjà transformé par Twitch), pas une
+    // reconstruction depuis le pseudo.
+    if (self.lastInsertedMentionText.length) {
+        s7tv_removeExactPrefixFromChatInput(self.lastInsertedMentionText);
+        self.lastInsertedMentionText = nil;
+    }
 
     UIWindow *window = self.containerView.window;
     if (window) [self s7tv_layoutPanelContentInWindow:window];
@@ -1440,10 +1453,13 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     self.containerView.hidden = YES;
     self.currentThreadRootID = nil;
     self.pendingReplyTargetMessageID = nil;
-    // Referme aussi la sélection en cours (état du panneau), mais NE touche
-    // PAS au texte déjà tapé dans la barre de saisie — fermer le panneau
-    // n'est pas un "annuler", l'utilisateur peut vouloir garder sa mention
-    // et continuer/envoyer manuellement.
+    // Fermer le panneau retire aussi la mention en cours — demande
+    // explicite : contrairement à la version précédente, fermer sans
+    // "Annuler" doit quand même nettoyer le texte, pas le laisser en place.
+    if (self.lastInsertedMentionText.length) {
+        s7tv_removeExactPrefixFromChatInput(self.lastInsertedMentionText);
+        self.lastInsertedMentionText = nil;
+    }
     self.selectedReplyTargetMessageID = nil;
     self.selectedReplyTargetUsername = nil;
     self.replyTargetBarView.hidden = YES;

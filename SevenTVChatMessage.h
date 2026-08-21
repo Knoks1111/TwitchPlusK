@@ -196,6 +196,10 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 @interface S7TVChannelPointRewardInfo : NSObject <S7TVResolvedEmote>
 @property (nonatomic, copy) NSString *rewardID;
 @property (nonatomic, copy) NSString *title;
+// Récompenses automatiques Twitch uniquement : leur catalogue ne renvoie
+// aucun titre, seulement un type technique fixe. Le renderer résout alors
+// ce libellé local à chaque affichage pour suivre le changement FR/EN live.
+@property (nonatomic, copy, nullable) NSString *titleLocalizationKey;
 @property (nonatomic, copy, nullable) NSString *prompt;
 @property (nonatomic, assign) NSInteger cost;
 @property (nonatomic, copy) NSString *pricingType;

@@ -314,6 +314,14 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // récompenses avec saisie affichent directement leur titre au-dessus
         // du message et n'utilisent donc pas ce connecteur.
         @"chat_channel_points_redeemed_format": @[@"%@ a récupéré : %@", @"%@ redeemed: %@"],
+        @"chat_channel_points_used_format": @[@"%@ utilisé", @"%@ used"],
+        // Twitch ne renvoie que le type technique de ses récompenses
+        // automatiques ; ces deux libellés correspondent aux msg-id IRC qui
+        // accompagnent réellement un message de chat.
+        @"channel_points_auto_bypass_sub_mode": @[@"Envoyer un message sur le chat réservé aux abonnés",
+                                                    @"Send a message in sub-only mode"],
+        @"channel_points_auto_highlight_message": @[@"Surligner mon message",
+                                                      @"Highlight My Message"],
 
         // ── Verrouillage de rotation ──────────────────────────────────────
         @"lock_locked":                     @[@"Verrouillé", @"Locked"],

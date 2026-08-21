@@ -280,7 +280,8 @@ static void s7tv_logChannelPointIRCDiagnostic(NSString *ircLine) {
     if (![lower containsString:@"custom-reward-id"] &&
         ![lower containsString:@"channel-points"] &&
         ![lower containsString:@"channel_points"] &&
-        ![lower containsString:@"highlighted-message"]) return;
+        ![lower containsString:@"highlighted-message"] &&
+        ![lower containsString:@"skip-subs-mode-message"]) return;
     [[SevenTVManager sharedManager]
         log:@"[ChatCustom][Points:IRC]\n%@", s7tv_limitedDiagnosticString(ircLine)];
 }
@@ -815,6 +816,12 @@ static NSArray<NSString *> *s7tv_parseBadgesTag(NSString *tagValue) {
     return identifiers;
 }
 
+// Défini plus bas avec l'ingestion du catalogue GQL. Le parseur IRC reste
+// l'unique constructeur des messages et lui demande simplement si son
+// msg-id correspond à une récompense automatique actuellement configurée.
+static S7TVChannelPointRewardInfo * _Nullable
+s7tv_automaticRewardInfoForIRCMessageID(NSString *messageID);
+
 // Parse une ligne IRC complète et retourne un S7TVChatMessage si c'est un
 // PRIVMSG exploitable, nil sinon (autre type de commande, ou PRIVMSG dont
 // le texte n'a pas pu être isolé — on ne construit jamais de message à
@@ -909,6 +916,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     NSString *emotesTag    = s7tv_tagValue(tags, @"emotes", @"");
     NSString *badgesTag    = s7tv_tagValue(tags, @"badges", @"");
     NSString *customRewardID = s7tv_tagValue(tags, @"custom-reward-id", @"");
+    NSString *ircMessageID = s7tv_tagValue(tags, @"msg-id", @"");
 
     // ── Réponses / fils de discussion ───────────────────────────────────
     // reply-parent-msg-id = message immédiatement au-dessus (juste pour le
@@ -954,6 +962,17 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     msg.twitchEmotesTag = emotesTag;
     msg.badgeIdentifiers = s7tv_parseBadgesTag(badgesTag);
     msg.isFirstMessage = [s7tv_tagValue(tags, @"first-msg", @"0") isEqualToString:@"1"];
+
+    // Les récompenses automatiques (highlight, contournement du mode sub)
+    // ne produisent pas reward-redeemed. Twitch les marque directement sur
+    // le PRIVMSG avec un msg-id fixe ; les données visuelles/coût viennent
+    // néanmoins du catalogue GQL dynamique de la chaîne.
+    S7TVChannelPointRewardInfo *automaticReward =
+        s7tv_automaticRewardInfoForIRCMessageID(ircMessageID);
+    if (automaticReward) {
+        msg.type = S7TVChatMessageTypeChannelPointRedemption;
+        msg.channelPointRewardInfo = automaticReward;
+    }
 
     // Détection self-mention : scan des tokens .mention déjà résolus par le
     // tokenizer (@pseudo ET pseudo nu — voir S7TVChatToken), comparés au
@@ -1225,6 +1244,146 @@ static NSURL * _Nullable s7tv_channelPointImageURL(NSDictionary *reward) {
         urlString = s7tv_channelPointImageURLString(defaultImage);
     }
     return urlString.length ? [NSURL URLWithString:urlString] : nil;
+}
+
+// ── Catalogue des récompenses automatiques Twitch ──────────────────────
+// Contrairement aux récompenses personnalisées, Twitch n'envoie pas de
+// reward-redeemed pour ces actions. ChannelPointsQuery fournit néanmoins
+// leur coût/image/couleur courants ; seuls le type et le msg-id sont des
+// identifiants de protocole fixes.
+
+static NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *
+s7tv_automaticRewardCatalog(void) {
+    static NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *catalog = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ catalog = [NSMutableDictionary dictionary]; });
+    return catalog;
+}
+
+static NSString *s7tv_automaticRewardCatalogChannelID = nil;
+
+static NSString * _Nullable s7tv_automaticRewardTitleLocalizationKey(NSString *type) {
+    if ([type isEqualToString:@"SINGLE_MESSAGE_BYPASS_SUB_MODE"])
+        return @"channel_points_auto_bypass_sub_mode";
+    if ([type isEqualToString:@"SEND_HIGHLIGHTED_MESSAGE"])
+        return @"channel_points_auto_highlight_message";
+    return nil;
+}
+
+static NSString * _Nullable s7tv_automaticRewardTypeForIRCMessageID(NSString *messageID) {
+    if ([messageID isEqualToString:@"skip-subs-mode-message"])
+        return @"SINGLE_MESSAGE_BYPASS_SUB_MODE";
+    if ([messageID isEqualToString:@"highlighted-message"])
+        return @"SEND_HIGHLIGHTED_MESSAGE";
+    return nil;
+}
+
+static S7TVChannelPointRewardInfo * _Nullable s7tv_copyChannelPointRewardInfo(
+    S7TVChannelPointRewardInfo * _Nullable source) {
+    if (!source) return nil;
+    S7TVChannelPointRewardInfo *copy = [S7TVChannelPointRewardInfo new];
+    copy.rewardID = source.rewardID ?: @"";
+    copy.title = source.title ?: @"";
+    copy.titleLocalizationKey = source.titleLocalizationKey;
+    copy.prompt = source.prompt;
+    copy.cost = source.cost;
+    copy.pricingType = source.pricingType ?: @"";
+    copy.isUserInputRequired = source.isUserInputRequired;
+    copy.userInput = source.userInput;
+    copy.accentColor = source.accentColor;
+    if (source.imageURL) copy.imageURL = source.imageURL;
+    return copy;
+}
+
+static S7TVChannelPointRewardInfo * _Nullable
+s7tv_automaticRewardInfoForIRCMessageID(NSString *messageID) {
+    NSString *type = s7tv_automaticRewardTypeForIRCMessageID(messageID);
+    if (!type.length) return nil;
+    NSMutableDictionary *catalog = s7tv_automaticRewardCatalog();
+    @synchronized (catalog) {
+        NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+        if (currentChannelID.length && s7tv_automaticRewardCatalogChannelID.length &&
+            ![currentChannelID isEqualToString:s7tv_automaticRewardCatalogChannelID]) {
+            return nil;
+        }
+        return s7tv_copyChannelPointRewardInfo(catalog[type]);
+    }
+}
+
+static void s7tv_collectAutomaticRewardDictionaries(id object,
+                                                     NSMutableArray<NSDictionary *> *rewards) {
+    if ([object isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dictionary = object;
+        id automaticRewards = dictionary[@"automaticRewards"];
+        if ([automaticRewards isKindOfClass:[NSArray class]]) {
+            for (id reward in (NSArray *)automaticRewards) {
+                if ([reward isKindOfClass:[NSDictionary class]]) [rewards addObject:reward];
+            }
+        }
+        for (id value in dictionary.allValues) {
+            if ([value isKindOfClass:[NSDictionary class]] ||
+                [value isKindOfClass:[NSArray class]]) {
+                s7tv_collectAutomaticRewardDictionaries(value, rewards);
+            }
+        }
+    } else if ([object isKindOfClass:[NSArray class]]) {
+        for (id value in (NSArray *)object) {
+            s7tv_collectAutomaticRewardDictionaries(value, rewards);
+        }
+    }
+}
+
+static void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data) {
+    if (!data.length) return;
+    NSString *raw = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (![raw containsString:@"automaticRewards"]) return;
+    id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (!root) return;
+
+    NSMutableArray<NSDictionary *> *rawRewards = [NSMutableArray array];
+    s7tv_collectAutomaticRewardDictionaries(root, rawRewards);
+    if (!rawRewards.count) return;
+
+    NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *nextCatalog =
+        [NSMutableDictionary dictionary];
+    for (NSDictionary *reward in rawRewards) {
+        NSString *type = s7tv_JSONStringForKeys(reward, @[@"type"]);
+        if (!type.length) continue;
+        S7TVChannelPointRewardInfo *info = [S7TVChannelPointRewardInfo new];
+        info.rewardID = type;
+        info.title = @"";
+        info.titleLocalizationKey = s7tv_automaticRewardTitleLocalizationKey(type);
+        info.pricingType = s7tv_JSONStringForKeys(reward, @[@"pricingType", @"pricing_type"]);
+        BOOL usesBits = [info.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame;
+        info.cost = usesBits
+            ? s7tv_JSONIntegerForKeys(reward, @[@"bitsCost", @"bits_cost"])
+            : s7tv_JSONIntegerForKeys(reward, @[@"cost"]);
+        if (info.cost <= 0) {
+            info.cost = usesBits
+                ? s7tv_JSONIntegerForKeys(reward, @[@"defaultBitsCost", @"default_bits_cost"])
+                : s7tv_JSONIntegerForKeys(reward, @[@"defaultCost", @"default_cost"]);
+        }
+        NSString *backgroundHex = s7tv_JSONStringForKeys(reward,
+            @[@"backgroundColor", @"background_color"]);
+        if (!backgroundHex.length) {
+            backgroundHex = s7tv_JSONStringForKeys(reward,
+                @[@"defaultBackgroundColor", @"default_background_color"]);
+        }
+        info.accentColor = s7tv_colorFromHexString(backgroundHex);
+        NSURL *imageURL = s7tv_channelPointImageURL(reward);
+        if (imageURL) info.imageURL = imageURL;
+        // Ces msg-id accompagnent toujours le texte saisi par l'utilisateur.
+        info.isUserInputRequired = info.titleLocalizationKey.length > 0;
+        nextCatalog[type] = info;
+    }
+
+    if (!nextCatalog.count) return;
+    NSMutableDictionary *catalog = s7tv_automaticRewardCatalog();
+    @synchronized (catalog) {
+        [catalog setDictionary:nextCatalog];
+        s7tv_automaticRewardCatalogChannelID =
+            [[SevenTVManager sharedManager].currentChannelTwitchID copy] ?: @"";
+    }
 }
 
 static NSDate *s7tv_channelPointTimestamp(NSString *rawTimestamp) {
@@ -1938,6 +2097,7 @@ static NSArray<NSString *> *s7tv_joinedChannelsInOutgoingWebSocketMessage(
                 if (data && !error) {
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
                     s7tv_scanGQLResponseForChannelPointsClaim(data);
+                    s7tv_ingestAutomaticRewardsFromGQLData(data);
                     s7tv_logChannelPointGQLDiagnostic(data, request);
                 }
                 completionHandler(data, response, error);
@@ -1955,6 +2115,7 @@ static NSArray<NSString *> *s7tv_joinedChannelsInOutgoingWebSocketMessage(
                 if (data && !error) {
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
                     s7tv_scanGQLResponseForChannelPointsClaim(data);
+                    s7tv_ingestAutomaticRewardsFromGQLData(data);
                     s7tv_logChannelPointGQLDiagnostic(data, nil);
                 }
                 completionHandler(data, response, error);
@@ -2049,6 +2210,7 @@ static NSMutableDictionary<NSNumber *, NSMutableData *> *s7tv_apolloBuffers(void
         if ([host isEqualToString:@"gql.twitch.tv"]) {
             [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:fullData];
             s7tv_scanGQLResponseForChannelPointsClaim(fullData);
+            s7tv_ingestAutomaticRewardsFromGQLData(fullData);
             s7tv_logChannelPointGQLDiagnostic(fullData,
                 task.currentRequest ?: task.originalRequest);
 

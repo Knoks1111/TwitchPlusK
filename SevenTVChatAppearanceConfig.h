@@ -33,6 +33,12 @@ typedef NS_ENUM(NSInteger, S7TVDeletedMessageStyle) {
     S7TVDeletedMessageStyleDimmedAndStrikethrough,
 };
 
+typedef NS_ENUM(NSInteger, S7TVDeletedMessageRevealMode) {
+    S7TVDeletedMessageRevealModeNever = 0,       // reste replié, tap désactivé
+    S7TVDeletedMessageRevealModeOnTap,           // comportement actuel
+    S7TVDeletedMessageRevealModeAlways,          // contenu affiché directement
+};
+
 @interface SevenTVChatAppearanceConfig : NSObject
 
 + (instancetype)sharedConfig;
@@ -99,6 +105,7 @@ typedef NS_ENUM(NSInteger, S7TVDeletedMessageStyle) {
 // ou les deux sans toucher au pseudo ni aux badges ; son opacité est
 // réglable de 0.25 à 1.0 pour les styles qui utilisent l'atténuation.
 @property (nonatomic, assign) BOOL showModerationDetails;
+@property (nonatomic, assign) S7TVDeletedMessageRevealMode deletedMessageRevealMode;
 @property (nonatomic, assign) S7TVDeletedMessageStyle deletedMessageStyle;
 @property (nonatomic, assign) CGFloat deletedMessageTextOpacity;
 

@@ -54,6 +54,11 @@
 // plus bas) : la cellule ne connaît pas SevenTVChatCustomView, juste ce
 // qu'on lui donne au moment de la configuration (voir s7tv_cellForMessageID:).
 @property (nonatomic, copy, nullable) void (^onReplyBannerTap)(void);
+// Phase 5 — présent uniquement pour un message supprimé (collapsed OU
+// expanded). Le tap sur le corps bascule l'état avant toute détection de
+// lien/réponse : le placeholder et le contenu révélé partagent ainsi la
+// même zone interactive, sans ajouter de geste concurrent sur contentView.
+@property (nonatomic, copy, nullable) void (^onDeletedMessageTap)(void);
 // ── Bouton "répondre à ce message" (panneau Fil uniquement) ────────────
 // Icône à droite de la cellule, tap immédiat = sélectionne CE message comme
 // cible (pas de confirmation supplémentaire, voir onReplySelectTap). Séparé
@@ -348,6 +353,11 @@
 // messageLabel — pas besoin d'un geste séparé sur contentView (qui, lui, ne
 // se déclenchait pas de façon fiable, retiré).
 - (void)s7tv_handleTap:(UITapGestureRecognizer *)gesture {
+    if (self.onDeletedMessageTap) {
+        self.onDeletedMessageTap();
+        return;
+    }
+
     NSAttributedString *attributedText = self.messageLabel.attributedText;
     if (attributedText.length) {
         NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
@@ -644,7 +654,11 @@
                  forMessage:(S7TVChatMessage *)msg
              attributedText:(NSAttributedString *)text {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
-    if (msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
+    // Un contenu supprimé, même révélé volontairement, ne conserve pas les
+    // accents système/mention : l'atténuation doit rester le signal visuel
+    // prioritaire et ne pas être confondue avec un message encore actif.
+    if (msg.state == S7TVChatMessageStateNormal &&
+        msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
         UIColor *accentColor; NSString *iconName;
         switch (msg.systemInfo.kind) {
             case S7TVSystemMessageKindCommunityGift:
@@ -665,7 +679,8 @@
         [cell s7tv_configureSystemAccentWithColor:accentColor iconName:iconName
                                  backgroundEnabled:cfg.systemMessageBackgroundsEnabled
                                   mentionBadgeText:nil];
-    } else if (msg.mentionsCurrentViewer && cfg.selfMentionHighlightEnabled) {
+    } else if (msg.state == S7TVChatMessageStateNormal &&
+               msg.mentionsCurrentViewer && cfg.selfMentionHighlightEnabled) {
         // Réutilise exactement le même mécanisme que les messages système
         // (barre d'accent + fond teinté à 12%) — voir
         // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:mentionBadgeText:.
@@ -684,6 +699,10 @@
                                   mentionBadgeText:nil];
     }
     cell.messageLabel.attributedText = text;
+    // Expanded = contenu original récupéré localement, mais volontairement
+    // atténué (pseudo, badges, texte et emotes ensemble). Réinitialisé à 1 à
+    // chaque configuration pour rendre le cell reuse déterministe.
+    cell.messageLabel.alpha = (msg.state == S7TVChatMessageStateDeletedExpanded) ? 0.58 : 1.0;
     // cfg.lineSpacing = espacement ENTRE deux messages (voir
     // SevenTVChatAppearanceConfig.h). Avec les self-sizing cells, il n'y a
     // plus de calcul de hauteur externe où l'ajouter (voir
@@ -708,7 +727,8 @@
                                                       collectAnimatedEmotes:animatedEmotes];
     [self s7tv_configureCell:cell forMessage:msg attributedText:text];
 
-    BOOL isReply = self.showsReplyBanners && msg.replyParentUsername.length > 0;
+    BOOL isCollapsed = (msg.state == S7TVChatMessageStateDeletedCollapsed);
+    BOOL isReply = self.showsReplyBanners && !isCollapsed && msg.replyParentUsername.length > 0;
     [cell s7tv_configureReplyBannerWithUsername:isReply ? msg.replyParentUsername : nil
                                      bodyPreview:isReply ? msg.replyParentBodyPreview : nil];
 
@@ -725,9 +745,29 @@
         }
     } : nil;
 
+    BOOL isDeleted = (msg.state == S7TVChatMessageStateDeletedCollapsed ||
+                      msg.state == S7TVChatMessageStateDeletedExpanded);
+    NSString *deletedMessageID = msg.messageID;
+    __weak typeof(self) weakSelfForDeletion = self;
+    cell.onDeletedMessageTap = isDeleted ? ^{
+        __strong typeof(weakSelfForDeletion) strongSelf = weakSelfForDeletion;
+        if (!strongSelf) return;
+        [strongSelf.store toggleExpandedForMessageID:deletedMessageID completion:^{
+            __strong typeof(weakSelfForDeletion) innerSelf = weakSelfForDeletion;
+            if (!innerSelf) return;
+            S7TVChatMessage *updated = [innerSelf.store messageWithID:deletedMessageID];
+            NSString *mode = (updated.state == S7TVChatMessageStateDeletedExpanded)
+                ? @"révélé" : @"masqué";
+            [[SevenTVManager sharedManager]
+                log:@"[ChatCustom] 🛡 Message supprimé %@ localement (id=%@)",
+                    mode, deletedMessageID];
+            [innerSelf s7tv_reloadMessageWithID:deletedMessageID animated:YES];
+        }];
+    } : nil;
+
     [cell s7tv_setThreadIndentEnabled:self.usesThreadReplyIndent];
 
-    [cell s7tv_setReplyTargetButtonEnabled:self.showsReplyTargetButton];
+    [cell s7tv_setReplyTargetButtonEnabled:self.showsReplyTargetButton && !isCollapsed];
     NSString *targetMessageID = msg.messageID;
     NSString *targetAuthor = msg.authorDisplayName;
     __weak typeof(self) weakSelfForTarget = self;
@@ -774,10 +814,14 @@
 }
 
 - (void)s7tv_reloadMessageWithID:(NSString *)messageID {
+    [self s7tv_reloadMessageWithID:messageID animated:NO];
+}
+
+- (void)s7tv_reloadMessageWithID:(NSString *)messageID animated:(BOOL)animated {
     if (!self.messagesByID[messageID]) return;
     NSDiffableDataSourceSnapshot<NSString *, NSString *> *snapshot = [self.dataSource snapshot];
     [snapshot reloadItemsWithIdentifiers:@[messageID]];
-    [self.dataSource applySnapshot:snapshot animatingDifferences:NO];
+    [self.dataSource applySnapshot:snapshot animatingDifferences:animated];
 }
 
 #pragma mark - UITableViewDelegate
@@ -1043,6 +1087,17 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
                                        collectUncachedEmotes:(NSMutableArray<id<S7TVResolvedEmote>> *)outUncachedEmotes
                                        collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes {
     NSMutableAttributedString *result = [NSMutableAttributedString new];
+
+    // CLEARCHAT global peut aussi toucher un message système conservé dans
+    // le store. Le placeholder doit alors remplacer TOUT son rendu, pas être
+    // ajouté sous la bannière sub/gift originale.
+    if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
+        [self s7tv_appendNormalBodyForMessage:msg into:result
+                        collectUncachedEmotes:outUncachedEmotes
+                        collectAnimatedEmotes:outAnimatedEmotes];
+        s7tv_applyLineBreakParagraphStyle(result);
+        return result;
+    }
 
     // Phase 3 — message système (sub/resub/gift) : bannière au lieu du
     // "pseudo: texte" habituel, suivie éventuellement du commentaire que

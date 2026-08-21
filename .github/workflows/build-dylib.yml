@@ -223,6 +223,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 🔔 Notifier via Pushcut
+        run: curl -s "${{ secrets.PUSHCUT_URL }}"
+
       - name: ✅ Résumé
         run: |
           echo "========================================"

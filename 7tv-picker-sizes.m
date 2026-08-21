@@ -58,6 +58,37 @@ static const char kS7TVRowKeyTag = 0;
 @end
 
 
+// Capsule de catégories calée sur le composant d'onglets du picker. Elle
+// recalcule ses trois segments en proportions égales à chaque rotation ou
+// changement de largeur, sans dépendre du rendu natif de UISegmentedControl.
+@interface S7TVPickerCategoryCapsuleView : UIView
+@property (nonatomic, weak) UIView *categoryIndicatorView;
+@property (nonatomic, copy) NSArray<UIButton *> *categoryButtons;
+@property (nonatomic, assign) NSInteger selectedIndex;
+@end
+
+@implementation S7TVPickerCategoryCapsuleView
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    NSUInteger count = self.categoryButtons.count;
+    if (count == 0) return;
+
+    CGFloat segmentWidth = self.bounds.size.width / (CGFloat)count;
+    self.layer.cornerRadius = self.bounds.size.height / 2.0;
+    self.categoryIndicatorView.layer.cornerRadius = self.bounds.size.height / 2.0;
+    self.categoryIndicatorView.frame = CGRectMake(segmentWidth * self.selectedIndex,
+                                                   0,
+                                                   segmentWidth,
+                                                   self.bounds.size.height);
+    [self.categoryButtons enumerateObjectsUsingBlock:^(UIButton *button, NSUInteger index, BOOL *stop) {
+        button.frame = CGRectMake(segmentWidth * index, 0, segmentWidth, self.bounds.size.height);
+    }];
+}
+
+@end
+
+
 @interface SevenTVPickerSizesPanel ()
 @property (nonatomic, weak, readwrite) UIView *panelView;
 @property (nonatomic, assign, readwrite) CGFloat contentHeight;
@@ -96,7 +127,8 @@ static const char kS7TVRowKeyTag = 0;
 @property (nonatomic, strong) SevenTVChatCustomView *fakeChatView;
 @property (nonatomic, strong) UIColor *panelTextColor;
 @property (nonatomic, strong) UIColor *panelSubColor;
-@property (nonatomic, weak) UISegmentedControl *categoryControl;
+@property (nonatomic, weak) S7TVPickerCategoryCapsuleView *categoryCapsuleView;
+@property (nonatomic, strong) NSArray<UIButton *> *categoryButtons;
 @property (nonatomic, weak) UIScrollView *sizesCategoryView;
 @property (nonatomic, weak) UIScrollView *appearanceCategoryView;
 @property (nonatomic, weak) UIScrollView *moderationCategoryView;
@@ -163,35 +195,53 @@ static const char kS7TVRowKeyTag = 0;
     self.panelTextColor    = textColor;
     self.panelSubColor     = subColor;
 
-    // Trois catégories seulement : suffisamment larges pour organiser tous
-    // les réglages sans recréer une liste de dizaines de mini-sections.
-    UISegmentedControl *categoryControl = [[UISegmentedControl alloc] initWithItems:@[
+    // Trois catégories seulement. Cette capsule reprend exactement la logique
+    // visuelle des onglets du picker : un fond pilule partagé et un indicateur
+    // violet arrondi qui se déplace derrière le bouton actif.
+    CGFloat categoryX = 12.0;
+    CGFloat categoryY = 8.0;
+    CGFloat categoryH = 32.0;
+    CGFloat categoryW = frame.size.width - 92.0; // place pour Retour/Réglages
+    S7TVPickerCategoryCapsuleView *categoryCapsule = [[S7TVPickerCategoryCapsuleView alloc] initWithFrame:
+        CGRectMake(categoryX, categoryY, categoryW, categoryH)];
+    categoryCapsule.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    categoryCapsule.backgroundColor = [cardColor colorWithAlphaComponent:0.92];
+    categoryCapsule.clipsToBounds = YES;
+    [sizesPanel addSubview:categoryCapsule];
+    self.categoryCapsuleView = categoryCapsule;
+
+    UIView *categoryIndicator = [[UIView alloc] initWithFrame:
+        CGRectMake(0, 0, categoryW / 3.0, categoryH)];
+    categoryIndicator.backgroundColor = accent;
+    categoryIndicator.layer.cornerRadius = categoryH / 2.0;
+    [categoryCapsule addSubview:categoryIndicator];
+    categoryCapsule.categoryIndicatorView = categoryIndicator;
+
+    NSArray<NSString *> *categoryTitles = @[
         L(@"sizes_category_sizes"),
         L(@"sizes_category_appearance"),
         L(@"sizes_category_moderation"),
-    ]];
-    // 68 pt restent libres à droite pour la capsule Retour/Réglages que
-    // le controller place sur la même ligne (60 pt + marge visuelle).
-    categoryControl.frame = CGRectMake(12, 8, frame.size.width - 92, 32);
-    categoryControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    categoryControl.selectedSegmentIndex = 0;
-    categoryControl.selectedSegmentTintColor = accent;
-    categoryControl.backgroundColor = [cardColor colorWithAlphaComponent:0.92];
-    categoryControl.layer.cornerRadius = 16;
-    categoryControl.clipsToBounds = YES;
-    [categoryControl setTitleTextAttributes:@{
-        NSForegroundColorAttributeName: subColor,
-        NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold]
-    } forState:UIControlStateNormal];
-    [categoryControl setTitleTextAttributes:@{
-        NSForegroundColorAttributeName: [UIColor whiteColor],
-        NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold]
+    ];
+    NSMutableArray<UIButton *> *categoryButtons = [NSMutableArray arrayWithCapacity:3];
+    for (NSInteger index = 0; index < 3; index++) {
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.frame = CGRectMake((categoryW / 3.0) * index, 0, categoryW / 3.0, categoryH);
+        button.tag = index;
+        button.titleLabel.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold];
+        button.titleLabel.adjustsFontSizeToFitWidth = YES;
+        button.titleLabel.minimumScaleFactor = 0.75;
+        [button setTitle:categoryTitles[index] forState:UIControlStateNormal];
+        [button setTitleColor:subColor forState:UIControlStateNormal];
+        [button setTitleColor:[UIColor whiteColor] forState:UIControlStateSelected];
+        [button addTarget:self action:@selector(_categoryTapped:)
+          forControlEvents:UIControlEventTouchUpInside];
+        [categoryCapsule addSubview:button];
+        [categoryButtons addObject:button];
     }
-                                    forState:UIControlStateSelected];
-    [categoryControl addTarget:self action:@selector(_categoryChanged:)
-              forControlEvents:UIControlEventValueChanged];
-    [sizesPanel addSubview:categoryControl];
-    self.categoryControl = categoryControl;
+    self.categoryButtons = categoryButtons;
+    categoryCapsule.categoryButtons = categoryButtons;
+    categoryCapsule.selectedIndex = 0;
+    categoryButtons.firstObject.selected = YES;
 
     CGRect categoryFrame = CGRectMake(0, 48, frame.size.width, frame.size.height - 48);
     UIScrollView *sizesCategory = [[UIScrollView alloc] initWithFrame:categoryFrame];
@@ -346,9 +396,16 @@ static const char kS7TVRowKeyTag = 0;
 }
 
 - (void)_refreshLocalizedStrings {
-    [self.categoryControl setTitle:L(@"sizes_category_sizes") forSegmentAtIndex:0];
-    [self.categoryControl setTitle:L(@"sizes_category_appearance") forSegmentAtIndex:1];
-    [self.categoryControl setTitle:L(@"sizes_category_moderation") forSegmentAtIndex:2];
+    NSArray<NSString *> *categoryTitles = @[
+        L(@"sizes_category_sizes"),
+        L(@"sizes_category_appearance"),
+        L(@"sizes_category_moderation"),
+    ];
+    [self.categoryButtons enumerateObjectsUsingBlock:^(UIButton *button, NSUInteger index, BOOL *stop) {
+        if (index < categoryTitles.count) {
+            [button setTitle:categoryTitles[index] forState:UIControlStateNormal];
+        }
+    }];
     self.colorsSectionLabel.text = L(@"sizes_colors_section_title");
     self.colorsToggleLabel.text  = L(@"sizes_colors_toggle_label");
 
@@ -901,8 +958,19 @@ static const char kS7TVRowKeyTag = 0;
     [self.fakeChatView reloadMessages];
 }
 
-- (void)_categoryChanged:(UISegmentedControl *)control {
-    NSInteger selected = control.selectedSegmentIndex;
+- (void)_categoryTapped:(UIButton *)button {
+    NSInteger selected = button.tag;
+    self.categoryCapsuleView.selectedIndex = selected;
+    [self.categoryCapsuleView setNeedsLayout];
+    [UIView animateWithDuration:0.18
+                          delay:0
+                        options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+        [self.categoryCapsuleView layoutIfNeeded];
+    } completion:nil];
+    [self.categoryButtons enumerateObjectsUsingBlock:^(UIButton *categoryButton, NSUInteger index, BOOL *stop) {
+        categoryButton.selected = (index == selected);
+    }];
     self.sizesCategoryView.hidden = (selected != 0);
     self.appearanceCategoryView.hidden = (selected != 1);
     self.moderationCategoryView.hidden = (selected != 2);

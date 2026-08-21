@@ -7,8 +7,20 @@
 
 #import "SevenTVEmoteAnimationEngine.h"
 #import "SevenTVManager.h"
+#import <float.h>
 
 static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 24;
+static const NSUInteger kS7TVMaxRegisteredFrameSets = 32;
+static const NSUInteger kS7TVMaxRegisteredFramesCost = 48 * 1024 * 1024;
+
+static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
+    NSUInteger total = 0;
+    for (UIImage *image in frames.images) {
+        CGImageRef cgImage = image.CGImage;
+        if (cgImage) total += CGImageGetBytesPerRow(cgImage) * CGImageGetHeight(cgImage);
+    }
+    return total;
+}
 
 
 // ============================================================
@@ -40,6 +52,8 @@ static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 24;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *frameIndexByKey;   // NSUInteger
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *elapsedByKey;      // CFTimeInterval accumulé
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *firstSeenAtByKey;  // CFTimeInterval, référence throttle
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastAccessByKey;   // LRU des frames inactives
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *frameCostByKey;    // octets décodés estimés
 
 // Clé → observateurs actuellement affichés (weak — un observateur qui
 // disparaît sans appeler removeObserver: ne fuit pas indéfiniment).
@@ -48,6 +62,7 @@ static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 24;
 // l'observateur, filet de sécurité en plus de removeObserver: explicite).
 @property (nonatomic, strong) NSMapTable<id, NSMutableSet<NSString *> *> *keysByObserver;
 @property (nonatomic, strong) NSMapTable<id, dispatch_block_t> *redrawByObserver;
+- (void)s7tv_pruneInactiveFrameSets;
 @end
 
 @implementation SevenTVEmoteAnimationEngine
@@ -69,6 +84,8 @@ static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 24;
         _frameIndexByKey   = [NSMutableDictionary dictionary];
         _elapsedByKey      = [NSMutableDictionary dictionary];
         _firstSeenAtByKey  = [NSMutableDictionary dictionary];
+        _lastAccessByKey   = [NSMutableDictionary dictionary];
+        _frameCostByKey    = [NSMutableDictionary dictionary];
         _observersByKey    = [NSMutableDictionary dictionary];
         _keysByObserver    = [NSMapTable weakToStrongObjectsMapTable];
         _redrawByObserver  = [NSMapTable weakToStrongObjectsMapTable];
@@ -82,9 +99,19 @@ static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 24;
     NSAssert([NSThread isMainThread], @"SevenTVEmoteAnimationEngine: main thread uniquement");
     if (!key.length || frames.images.count == 0) return;
 
+    // Ne pas réinitialiser une animation déjà enregistrée quand plusieurs
+    // cellules demandent la même emote au même moment.
+    if (self.framesByKey[key] == frames) {
+        self.lastAccessByKey[key] = @(CACurrentMediaTime());
+        return;
+    }
+
     self.framesByKey[key]     = frames;
     self.frameIndexByKey[key] = @0;
     self.elapsedByKey[key]    = @0.0;
+    self.lastAccessByKey[key] = @(CACurrentMediaTime());
+    self.frameCostByKey[key]  = @(s7tv_engineFramesCost(frames));
+    [self s7tv_pruneInactiveFrameSets];
 
     // Redraw immédiat : sans ça, une clé qui vient tout juste d'être décodée
     // n'affiche sa vraie frame 0 qu'au PROCHAIN avancement de frame (jusqu'à
@@ -93,7 +120,9 @@ static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 24;
 }
 
 - (BOOL)hasFramesForKey:(NSString *)key {
-    return key.length > 0 && self.framesByKey[key] != nil;
+    BOOL hasFrames = key.length > 0 && self.framesByKey[key] != nil;
+    if (hasFrames) self.lastAccessByKey[key] = @(CACurrentMediaTime());
+    return hasFrames;
 }
 
 - (nullable UIImage *)currentFrameForKey:(NSString *)key {
@@ -116,6 +145,7 @@ static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 24;
 
     CFTimeInterval now = CACurrentMediaTime();
     for (NSString *key in keys) {
+        self.lastAccessByKey[key] = @(now);
         NSHashTable *observers = self.observersByKey[key];
         if (!observers) {
             observers = [NSHashTable weakObjectsHashTable];
@@ -145,16 +175,63 @@ static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 24;
         if (observers.count == 0) {
             [self.observersByKey removeObjectForKey:key];
             [self.firstSeenAtByKey removeObjectForKey:key];
-            // framesByKey/frameIndexByKey/elapsedByKey restent en cache
-            // volontairement — redécoder à chaque scroll coûterait bien plus
-            // cher qu'un peu de mémoire ; l'éviction se fait côté
-            // SevenTVEmoteImageCache (NSCache bornée), pas ici.
+            // Les frames restent disponibles pour un retour rapide à l'écran,
+            // mais le LRU borné ci-dessous évite leur accumulation illimitée.
         }
     }
     [self.keysByObserver removeObjectForKey:observer];
     [self.redrawByObserver removeObjectForKey:observer];
 
+    [self s7tv_pruneInactiveFrameSets];
     [self s7tv_updateDisplayLinkState];
+}
+
+- (void)clearAllCachedFrames {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self clearAllCachedFrames]; });
+        return;
+    }
+    [self.displayLink invalidate];
+    self.displayLink = nil;
+    [self.framesByKey removeAllObjects];
+    [self.frameIndexByKey removeAllObjects];
+    [self.elapsedByKey removeAllObjects];
+    [self.firstSeenAtByKey removeAllObjects];
+    [self.lastAccessByKey removeAllObjects];
+    [self.frameCostByKey removeAllObjects];
+    [self.observersByKey removeAllObjects];
+    [self.keysByObserver removeAllObjects];
+    [self.redrawByObserver removeAllObjects];
+}
+
+// Le NSCache d'images est borné, mais framesByKey retenait auparavant une
+// seconde référence forte vers chaque animation jamais rencontrée. Après un
+// long scroll, cette table devenait donc un cache illimité. On garde un petit
+// LRU borné à la fois en nombre et à ~48 Mo, sans jamais évincer une clé
+// actuellement visible.
+- (void)s7tv_pruneInactiveFrameSets {
+    NSUInteger totalCost = 0;
+    for (NSNumber *cost in self.frameCostByKey.allValues) totalCost += cost.unsignedIntegerValue;
+    while (self.framesByKey.count > kS7TVMaxRegisteredFrameSets ||
+           totalCost > kS7TVMaxRegisteredFramesCost) {
+        NSString *oldestKey = nil;
+        CFTimeInterval oldestAccess = DBL_MAX;
+        for (NSString *candidate in self.framesByKey) {
+            if (self.observersByKey[candidate].count > 0) continue;
+            CFTimeInterval access = self.lastAccessByKey[candidate].doubleValue;
+            if (!oldestKey || access < oldestAccess) {
+                oldestKey = candidate;
+                oldestAccess = access;
+            }
+        }
+        if (!oldestKey) break; // toutes les clés sont réellement visibles
+        totalCost -= MIN(totalCost, self.frameCostByKey[oldestKey].unsignedIntegerValue);
+        [self.framesByKey removeObjectForKey:oldestKey];
+        [self.frameIndexByKey removeObjectForKey:oldestKey];
+        [self.elapsedByKey removeObjectForKey:oldestKey];
+        [self.lastAccessByKey removeObjectForKey:oldestKey];
+        [self.frameCostByKey removeObjectForKey:oldestKey];
+    }
 }
 
 - (void)s7tv_notifyObserversOfKey:(NSString *)key {
@@ -171,6 +248,10 @@ static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 24;
     BOOL shouldRun = self.observersByKey.count > 0;
     if (shouldRun && !self.displayLink) {
         self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(s7tv_tick:)];
+        // Les WebP d'emotes dépassent rarement 30 fps. Sur les écrans
+        // ProMotion, laisser CADisplayLink à 120 Hz quadruplait inutilement le
+        // nombre de passages sur le main thread.
+        self.displayLink.preferredFramesPerSecond = 30;
         [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
     } else if (!shouldRun && self.displayLink) {
         // Plus aucune emote animée observée à l'écran → coupe le timer

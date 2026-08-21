@@ -89,9 +89,10 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Cache (accueil → Avancé) ─────────────────────────────────────
         @"action_clear_cache":              @[@"Vider le cache", @"Clear cache"],
+        @"cache_emote_count_format":        @[@"%ld emotes", @"%ld emotes"],
         @"alert_cache_cleared_title":       @[@"Cache vidé", @"Cache cleared"],
-        @"alert_cache_cleared_message":     @[@"Les emotes seront rechargées dans quelques secondes.",
-                                               @"Emotes will reload in a few seconds."],
+        @"alert_cache_cleared_message_format": @[@"%lu emotes ont été supprimées du cache. Elles se rechargeront à la demande.",
+                                                   @"%lu emotes were removed from the cache. They will reload on demand."],
 
         // ── Résumé accueil (remplace l'ancien écran Statistiques) ────────
         @"summary_emotes_channel_format":   @[@"%lu emotes chargées · %@", @"%lu emotes loaded · %@"],
@@ -154,6 +155,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"error_no_favorites_in_file":      @[@"Ce fichier ne contient pas d'emotes 7TV en favoris.",
                                                @"This file doesn't contain any favorited 7TV emotes."],
         @"empty_no_favorites":              @[@"Aucun favori pour l'instant.", @"No favorites yet."],
+        @"favorites_count_format":          @[@"%lu emote(s) en favoris", @"%lu favorited emote(s)"],
+        @"favorite_emote_unknown":          @[@"Emote non chargée", @"Emote not loaded"],
         @"alert_clear_favorites_title":     @[@"Vider les favoris", @"Clear favorites"],
         @"alert_clear_favorites_message":   @[@"Supprimer les %lu emotes en favoris ?",
                                                @"Remove %lu favorited emotes?"],

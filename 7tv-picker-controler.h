@@ -48,4 +48,12 @@
 // picker retrie au prochain affichage. ---
 - (void)invalidateSortCache;
 
+// Recalcule immédiatement l'onglet Favoris après un import/suppression dans
+// les réglages, sans recréer le picker ni relancer l'application.
+- (void)favoritesDidChange;
+
+// Annule les chargements des previews du panneau de réglages avant un
+// vidage complet du cache partagé.
+- (void)cancelPendingImageLoadsWithCompletion:(void (^)(void))completion;
+
 @end

@@ -23,6 +23,8 @@
 #import "SevenTVURLProtocol.h"
 #import "SevenTVManager.h"
 
+NSString *const S7TVEmoteCacheCountDidChangeNotification = @"S7TVEmoteCacheCountDidChangeNotification";
+
 // ── Sessions CDN ──────────────────────────────────────────────────────────────
 //
 // ARCHITECTURE (important pour la cohérence du cache) :
@@ -148,11 +150,98 @@ static BOOL SevenTVIsValidWebPResponse(NSURLResponse *response, NSData *data) {
 
 // ── Compteur global des emotes mises en cache (WebP natif, plus de conversion) ──
 static _Atomic(NSInteger) s_cachedCount = 0;
+static _Atomic(NSUInteger) s_cacheGeneration = 1;
+static NSMutableSet<NSString *> *s_cachedEmoteIDs = nil;
+static dispatch_once_t s_cachedEmoteIDsOnce;
+static BOOL s_cacheIndexSaveScheduled = NO;
+static NSString *const kS7TVCachedEmoteIDsKey = @"s7tv_cached_emote_ids";
+
+static NSMutableSet<NSString *> *SevenTVCachedEmoteIDs(void) {
+    dispatch_once(&s_cachedEmoteIDsOnce, ^{
+        NSArray *saved = [[NSUserDefaults standardUserDefaults]
+            arrayForKey:kS7TVCachedEmoteIDsKey] ?: @[];
+        s_cachedEmoteIDs = [NSMutableSet setWithArray:saved];
+        s_cachedCount = (NSInteger)s_cachedEmoteIDs.count;
+    });
+    return s_cachedEmoteIDs;
+}
+
+static BOOL SevenTVAnyCachedResolutionForEmoteID(NSString *emoteID) {
+    if (!emoteID.length) return NO;
+    for (NSInteger scale = 1; scale <= 4; scale++) {
+        NSString *urlString = [NSString stringWithFormat:
+            @"https://cdn.7tv.app/emote/%@/%ldx.webp", emoteID, (long)scale];
+        NSURL *url = [NSURL URLWithString:urlString];
+        if (url && [SevenTVGetSharedCache() cachedResponseForRequest:
+                    [NSURLRequest requestWithURL:url]]) return YES;
+    }
+    return NO;
+}
+
+static void SevenTVScheduleCacheIndexSave(void) {
+    @synchronized (SevenTVCachedEmoteIDs()) {
+        if (s_cacheIndexSaveScheduled) return;
+        s_cacheIndexSaveScheduled = YES;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.75 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSArray *snapshot = nil;
+        @synchronized (SevenTVCachedEmoteIDs()) {
+            snapshot = SevenTVCachedEmoteIDs().allObjects;
+            s_cacheIndexSaveScheduled = NO;
+        }
+        [[NSUserDefaults standardUserDefaults] setObject:snapshot
+                                                   forKey:kS7TVCachedEmoteIDsKey];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:S7TVEmoteCacheCountDidChangeNotification object:nil];
+        });
+    });
+}
 
 
 @implementation SevenTVURLProtocol
 
-+ (NSInteger)cachedEmoteCount   { return s_cachedCount; }
++ (NSInteger)cachedEmoteCount {
+    SevenTVCachedEmoteIDs();
+    return s_cachedCount;
+}
+
++ (void)refreshCachedEmoteCountWithCompletion:(void (^)(NSInteger))completion {
+    NSArray<NSString *> *known = nil;
+    @synchronized (SevenTVCachedEmoteIDs()) {
+        known = SevenTVCachedEmoteIDs().allObjects;
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSMutableArray<NSString *> *missing = [NSMutableArray array];
+        for (NSString *emoteID in known) {
+            if (!SevenTVAnyCachedResolutionForEmoteID(emoteID)) {
+                [missing addObject:emoteID];
+            }
+        }
+        NSInteger count = 0;
+        @synchronized (SevenTVCachedEmoteIDs()) {
+            [SevenTVCachedEmoteIDs() minusSet:[NSSet setWithArray:missing]];
+            s_cachedCount = (NSInteger)SevenTVCachedEmoteIDs().count;
+            count = s_cachedCount;
+        }
+        if (missing.count) SevenTVScheduleCacheIndexSave();
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(count); });
+    });
+}
+
++ (void)noteCachedEmoteID:(NSString *)emoteID {
+    if (!emoteID.length) return;
+    BOOL added = NO;
+    @synchronized (SevenTVCachedEmoteIDs()) {
+        if (![SevenTVCachedEmoteIDs() containsObject:emoteID]) {
+            [SevenTVCachedEmoteIDs() addObject:emoteID];
+            added = YES;
+        }
+        s_cachedCount = (NSInteger)SevenTVCachedEmoteIDs().count;
+    }
+    if (added) SevenTVScheduleCacheIndexSave();
+}
 
 // ============================================================
 // MARK: - Utilitaires (appelés depuis TweakSevenTV.m)
@@ -166,7 +255,9 @@ static _Atomic(NSInteger) s_cachedCount = 0;
 
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
-    return ([SevenTVGetSharedCache() cachedResponseForRequest:req] != nil);
+    BOOL cached = ([SevenTVGetSharedCache() cachedResponseForRequest:req] != nil);
+    if (cached) [self noteCachedEmoteID:emoteID];
+    return cached;
 }
 
 // Télécharge l'image et appelle completion quand elle est en cache.
@@ -191,6 +282,7 @@ static _Atomic(NSInteger) s_cachedCount = 0;
     NSMutableURLRequest *checkReq = [NSMutableURLRequest requestWithURL:url];
     checkReq.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
     if ([SevenTVGetSharedCache() cachedResponseForRequest:checkReq]) {
+        [self noteCachedEmoteID:emoteID];
         if (completion) completion();
         return;
     }
@@ -205,6 +297,7 @@ static _Atomic(NSInteger) s_cachedCount = 0;
     req.timeoutInterval = 30.0;
 
     // Session URGENTE — indépendante du bulk prefetch.
+    NSUInteger requestGeneration = s_cacheGeneration;
     [[SevenTVGetUrgentSession() dataTaskWithRequest:req
                completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
         if (err) {
@@ -222,7 +315,7 @@ static _Atomic(NSInteger) s_cachedCount = 0;
         //
         // On stocke le WebP natif tel que reçu du CDN 7TV — plus de conversion
         // GIF, format d'origine conservé tel quel.
-        if (data && resp && !err) {
+        if (data && resp && !err && requestGeneration == s_cacheGeneration) {
             if (SevenTVIsValidWebPResponse(resp, data)) {
                 NSHTTPURLResponse *http = (NSHTTPURLResponse *)resp;
                 NSHTTPURLResponse *webpResp = [[NSHTTPURLResponse alloc]
@@ -235,7 +328,7 @@ static _Atomic(NSInteger) s_cachedCount = 0;
                 NSURLRequest *cacheKey = [NSURLRequest requestWithURL:url];
                 [SevenTVGetSharedCache() storeCachedResponse:toCache forRequest:cacheKey];
 
-                s_cachedCount++;
+                [self noteCachedEmoteID:emoteID];
                 [[SevenTVManager sharedManager] log:
                     @"🖼 Préfetch %@ → WebP natif mis en cache (%lu bytes) [total:%ld]",
                     emoteID, (unsigned long)data.length, (long)s_cachedCount];
@@ -262,6 +355,39 @@ static _Atomic(NSInteger) s_cachedCount = 0;
 
 + (NSURLCache *)sharedEmoteCache {
     return SevenTVGetSharedCache();
+}
+
++ (void)clearAllEmoteCachesWithCompletion:(void (^)(NSUInteger))completion {
+    NSUInteger clearedCount = (NSUInteger)[self cachedEmoteCount];
+    s_cacheGeneration++;
+
+    dispatch_group_t cancellationGroup = dispatch_group_create();
+    void (^cancelTasks)(NSURLSession *) = ^(NSURLSession *session) {
+        dispatch_group_enter(cancellationGroup);
+        [session getAllTasksWithCompletionHandler:^(NSArray<__kindof NSURLSessionTask *> *tasks) {
+            for (NSURLSessionTask *task in tasks) [task cancel];
+            dispatch_group_leave(cancellationGroup);
+        }];
+    };
+    cancelTasks(SevenTVGetCDNSession());
+    cancelTasks(SevenTVGetPrefetchSession());
+    cancelTasks(SevenTVGetUrgentSession());
+
+    dispatch_group_notify(cancellationGroup,
+                          dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [SevenTVGetSharedCache() removeAllCachedResponses];
+        @synchronized (SevenTVCachedEmoteIDs()) {
+            [SevenTVCachedEmoteIDs() removeAllObjects];
+            s_cachedCount = 0;
+            s_cacheIndexSaveScheduled = NO;
+        }
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:kS7TVCachedEmoteIDsKey];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:S7TVEmoteCacheCountDidChangeNotification object:nil];
+            if (completion) completion(clearedCount);
+        });
+    });
 }
 
 + (void)prewarmCDNConnection {

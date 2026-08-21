@@ -57,6 +57,9 @@
 
 - (void)prepareForReuse {
     [super prepareForReuse];
+    self.imageLoadGeneration += 1;
+    self.animationGeneration += 1;
+    self.wantsAnimation = NO;
     self.emoteImageView.image = nil;
     self.favoriteStarView.hidden = YES;
     self.currentEmoteKey = nil;

@@ -7,6 +7,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
+FOUNDATION_EXPORT NSString *const S7TVFavoritesDidChangeNotification;
+
 @class S7TVChatMessageStore;
 @class SevenTVChatCustomView;
 
@@ -212,6 +214,8 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // seule l'UI qui l'affiche/la modifie vit dans le picker.
 - (BOOL)isEmoteFavorited:(NSString *)emoteID;
 - (void)setEmote:(NSString *)emoteID favorited:(BOOL)favorited;
+- (NSArray<NSString *> *)favoriteEmoteIDsSnapshot;
+- (void)replaceFavoriteEmoteIDs:(NSArray<NSString *> *)emoteIDs;
 
 // --- Accès aux emotes ---
 // Retourne l'emote 7TV correspondant au nom, ou nil si pas trouvée
@@ -252,13 +256,13 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 - (void)clearLogs;
 
 // --- Cache ---
-// Vide entièrement le cache 7TV : fichiers JSON du cache disque
-// (Library/Caches/s7tv/*.json — emotes globales + par channel) et
-// dictionnaires d'emotes en mémoire (globalEmotes/channelEmotes). Recharge
-// ensuite immédiatement les emotes globales et celles du channel actif si
-// disponible, pour que l'effet soit visible sans avoir à recharger le stream.
+// Vide entièrement le cache des emotes 7TV : WebP mémoire/disque, images et
+// animations décodées, chargements en cours, JSON des catalogues et
+// dictionnaires en mémoire. Recharge ensuite les catalogues global/channel,
+// tandis que les images ne reviennent qu'à la demande.
 // N'affecte PAS les favoris (s7tv_favorites), les badges, ni les préférences
 // de réglages.
 - (void)clearAllCaches;
+- (void)clearAllCachesWithCompletion:(nullable void (^)(NSUInteger clearedEmoteCount))completion;
 
 @end

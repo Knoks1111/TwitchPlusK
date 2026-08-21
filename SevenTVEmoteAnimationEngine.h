@@ -78,6 +78,9 @@ NS_ASSUME_NONNULL_BEGIN
 // en willDisplayCell (cell reuse) — voir SevenTVChatCustomView.
 - (void)removeObserver:(id)observer;
 
+// Retire toutes les frames décodées et arrête immédiatement les animations.
+- (void)clearAllCachedFrames;
+
 @end
 
 

@@ -24,4 +24,12 @@
 // Sert à valider qu'un callback asynchrone arrivant après un recyclage
 // concerne toujours la bonne emote avant d'appliquer une image/frame.
 @property (nonatomic, copy) NSString *currentEmoteKey;
+// L'animation n'est pas démarrée dans cellForItemAtIndexPath:. Comme dans le
+// chat custom, elle est activée uniquement quand la cellule est réellement
+// visible, puis coupée dans didEndDisplayingCell.
+@property (nonatomic, assign) BOOL wantsAnimation;
+@property (nonatomic, assign) NSUInteger imageLoadGeneration;
+// Invalide les activations différées et les callbacks arrivant après un
+// scroll, une fermeture du picker ou une réutilisation de la cellule.
+@property (nonatomic, assign) NSUInteger animationGeneration;
 @end

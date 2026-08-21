@@ -11,6 +11,26 @@
 
 typedef void (^S7TVImageCompletion)(UIImage * _Nullable image);
 typedef void (^S7TVFramesCompletion)(S7TVEmoteAnimatedFrames * _Nullable frames);
+typedef void (^S7TVDataCompletion)(NSData * _Nullable data);
+
+static NSUInteger s7tv_imageMemoryCost(UIImage *image) {
+    CGImageRef cgImage = image.CGImage;
+    if (!cgImage) return 0;
+    return CGImageGetBytesPerRow(cgImage) * CGImageGetHeight(cgImage);
+}
+
+static NSUInteger s7tv_framesMemoryCost(S7TVEmoteAnimatedFrames *frames) {
+    NSUInteger total = 0;
+    for (UIImage *image in frames.images) total += s7tv_imageMemoryCost(image);
+    return total;
+}
+
+static NSString *s7tv_emoteIDFromURL(NSURL *url) {
+    NSArray<NSString *> *parts = url.pathComponents;
+    NSUInteger index = [parts indexOfObject:@"emote"];
+    if (index != NSNotFound && index + 1 < parts.count) return parts[index + 1];
+    return nil;
+}
 
 @implementation S7TVEmoteAnimatedFrames
 @end
@@ -28,7 +48,18 @@ typedef void (^S7TVFramesCompletion)(S7TVEmoteAnimatedFrames * _Nullable frames)
 @property (nonatomic, strong) NSCache<NSString *, S7TVEmoteAnimatedFrames *> *animatedFramesCache;
 // Même dédoublonnage que pendingCallbacks, pour le décodage animé.
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<S7TVFramesCompletion> *> *pendingFrameCallbacks;
+// Dédoublonnage commun au chemin statique et au chemin animé. Sans lui, une
+// même cellule pouvait lancer deux téléchargements de la même URL : un pour
+// sa miniature immédiate et un autre pour ses frames.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<S7TVDataCompletion> *> *pendingDataCallbacks;
 @property (nonatomic, strong) dispatch_queue_t syncQueue;
+// Les décodages ImageIO ne doivent jamais saturer tous les cœurs pendant un
+// scroll. Les files bornées gardent le travail hors main thread tout en
+// donnant la priorité aux miniatures visibles.
+@property (nonatomic, strong) NSOperationQueue *staticDecodeQueue;
+@property (nonatomic, strong) NSOperationQueue *animatedDecodeQueue;
+@property (atomic, assign) NSUInteger cacheGeneration;
+- (nullable UIImage *)s7tv_decodeFirstFrameData:(NSData *)data;
 @end
 
 @implementation SevenTVEmoteImageCache
@@ -47,11 +78,25 @@ typedef void (^S7TVFramesCompletion)(S7TVEmoteAnimatedFrames * _Nullable frames)
     if (self) {
         _decodedCache = [[NSCache alloc] init];
         _decodedCache.countLimit = 200; // borne mémoire, voir exigence transverse #3
+        _decodedCache.totalCostLimit = 24 * 1024 * 1024;
         _pendingCallbacks = [NSMutableDictionary dictionary];
         _animatedFramesCache = [[NSCache alloc] init];
-        _animatedFramesCache.countLimit = 60; // plus bas que decodedCache — voir raison en @interface
+        _animatedFramesCache.countLimit = 48; // plus bas que decodedCache — voir raison en @interface
+        _animatedFramesCache.totalCostLimit = 48 * 1024 * 1024;
         _pendingFrameCallbacks = [NSMutableDictionary dictionary];
+        _pendingDataCallbacks = [NSMutableDictionary dictionary];
         _syncQueue = dispatch_queue_create("tv.s7tv.emote-image-cache", DISPATCH_QUEUE_SERIAL);
+        _cacheGeneration = 1;
+
+        _staticDecodeQueue = [[NSOperationQueue alloc] init];
+        _staticDecodeQueue.name = @"tv.s7tv.emote-static-decode";
+        _staticDecodeQueue.qualityOfService = NSQualityOfServiceUserInitiated;
+        _staticDecodeQueue.maxConcurrentOperationCount = 2;
+
+        _animatedDecodeQueue = [[NSOperationQueue alloc] init];
+        _animatedDecodeQueue.name = @"tv.s7tv.emote-animation-decode";
+        _animatedDecodeQueue.qualityOfService = NSQualityOfServiceUserInitiated;
+        _animatedDecodeQueue.maxConcurrentOperationCount = 1;
     }
     return self;
 }
@@ -135,34 +180,73 @@ typedef void (^S7TVFramesCompletion)(S7TVEmoteAnimatedFrames * _Nullable frames)
 // chemin statique et le prefetch de channel) — seul le décodage diffère :
 // ici on décode TOUTES les frames au lieu de la seule 1ère.
 - (void)s7tv_loadAndDecodeFramesForKey:(NSString *)key url:(NSURL *)url {
+    NSUInteger generation = self.cacheGeneration;
     [self s7tv_fetchDataForURL:url completion:^(NSData * _Nullable data) {
-        // Décodage hors main thread — même raisonnement que
-        // s7tv_loadAndDecodeForKey:url: pour le chemin statique.
-        S7TVEmoteAnimatedFrames *frames = data ? [self s7tv_decodeAnimatedWebPData:data] : nil;
+        // Même si plusieurs WebP arrivent ensemble depuis le cache disque ou
+        // le réseau, deux décodages animés au maximum travaillent en parallèle.
+        [self.animatedDecodeQueue addOperationWithBlock:^{
+            S7TVEmoteAnimatedFrames *frames = data ? [self s7tv_decodeAnimatedWebPData:data] : nil;
 
-        if (frames.images.count > 0) {
-            [self.animatedFramesCache setObject:frames forKey:key];
-            // La 1ère frame alimente aussi decodedCache (chemin statique) si
-            // elle n'y est pas déjà — garde cachedImageForResolvedEmote:
-            // cohérent avec ce qu'on vient de décoder, sans redécoder deux
-            // fois la même image pour rien.
-            if (![self.decodedCache objectForKey:key]) {
-                [self.decodedCache setObject:frames.images.firstObject forKey:key];
+            if (generation != self.cacheGeneration) frames = nil;
+            if (frames.images.count > 0) {
+                [self.animatedFramesCache setObject:frames
+                                             forKey:key
+                                               cost:s7tv_framesMemoryCost(frames)];
+                UIImage *firstFrame = frames.images.firstObject;
+                if (![self.decodedCache objectForKey:key] && firstFrame) {
+                    [self.decodedCache setObject:firstFrame
+                                          forKey:key
+                                            cost:s7tv_imageMemoryCost(firstFrame)];
+                }
+            } else {
+                frames = nil;
+                [[SevenTVManager sharedManager]
+                    log:@"[ChatCustom] ⚠️ Emote animée non décodable (WebP invalide/vide): %@", url.absoluteString];
             }
-        } else {
-            frames = nil;
-            [[SevenTVManager sharedManager]
-                log:@"[ChatCustom] ⚠️ Emote animée non décodable (WebP invalide/vide): %@", url.absoluteString];
-        }
 
-        dispatch_async(self.syncQueue, ^{
-            NSArray<S7TVFramesCompletion> *callbacks = self.pendingFrameCallbacks[key] ?: @[];
-            [self.pendingFrameCallbacks removeObjectForKey:key];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                for (S7TVFramesCompletion cb in callbacks) cb(frames);
+            dispatch_async(self.syncQueue, ^{
+                NSArray<S7TVFramesCompletion> *callbacks = self.pendingFrameCallbacks[key] ?: @[];
+                [self.pendingFrameCallbacks removeObjectForKey:key];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    for (S7TVFramesCompletion cb in callbacks) cb(frames);
+                });
             });
-        });
+        }];
     }];
+}
+
+- (void)setDecodingSuspended:(BOOL)suspended {
+    self.staticDecodeQueue.suspended = suspended;
+    self.animatedDecodeQueue.suspended = suspended;
+}
+
+- (void)clearAllCaches {
+    self.cacheGeneration += 1;
+    self.staticDecodeQueue.suspended = NO;
+    self.animatedDecodeQueue.suspended = NO;
+    [self.staticDecodeQueue cancelAllOperations];
+    [self.animatedDecodeQueue cancelAllOperations];
+    [self.decodedCache removeAllObjects];
+    [self.animatedFramesCache removeAllObjects];
+
+    dispatch_sync(self.syncQueue, ^{
+        NSMutableArray<S7TVImageCompletion> *imageCallbacks = [NSMutableArray array];
+        for (NSArray *callbacks in self.pendingCallbacks.allValues) {
+            [imageCallbacks addObjectsFromArray:callbacks];
+        }
+        NSMutableArray<S7TVFramesCompletion> *frameCallbacks = [NSMutableArray array];
+        for (NSArray *callbacks in self.pendingFrameCallbacks.allValues) {
+            [frameCallbacks addObjectsFromArray:callbacks];
+        }
+        [self.pendingCallbacks removeAllObjects];
+        [self.pendingFrameCallbacks removeAllObjects];
+        [self.pendingDataCallbacks removeAllObjects];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            for (S7TVImageCompletion callback in imageCallbacks) callback(nil);
+            for (S7TVFramesCompletion callback in frameCallbacks) callback(nil);
+        });
+    });
 }
 
 // Décodage WebP animé complet via ImageIO — chaque frame + sa durée
@@ -184,30 +268,39 @@ typedef void (^S7TVFramesCompletion)(S7TVEmoteAnimatedFrames * _Nullable frames)
 
     NSMutableArray<UIImage *> *images = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray<NSNumber *> *durations = [NSMutableArray arrayWithCapacity:count];
+    NSDictionary *decodeOptions = @{
+        (__bridge NSString *)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (__bridge NSString *)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (__bridge NSString *)kCGImageSourceThumbnailMaxPixelSize: @256,
+        (__bridge NSString *)kCGImageSourceShouldCacheImmediately: @YES,
+    };
 
     for (size_t i = 0; i < count; i++) {
-        CGImageRef cgImage = CGImageSourceCreateImageAtIndex(source, i, NULL);
-        if (!cgImage) continue; // frame corrompue isolée → on saute plutôt que d'abandonner toute l'emote
-        [images addObject:[UIImage imageWithCGImage:cgImage]];
-        CGImageRelease(cgImage);
+        @autoreleasepool {
+            CGImageRef cgImage = CGImageSourceCreateThumbnailAtIndex(source, i,
+                (__bridge CFDictionaryRef)decodeOptions);
+            if (!cgImage) continue; // frame corrompue isolée → on saute plutôt que d'abandonner toute l'emote
+            [images addObject:[UIImage imageWithCGImage:cgImage]];
+            CGImageRelease(cgImage);
 
-        NSTimeInterval duration = 0.1; // filet de sécurité si la métadonnée manque
-        NSDictionary *props = (__bridge_transfer NSDictionary *)
-            CGImageSourceCopyPropertiesAtIndex(source, i, NULL);
-        NSDictionary *webpProps = props[(__bridge NSString *)kCGImagePropertyWebPDictionary];
-        NSNumber *delay = webpProps[(__bridge NSString *)kCGImagePropertyWebPUnclampedDelayTime]
-                        ?: webpProps[(__bridge NSString *)kCGImagePropertyWebPDelayTime];
-        if (!delay) {
-            // Repli GIF : constaté que certaines versions d'ImageIO exposent
-            // les WebP animés via les mêmes clés que les GIF plutôt que les
-            // clés WebP dédiées — on couvre les deux plutôt que de supposer
-            // un seul comportement.
-            NSDictionary *gifProps = props[(__bridge NSString *)kCGImagePropertyGIFDictionary];
-            delay = gifProps[(__bridge NSString *)kCGImagePropertyGIFUnclampedDelayTime]
-                  ?: gifProps[(__bridge NSString *)kCGImagePropertyGIFDelayTime];
+            NSTimeInterval duration = 0.1; // filet de sécurité si la métadonnée manque
+            NSDictionary *props = (__bridge_transfer NSDictionary *)
+                CGImageSourceCopyPropertiesAtIndex(source, i, NULL);
+            NSDictionary *webpProps = props[(__bridge NSString *)kCGImagePropertyWebPDictionary];
+            NSNumber *delay = webpProps[(__bridge NSString *)kCGImagePropertyWebPUnclampedDelayTime]
+                            ?: webpProps[(__bridge NSString *)kCGImagePropertyWebPDelayTime];
+            if (!delay) {
+                // Repli GIF : constaté que certaines versions d'ImageIO exposent
+                // les WebP animés via les mêmes clés que les GIF plutôt que les
+                // clés WebP dédiées — on couvre les deux plutôt que de supposer
+                // un seul comportement.
+                NSDictionary *gifProps = props[(__bridge NSString *)kCGImagePropertyGIFDictionary];
+                delay = gifProps[(__bridge NSString *)kCGImagePropertyGIFUnclampedDelayTime]
+                      ?: gifProps[(__bridge NSString *)kCGImagePropertyGIFDelayTime];
+            }
+            if (delay && delay.doubleValue > 0) duration = delay.doubleValue;
+            [durations addObject:@(duration)];
         }
-        if (delay && delay.doubleValue > 0) duration = delay.doubleValue;
-        [durations addObject:@(duration)];
     }
     CFRelease(source);
 
@@ -234,27 +327,51 @@ typedef void (^S7TVFramesCompletion)(S7TVEmoteAnimatedFrames * _Nullable frames)
 // affichée à la place. C'était un vrai bug introduit par ce fichier, pas lié
 // au pipeline de prefetch existant de SevenTVManager.)
 - (void)s7tv_loadAndDecodeForKey:(NSString *)key url:(NSURL *)url {
+    NSUInteger generation = self.cacheGeneration;
     [self s7tv_fetchDataForURL:url completion:^(NSData * _Nullable data) {
-        // Décodage hors thread principal — le completion handler de
-        // NSURLSession (partagée) ne délivre jamais sur le main thread par
-        // défaut, donc on est déjà en sécurité ici sans dispatch explicite.
-        UIImage *image = data ? [UIImage imageWithData:data] : nil;
+        [self.staticDecodeQueue addOperationWithBlock:^{
+            UIImage *image = [self.decodedCache objectForKey:key];
+            if (!image && data) image = [self s7tv_decodeFirstFrameData:data];
+            if (generation != self.cacheGeneration) image = nil;
 
-        if (image) {
-            [self.decodedCache setObject:image forKey:key];
-        } else {
-            [[SevenTVManager sharedManager]
-                log:@"[ChatCustom] ⚠️ Emote image introuvable/non décodable: %@", url.absoluteString];
-        }
+            if (image) {
+                [self.decodedCache setObject:image forKey:key cost:s7tv_imageMemoryCost(image)];
+            } else {
+                [[SevenTVManager sharedManager]
+                    log:@"[ChatCustom] ⚠️ Emote image introuvable/non décodable: %@", url.absoluteString];
+            }
 
-        dispatch_async(self.syncQueue, ^{
-            NSArray<S7TVImageCompletion> *callbacks = self.pendingCallbacks[key] ?: @[];
-            [self.pendingCallbacks removeObjectForKey:key];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                for (S7TVImageCompletion cb in callbacks) cb(image);
+            dispatch_async(self.syncQueue, ^{
+                NSArray<S7TVImageCompletion> *callbacks = self.pendingCallbacks[key] ?: @[];
+                [self.pendingCallbacks removeObjectForKey:key];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    for (S7TVImageCompletion cb in callbacks) cb(image);
+                });
             });
-        });
+        }];
     }];
+}
+
+// Décode uniquement la première frame et force sa décompression sur la file
+// de fond. UIImage imageWithData: pouvait conserver un backing compressé et
+// reporter le coût au premier draw de l'UIImageView sur le main thread.
+- (nullable UIImage *)s7tv_decodeFirstFrameData:(NSData *)data {
+    if (!data.length) return nil;
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!source) return nil;
+    NSDictionary *options = @{
+        (__bridge NSString *)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (__bridge NSString *)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (__bridge NSString *)kCGImageSourceThumbnailMaxPixelSize: @256,
+        (__bridge NSString *)kCGImageSourceShouldCacheImmediately: @YES,
+    };
+    CGImageRef cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0,
+        (__bridge CFDictionaryRef)options);
+    CFRelease(source);
+    if (!cgImage) return nil;
+    UIImage *image = [UIImage imageWithCGImage:cgImage];
+    CGImageRelease(cgImage);
+    return image;
 }
 
 - (void)s7tv_fetchDataForURL:(NSURL *)url completion:(void (^)(NSData * _Nullable data))completion {
@@ -263,23 +380,44 @@ typedef void (^S7TVFramesCompletion)(S7TVEmoteAnimatedFrames * _Nullable frames)
     NSCachedURLResponse *cachedResponse =
         [[SevenTVURLProtocol sharedEmoteCache] cachedResponseForRequest:req];
     if (cachedResponse.data.length) {
+        [SevenTVURLProtocol noteCachedEmoteID:s7tv_emoteIDFromURL(url)];
         completion(cachedResponse.data);
         return;
     }
 
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession]
-        dataTaskWithURL:url
-      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (data.length && response && !error) {
-            // Mise en cache partagée — un futur passage (picker, autre
-            // message avec la même emote) en profite directement.
-            NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
-                initWithResponse:response data:data];
-            [[SevenTVURLProtocol sharedEmoteCache] storeCachedResponse:toCache forRequest:req];
+    NSString *key = url.absoluteString;
+    if (!key.length) {
+        completion(nil);
+        return;
+    }
+
+    dispatch_async(self.syncQueue, ^{
+        NSMutableArray<S7TVDataCompletion> *callbacks = self.pendingDataCallbacks[key];
+        if (callbacks) {
+            [callbacks addObject:completion];
+            return;
         }
-        completion(data);
-    }];
-    [task resume];
+        self.pendingDataCallbacks[key] = [NSMutableArray arrayWithObject:completion];
+        NSUInteger generation = self.cacheGeneration;
+
+        NSURLSessionDataTask *task = [[NSURLSession sharedSession]
+            dataTaskWithURL:url
+          completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            if (generation != self.cacheGeneration) data = nil;
+            if (data.length && response && !error) {
+                NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
+                    initWithResponse:response data:data];
+                [[SevenTVURLProtocol sharedEmoteCache] storeCachedResponse:toCache forRequest:req];
+                [SevenTVURLProtocol noteCachedEmoteID:s7tv_emoteIDFromURL(url)];
+            }
+            dispatch_async(self.syncQueue, ^{
+                NSArray<S7TVDataCompletion> *waiting = self.pendingDataCallbacks[key] ?: @[];
+                [self.pendingDataCallbacks removeObjectForKey:key];
+                for (S7TVDataCompletion callback in waiting) callback(data);
+            });
+        }];
+        [task resume];
+    });
 }
 
 @end

@@ -14,6 +14,9 @@
 // Contrôle l'affichage du bouton "Fermer" dans la nav bar.
 @property (nonatomic, assign) BOOL openedAsModal;
 
+// Installe la section 7TV dans les paramètres Twitch natifs.
++ (void)installTwitchSettingsIntegration;
+
 @end
 
 // ─── Sous-pages 7TV (architecture v3 — 4 catégories larges et évolutives) ─────

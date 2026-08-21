@@ -8,6 +8,37 @@
 
 @implementation SevenTVChatTokenizer
 
+// Parse "emoteID1:start-end,start-end/emoteID2:start-end..." en plages
+// triées. Twitch exprime les bornes de fin de manière inclusive. Les entrées
+// réseau malformées sont ignorées pour que la tokenisation ne puisse jamais
+// provoquer une sortie de plage dans NSString.
++ (NSArray<NSArray *> *)s7tv_twitchEmoteRangesFromTag:(NSString *)tagValue {
+    NSMutableArray<NSArray *> *ranges = [NSMutableArray array];
+    if (!tagValue.length) return ranges;
+
+    for (NSString *emoteBlock in [tagValue componentsSeparatedByString:@"/"]) {
+        NSRange colonRange = [emoteBlock rangeOfString:@":"];
+        if (colonRange.location == NSNotFound) continue;
+        NSString *emoteID = [emoteBlock substringToIndex:colonRange.location];
+        NSString *positions = [emoteBlock substringFromIndex:colonRange.location + 1];
+        if (!emoteID.length) continue;
+
+        for (NSString *position in [positions componentsSeparatedByString:@","]) {
+            NSRange dashRange = [position rangeOfString:@"-"];
+            if (dashRange.location == NSNotFound) continue;
+            NSInteger start = [[position substringToIndex:dashRange.location] integerValue];
+            NSInteger end = [[position substringFromIndex:dashRange.location + 1] integerValue];
+            if (start < 0 || end < start) continue;
+            [ranges addObject:@[emoteID, @(start), @(end)]];
+        }
+    }
+
+    [ranges sortUsingComparator:^NSComparisonResult(NSArray *left, NSArray *right) {
+        return [(NSNumber *)left[1] compare:(NSNumber *)right[1]];
+    }];
+    return ranges;
+}
+
 + (NSArray<S7TVChatToken *> *)tokenizeText:(NSString *)text
                                   providers:(NSArray<id<S7TVEmoteProvider>> *)providers {
     NSMutableArray<S7TVChatToken *> *tokens = [NSMutableArray array];
@@ -69,6 +100,52 @@
         }
     }
 
+    return tokens;
+}
+
++ (NSArray<S7TVChatToken *> *)tokenizeText:(NSString *)text
+                          twitchEmotesTag:(NSString * _Nullable)emotesTag
+                                providers:(NSArray<id<S7TVEmoteProvider>> *)providers {
+    NSArray<NSArray *> *ranges = [self s7tv_twitchEmoteRangesFromTag:emotesTag ?: @""];
+    if (ranges.count == 0) return [self tokenizeText:text providers:providers];
+
+    NSMutableArray<S7TVChatToken *> *tokens = [NSMutableArray array];
+    NSInteger cursor = 0;
+
+    for (NSArray *range in ranges) {
+        NSString *emoteID = range[0];
+        NSInteger start = [(NSNumber *)range[1] integerValue];
+        NSInteger end = [(NSNumber *)range[2] integerValue];
+
+        if (start < cursor || start >= (NSInteger)text.length ||
+            end >= (NSInteger)text.length) {
+            continue;
+        }
+
+        if (start > cursor) {
+            NSString *span = [text substringWithRange:NSMakeRange(cursor, start - cursor)];
+            [tokens addObjectsFromArray:[self tokenizeText:span providers:providers]];
+        }
+
+        NSString *emoteText = [text substringWithRange:NSMakeRange(start, end - start + 1)];
+        id<S7TVResolvedEmote> resolved =
+            [S7TVTwitchNativeEmoteFactory resolvedEmoteForTwitchEmoteID:emoteID];
+        if (resolved) {
+            S7TVChatToken *token = [S7TVChatToken emoteToken:emoteText
+                                                     provider:S7TVChatTokenTypeEmoteTwitch
+                                                      emoteID:emoteID];
+            token.resolvedEmote = resolved;
+            [tokens addObject:token];
+        } else {
+            [tokens addObject:[S7TVChatToken textToken:emoteText]];
+        }
+        cursor = end + 1;
+    }
+
+    if (cursor < (NSInteger)text.length) {
+        NSString *span = [text substringFromIndex:cursor];
+        [tokens addObjectsFromArray:[self tokenizeText:span providers:providers]];
+    }
     return tokens;
 }
 

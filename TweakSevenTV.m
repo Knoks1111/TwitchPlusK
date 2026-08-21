@@ -55,7 +55,6 @@
 
 static const char kS7TVTextFieldTagged = 5;
 static const char kS7TVBitsHijacked    = 6;
-static const char kS7TVOrigSectionCount = 7;
 static const char kS7TVShareHijacked   = 8;   // verrou orientation
 
 // Variable de compat : le Tap Logger (diagnostic de reverse-engineering du
@@ -560,121 +559,6 @@ static BOOL s7tv_handleModerationEvent(NSString *ircLine) {
     return YES;
 }
 
-// ────────────────────────────────────────────────────────────
-// MARK: - Emotes Twitch natives (tag IRC emotes=)
-// ────────────────────────────────────────────────────────────
-//
-// Contrairement à 7TV, Twitch fournit déjà l'ID exact ET la position de
-// chaque emote native directement dans le tag IRC — pas de lookup par nom
-// nécessaire, juste un splicing du texte autour de ces positions connues.
-
-// Parse "emoteID1:start-end,start-end/emoteID2:start-end..." en liste triée
-// par position de départ. Chaque entrée : @[emoteID, @(start), @(end)]
-// (end inclusif, comme le format Twitch). Tolère les entrées malformées
-// (les ignore silencieusement plutôt que planter — exigence Phase 1a).
-static NSArray<NSArray *> *s7tv_parseTwitchEmotesTag(NSString *tagValue) {
-    NSMutableArray<NSArray *> *ranges = [NSMutableArray array];
-    if (!tagValue.length) return ranges;
-
-    for (NSString *emoteBlock in [tagValue componentsSeparatedByString:@"/"]) {
-        NSRange colonRange = [emoteBlock rangeOfString:@":"];
-        if (colonRange.location == NSNotFound) continue;
-        NSString *emoteID = [emoteBlock substringToIndex:colonRange.location];
-        NSString *positionsStr = [emoteBlock substringFromIndex:colonRange.location + 1];
-        if (!emoteID.length) continue;
-
-        for (NSString *pos in [positionsStr componentsSeparatedByString:@","]) {
-            NSRange dashRange = [pos rangeOfString:@"-"];
-            if (dashRange.location == NSNotFound) continue;
-            NSInteger start = [[pos substringToIndex:dashRange.location] integerValue];
-            NSInteger end   = [[pos substringFromIndex:dashRange.location + 1] integerValue];
-            if (end < start || start < 0) continue;
-            [ranges addObject:@[emoteID, @(start), @(end)]];
-        }
-    }
-
-    [ranges sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
-        return [(NSNumber *)a[1] compare:(NSNumber *)b[1]];
-    }];
-    return ranges;
-}
-
-// Tokenise le texte du message en épissant les emotes Twitch natives (position
-// exacte connue via le tag) avec le tokenizer 7TV existant (mots, résolution
-// par nom) pour tout le texte autour. Chemin le plus fréquent (aucune emote
-// native dans le message) : identique à avant, aucun coût supplémentaire.
-static NSArray<S7TVChatToken *> *s7tv_tokenizeMessageWithNativeEmotes(NSString *text,
-                                                                        NSString *emotesTag) {
-    NSArray<NSArray *> *ranges = s7tv_parseTwitchEmotesTag(emotesTag);
-    if (ranges.count == 0) {
-        return [SevenTVChatTokenizer tokenizeText:text providers:s7tv_emoteProviders()];
-    }
-
-    NSMutableArray<S7TVChatToken *> *tokens = [NSMutableArray array];
-    NSInteger cursor = 0; // position courante dans text (unités UTF-16, comme NSString)
-
-    for (NSArray *range in ranges) {
-        NSString *emoteID = range[0];
-        NSInteger start = [(NSNumber *)range[1] integerValue];
-        NSInteger end   = [(NSNumber *)range[2] integerValue]; // inclusif
-
-        // Garde-fou : jamais faire confiance à 100% à des positions reçues du
-        // réseau (exigence Phase 1a "parsing robuste, jamais de crash").
-        if (start < cursor || start >= (NSInteger)text.length || end >= (NSInteger)text.length) {
-            continue;
-        }
-
-        if (start > cursor) {
-            NSString *span = [text substringWithRange:NSMakeRange(cursor, start - cursor)];
-            [tokens addObjectsFromArray:
-                [SevenTVChatTokenizer tokenizeText:span providers:s7tv_emoteProviders()]];
-        }
-
-        NSString *emoteText = [text substringWithRange:NSMakeRange(start, end - start + 1)];
-        id<S7TVResolvedEmote> resolved =
-            [S7TVTwitchNativeEmoteFactory resolvedEmoteForTwitchEmoteID:emoteID];
-        if (resolved) {
-            S7TVChatToken *token = [S7TVChatToken emoteToken:emoteText
-                                                     provider:S7TVChatTokenTypeEmoteTwitch
-                                                      emoteID:emoteID];
-            token.resolvedEmote = resolved;
-            [tokens addObject:token];
-        } else {
-            [tokens addObject:[S7TVChatToken textToken:emoteText]];
-        }
-
-        cursor = end + 1;
-    }
-
-    if (cursor < (NSInteger)text.length) {
-        NSString *span = [text substringFromIndex:cursor];
-        [tokens addObjectsFromArray:
-            [SevenTVChatTokenizer tokenizeText:span providers:s7tv_emoteProviders()]];
-    }
-
-    return tokens;
-}
-
-// ────────────────────────────────────────────────────────────
-// MARK: - Badges (tag IRC badges=)
-// ────────────────────────────────────────────────────────────
-//
-// Format "setID1/version1,setID2/version2,..." — contrairement au tag
-// emotes=, pas de position à gérer : c'est déjà exactement la liste
-// d'identifiants attendue par SevenTVBadgeProvider.resolvedBadgeForIdentifier:.
-// Parsing tolérant (exigence Phase 1a) : entrées vides/malformées ignorées
-// silencieusement plutôt que de planter.
-static NSArray<NSString *> *s7tv_parseBadgesTag(NSString *tagValue) {
-    if (!tagValue.length) return @[];
-    NSMutableArray<NSString *> *identifiers = [NSMutableArray array];
-    for (NSString *entry in [tagValue componentsSeparatedByString:@","]) {
-        if (entry.length && [entry containsString:@"/"]) {
-            [identifiers addObject:entry];
-        }
-    }
-    return identifiers;
-}
-
 // Défini plus bas avec l'ingestion du catalogue GQL. Le parseur IRC reste
 // l'unique constructeur des messages et lui demande simplement si son
 // msg-id correspond à une récompense automatique actuellement configurée.
@@ -754,7 +638,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     // enveloppé "\x01ACTION texte\x01". Déballage AVANT tokenisation —
     // emotesTag utilise des offsets relatifs au texte réellement affiché
     // (sans le wrapper ACTION), donc décaler l'appel à
-    // s7tv_tokenizeMessageWithNativeEmotes: plus bas casserait l'alignement
+    // tokenizeText:twitchEmotesTag:providers: plus bas casserait l'alignement
     // des emotes si on ne déballait qu'après.
     static NSString *const kS7TVActionPrefix = @"\001ACTION ";
     static NSString *const kS7TVActionSuffix = @"\001";
@@ -817,9 +701,11 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     // avant même le premier passage dans la table — c'est ce qui permet de
     // réserver l'espace exact dès le départ côté renderer, sans jamais avoir
     // à resize après coup une fois l'image chargée.
-    msg.tokens = s7tv_tokenizeMessageWithNativeEmotes(messageText, emotesTag);
+    msg.tokens = [SevenTVChatTokenizer tokenizeText:messageText
+                                  twitchEmotesTag:emotesTag
+                                        providers:s7tv_emoteProviders()];
     msg.twitchEmotesTag = emotesTag;
-    msg.badgeIdentifiers = s7tv_parseBadgesTag(badgesTag);
+    msg.badgeIdentifiers = [SevenTVBadgeProvider identifiersFromIRCTag:badgesTag];
     msg.isFirstMessage = [s7tv_tagValue(tags, @"first-msg", @"0") isEqualToString:@"1"];
 
     // Les récompenses automatiques (highlight, contournement du mode sub)
@@ -1040,10 +926,11 @@ static S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(NSString *ircLine) {
     // comme un message normal, rendu sous la bannière système (voir
     // SevenTVChatCustomView, s7tv_appendNormalBodyForMessage:into:...).
     if (messageText.length) {
-        msg.tokens = s7tv_tokenizeMessageWithNativeEmotes(messageText,
-                                                            s7tv_tagValue(tags, @"emotes", @""));
+        msg.tokens = [SevenTVChatTokenizer tokenizeText:messageText
+                                      twitchEmotesTag:s7tv_tagValue(tags, @"emotes", @"")
+                                            providers:s7tv_emoteProviders()];
     }
-    msg.badgeIdentifiers = s7tv_parseBadgesTag(badgesTag);
+    msg.badgeIdentifiers = [SevenTVBadgeProvider identifiersFromIRCTag:badgesTag];
 
     return msg;
 }
@@ -1553,7 +1440,9 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromRedemption(
     message.authorColor = [[SevenTVChatUserColorRegistry sharedRegistry]
         colorForUsername:displayName];
     if (userInput.length) {
-        message.tokens = s7tv_tokenizeMessageWithNativeEmotes(userInput, @"");
+        message.tokens = [SevenTVChatTokenizer tokenizeText:userInput
+                                          twitchEmotesTag:@""
+                                                providers:s7tv_emoteProviders()];
         s7tv_registerChannelPointCompanionToSuppress(userID, rewardID);
     }
     return message;
@@ -1630,7 +1519,9 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromAutomaticRedempti
     message.authorColor = [[SevenTVChatUserColorRegistry sharedRegistry]
         colorForUsername:displayName];
     if (userInput.length) {
-        message.tokens = s7tv_tokenizeMessageWithNativeEmotes(userInput, @"");
+        message.tokens = [SevenTVChatTokenizer tokenizeText:userInput
+                                          twitchEmotesTag:@""
+                                                providers:s7tv_emoteProviders()];
         s7tv_registerChannelPointCompanionToSuppress(userID, automaticType);
     }
     return message;
@@ -2708,209 +2599,6 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
 
 
 // ────────────────────────────────────────────────────────────
-// MARK: - AccountMenuViewController — injection section 7TV
-// ────────────────────────────────────────────────────────────
-
-static NSInteger s7tv_imp_numberOfSections(id self, SEL _cmd, UITableView *tv) {
-    SEL origSel = NSSelectorFromString(@"s7tv_numberOfSectionsInTableView:");
-    NSInteger (*origIMP)(id, SEL, UITableView *) =
-        (NSInteger (*)(id, SEL, UITableView *))
-        [self methodForSelector:origSel];
-    NSInteger orig = origIMP(self, origSel, tv);
-    objc_setAssociatedObject(self, &kS7TVOrigSectionCount,
-                             @(orig), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return orig + 1;
-}
-
-static NSInteger s7tv_origSection(NSInteger displayedSection) {
-    return displayedSection - 1;
-}
-
-static NSInteger s7tv_imp_numberOfRows(id self, SEL _cmd, UITableView *tv, NSInteger section) {
-    if (section == 0) return 1;
-    SEL origSel = NSSelectorFromString(@"s7tv_tableView:numberOfRowsInSection:");
-    NSInteger (*origIMP)(id, SEL, UITableView *, NSInteger) =
-        (NSInteger (*)(id, SEL, UITableView *, NSInteger))
-        [self methodForSelector:origSel];
-    return origIMP(self, origSel, tv, s7tv_origSection(section));
-}
-
-static NSString *s7tv_imp_titleForHeader(id self, SEL _cmd, UITableView *tv, NSInteger section) {
-    if (section == 0) return nil;
-    SEL origSel = NSSelectorFromString(@"s7tv_tableView:titleForHeaderInSection:");
-    NSString *(*origIMP)(id, SEL, UITableView *, NSInteger) =
-        (NSString *(*)(id, SEL, UITableView *, NSInteger))
-        [self methodForSelector:origSel];
-    return origIMP(self, origSel, tv, s7tv_origSection(section));
-}
-
-static UIView *s7tv_imp_viewForHeader(id self, SEL _cmd, UITableView *tv, NSInteger section) {
-    if (section != 0) {
-        SEL origSel = NSSelectorFromString(@"s7tv_tableView:viewForHeaderInSection:");
-        UIView *(*origIMP)(id, SEL, UITableView *, NSInteger) =
-            (UIView *(*)(id, SEL, UITableView *, NSInteger))
-            [self methodForSelector:origSel];
-        return origIMP(self, origSel, tv, s7tv_origSection(section));
-    }
-
-    UIView *container = [[UIView alloc] init];
-    container.backgroundColor = [UIColor clearColor];
-
-    NSData *logoData = [[NSData alloc]
-        initWithBase64EncodedString:kS7TVLogoBase64
-                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    UIImageView *logoView = [[UIImageView alloc] init];
-    if (logoData) logoView.image = [UIImage imageWithData:logoData scale:2.0];
-    logoView.contentMode = UIViewContentModeScaleAspectFit;
-    logoView.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:logoView];
-
-    UILabel *lbl = [[UILabel alloc] init];
-    lbl.text = L(@"header_7tv_settings_caps");
-    lbl.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
-    lbl.textColor = [UIColor secondaryLabelColor];
-    lbl.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:lbl];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [logoView.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
-        [logoView.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
-        [logoView.widthAnchor constraintEqualToConstant:26],
-        [logoView.heightAnchor constraintEqualToConstant:19],
-        [lbl.leadingAnchor constraintEqualToAnchor:logoView.trailingAnchor constant:6],
-        [lbl.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
-        [lbl.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
-    ]];
-
-    return container;
-}
-
-static CGFloat s7tv_imp_heightForHeader(id self, SEL _cmd, UITableView *tv, NSInteger section) {
-    if (section == 0) return 38.0;
-    SEL origSel = NSSelectorFromString(@"s7tv_tableView:heightForHeaderInSection:");
-    CGFloat (*origIMP)(id, SEL, UITableView *, NSInteger) =
-        (CGFloat (*)(id, SEL, UITableView *, NSInteger))
-        [self methodForSelector:origSel];
-    return origIMP(self, origSel, tv, s7tv_origSection(section));
-}
-
-static UITableViewCell *s7tv_imp_cellForRow(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (ip.section != 0) {
-        NSIndexPath *origIP = [NSIndexPath indexPathForRow:ip.row
-                                                 inSection:s7tv_origSection(ip.section)];
-        SEL origSel = NSSelectorFromString(@"s7tv_tableView:cellForRowAtIndexPath:");
-        UITableViewCell *(*origIMP)(id, SEL, UITableView *, NSIndexPath *) =
-            (UITableViewCell *(*)(id, SEL, UITableView *, NSIndexPath *))
-            [self methodForSelector:origSel];
-        return origIMP(self, origSel, tv, origIP);
-    }
-
-    static NSString *rID = @"S7TVSettingsCell";
-    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:rID];
-    if (!cell) {
-        Class disclosureClass = NSClassFromString(@"Twitch.SettingsDisclosureCell")
-                              ?: NSClassFromString(@"_TtC6Twitch22SettingsDisclosureCell");
-        if (disclosureClass) {
-            cell = [[disclosureClass alloc] initWithStyle:UITableViewCellStyleDefault
-                                          reuseIdentifier:rID];
-        }
-        if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                          reuseIdentifier:rID];
-        }
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    }
-
-    cell.textLabel.text = L(@"title_7tv_settings");
-    cell.textLabel.numberOfLines = 0;
-
-    NSData *logoData = [[NSData alloc]
-        initWithBase64EncodedString:kS7TVLogoBase64
-                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    if (logoData) {
-        UIImage *logo = [UIImage imageWithData:logoData scale:2.0];
-        if (logo) cell.imageView.image = logo;
-    }
-
-    return cell;
-}
-
-static void s7tv_imp_didSelect(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (ip.section != 0) {
-        NSIndexPath *origIP = [NSIndexPath indexPathForRow:ip.row
-                                                 inSection:s7tv_origSection(ip.section)];
-        SEL origSel = NSSelectorFromString(@"s7tv_tableView:didSelectRowAtIndexPath:");
-        void (*origIMP)(id, SEL, UITableView *, NSIndexPath *) =
-            (void (*)(id, SEL, UITableView *, NSIndexPath *))
-            [self methodForSelector:origSel];
-        origIMP(self, origSel, tv, origIP);
-        return;
-    }
-
-    [tv deselectRowAtIndexPath:ip animated:YES];
-    SevenTVSettingsController *vc = [[SevenTVSettingsController alloc] init];
-    UINavigationController *nav = ((UIViewController *)self).navigationController;
-    [nav pushViewController:vc animated:YES];
-    [[SevenTVManager sharedManager] log:@"✅ 7TV Settings ouvert depuis les paramètres Twitch"];
-}
-
-static void s7tv_swizzle_account_menu(void) {
-    Class target = NSClassFromString(@"_TtC6Twitch25AccountMenuViewController");
-    if (!target) {
-        [[SevenTVManager sharedManager]
-            log:@"⚠️ _TtC6Twitch25AccountMenuViewController introuvable — swizzle ignoré"];
-        return;
-    }
-
-    void (^swizzleWithIMP)(SEL, SEL, IMP, const char *) =
-        ^(SEL origSel, SEL newSel, IMP newIMP, const char *types) {
-            Method origMethod = class_getInstanceMethod(target, origSel);
-            if (!origMethod) return;
-            // CRITICAL FIX: if the method is only *inherited* (not defined directly on
-            // target), class_getInstanceMethod returns the superclass's Method object.
-            // Calling method_exchangeImplementations on it would modify the superclass,
-            // affecting ALL subclasses including SearchTopResultsViewController → crash.
-            // Solution: add the original IMP directly on target first so the exchange
-            // only touches target's own method table.
-            class_addMethod(target, origSel,
-                            method_getImplementation(origMethod),
-                            method_getTypeEncoding(origMethod));
-            // Add our replacement under the s7tv_ selector
-            class_addMethod(target, newSel, newIMP, types);
-            // Re-fetch: origMethod now points to target's own copy (not superclass)
-            Method orig = class_getInstanceMethod(target, origSel);
-            Method repl = class_getInstanceMethod(target, newSel);
-            if (orig && repl) method_exchangeImplementations(orig, repl);
-        };
-
-    swizzleWithIMP(@selector(numberOfSectionsInTableView:),
-        NSSelectorFromString(@"s7tv_numberOfSectionsInTableView:"),
-        (IMP)s7tv_imp_numberOfSections, "q@:@");
-    swizzleWithIMP(@selector(tableView:numberOfRowsInSection:),
-        NSSelectorFromString(@"s7tv_tableView:numberOfRowsInSection:"),
-        (IMP)s7tv_imp_numberOfRows, "q@:@q");
-    swizzleWithIMP(@selector(tableView:titleForHeaderInSection:),
-        NSSelectorFromString(@"s7tv_tableView:titleForHeaderInSection:"),
-        (IMP)s7tv_imp_titleForHeader, "@@:@q");
-    swizzleWithIMP(@selector(tableView:viewForHeaderInSection:),
-        NSSelectorFromString(@"s7tv_tableView:viewForHeaderInSection:"),
-        (IMP)s7tv_imp_viewForHeader, "@@:@q");
-    swizzleWithIMP(@selector(tableView:heightForHeaderInSection:),
-        NSSelectorFromString(@"s7tv_tableView:heightForHeaderInSection:"),
-        (IMP)s7tv_imp_heightForHeader, "d@:@q");
-    swizzleWithIMP(@selector(tableView:cellForRowAtIndexPath:),
-        NSSelectorFromString(@"s7tv_tableView:cellForRowAtIndexPath:"),
-        (IMP)s7tv_imp_cellForRow, "@@:@@");
-    swizzleWithIMP(@selector(tableView:didSelectRowAtIndexPath:),
-        NSSelectorFromString(@"s7tv_tableView:didSelectRowAtIndexPath:"),
-        (IMP)s7tv_imp_didSelect, "v@:@@");
-
-    [[SevenTVManager sharedManager]
-        log:@"✅ AccountMenuViewController swizzlé — section 7TV Settings injectée"];
-}
-
-
-// ────────────────────────────────────────────────────────────
 // MARK: - Interception du token Twitch (2 points de capture)
 // ────────────────────────────────────────────────────────────
 //
@@ -3095,8 +2783,9 @@ static void TwitchSevenTVInit(void) {
                      queue:[NSOperationQueue mainQueue]
                 usingBlock:^(__unused NSNotification *note) {
         [mgr.chatMessageStore retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
-            return s7tv_tokenizeMessageWithNativeEmotes(message.rawText ?: @"",
-                                                        message.twitchEmotesTag ?: @"");
+            return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
+                                      twitchEmotesTag:message.twitchEmotesTag ?: @""
+                                            providers:s7tv_emoteProviders()];
         } completion:^{
             s7tv_reloadActiveChatCustomView();
         }];
@@ -3133,7 +2822,7 @@ static void TwitchSevenTVInit(void) {
     // par le join de channel, indépendamment du chat.
 
     // Section 7TV dans les paramètres Twitch
-    s7tv_swizzle_account_menu();
+    [SevenTVSettingsController installTwitchSettingsIntegration];
 
     // Auto Collect Channel Points — module 100% autonome (voir
     // 7tv-system-NativeBehaviorHooks.m), aucune dépendance avec les

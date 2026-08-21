@@ -21,6 +21,15 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSArray<S7TVChatToken *> *)tokenizeText:(NSString *)text
                                   providers:(NSArray<id<S7TVEmoteProvider>> *)providers;
 
+// Variante utilisée pour les messages Twitch : le tag IRC `emotes=` fournit
+// l'identifiant et les positions exactes des emotes natives. Les portions de
+// texte restantes suivent le même pipeline générique que ci-dessus, afin de
+// continuer à résoudre les emotes 7TV et les mentions sans dupliquer cette
+// logique dans le hook réseau.
++ (NSArray<S7TVChatToken *> *)tokenizeText:(NSString *)text
+                          twitchEmotesTag:(nullable NSString *)emotesTag
+                                providers:(NSArray<id<S7TVEmoteProvider>> *)providers;
+
 @end
 
 NS_ASSUME_NONNULL_END

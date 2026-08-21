@@ -68,6 +68,11 @@ extern NSString *const S7TVBadgesCatalogUpdatedNotification;
 // sharedProvider) — sûr à appeler plusieurs fois.
 + (void)setup;
 
+// Convertit directement le tag IRC `badges=` en identifiants ordonnés
+// "setID/version" compris par resolvedBadgeForIdentifier:. Les entrées
+// absentes ou malformées sont simplement ignorées.
++ (NSArray<NSString *> *)identifiersFromIRCTag:(nullable NSString *)tagValue;
+
 // Résout un identifiant "setID/version" (tel qu'extrait du tag IRC badges=)
 // vers un badge exploitable, ou nil si absent des deux catalogues (global +
 // channel) — ex: fetch pas encore terminé, ou set/version inconnu (nouveau

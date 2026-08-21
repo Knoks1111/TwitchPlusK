@@ -495,6 +495,23 @@
     });
 }
 
+- (void)updateChannelPointCurrencyImageURL:(NSURL *)imageURL
+                                completion:(void (^ _Nullable)(void))completion {
+    if (!imageURL.absoluteString.length) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        return;
+    }
+    dispatch_barrier_async(self.storeQueue, ^{
+        for (S7TVChatMessage *message in self.orderedMessages) {
+            S7TVChannelPointRewardInfo *info = message.channelPointRewardInfo;
+            if (message.type != S7TVChatMessageTypeChannelPointRedemption || !info) continue;
+            if ([info.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame) continue;
+            info.imageURL = imageURL;
+        }
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+    });
+}
+
 #pragma mark - Lecture
 
 - (NSArray<S7TVChatMessage *> *)allMessages {

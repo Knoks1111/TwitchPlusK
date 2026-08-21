@@ -166,6 +166,7 @@
     // On se contente de remettre notre propre état à plat.
     [self _s7tv_deactivateVisiblePickerAnimations];
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
+    [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
     self.emotePickerTextEntryView = nil;
@@ -617,6 +618,7 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
 - (void)_hideEmotePicker {
     [self _s7tv_deactivateVisiblePickerAnimations];
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
+    [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
     UITextView *tv = self.emotePickerTextEntryView;
@@ -642,6 +644,7 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
     [[SevenTVManager sharedManager] log:@"🔒 cleanupPickerForStreamClose → nettoyage picker"];
     [self _s7tv_deactivateVisiblePickerAnimations];
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
+    [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
     UITextView *tv = self.emotePickerTextEntryView;
@@ -1687,6 +1690,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     if (show) {
         [self _s7tv_deactivateVisiblePickerAnimations];
         [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
+        [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
         [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
         self.pickerScrollInProgress = NO;
     }
@@ -2075,6 +2079,7 @@ static CGFloat S7TVRefCols(void) {
     if (scrollView != self.emoteCollectionView) return;
     self.pickerScrollInProgress = YES;
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:YES];
+    [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:YES];
 }
 
 - (void)scrollViewDidEndDragging:(UIScrollView *)scrollView
@@ -2082,6 +2087,7 @@ static CGFloat S7TVRefCols(void) {
     if (scrollView != self.emoteCollectionView || decelerate) return;
     self.pickerScrollInProgress = NO;
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
+    [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
     [self _s7tv_activateVisiblePickerAnimations];
 }
 
@@ -2089,6 +2095,7 @@ static CGFloat S7TVRefCols(void) {
     if (scrollView != self.emoteCollectionView) return;
     self.pickerScrollInProgress = NO;
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
+    [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
     [self _s7tv_activateVisiblePickerAnimations];
 }
 

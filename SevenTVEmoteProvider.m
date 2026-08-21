@@ -105,7 +105,7 @@
     // automatiquement le GIF animé si l'emote en a un, un PNG statique
     // sinon (documenté côté Twitch). isAnimated ne fait ici que déterminer
     // si le pipeline PASSE par le décodage multi-frames
-    // (SevenTVEmoteImageCache framesForResolvedEmote:) plutôt que par le
+    // (SevenTVEmoteImageCache) plutôt que par le
     // décodage 1-frame classique — et ce pipeline gère déjà très bien le
     // cas "1 seule frame décodée" (voir s7tv_decodeAnimatedWebPData:),
     // donc mettre YES pour une emote en réalité statique ne casse rien,

@@ -53,6 +53,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 
 @interface SevenTVEmoteAnimationEngine ()
 @property (nonatomic, strong, nullable) CADisplayLink *displayLink;
+@property (nonatomic, assign) CFTimeInterval lastTickTimestamp;
 
 @property (nonatomic, strong) NSMutableDictionary<NSString *, S7TVEmoteAnimatedFrames *> *framesByKey;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *frameIndexByKey;   // NSUInteger
@@ -106,9 +107,16 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     NSAssert([NSThread isMainThread], @"SevenTVEmoteAnimationEngine: main thread uniquement");
     if (!key.length || frames.images.count == 0) return;
 
+    S7TVEmoteAnimatedFrames *existingFrames = self.framesByKey[key];
+    // Une preview peut arriver après la boucle complète (files de décodage
+    // distinctes). Ne jamais dégrader alors l'animation déjà enregistrée.
+    if (existingFrames && !existingFrames.isPreview && frames.isPreview) {
+        self.lastAccessByKey[key] = @(CACurrentMediaTime());
+        return;
+    }
     // Ne pas réinitialiser une animation déjà enregistrée quand plusieurs
-    // cellules demandent la même emote au même moment.
-    if (self.framesByKey[key] == frames) {
+    // cellules demandent exactement le même résultat au même moment.
+    if (existingFrames == frames) {
         self.lastAccessByKey[key] = @(CACurrentMediaTime());
         return;
     }
@@ -211,6 +219,13 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     [self s7tv_updateDisplayLinkState];
 }
 
+- (BOOL)hasCompleteFramesForKey:(NSString *)key {
+    S7TVEmoteAnimatedFrames *frames = key.length > 0 ? self.framesByKey[key] : nil;
+    BOOL complete = frames != nil && !frames.isPreview;
+    if (complete) self.lastAccessByKey[key] = @(CACurrentMediaTime());
+    return complete;
+}
+
 - (void)setScrollingPerformanceMode:(BOOL)enabled {
     NSAssert([NSThread isMainThread], @"SevenTVEmoteAnimationEngine: main thread uniquement");
     // Conservé comme point d'entrée du picker. La visibilité stricte des
@@ -225,6 +240,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     }
     [self.displayLink invalidate];
     self.displayLink = nil;
+    self.lastTickTimestamp = 0;
     [self.framesByKey removeAllObjects];
     [self.frameIndexByKey removeAllObjects];
     [self.elapsedByKey removeAllObjects];
@@ -299,6 +315,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
         // les passages inutiles à 120 Hz sur les écrans ProMotion. Le moteur
         // ne tourne déjà que pour les emotes dont une cellule est visible.
         self.displayLink.preferredFramesPerSecond = 60;
+        self.lastTickTimestamp = 0;
         [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
     } else if (!shouldRun && self.displayLink) {
         // Plus aucune emote animée observée à l'écran → coupe le timer
@@ -306,6 +323,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
         // ou aucune emote animée dans les messages visibles actuellement).
         [self.displayLink invalidate];
         self.displayLink = nil;
+        self.lastTickTimestamp = 0;
     }
 }
 
@@ -318,7 +336,21 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
         return;
     }
 
-    NSTimeInterval elapsedStep = link.duration;
+    // link.duration correspond à la cadence physique de l'écran. Sur un
+    // écran ProMotion 120 Hz avec un displayLink demandé à 60 Hz, elle peut
+    // donc valoir 1/120 alors que ce callback n'arrive que toutes les 1/60 s :
+    // les animations avançaient à demi-vitesse et semblaient saccader. La
+    // différence entre deux timestamps mesure la cadence réellement livrée,
+    // y compris lorsqu'une frame est ponctuellement manquée par le main thread.
+    NSTimeInterval nominalStep = link.targetTimestamp > link.timestamp
+        ? (link.targetTimestamp - link.timestamp) : (1.0 / 60.0);
+    NSTimeInterval elapsedStep = self.lastTickTimestamp > 0
+        ? (link.timestamp - self.lastTickTimestamp) : nominalStep;
+    self.lastTickTimestamp = link.timestamp;
+    if (elapsedStep <= 0) elapsedStep = nominalStep;
+    // Évite une énorme boucle de rattrapage après un passage en arrière-plan,
+    // tout en absorbant largement les petites pointes de charge réelles.
+    elapsedStep = MIN(elapsedStep, 0.25);
 
     // Throttle : au-delà de maxSimultaneousAnimations clés actives, les plus
     // anciennes (firstSeenAt le plus petit) gèlent — jamais retirées, juste

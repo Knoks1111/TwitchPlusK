@@ -93,8 +93,8 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 // scroll. Les files bornées gardent le travail hors main thread tout en
 // donnant la priorité aux miniatures visibles.
 @property (nonatomic, strong) NSOperationQueue *staticDecodeQueue;
-// File courte dédiée aux previews du picker. Elle n'attend jamais qu'un WebP
-// complet soit entièrement décodé avant de passer à l'emote visible suivante.
+// File courte dédiée aux previews des cellules visibles (chat et picker). Elle
+// n'attend jamais qu'un WebP complet soit décodé avant l'emote suivante.
 @property (nonatomic, strong) NSOperationQueue *animatedPreviewDecodeQueue;
 @property (nonatomic, strong) NSOperationQueue *animatedDecodeQueue;
 @property (atomic, assign) NSUInteger cacheGeneration;
@@ -196,12 +196,6 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
     return [self.animatedFramesCache objectForKey:key];
 }
 
-- (void)framesForResolvedEmote:(id<S7TVResolvedEmote>)emote
-                     completion:(S7TVFramesCompletion)completion {
-    // Le chat n'a pas besoin de preview progressive et conserve l'API simple.
-    [self framesForResolvedEmote:emote preview:nil completion:completion];
-}
-
 - (S7TVEmoteFrameRequest *)framesForResolvedEmote:(id<S7TVResolvedEmote>)emote
                                           preview:(S7TVFramesPreview)preview
                                        completion:(S7TVFramesCompletion)completion {
@@ -258,7 +252,8 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 }
 
 // YES si au moins un consommateur non annulé attend toujours cette clé. Avec
-// requiringPreview=YES, seuls les consommateurs du picker sont considérés.
+// requiringPreview=YES, seuls les consommateurs demandant la boucle rapide
+// (cellules visibles du chat ou du picker) sont considérés.
 - (BOOL)s7tv_hasActiveFrameRequestsForKey:(NSString *)key requiringPreview:(BOOL)requiringPreview {
     __block BOOL active = NO;
     dispatch_block_t inspect = ^{
@@ -323,6 +318,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
                 }];
             }
             if (previewFrames.images.count > 1 && generation == self.cacheGeneration) {
+                previewFrames.preview = YES;
                 [self s7tv_publishPreviewFrames:previewFrames forKey:key];
             }
             dispatch_async(self.syncQueue, ^{
@@ -333,9 +329,9 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 }
 
 // Réutilise s7tv_fetchDataForURL:completion: (cache HTTP partagé avec le
-// chemin statique). Le picker reçoit d'abord une boucle légère via sa file de
-// preview ; le décodage complet continue séparément sans bloquer les previews
-// des autres cellules visibles.
+// chemin statique). Le renderer reçoit d'abord une boucle légère via sa file
+// de preview ; le décodage complet continue séparément sans bloquer les autres
+// cellules visibles.
 - (void)s7tv_loadAndDecodeFramesForKey:(NSString *)key url:(NSURL *)url {
     NSUInteger generation = self.cacheGeneration;
     [self s7tv_fetchDataForURL:url completion:^(NSData * _Nullable data) {

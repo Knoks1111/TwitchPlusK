@@ -229,9 +229,15 @@ static const char kS7TVRowKeyTag = 0;
     ];
     NSMutableArray<UIButton *> *categoryButtons = [NSMutableArray arrayWithCapacity:3];
     for (NSInteger index = 0; index < 3; index++) {
-        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        // UIButtonTypeSystem peut injecter le fond/tint bleu automatique de
+        // UIKit derrière le titre selon la version d'iOS et les réglages
+        // d'accessibilité. Les catégories gèrent déjà elles-mêmes leur état
+        // sélectionné : un bouton custom garantit donc un fond transparent.
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
         button.frame = CGRectMake((categoryW / 3.0) * index, 0, categoryW / 3.0, categoryH);
         button.tag = index;
+        button.backgroundColor = [UIColor clearColor];
+        button.showsTouchWhenHighlighted = NO;
         button.titleLabel.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold];
         button.titleLabel.adjustsFontSizeToFitWidth = YES;
         button.titleLabel.minimumScaleFactor = 0.75;

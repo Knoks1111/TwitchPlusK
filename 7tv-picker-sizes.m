@@ -83,6 +83,8 @@ static const char kS7TVRowKeyTag = 0;
 @property (nonatomic, weak) UIColorWell *selfMentionColorWell;
 @property (nonatomic, weak) UILabel *selfMentionRowLabel;
 @property (nonatomic, weak) UILabel *moderationSectionLabel;
+@property (nonatomic, weak) UILabel *deletedPreviewLabel;
+@property (nonatomic, weak) UISegmentedControl *deletedPreviewControl;
 @property (nonatomic, weak) UILabel *deletedStyleLabel;
 @property (nonatomic, weak) UISegmentedControl *deletedStyleControl;
 @property (nonatomic, weak) UILabel *moderationDetailsLabel;
@@ -168,11 +170,23 @@ static const char kS7TVRowKeyTag = 0;
         L(@"sizes_category_appearance"),
         L(@"sizes_category_moderation"),
     ]];
-    categoryControl.frame = CGRectMake(12, 8, frame.size.width - 24, 32);
+    // 68 pt restent libres à droite pour la capsule Retour/Réglages que
+    // le controller place sur la même ligne (60 pt + marge visuelle).
+    categoryControl.frame = CGRectMake(12, 8, frame.size.width - 92, 32);
     categoryControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     categoryControl.selectedSegmentIndex = 0;
     categoryControl.selectedSegmentTintColor = accent;
-    [categoryControl setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]}
+    categoryControl.backgroundColor = [cardColor colorWithAlphaComponent:0.92];
+    categoryControl.layer.cornerRadius = 16;
+    categoryControl.clipsToBounds = YES;
+    [categoryControl setTitleTextAttributes:@{
+        NSForegroundColorAttributeName: subColor,
+        NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold]
+    } forState:UIControlStateNormal];
+    [categoryControl setTitleTextAttributes:@{
+        NSForegroundColorAttributeName: [UIColor whiteColor],
+        NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold]
+    }
                                     forState:UIControlStateSelected];
     [categoryControl addTarget:self action:@selector(_categoryChanged:)
               forControlEvents:UIControlEventValueChanged];
@@ -349,6 +363,10 @@ static const char kS7TVRowKeyTag = 0;
 
     self.selfMentionRowLabel.text = L(@"sizes_self_mention_row_label");
     self.moderationSectionLabel.text = L(@"sizes_moderation_section_title");
+    self.deletedPreviewLabel.text = L(@"sizes_deleted_preview_label");
+    [self.deletedPreviewControl setTitle:L(@"sizes_deleted_preview_disabled") forSegmentAtIndex:0];
+    [self.deletedPreviewControl setTitle:L(@"sizes_deleted_preview_tap") forSegmentAtIndex:1];
+    [self.deletedPreviewControl setTitle:L(@"sizes_deleted_preview_revealed") forSegmentAtIndex:2];
     self.deletedStyleLabel.text = L(@"sizes_deleted_style_label");
     [self.deletedStyleControl setTitle:L(@"sizes_deleted_style_dimmed") forSegmentAtIndex:0];
     [self.deletedStyleControl setTitle:L(@"sizes_deleted_style_struck") forSegmentAtIndex:1];
@@ -638,6 +656,62 @@ static const char kS7TVRowKeyTag = 0;
     self.moderationSectionLabel = sectionLabel;
     y += 26;
 
+    UIView *previewRow = [[UIView alloc] initWithFrame:CGRectMake(0, y, width, 64)];
+    previewRow.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    UILabel *previewLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 5, width - 56, 18)];
+    previewLabel.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    previewLabel.textColor = textColor;
+    previewLabel.text = L(@"sizes_deleted_preview_label");
+    previewLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [previewRow addSubview:previewLabel];
+    self.deletedPreviewLabel = previewLabel;
+
+    UIButton *previewReset = [UIButton buttonWithType:UIButtonTypeSystem];
+    previewReset.frame = CGRectMake(width - 40, 0, 28, 28);
+    previewReset.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    UIImageSymbolConfiguration *previewResetCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
+    [previewReset setImage:[UIImage systemImageNamed:@"arrow.counterclockwise" withConfiguration:previewResetCfg]
+                  forState:UIControlStateNormal];
+    previewReset.tintColor = subColor;
+    [previewReset addTarget:self action:@selector(_deletedPreviewResetTapped:)
+           forControlEvents:UIControlEventTouchUpInside];
+    [previewRow addSubview:previewReset];
+
+    UISegmentedControl *previewControl = [[UISegmentedControl alloc] initWithItems:@[
+        L(@"sizes_deleted_preview_disabled"),
+        L(@"sizes_deleted_preview_tap"),
+        L(@"sizes_deleted_preview_revealed"),
+    ]];
+    previewControl.frame = CGRectMake(12, 28, width - 24, 30);
+    previewControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    previewControl.selectedSegmentIndex = cfg.deletedMessageRevealMode;
+    previewControl.selectedSegmentTintColor = accent;
+    previewControl.backgroundColor = [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:0.92];
+    previewControl.layer.cornerRadius = 8;
+    previewControl.clipsToBounds = YES;
+    [previewControl setTitleTextAttributes:@{
+        NSForegroundColorAttributeName: subColor,
+        NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold]
+    } forState:UIControlStateNormal];
+    [previewControl setTitleTextAttributes:@{
+        NSForegroundColorAttributeName: [UIColor whiteColor],
+        NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold]
+    }
+                                  forState:UIControlStateSelected];
+    [previewControl addTarget:self action:@selector(_deletedPreviewChanged:)
+             forControlEvents:UIControlEventValueChanged];
+    [previewRow addSubview:previewControl];
+    self.deletedPreviewControl = previewControl;
+
+    UIView *previewSep = [[UIView alloc] initWithFrame:CGRectMake(12, 63.5, width - 24, 0.5)];
+    previewSep.backgroundColor = sepColor;
+    previewSep.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [previewRow addSubview:previewSep];
+    [scrollView addSubview:previewRow];
+    y += 64;
+
     UIView *styleRow = [[UIView alloc] initWithFrame:CGRectMake(0, y, width, 64)];
     styleRow.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
@@ -670,7 +744,17 @@ static const char kS7TVRowKeyTag = 0;
     styleControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     styleControl.selectedSegmentIndex = cfg.deletedMessageStyle;
     styleControl.selectedSegmentTintColor = accent;
-    [styleControl setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]}
+    styleControl.backgroundColor = [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:0.92];
+    styleControl.layer.cornerRadius = 8;
+    styleControl.clipsToBounds = YES;
+    [styleControl setTitleTextAttributes:@{
+        NSForegroundColorAttributeName: subColor,
+        NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold]
+    } forState:UIControlStateNormal];
+    [styleControl setTitleTextAttributes:@{
+        NSForegroundColorAttributeName: [UIColor whiteColor],
+        NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold]
+    }
                                 forState:UIControlStateSelected];
     [styleControl addTarget:self action:@selector(_deletedStyleChanged:)
            forControlEvents:UIControlEventValueChanged];
@@ -794,6 +878,20 @@ static const char kS7TVRowKeyTag = 0;
     self.deletedOpacitySlider.enabled = usesDimming;
     self.deletedOpacityLabel.textColor = usesDimming ? self.panelTextColor : self.panelSubColor;
     self.deletedOpacityValueLabel.alpha = usesDimming ? 1.0 : 0.45;
+}
+
+- (void)_deletedPreviewChanged:(UISegmentedControl *)control {
+    S7TVDeletedMessageRevealMode mode =
+        (S7TVDeletedMessageRevealMode)control.selectedSegmentIndex;
+    [SevenTVChatAppearanceConfig sharedConfig].deletedMessageRevealMode = mode;
+    [self.fakeChatView reloadMessages];
+}
+
+- (void)_deletedPreviewResetTapped:(UIButton *)btn {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    cfg.deletedMessageRevealMode = S7TVDeletedMessageRevealModeOnTap;
+    self.deletedPreviewControl.selectedSegmentIndex = S7TVDeletedMessageRevealModeOnTap;
+    [self.fakeChatView reloadMessages];
 }
 
 - (void)_deletedStyleChanged:(UISegmentedControl *)control {

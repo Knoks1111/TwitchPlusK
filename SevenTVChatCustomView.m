@@ -13,6 +13,30 @@
 #import "SevenTVManager.h"
 #import <math.h>
 
+static BOOL s7tv_isDeletedMessage(S7TVChatMessage *msg) {
+    return msg.state == S7TVChatMessageStateDeletedCollapsed ||
+           msg.state == S7TVChatMessageStateDeletedExpanded;
+}
+
+static BOOL s7tv_shouldRenderDeletedCollapsed(S7TVChatMessage *msg,
+                                               SevenTVChatAppearanceConfig *cfg) {
+    if (!s7tv_isDeletedMessage(msg)) return NO;
+    switch (cfg.deletedMessageRevealMode) {
+        case S7TVDeletedMessageRevealModeNever:
+            return YES;
+        case S7TVDeletedMessageRevealModeAlways:
+            return NO;
+        case S7TVDeletedMessageRevealModeOnTap:
+        default:
+            return msg.state == S7TVChatMessageStateDeletedCollapsed;
+    }
+}
+
+static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
+                                              SevenTVChatAppearanceConfig *cfg) {
+    return s7tv_isDeletedMessage(msg) && !s7tv_shouldRenderDeletedCollapsed(msg, cfg);
+}
+
 
 // ============================================================
 // MARK: - Cellule (texte + emotes, hauteur dynamique)
@@ -745,7 +769,8 @@
                                                       collectAnimatedEmotes:animatedEmotes];
     [self s7tv_configureCell:cell forMessage:msg attributedText:text];
 
-    BOOL isCollapsed = (msg.state == S7TVChatMessageStateDeletedCollapsed);
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    BOOL isCollapsed = s7tv_shouldRenderDeletedCollapsed(msg, cfg);
     BOOL isReply = self.showsReplyBanners && !isCollapsed && msg.replyParentUsername.length > 0;
     [cell s7tv_configureReplyBannerWithUsername:isReply ? msg.replyParentUsername : nil
                                      bodyPreview:isReply ? msg.replyParentBodyPreview : nil];
@@ -763,11 +788,12 @@
         }
     } : nil;
 
-    BOOL isDeleted = (msg.state == S7TVChatMessageStateDeletedCollapsed ||
-                      msg.state == S7TVChatMessageStateDeletedExpanded);
+    BOOL isDeleted = s7tv_isDeletedMessage(msg);
+    BOOL allowsTapToReveal = isDeleted &&
+        cfg.deletedMessageRevealMode == S7TVDeletedMessageRevealModeOnTap;
     NSString *deletedMessageID = msg.messageID;
     __weak typeof(self) weakSelfForDeletion = self;
-    cell.onDeletedMessageTap = isDeleted ? ^{
+    cell.onDeletedMessageTap = allowsTapToReveal ? ^{
         __strong typeof(weakSelfForDeletion) strongSelf = weakSelfForDeletion;
         if (!strongSelf) return;
         [strongSelf.store toggleExpandedForMessageID:deletedMessageID completion:^{
@@ -1175,7 +1201,7 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
                                        NSUInteger bodyStart,
                                        S7TVChatMessage *msg,
                                        SevenTVChatAppearanceConfig *cfg) {
-    if (msg.state != S7TVChatMessageStateDeletedExpanded ||
+    if (!s7tv_shouldRenderDeletedExpanded(msg, cfg) ||
         bodyStart >= result.length) return;
     if (cfg.deletedMessageStyle == S7TVDeletedMessageStyleStrikethrough ||
         cfg.deletedMessageStyle == S7TVDeletedMessageStyleDimmedAndStrikethrough) {
@@ -1193,7 +1219,8 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
     // CLEARCHAT global peut aussi toucher un message système conservé dans
     // le store. Le placeholder doit alors remplacer TOUT son rendu, pas être
     // ajouté sous la bannière sub/gift originale.
-    if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    if (s7tv_shouldRenderDeletedCollapsed(msg, cfg)) {
         [self s7tv_appendNormalBodyForMessage:msg into:result
                         collectUncachedEmotes:outUncachedEmotes
                         collectAnimatedEmotes:outAnimatedEmotes];
@@ -1266,7 +1293,7 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
     // TweakSevenTV.m. Un seul point de bascule : messageColor est déjà
     // réutilisé pour tous les chemins du corps ci-dessous (fallback sans
     // tokens, texte brut, emote non résolue, texte hors mention).
-    BOOL isDeletedExpanded = (msg.state == S7TVChatMessageStateDeletedExpanded);
+    BOOL isDeletedExpanded = s7tv_shouldRenderDeletedExpanded(msg, cfg);
     BOOL usesDimming = (cfg.deletedMessageStyle != S7TVDeletedMessageStyleStrikethrough);
     CGFloat deletedOpacity = MIN(1.0, MAX(0.25, cfg.deletedMessageTextOpacity));
     UIColor *messageColor = (isDeletedExpanded && usesDimming)
@@ -1306,7 +1333,7 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
     // exclus de tous les styles de suppression configurables.
     NSUInteger messageBodyStart = result.length;
 
-    if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
+    if (s7tv_shouldRenderDeletedCollapsed(msg, cfg)) {
         [result appendAttributedString:[[NSAttributedString alloc]
             initWithString:s7tv_deletedPlaceholderForMessage(msg, cfg)
                 attributes:@{NSFontAttributeName: [UIFont italicSystemFontOfSize:cfg.messageFontSize],

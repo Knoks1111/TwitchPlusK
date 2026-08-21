@@ -57,6 +57,7 @@
 // seul fond) — les 2 boutons sont ainsi visuellement collés au lieu d'être
 // 2 pastilles séparées avec un espace entre elles.
 @property (nonatomic, weak) UIView   *pickerToolsCapsuleView;
+@property (nonatomic, weak) UIView   *pickerToolsDividerView;
 @property (nonatomic, assign) BOOL   pickerSizesPanelVisible;
 
 // Conteneur du faux chat (SevenTVPickerSizesPanel.fakeChatView), ajouté
@@ -984,6 +985,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     self.pickerToolsCapsuleView = toolsCapsule;
     [picker addSubview:toolsCapsule];
 
+    UIView *toolsDivider = [[UIView alloc] initWithFrame:
+        CGRectMake(kS7TVPickerFloatSize - 0.25, 6, 0.5, kS7TVPickerFloatSize - 12)];
+    toolsDivider.backgroundColor = sepColor;
+    [toolsCapsule addSubview:toolsDivider];
+    self.pickerToolsDividerView = toolsDivider;
+
     // Bouton réglages — slot gauche de la capsule (côté "intérieur", vers le
     // centre). Ouvre le même écran que le bouton flottant 7TV (voir
     // -[SevenTVManager presentSettingsMenu]) ; ferme d'abord le picker (voir
@@ -1158,16 +1165,16 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
                           - kS7TVPickerFloatGap - kS7TVPickerFloatSize;
     CGFloat tabCapsuleW = kS7TVPickerFloatSize * 3.0;
     self.pickerTabCapsuleView.frame = CGRectMake(kS7TVPickerFloatMargin, bottomRowY, tabCapsuleW, kS7TVPickerFloatSize);
-    // ── Capsule tailles/réglages : à droite dans la grille, à gauche dans le
-    // panneau des tailles (elle sert alors aussi de retour vers la grille,
-    // via le bouton tailles — voir -emotePickerSizesToggleTapped) — les 2
-    // boutons qu'elle contient voyagent ensemble d'un bloc, toujours collés
-    // l'un à l'autre, repositionnés ici à CHAQUE ouverture/rotation.
+    // Dans la grille, la capsule reste en bas à droite. Dans les réglages,
+    // elle rejoint la ligne des trois catégories en haut à droite : aucun
+    // contrôle n'est alors recouvert au bas des listes scrollables.
     CGFloat toolsCapsuleW = kS7TVPickerFloatSize * 2.0;
-    CGFloat toolsX = self.pickerSizesPanelVisible
-        ? kS7TVPickerFloatMargin
-        : (size.width - kS7TVPickerFloatMargin - toolsCapsuleW);
-    self.pickerToolsCapsuleView.frame = CGRectMake(toolsX, bottomRowY, toolsCapsuleW, kS7TVPickerFloatSize);
+    CGFloat toolsX = size.width - kS7TVPickerFloatMargin - toolsCapsuleW;
+    CGFloat toolsY = self.pickerSizesPanelVisible ? 9.0 : bottomRowY;
+    self.pickerToolsCapsuleView.frame = CGRectMake(toolsX, toolsY, toolsCapsuleW, kS7TVPickerFloatSize);
+    self.pickerToolsCapsuleView.layer.borderWidth = self.pickerSizesPanelVisible ? 1.0 : 0.0;
+    self.pickerToolsCapsuleView.layer.borderColor =
+        [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:0.7].CGColor;
     [self _s7tv_updateTabButtonHighlight];
 
     CGFloat searchY = size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH;
@@ -1675,14 +1682,13 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // passe à gauche dans le panneau des tailles.
     self.pickerTabCapsuleView.hidden = show;
     for (UIButton *btn in self.pickerTabButtons) btn.hidden = show;
-    self.pickerSizesToggleBtn.tintColor = [UIColor colorWithWhite:0.55 alpha:1.0];
-    // Icône explicite pour indiquer où mène le bouton : un émoticône (retour
-    // à la grille d'emotes) plutôt qu'un chevron générique ou une couleur —
-    // pas de teinte accent ici, contrairement à avant.
+    self.pickerSizesToggleBtn.tintColor = show
+        ? [UIColor whiteColor] : [UIColor colorWithWhite:0.55 alpha:1.0];
+    // Dans la page de réglages ce bouton devient explicitement un retour.
     UIImageSymbolConfiguration *backCfg = [UIImageSymbolConfiguration
         configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
     [self.pickerSizesToggleBtn setImage:
-        [UIImage systemImageNamed:(show ? @"face.smiling" : @"textformat.size")
+        [UIImage systemImageNamed:(show ? @"chevron.backward" : @"textformat.size")
                 withConfiguration:backCfg]
                                 forState:UIControlStateNormal];
 

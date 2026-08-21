@@ -12,15 +12,9 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import "SevenTVEmoteProvider.h"
 
 NS_ASSUME_NONNULL_BEGIN
-
-// Forward declaration plutôt qu'un #import de SevenTVEmoteProvider.h : évite
-// une dépendance circulaire (le fournisseur 7TV importe déjà ce fichier pour
-// S7TVChatTokenType). Le modèle 1a n'a besoin de connaître que le nom du
-// protocole, pas son contenu.
-@protocol S7TVResolvedEmote;
-
 
 // ============================================================
 // MARK: - S7TVChatUserColorRegistry
@@ -132,6 +126,10 @@ typedef NS_ENUM(NSInteger, S7TVChatMessageType) {
     S7TVChatMessageTypeAnnouncement,
     S7TVChatMessageTypePoll,
     S7TVChatMessageTypePrediction,
+    // Utilisation d'une récompense personnalisée de points de chaîne.
+    // Les données sont portées par channelPointRewardInfo et viennent du
+    // payload PubSub `reward-redeemed` — aucun titre/coût/type n'est codé ici.
+    S7TVChatMessageTypeChannelPointRedemption,
     // Lignes locales sans équivalent IRC, insérées à la jonction entre
     // l'historique récent et les nouveaux messages reçus en direct.
     S7TVChatMessageTypeHistoryWelcome,
@@ -186,6 +184,29 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 
 
 // ============================================================
+// MARK: - Récompense de points de chaîne
+// ============================================================
+//
+// Modèle volontairement générique : une récompense personnalisée peut être
+// renommée et reconfigurée librement par chaque streamer. Le chat conserve
+// donc exclusivement les champs livrés par Twitch dans `reward-redeemed`.
+// La conformité S7TVResolvedEmote permet de réutiliser directement le cache
+// d'images déjà éprouvé par les emotes et badges, sans second downloader.
+
+@interface S7TVChannelPointRewardInfo : NSObject <S7TVResolvedEmote>
+@property (nonatomic, copy) NSString *rewardID;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy, nullable) NSString *prompt;
+@property (nonatomic, assign) NSInteger cost;
+@property (nonatomic, copy) NSString *pricingType;
+@property (nonatomic, assign) BOOL isUserInputRequired;
+@property (nonatomic, copy, nullable) NSString *userInput;
+@property (nonatomic, strong, nullable) UIColor *accentColor;
+@property (nonatomic, strong) NSURL *imageURL;
+@end
+
+
+// ============================================================
 // MARK: - S7TVChatMessage
 // ============================================================
 
@@ -233,6 +254,17 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // côté parsing, pas dans SevenTVChatCustomView.
 @property (nonatomic, strong, nullable) S7TVSystemMessageInfo *systemInfo;
 @property (nonatomic, copy, nullable) NSString *systemPhrase;
+
+// Présent uniquement sur la ligne synthétique créée depuis
+// `reward-redeemed`. Le titre, le coût, l'image, la couleur et la saisie
+// éventuelle viennent tous de Twitch et restent indépendants du nom choisi
+// par le streamer.
+@property (nonatomic, strong, nullable) S7TVChannelPointRewardInfo *channelPointRewardInfo;
+
+// Tag IRC `custom-reward-id`. Il sert à associer/supprimer le PRIVMSG
+// compagnon d'une récompense avec saisie, afin que le texte ne soit jamais
+// affiché deux fois quand PubSub et IRC livrent le même événement.
+@property (nonatomic, copy, nullable) NSString *channelPointRewardID;
 
 @property (nonatomic, assign) S7TVChatMessageType type;
 @property (nonatomic, assign) S7TVChatMessageState state;
@@ -390,6 +422,13 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // sur le main thread. Le bloc est exécuté hors du thread UIKit.
 - (void)retokenizeMessagesUsingBlock:(NSArray<S7TVChatToken *> * (^)(S7TVChatMessage *message))tokenizer
                           completion:(void (^ _Nullable)(void))completion;
+
+// Enrichit la ligne reward-redeemed correspondante avec les données de son
+// PRIVMSG custom-reward-id (badges, couleur et offsets d'emotes Twitch),
+// sans ajouter une seconde ligne. Rare et borné à 300 messages, un scan
+// inverse est préférable à un index permanent supplémentaire.
+- (void)mergeChannelPointCompanionMessage:(S7TVChatMessage *)companion
+                                completion:(void (^ _Nullable)(NSString * _Nullable mergedMessageID))completion;
 
 // --- Lecture (thread-safe) ---
 

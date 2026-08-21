@@ -115,6 +115,30 @@
 
 
 // ============================================================
+// MARK: - S7TVChannelPointRewardInfo
+// ============================================================
+
+@implementation S7TVChannelPointRewardInfo
+
+// Adaptateur minimal vers le cache d'images générique. Les récompenses sont
+// carrées dans les payloads Twitch et statiques ; la taille finale est
+// choisie par le renderer, seul le ratio 1:1 importe ici.
+- (NSString *)emoteID {
+    return self.rewardID ?: @"";
+}
+
+- (CGSize)nativeSize {
+    return CGSizeMake(1.0, 1.0);
+}
+
+- (BOOL)isAnimated {
+    return NO;
+}
+
+@end
+
+
+// ============================================================
 // MARK: - S7TVChatMessage
 // ============================================================
 
@@ -434,6 +458,40 @@
             message.tokens = tokenizer(message);
         }
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+    });
+}
+
+- (void)mergeChannelPointCompanionMessage:(S7TVChatMessage *)companion
+                                completion:(void (^ _Nullable)(NSString * _Nullable))completion {
+    if (!companion.channelPointRewardID.length || !companion.authorUserID.length) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+        return;
+    }
+    dispatch_barrier_async(self.storeQueue, ^{
+        S7TVChatMessage *matched = nil;
+        for (S7TVChatMessage *candidate in self.orderedMessages.reverseObjectEnumerator) {
+            if (candidate.type != S7TVChatMessageTypeChannelPointRedemption) continue;
+            if (![candidate.channelPointRewardID isEqualToString:companion.channelPointRewardID] ||
+                ![candidate.authorUserID isEqualToString:companion.authorUserID]) continue;
+            if (ABS([candidate.timestamp timeIntervalSinceDate:companion.timestamp]) > 8.0) continue;
+            if (candidate.rawText.length && companion.rawText.length &&
+                ![candidate.rawText isEqualToString:companion.rawText]) continue;
+            matched = candidate;
+            break;
+        }
+
+        if (matched) {
+            if (companion.rawText.length) matched.rawText = companion.rawText;
+            matched.tokens = companion.tokens;
+            matched.twitchEmotesTag = companion.twitchEmotesTag ?: @"";
+            matched.badgeIdentifiers = companion.badgeIdentifiers ?: @[];
+            if (companion.authorColor) matched.authorColor = companion.authorColor;
+            matched.isActionMessage = companion.isActionMessage;
+        }
+        NSString *mergedID = [matched.messageID copy];
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(mergedID); });
+        }
     });
 }
 

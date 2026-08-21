@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 
 @class S7TVChatMessageStore;
+@class SevenTVChatCustomView;
 
 // ============================================================
 // CONFIGURATION - Modifie ces valeurs selon tes besoins
@@ -33,6 +34,24 @@
 extern NSString *const S7TVLogsDidUpdateNotification;
 extern NSString *const S7TVEmoteCatalogDidUpdateNotification;
 extern NSString *const S7TVChatCustomToggleDidChangeNotification;
+
+// ============================================================
+// Fonctions C partagées (définies dans TweakSevenTV.m)
+// ============================================================
+// Cherche l'instance actuellement affichée de Twitch.ChatInputView (tous
+// écrans/fenêtres connectés confondus). Utilisée par le système de channel
+// points autoclaim ET par S7TVReplyThreadPanel (voir
+// 7tv-chat-ReplyThreadPanel.m) pour le positionnement du panneau au-dessus
+// de la barre de saisie et l'insertion/retrait de mention.
+UIView *s7tv_findChatInputView(void);
+
+// Retourne la SevenTVChatCustomView actuellement montée à l'écran (chat
+// custom Phase 1a+), ou nil si aucune n'est active. Lecture seule : la
+// variable réelle (s_activeChatCustomView) reste privée à TweakSevenTV.m,
+// mutée uniquement par le hook didMoveToWindow/s7tv_applyChatCustomTest.
+// Utilisée par S7TVReplyThreadPanel (voir 7tv-chat-ReplyThreadPanel.m) pour
+// retrouver la window hôte.
+SevenTVChatCustomView *s7tv_activeChatCustomView(void);
 
 
 // ============================================================

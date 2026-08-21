@@ -295,10 +295,10 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     BOOL shouldRun = self.observersByKey.count > 0;
     if (shouldRun && !self.displayLink) {
         self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(s7tv_tick:)];
-        // Les WebP d'emotes dépassent rarement 30 fps. Sur les écrans
-        // ProMotion, laisser CADisplayLink à 120 Hz quadruplait inutilement le
-        // nombre de passages sur le main thread.
-        self.displayLink.preferredFramesPerSecond = 30;
+        // Conserver les emotes 50/60 fps réellement fluides, tout en évitant
+        // les passages inutiles à 120 Hz sur les écrans ProMotion. Le moteur
+        // ne tourne déjà que pour les emotes dont une cellule est visible.
+        self.displayLink.preferredFramesPerSecond = 60;
         [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
     } else if (!shouldRun && self.displayLink) {
         // Plus aucune emote animée observée à l'écran → coupe le timer

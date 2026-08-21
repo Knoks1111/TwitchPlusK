@@ -345,7 +345,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
             __block BOOL abandonedBecauseInvisible = NO;
             S7TVEmoteAnimatedFrames *frames = data
                 ? [self s7tv_decodeAnimatedWebPData:data
-                                  maximumFrameCount:120
+                                  maximumFrameCount:240
                                      shouldContinue:^BOOL{
                     BOOL active = generation == self.cacheGeneration &&
                         [self s7tv_hasActiveFrameRequestsForKey:key requiringPreview:NO];
@@ -463,11 +463,11 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
         return nil;
     }
 
-    // Le moteur tourne à 30 Hz : les frames au-delà du nombre réellement
+    // Le moteur tourne à 60 Hz : les frames au-delà du nombre réellement
     // affichable selon la durée de la boucle ne produisent aucun gain visuel,
     // mais retardent toutes les animations suivantes sur la file série.
     // On lit d'abord les délais (léger), puis on échantillonne uniquement si
-    // la source dépasse 30 fps. Un plafond de 120 protège aussi des WebP
+    // la source dépasse 60 fps. Un plafond de 240 protège aussi des WebP
     // pathologiques sans dégrader les boucles ordinaires allant jusqu'à 4 s.
     NSMutableArray<NSNumber *> *sourceDurations = [NSMutableArray arrayWithCapacity:count];
     NSTimeInterval totalDuration = 0.0;
@@ -482,7 +482,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
     }
 
     maximumFrameCount = MAX((size_t)2, maximumFrameCount);
-    size_t displayableCount = (size_t)(totalDuration * 30.0 + 0.999);
+    size_t displayableCount = (size_t)(totalDuration * 60.0 + 0.999);
     displayableCount = MAX((size_t)1, MIN(displayableCount, maximumFrameCount));
     size_t decodedCount = MIN(count, displayableCount);
 

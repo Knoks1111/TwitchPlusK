@@ -1041,7 +1041,7 @@ BOOL s7tv_shouldSuppressChannelPointCompanion(S7TVChatMessage *message) {
 }
 
 static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromRedemption(
-    NSDictionary *redemption) {
+    NSDictionary *redemption, NSArray<id<S7TVEmoteProvider>> *providers) {
     if (![redemption isKindOfClass:[NSDictionary class]]) return nil;
 
     NSDictionary *reward = s7tv_JSONDictionaryForKeys(redemption, @[@"reward"]);
@@ -1111,7 +1111,7 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromRedemption(
 }
 
 static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromAutomaticRedemption(
-    NSDictionary *redemption) {
+    NSDictionary *redemption, NSArray<id<S7TVEmoteProvider>> *providers) {
     if (![redemption isKindOfClass:[NSDictionary class]]) return nil;
 
     NSDictionary *reward = s7tv_JSONDictionaryForKeys(redemption, @[@"reward"]);
@@ -1190,7 +1190,8 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromAutomaticRedempti
 }
 
 static void s7tv_collectChannelPointMessages(id object,
-                                              NSMutableArray<S7TVChatMessage *> *messages) {
+                                              NSMutableArray<S7TVChatMessage *> *messages,
+                                              NSArray<id<S7TVEmoteProvider>> *providers) {
     if ([object isKindOfClass:[NSDictionary class]]) {
         NSDictionary *dictionary = object;
         NSString *type = s7tv_JSONStringForKeys(dictionary, @[@"type"]);
@@ -1204,8 +1205,8 @@ static void s7tv_collectChannelPointMessages(id object,
             BOOL isAutomatic =
                 s7tv_automaticRewardTitleLocalizationKey(possibleAutomaticType).length > 0;
             S7TVChatMessage *message = isAutomatic
-                ? s7tv_channelPointMessageFromAutomaticRedemption(redemption)
-                : s7tv_channelPointMessageFromRedemption(redemption);
+                ? s7tv_channelPointMessageFromAutomaticRedemption(redemption, providers)
+                : s7tv_channelPointMessageFromRedemption(redemption, providers);
             if (message) [messages addObject:message];
             return;
         }
@@ -1220,7 +1221,7 @@ static void s7tv_collectChannelPointMessages(id object,
             if (!redemption.count) redemption = s7tv_JSONDictionaryForKeys(data, @[@"event"]);
             if (!redemption.count) redemption = data;
             S7TVChatMessage *message =
-                s7tv_channelPointMessageFromAutomaticRedemption(redemption);
+                s7tv_channelPointMessageFromAutomaticRedemption(redemption, providers);
             if (message) [messages addObject:message];
             return;
         }
@@ -1237,7 +1238,7 @@ static void s7tv_collectChannelPointMessages(id object,
             s7tv_JSONStringForKeys(dictionary, @[@"redeemed_at", @"redeemedAt"]).length > 0;
         if (isDirectAutomaticEvent) {
             S7TVChatMessage *message =
-                s7tv_channelPointMessageFromAutomaticRedemption(dictionary);
+                s7tv_channelPointMessageFromAutomaticRedemption(dictionary, providers);
             if (message) [messages addObject:message];
             return;
         }
@@ -1253,21 +1254,21 @@ static void s7tv_collectChannelPointMessages(id object,
                 id nested = nestedData.length
                     ? [NSJSONSerialization JSONObjectWithData:nestedData options:0 error:nil]
                     : nil;
-                if (nested) s7tv_collectChannelPointMessages(nested, messages);
+                if (nested) s7tv_collectChannelPointMessages(nested, messages, providers);
             } else if ([value isKindOfClass:[NSDictionary class]] ||
                        [value isKindOfClass:[NSArray class]]) {
-                s7tv_collectChannelPointMessages(value, messages);
+                s7tv_collectChannelPointMessages(value, messages, providers);
             }
         }];
     } else if ([object isKindOfClass:[NSArray class]]) {
         for (id value in (NSArray *)object) {
-            s7tv_collectChannelPointMessages(value, messages);
+            s7tv_collectChannelPointMessages(value, messages, providers);
         }
     }
 }
 
 NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
-    NSString *text) {
+    NSString *text, NSArray<id<S7TVEmoteProvider>> *providers) {
     NSString *lower = text.lowercaseString;
     BOOL containsCustomRedemption = [lower containsString:@"reward-redeemed"] ||
                                     [lower containsString:@"reward_redeemed"];
@@ -1281,7 +1282,7 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
         : nil;
     if (!root) return @[];
     NSMutableArray<S7TVChatMessage *> *messages = [NSMutableArray array];
-    s7tv_collectChannelPointMessages(root, messages);
+    s7tv_collectChannelPointMessages(root, messages, providers);
     return messages;
 }
 

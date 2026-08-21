@@ -1963,13 +1963,16 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
     UIFont *font = [UIFont systemFontOfSize:cfg.messageFontSize];
     UIColor *color = [UIColor colorWithWhite:0.85 alpha:1.0];
+    NSString *title = info.titleLocalizationKey.length
+        ? L(info.titleLocalizationKey)
+        : (info.title ?: @"");
     NSString *header = nil;
     if (info.isUserInputRequired) {
-        header = info.title ?: @"";
+        header = [NSString stringWithFormat:L(@"chat_channel_points_used_format"), title];
     } else {
         NSString *displayName = msg.authorDisplayName.length ? msg.authorDisplayName : @"???";
         header = [NSString stringWithFormat:L(@"chat_channel_points_redeemed_format"),
-                                               displayName, info.title ?: @""];
+                                               displayName, title];
     }
     [result appendAttributedString:[[NSAttributedString alloc]
         initWithString:header

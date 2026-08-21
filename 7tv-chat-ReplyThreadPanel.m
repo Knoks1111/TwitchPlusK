@@ -237,6 +237,12 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 
 @interface S7TVReplyThreadPanel ()
 @property (nonatomic, weak) UIView *containerView;
+// Contraintes externes du panneau complet. Comme pour la barre autonome,
+// son bas est relié directement au haut de la vraie saisie Twitch : aucun
+// recalcul ponctuel de frame quand le clavier ou la hauteur du champ change.
+@property (nonatomic, strong) NSLayoutConstraint *containerHeightConstraint;
+@property (nonatomic, copy) NSArray<NSLayoutConstraint *> *containerPositionConstraints;
+@property (nonatomic, weak) UIView *containerInputAnchorView;
 // Référence gardée pour rafraîchir le texte à chaque ouverture (voir
 // s7tv_closeTapped... non, voir showForThreadRootID:) — sans ça, le titre
 // restait figé dans la langue active AU MOMENT de la création du panneau
@@ -401,11 +407,41 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     [window bringSubviewToFront:self.replyTargetBarView];
 }
 
+- (void)s7tv_updateContainerPositionConstraintsInWindow:(UIWindow *)window {
+    UIView *container = self.containerView;
+    if (!container || !window) return;
+
+    UIView *inputView = s7tv_findChatInputView();
+    if (inputView.window != window) inputView = nil;
+    if (self.containerPositionConstraints.count > 0 &&
+        self.containerInputAnchorView == inputView) return;
+
+    [NSLayoutConstraint deactivateConstraints:self.containerPositionConstraints ?: @[]];
+    self.containerInputAnchorView = inputView;
+    NSLayoutYAxisAnchor *bottomAnchor = inputView
+        ? inputView.topAnchor
+        : window.safeAreaLayoutGuide.bottomAnchor;
+    self.containerPositionConstraints = @[
+        [container.leadingAnchor constraintEqualToAnchor:window.leadingAnchor],
+        [container.trailingAnchor constraintEqualToAnchor:window.trailingAnchor],
+        [container.bottomAnchor constraintEqualToAnchor:bottomAnchor],
+    ];
+    [NSLayoutConstraint activateConstraints:self.containerPositionConstraints];
+}
+
 - (void)s7tv_ensureContainerInWindow:(UIWindow *)window {
-    if (self.containerView.window == window) return;
+    if (self.containerView.window == window) {
+        [self s7tv_updateContainerPositionConstraintsInWindow:window];
+        return;
+    }
+    [NSLayoutConstraint deactivateConstraints:self.containerPositionConstraints ?: @[]];
+    self.containerPositionConstraints = nil;
+    self.containerHeightConstraint = nil;
+    self.containerInputAnchorView = nil;
     [self.containerView removeFromSuperview];
 
     UIView *container = [[UIView alloc] init];
+    container.translatesAutoresizingMaskIntoConstraints = NO;
     container.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0]; // opaque (pas 0.97) : évite tout effet de transparence qui laissait deviner le chat derrière
     container.layer.cornerRadius = 14;
     container.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
@@ -413,6 +449,13 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     container.hidden = YES;
     [window addSubview:container];
     self.containerView = container;
+    CGFloat initialHeight = kS7TVReplyThreadTitleHeight +
+        kS7TVReplyThreadSeparatorHeight * 2 +
+        kS7TVReplyThreadBottomPadding + 44.0;
+    self.containerHeightConstraint =
+        [container.heightAnchor constraintEqualToConstant:initialHeight];
+    self.containerHeightConstraint.active = YES;
+    [self s7tv_updateContainerPositionConstraintsInWindow:window];
 
     UIImageView *titleIcon = [[UIImageView alloc] init];
     UIImageSymbolConfiguration *titleIconConfig =
@@ -644,13 +687,12 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     [self s7tv_reloadThreadMessagesWithCompletion:nil];
 }
 
-// Calcule les hauteurs réelles (racine épinglée + réponses) et positionne le
-// panneau juste au-dessus de la VRAIE barre de saisie Twitch
-// (s7tv_findChatInputView, déjà utilisée ailleurs dans ce fichier — même
-// technique que le fake chat du picker dans 7tv-picker-controler.m).
-// Erreur précédente : ancrer sur window.bounds.size.height (bas brut de
-// l'écran) plaçait le panneau SOUS la barre de saisie au lieu d'au-dessus.
+// Calcule les hauteurs réelles (racine épinglée + réponses). La position du
+// panneau est désormais assurée en continu par une contrainte vers la VRAIE
+// barre de saisie Twitch (voir s7tv_updateContainerPositionConstraints...),
+// et non plus par une frame figée calculée ici.
 - (void)s7tv_layoutPanelContentInWindow:(UIWindow *)window {
+    [self s7tv_updateContainerPositionConstraintsInWindow:window];
     CGFloat width = window.bounds.size.width;
 
     UIView *inputView = s7tv_findChatInputView();
@@ -693,7 +735,13 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     CGFloat totalHeight = chromeHeight + rootHeight + repliesHeight;
     totalHeight = MIN(MAX(totalHeight, chromeHeight + 44), maxTotalHeight);
 
-    self.containerView.frame = CGRectMake(0, inputTopY - totalHeight, width, totalHeight);
+    // La position verticale n'est plus écrite ici : bottomAnchor suit en
+    // permanence inputView.topAnchor. Seule la hauteur calculée du contenu
+    // change, donc l'ouverture du clavier et l'agrandissement du champ ne
+    // peuvent plus désynchroniser le panneau de la chat box.
+    self.containerHeightConstraint.constant = totalHeight;
+    [self.containerView setNeedsLayout];
+    [self.containerView layoutIfNeeded];
 }
 
 - (void)showForThreadRootID:(NSString *)threadRootID tappedMessageID:(NSString *)tappedMessageID {

@@ -1,7 +1,7 @@
 /*
  * 7tv-chat-ReplyThreadPanel.h
  *
- * Panneau "Fil" (réponses) — voir 7tv-chat-ReplyThreadPanel.m pours le détail.
+ * Panneau "Fil" (réponses) — voir 7tv-chat-ReplyThreadPanel.m pour le détail.
  * Extrait de TweakSevenTV.m (voir migration-panneau-fil.md).
  */
 

@@ -40,9 +40,10 @@ extern NSString *const S7TVChatCustomToggleDidChangeNotification;
 // ============================================================
 // Cherche l'instance actuellement affichée de Twitch.ChatInputView (tous
 // écrans/fenêtres connectés confondus). Utilisée par le système de channel
-// points autoclaim ET par S7TVReplyThreadPanel (voir
-// 7tv-chat-ReplyThreadPanel.m) pour le positionnement du panneau au-dessus
-// de la barre de saisie et l'insertion/retrait de mention.
+// points autoclaim (voir 7tv-system-NativeBehaviorHooks.m) ET par
+// S7TVReplyThreadPanel (voir 7tv-chat-ReplyThreadPanel.m) pour le
+// positionnement du panneau au-dessus de la barre de saisie et
+// l'insertion/retrait de mention.
 UIView *s7tv_findChatInputView(void);
 
 // Retourne la SevenTVChatCustomView actuellement montée à l'écran (chat
@@ -52,6 +53,20 @@ UIView *s7tv_findChatInputView(void);
 // Utilisée par S7TVReplyThreadPanel (voir 7tv-chat-ReplyThreadPanel.m) pour
 // retrouver la window hôte.
 SevenTVChatCustomView *s7tv_activeChatCustomView(void);
+
+// Recherche récursive d'une clé dans un JSON déjà parsé (NSDictionary/
+// NSArray imbriqués). `*found` distingue "clé absente" de "clé présente
+// mais valant null". Utilitaire générique utilisé par le parsing GQL/PubSub
+// resté dans TweakSevenTV.m ET par le module Channel Points (voir
+// 7tv-system-NativeBehaviorHooks.m).
+id s7tv_findValueForKeyRecursive(id json, NSString *key, BOOL *found);
+
+// Helper swizzle partagé par tout le tweak (échange les implémentations de
+// `original` et `swizzled` entre sourceClass et targetClass). Utilisé par
+// TweakSevenTV.m ET par le module verrou d'orientation (voir
+// 7tv-system-NativeBehaviorHooks.m) pour installer ses propres swizzles
+// UIApplication/UIViewController à la demande, au premier lock.
+void s7tv_swizzle(Class targetClass, Class sourceClass, SEL original, SEL swizzled);
 
 
 // ============================================================

@@ -12,9 +12,10 @@
 // Le picker peut afficher plus de 24 emotes animées distinctes en même temps,
 // auxquelles s'ajoutent celles du chat encore visible derrière lui. La limite
 // précédente gelait donc certaines cellules pourtant durablement à l'écran.
-// 64 couvre confortablement les deux vues ; le mode scroll reste borné à 16
-// plus bas afin de conserver la fluidité du défilement.
-static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 64;
+// Les observateurs sont strictement liés aux cellules réellement visibles et
+// retirés dans didEndDisplayingCell. On peut donc couvrir tout le picker + le
+// chat derrière sans geler arbitrairement une cellule encore à l'écran.
+static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 128;
 static const NSUInteger kS7TVMaxRegisteredFrameSets = 32;
 static const NSUInteger kS7TVMaxRegisteredFramesCost = 48 * 1024 * 1024;
 
@@ -67,8 +68,6 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 // l'observateur, filet de sécurité en plus de removeObserver: explicite).
 @property (nonatomic, strong) NSMapTable<id, NSMutableSet<NSString *> *> *keysByObserver;
 @property (nonatomic, strong) NSMapTable<id, dispatch_block_t> *redrawByObserver;
-@property (nonatomic, assign) BOOL scrollingPerformanceMode;
-@property (nonatomic, assign) BOOL scrollingTickPhase;
 - (void)s7tv_pruneInactiveFrameSetsPreservingKey:(NSString *)protectedKey;
 - (void)s7tv_pruneEmptyObserverKeys;
 @end
@@ -214,8 +213,9 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 
 - (void)setScrollingPerformanceMode:(BOOL)enabled {
     NSAssert([NSThread isMainThread], @"SevenTVEmoteAnimationEngine: main thread uniquement");
-    _scrollingPerformanceMode = enabled;
-    self.scrollingTickPhase = NO;
+    // Conservé comme point d'entrée du picker. La visibilité stricte des
+    // cellules remplace désormais le throttle artificiel pendant le scroll.
+    (void)enabled;
 }
 
 - (void)clearAllCachedFrames {
@@ -319,13 +319,6 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     }
 
     NSTimeInterval elapsedStep = link.duration;
-    if (self.scrollingPerformanceMode) {
-        self.scrollingTickPhase = !self.scrollingTickPhase;
-        if (!self.scrollingTickPhase) return;
-        // Un tick sur deux, mais deux intervalles comptabilisés : l'animation
-        // garde sa vitesse normale tout en divisant les redraws par deux.
-        elapsedStep *= 2.0;
-    }
 
     // Throttle : au-delà de maxSimultaneousAnimations clés actives, les plus
     // anciennes (firstSeenAt le plus petit) gèlent — jamais retirées, juste
@@ -333,9 +326,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     // par le throttle lui-même.
     NSArray<NSString *> *activeKeys = self.observersByKey.allKeys;
     NSSet<NSString *> *frozenSet = nil;
-    NSInteger activeLimit = self.scrollingPerformanceMode
-        ? MIN(self.maxSimultaneousAnimations, 16)
-        : self.maxSimultaneousAnimations;
+    NSInteger activeLimit = self.maxSimultaneousAnimations;
     if (activeKeys.count > activeLimit) {
         NSArray<NSString *> *sortedByAge = [activeKeys sortedArrayUsingComparator:
             ^NSComparisonResult(NSString *a, NSString *b) {

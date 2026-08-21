@@ -86,9 +86,9 @@
 @property (nonatomic, weak) UIView    *pickerTabIndicatorView;       // pastille violette qui glisse entre les 3 boutons
 @property (nonatomic, weak) UIView    *pickerSearchCapsuleView;      // bas, pleine largeur (recherche)
 @property (nonatomic, weak) UIButton  *pickerSearchClearBtn;         // petite croix à droite du champ, visible si texte non vide
-// Pendant un drag/deceleration, les miniatures continuent de charger. Les
-// animations déjà décodées restent actives via le mode allégé du moteur ; une
-// nouvelle animation ne part en décodage qu'après 80 ms de visibilité réelle.
+// Pendant un drag/deceleration, les miniatures continuent de charger et chaque
+// cellule visible demande immédiatement une preview animée annulable. Dès
+// qu'elle sort de l'écran, didEndDisplayingCell coupe observation et décodage.
 @property (nonatomic, assign) BOOL pickerScrollInProgress;
 
 // ── Avatar de chaîne (bouton "Chaîne" de la capsule sous-choix) ────────────
@@ -1819,6 +1819,8 @@ static CGFloat S7TVRefCols(void) {
     // prepareForReuse. On coupe donc ici l'ancienne observation, exactement
     // comme le chat custom le fait avant son willDisplayCell.
     [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:cell];
+    [cell.animationFrameRequest cancel];
+    cell.animationFrameRequest = nil;
     cell.imageLoadGeneration += 1;
     cell.animationGeneration += 1;
     cell.wantsAnimation = NO;
@@ -1927,14 +1929,28 @@ static CGFloat S7TVRefCols(void) {
     if (staticCached) cell.emoteImageView.image = staticCached;
 
     __weak S7TVEmotePickerCell *weakCellForLoad = cell;
-    [cache framesForResolvedEmote:resolved completion:^(S7TVEmoteAnimatedFrames * _Nullable frames) {
-        if (!frames) return;
+    void (^applyFrames)(S7TVEmoteAnimatedFrames *) = ^(S7TVEmoteAnimatedFrames *frames) {
+        if (!frames.images.count) return;
         S7TVEmotePickerCell *strongCell = weakCellForLoad;
         if (!strongCell || !cellIsStillActive()) return;
         [engine registerFrames:frames forKey:key];
         [engine addObserver:strongCell keys:[NSSet setWithObject:key] redraw:redraw];
         redraw();
-    }];
+    };
+
+    cell.animationFrameRequest = [cache framesForResolvedEmote:resolved
+        preview:^(S7TVEmoteAnimatedFrames *previewFrames) {
+            // Boucle légère (12 frames max) : rend l'animation visible sans
+            // attendre le décodage complet du WebP.
+            applyFrames(previewFrames);
+        }
+        completion:^(S7TVEmoteAnimatedFrames * _Nullable frames) {
+            S7TVEmotePickerCell *strongCell = weakCellForLoad;
+            if (frames) applyFrames(frames);
+            if (strongCell && cellIsStillActive()) {
+                strongCell.animationFrameRequest = nil;
+            }
+        }];
     return YES;
 }
 
@@ -1986,6 +2002,7 @@ static CGFloat S7TVRefCols(void) {
 - (void)_s7tv_scheduleAnimationForPickerCell:(S7TVEmotePickerCell *)cell
                                   atIndexPath:(NSIndexPath *)indexPath {
     if (!cell.wantsAnimation || self.emoteCollectionView.hidden) return;
+    if (cell.animationFrameRequest) return; // décodage courant déjà lié à cette cellule
 
     NSString *key = [cell.currentEmoteKey copy];
     if (!key.length) return;
@@ -2008,14 +2025,10 @@ static CGFloat S7TVRefCols(void) {
                                                           allowDecode:NO];
     if (attachedFromCache) return;
 
-    // Pour une animation encore inconnue, 80 ms de présence réelle pendant
-    // un scroll suffisent pour commencer son décodage. Les cellules parties
-    // avant ce délai invalident leur génération dans didEndDisplayingCell et
-    // ne créent donc aucun travail inutile. Hors scroll, le délai est réduit
-    // à une frame afin que l'animation démarre nettement plus vite.
-    NSTimeInterval delay = self.pickerScrollInProgress ? 0.08 : 0.016;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
+    // Les requêtes sont désormais annulables dans didEndDisplayingCell : plus
+    // besoin d'attendre 80/120 ms pour filtrer un flick. Toute cellule visible
+    // demande sa preview animée dès le prochain passage du run loop.
+    dispatch_async(dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         S7TVEmotePickerCell *strongCell = weakCell;
         if (!strongSelf || !strongCell) return;
@@ -2037,6 +2050,8 @@ static CGFloat S7TVRefCols(void) {
 
 - (void)_s7tv_deactivateVisiblePickerAnimations {
     for (S7TVEmotePickerCell *cell in self.emoteCollectionView.visibleCells) {
+        [cell.animationFrameRequest cancel];
+        cell.animationFrameRequest = nil;
         cell.imageLoadGeneration += 1;
         cell.animationGeneration += 1;
         [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:cell];
@@ -2070,6 +2085,8 @@ static CGFloat S7TVRefCols(void) {
   forItemAtIndexPath:(NSIndexPath *)indexPath {
     if (collectionView != self.emoteCollectionView) return;
     S7TVEmotePickerCell *pickerCell = (S7TVEmotePickerCell *)cell;
+    [pickerCell.animationFrameRequest cancel];
+    pickerCell.animationFrameRequest = nil;
     pickerCell.imageLoadGeneration += 1;
     pickerCell.animationGeneration += 1;
     [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:pickerCell];

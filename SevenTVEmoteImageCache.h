@@ -17,14 +17,21 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// Résultat du décodage WebP animé complet (toutes les frames, pas juste la
-// 1ère) — voir SevenTVEmoteAnimationEngine pour la lecture/synchro de ces
-// frames à l'affichage. images.count == durations.count, même index.
+// Résultat d'un décodage WebP animé, preview légère ou boucle complète — voir
+// SevenTVEmoteAnimationEngine pour la lecture/synchro de ces frames à
+// l'affichage. images.count == durations.count, même index.
 @interface S7TVEmoteAnimatedFrames : NSObject
 @property (nonatomic, copy) NSArray<UIImage *> *images;
 // Durée de chaque frame en secondes (index correspondant à images) — issue
 // des métadonnées WebP (delay time), 0.1s de filet de sécurité si absente.
 @property (nonatomic, copy) NSArray<NSNumber *> *durations;
+@end
+
+// Jeton d'une demande de frames liée à une vue. Le picker l'annule dès que
+// sa cellule quitte l'écran ; le téléchargement peut rester partagé avec le
+// chemin statique, mais aucun décodage animé inutile n'est alors poursuivi.
+@interface S7TVEmoteFrameRequest : NSObject
+- (void)cancel;
 @end
 
 
@@ -50,9 +57,9 @@ NS_ASSUME_NONNULL_BEGIN
 //
 // Ne s'applique qu'aux emotes avec emote.isAnimated == YES ; retourne nil
 // immédiatement pour une emote statique (utiliser imageForResolvedEmote:
-// dans ce cas). Le décodage se fait hors thread principal (ImageIO). Pendant
-// le scroll du picker, la file repasse temporairement à un seul travail ; une
-// fois immobile, deux emotes peuvent être décodées en parallèle.
+// dans ce cas). Le décodage se fait hors thread principal (ImageIO). Les
+// previews prioritaires du picker et les boucles complètes utilisent deux
+// files distinctes afin qu'une longue animation ne bloque pas les suivantes.
 //
 // Cache-first, synchrone, main thread — même rôle que
 // cachedImageForResolvedEmote: pour le chemin statique : évite un
@@ -67,14 +74,22 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)framesForResolvedEmote:(id<S7TVResolvedEmote>)emote
                      completion:(void (^)(S7TVEmoteAnimatedFrames * _Nullable frames))completion;
 
+// Variante annulable utilisée par le picker. preview reçoit rapidement une
+// boucle légère dès les premières frames décodées ; completion reçoit ensuite
+// la boucle complète. Les deux callbacks s'exécutent sur le main thread et ne
+// sont plus appelés après cancel.
+- (S7TVEmoteFrameRequest *)framesForResolvedEmote:(id<S7TVResolvedEmote>)emote
+                                          preview:(void (^ _Nullable)(S7TVEmoteAnimatedFrames *frames))preview
+                                       completion:(void (^)(S7TVEmoteAnimatedFrames * _Nullable frames))completion;
+
 // Suspend exceptionnellement les opérations de décodage encore en attente.
 // Le picker ne gèle plus ces files pendant le scroll : ses cellules filtrent
 // elles-mêmes les travaux selon leur visibilité, ce qui permet aux miniatures
 // visibles et aux animations du chat de continuer à progresser.
 - (void)setDecodingSuspended:(BOOL)suspended;
 
-// Ajuste uniquement la concurrence des frames animées : 1 pendant le scroll
-// pour préserver UICollectionView, 2 au repos pour vider rapidement la file.
+// Conserve les files de preview et de décodage bornées pendant le scroll.
+// Les previews annulables continuent afin que chaque cellule visible s'anime.
 - (void)setScrollingPerformanceMode:(BOOL)enabled;
 
 // Vide les images statiques, frames animées et travaux en attente. Les

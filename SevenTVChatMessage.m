@@ -190,6 +190,60 @@
 
 #pragma mark - Écriture
 
+// Doit être appelé sous une barrière storeQueue. Centralise l'indexation afin
+// que l'ingestion IRC normale et la reconstruction historique ne puissent pas
+// diverger (couleurs, utilisateurs et fils de discussion compris).
+- (BOOL)s7tv_appendMessageIfUnique:(S7TVChatMessage *)message {
+    if (!message.messageID.length || self.messagesByID[message.messageID]) return NO;
+
+    if (message.authorColor && message.authorDisplayName.length) {
+        [[SevenTVChatUserColorRegistry sharedRegistry]
+            registerColor:message.authorColor forUsername:message.authorDisplayName];
+    }
+
+    [self.orderedMessages addObject:message];
+    self.messagesByID[message.messageID] = message;
+
+    if (message.authorUserID.length) {
+        NSMutableSet<NSString *> *set = self.messageIDsByUserID[message.authorUserID];
+        if (!set) {
+            set = [NSMutableSet set];
+            self.messageIDsByUserID[message.authorUserID] = set;
+        }
+        [set addObject:message.messageID];
+    }
+
+    if (message.replyThreadRootID.length) {
+        NSMutableArray<NSString *> *replies = self.replyIDsByThreadRootID[message.replyThreadRootID];
+        if (!replies) {
+            replies = [NSMutableArray array];
+            self.replyIDsByThreadRootID[message.replyThreadRootID] = replies;
+        }
+        [replies addObject:message.messageID];
+        S7TVChatMessage *root = self.messagesByID[message.replyThreadRootID];
+        root.replyCount += 1;
+    }
+    return YES;
+}
+
+- (void)s7tv_clearAllMessagesAndIndexes {
+    [self.orderedMessages removeAllObjects];
+    [self.messagesByID removeAllObjects];
+    [self.messageIDsByUserID removeAllObjects];
+    [self.replyIDsByThreadRootID removeAllObjects];
+}
+
+- (void)s7tv_rebuildWithMessages:(NSArray<S7TVChatMessage *> *)messages {
+    [self s7tv_clearAllMessagesAndIndexes];
+    // Les instances live peuvent déjà avoir un replyCount calculé. Il faut
+    // repartir de zéro avant de rejouer l'indexation du lot fusionné.
+    for (S7TVChatMessage *message in messages) message.replyCount = 0;
+    for (S7TVChatMessage *message in messages) {
+        [self s7tv_appendMessageIfUnique:message];
+    }
+    [self s7tv_purgeIfNeeded];
+}
+
 - (void)addMessage:(S7TVChatMessage *)message {
     if (!message.messageID.length) {
         [[SevenTVManager sharedManager]
@@ -197,54 +251,7 @@
         return;
     }
     dispatch_barrier_async(self.storeQueue, ^{
-        // Doublon (ex: re-livraison IRC) → no-op plutôt que dupliquer à l'écran.
-        if (self.messagesByID[message.messageID]) return;
-
-        // Alimente le registre pseudo -> couleur (voir
-        // SevenTVChatUserColorRegistry ci-dessus) AVANT tout autre traitement, pour
-        // que la couleur de CET auteur soit déjà disponible si un message
-        // suivant (même dans le même burst IRC) le mentionne.
-        if (message.authorColor && message.authorDisplayName.length) {
-            [[SevenTVChatUserColorRegistry sharedRegistry]
-                registerColor:message.authorColor forUsername:message.authorDisplayName];
-        }
-
-        [self.orderedMessages addObject:message];
-        self.messagesByID[message.messageID] = message;
-
-        if (message.authorUserID.length) {
-            NSMutableSet<NSString *> *set = self.messageIDsByUserID[message.authorUserID];
-            if (!set) {
-                set = [NSMutableSet set];
-                self.messageIDsByUserID[message.authorUserID] = set;
-            }
-            [set addObject:message.messageID];
-        }
-
-        // ── Fils de discussion ──────────────────────────────────────────
-        // Toujours indexé sur replyThreadRootID (la racine), jamais sur
-        // replyParentMessageID (le parent immédiat) — voir le commentaire
-        // sur replyThreadRootID dans SevenTVChatMessage.h : indexer sur le
-        // parent immédiat fragmenterait un même fil dès qu'un message
-        // répond à une réponse plutôt qu'au tout premier message.
-        if (message.replyThreadRootID.length) {
-            NSMutableArray<NSString *> *replies = self.replyIDsByThreadRootID[message.replyThreadRootID];
-            if (!replies) {
-                replies = [NSMutableArray array];
-                self.replyIDsByThreadRootID[message.replyThreadRootID] = replies;
-            }
-            [replies addObject:message.messageID];
-
-            // Le message racine peut être encore en mémoire (cas courant) —
-            // si oui, on lui incrémente replyCount pour l'affichage "X
-            // réponses" sous le message racine. S'il n'est plus en mémoire
-            // (purgé), rien à mettre à jour ici : le panneau Fil retombe sur
-            // replyParentUsername/replyParentBodyPreview de chaque réponse.
-            S7TVChatMessage *root = self.messagesByID[message.replyThreadRootID];
-            root.replyCount += 1;
-        }
-
-        [self s7tv_purgeIfNeeded];
+        if ([self s7tv_appendMessageIfUnique:message]) [self s7tv_purgeIfNeeded];
     });
 }
 
@@ -363,6 +370,8 @@
 - (void)markAllMessagesDeletedWithCompletion:(void (^)(void))completion {
     dispatch_barrier_async(self.storeQueue, ^{
         for (S7TVChatMessage *msg in self.orderedMessages) {
+            if (msg.type == S7TVChatMessageTypeHistoryWelcome ||
+                msg.type == S7TVChatMessageTypeHistoryDivider) continue;
             msg.state = S7TVChatMessageStateDeletedCollapsed;
             msg.moderationKind = S7TVChatModerationKindChatCleared;
             msg.moderationDurationSeconds = 0;
@@ -373,10 +382,40 @@
 
 - (void)removeAllMessages {
     dispatch_barrier_async(self.storeQueue, ^{
-        [self.orderedMessages removeAllObjects];
-        [self.messagesByID removeAllObjects];
-        [self.messageIDsByUserID removeAllObjects];
-        [self.replyIDsByThreadRootID removeAllObjects];
+        [self s7tv_clearAllMessagesAndIndexes];
+    });
+}
+
+- (void)replaceAllMessages:(NSArray<S7TVChatMessage *> *)messages
+                completion:(void (^)(void))completion {
+    NSArray<S7TVChatMessage *> *snapshot = [messages copy] ?: @[];
+    dispatch_barrier_async(self.storeQueue, ^{
+        [self s7tv_rebuildWithMessages:snapshot];
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+    });
+}
+
+- (void)prependHistoricalMessages:(NSArray<S7TVChatMessage *> *)messages
+                        completion:(void (^)(void))completion {
+    NSArray<S7TVChatMessage *> *historical = [messages copy] ?: @[];
+    dispatch_barrier_async(self.storeQueue, ^{
+        NSArray<S7TVChatMessage *> *existing = [self.orderedMessages copy];
+        NSMutableSet<NSString *> *existingIDs = [NSMutableSet setWithCapacity:existing.count];
+        for (S7TVChatMessage *message in existing) {
+            if (message.messageID.length) [existingIDs addObject:message.messageID];
+        }
+        NSMutableArray<S7TVChatMessage *> *merged = [NSMutableArray arrayWithCapacity:
+            historical.count + existing.count];
+        for (S7TVChatMessage *message in historical) {
+            // La copie live gagne toujours : elle peut déjà avoir reçu un
+            // CLEARMSG/timeout pendant que la requête historique finissait.
+            if (message.messageID.length && ![existingIDs containsObject:message.messageID]) {
+                [merged addObject:message];
+            }
+        }
+        [merged addObjectsFromArray:existing];
+        [self s7tv_rebuildWithMessages:merged];
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
 }
 

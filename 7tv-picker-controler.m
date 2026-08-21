@@ -1587,9 +1587,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     container.layer.cornerRadius = 12;
     container.clipsToBounds = YES;
     container.hidden = YES;
-    // Pure preview : ne doit jamais intercepter les touches destinées au vrai
-    // chat / au picker en dessous, même s'il le recouvre visuellement.
-    container.userInteractionEnabled = NO;
+    // La preview est interactive et ce conteneur opaque doit aussi absorber
+    // toute touche dans ses marges : aucun tap ne traverse vers le vrai chat,
+    // le lecteur ou une autre vue Twitch placée derrière.
+    container.userInteractionEnabled = YES;
 
     SevenTVChatCustomView *chatView = self.sizesPanel.fakeChatView;
     chatView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;

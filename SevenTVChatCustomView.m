@@ -930,7 +930,12 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 - (void)s7tv_refreshEmotePreviewFavoriteState {
     NSString *emoteID = self.previewedEmoteToken.providerEmoteID;
     BOOL favorited = [[SevenTVManager sharedManager] isEmoteFavorited:emoteID];
-    self.emotePreviewFavoriteButton.selected = favorited;
+    UIImageSymbolConfiguration *starConfig =
+        [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightMedium];
+    NSString *symbolName = favorited ? @"star.fill" : @"star";
+    [self.emotePreviewFavoriteButton
+        setImage:[UIImage systemImageNamed:symbolName withConfiguration:starConfig]
+        forState:UIControlStateNormal];
     self.emotePreviewFavoriteButton.accessibilityLabel = favorited
         ? L(@"chat_emote_remove_favorite") : L(@"chat_emote_add_favorite");
 }
@@ -1010,15 +1015,8 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
     UIButton *favoriteButton = [UIButton buttonWithType:UIButtonTypeSystem];
     favoriteButton.translatesAutoresizingMaskIntoConstraints = NO;
-    UIImageSymbolConfiguration *starConfig =
-        [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold];
-    [favoriteButton setImage:[UIImage systemImageNamed:@"star" withConfiguration:starConfig]
-                    forState:UIControlStateNormal];
-    [favoriteButton setImage:[UIImage systemImageNamed:@"star.fill" withConfiguration:starConfig]
-                    forState:UIControlStateSelected];
     favoriteButton.tintColor = [UIColor colorWithRed:0.65 green:0.45 blue:1.0 alpha:1.0];
-    favoriteButton.backgroundColor = [UIColor colorWithRed:0.65 green:0.45 blue:1.0 alpha:0.12];
-    favoriteButton.layer.cornerRadius = 15.0;
+    favoriteButton.backgroundColor = [UIColor clearColor];
     [favoriteButton addTarget:self action:@selector(s7tv_togglePreviewedEmoteFavorite)
              forControlEvents:UIControlEventTouchUpInside];
     [card addSubview:favoriteButton];
@@ -1036,8 +1034,8 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
         [favoriteButton.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10],
         [favoriteButton.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-8],
-        [favoriteButton.widthAnchor constraintEqualToConstant:30],
-        [favoriteButton.heightAnchor constraintEqualToConstant:30],
+        [favoriteButton.widthAnchor constraintEqualToConstant:26],
+        [favoriteButton.heightAnchor constraintEqualToConstant:26],
     ]];
 
     id<S7TVResolvedEmote> emote = token.resolvedEmote;

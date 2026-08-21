@@ -19,6 +19,7 @@
 #import "SevenTVLogo.h"
 #import "SevenTVChatAppearanceConfig.h"
 #import "7tv-localization.h"
+#import <objc/runtime.h>
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names";
 
@@ -346,6 +347,153 @@ static void S7TVSetBool(NSString *key, BOOL val) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Intégration dans les paramètres Twitch natifs
+// ============================================================
+
+static NSInteger s7tv_settingsOriginalSection(NSInteger section) {
+    return section - 1;
+}
+
+static NSInteger s7tv_settingsNumberOfSections(id self, SEL cmd, UITableView *tableView) {
+    SEL original = NSSelectorFromString(@"s7tv_numberOfSectionsInTableView:");
+    NSInteger (*implementation)(id, SEL, UITableView *) =
+        (NSInteger (*)(id, SEL, UITableView *))[self methodForSelector:original];
+    return implementation(self, original, tableView) + 1;
+}
+
+static NSInteger s7tv_settingsNumberOfRows(id self, SEL cmd, UITableView *tableView,
+                                            NSInteger section) {
+    if (section == 0) return 1;
+    SEL original = NSSelectorFromString(@"s7tv_tableView:numberOfRowsInSection:");
+    NSInteger (*implementation)(id, SEL, UITableView *, NSInteger) =
+        (NSInteger (*)(id, SEL, UITableView *, NSInteger))[self methodForSelector:original];
+    return implementation(self, original, tableView, s7tv_settingsOriginalSection(section));
+}
+
+static NSString *s7tv_settingsHeaderTitle(id self, SEL cmd, UITableView *tableView,
+                                           NSInteger section) {
+    if (section == 0) return nil;
+    SEL original = NSSelectorFromString(@"s7tv_tableView:titleForHeaderInSection:");
+    NSString *(*implementation)(id, SEL, UITableView *, NSInteger) =
+        (NSString *(*)(id, SEL, UITableView *, NSInteger))[self methodForSelector:original];
+    return implementation(self, original, tableView, s7tv_settingsOriginalSection(section));
+}
+
+static UIView *s7tv_settingsHeaderView(id self, SEL cmd, UITableView *tableView,
+                                        NSInteger section) {
+    if (section != 0) {
+        SEL original = NSSelectorFromString(@"s7tv_tableView:viewForHeaderInSection:");
+        UIView *(*implementation)(id, SEL, UITableView *, NSInteger) =
+            (UIView *(*)(id, SEL, UITableView *, NSInteger))[self methodForSelector:original];
+        return implementation(self, original, tableView, s7tv_settingsOriginalSection(section));
+    }
+
+    UIView *container = [UIView new];
+    NSData *logoData = [[NSData alloc]
+        initWithBase64EncodedString:kS7TVLogoBase64
+                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    UIImageView *logo = [UIImageView new];
+    if (logoData) logo.image = [UIImage imageWithData:logoData scale:2.0];
+    logo.contentMode = UIViewContentModeScaleAspectFit;
+    logo.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:logo];
+
+    UILabel *label = [UILabel new];
+    label.text = L(@"header_7tv_settings_caps");
+    label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
+    label.textColor = UIColor.secondaryLabelColor;
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [logo.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [logo.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
+        [logo.widthAnchor constraintEqualToConstant:26],
+        [logo.heightAnchor constraintEqualToConstant:19],
+        [label.leadingAnchor constraintEqualToAnchor:logo.trailingAnchor constant:6],
+        [label.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
+        [label.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+    ]];
+    return container;
+}
+
+static CGFloat s7tv_settingsHeaderHeight(id self, SEL cmd, UITableView *tableView,
+                                          NSInteger section) {
+    if (section == 0) return 38.0;
+    SEL original = NSSelectorFromString(@"s7tv_tableView:heightForHeaderInSection:");
+    CGFloat (*implementation)(id, SEL, UITableView *, NSInteger) =
+        (CGFloat (*)(id, SEL, UITableView *, NSInteger))[self methodForSelector:original];
+    return implementation(self, original, tableView, s7tv_settingsOriginalSection(section));
+}
+
+static UITableViewCell *s7tv_settingsCell(id self, SEL cmd, UITableView *tableView,
+                                          NSIndexPath *indexPath) {
+    if (indexPath.section != 0) {
+        NSIndexPath *originalIndexPath = [NSIndexPath indexPathForRow:indexPath.row
+            inSection:s7tv_settingsOriginalSection(indexPath.section)];
+        SEL original = NSSelectorFromString(@"s7tv_tableView:cellForRowAtIndexPath:");
+        UITableViewCell *(*implementation)(id, SEL, UITableView *, NSIndexPath *) =
+            (UITableViewCell *(*)(id, SEL, UITableView *, NSIndexPath *))
+                [self methodForSelector:original];
+        return implementation(self, original, tableView, originalIndexPath);
+    }
+
+    static NSString *reuseIdentifier = @"S7TVSettingsCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseIdentifier];
+    if (!cell) {
+        Class cellClass = NSClassFromString(@"Twitch.SettingsDisclosureCell")
+            ?: NSClassFromString(@"_TtC6Twitch22SettingsDisclosureCell");
+        if (cellClass) {
+            cell = [[cellClass alloc] initWithStyle:UITableViewCellStyleDefault
+                                    reuseIdentifier:reuseIdentifier];
+        }
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                           reuseIdentifier:reuseIdentifier];
+        }
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    cell.textLabel.text = L(@"title_7tv_settings");
+    cell.textLabel.numberOfLines = 0;
+    NSData *logoData = [[NSData alloc]
+        initWithBase64EncodedString:kS7TVLogoBase64
+                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    if (logoData) cell.imageView.image = [UIImage imageWithData:logoData scale:2.0];
+    return cell;
+}
+
+static void s7tv_settingsDidSelect(id self, SEL cmd, UITableView *tableView,
+                                    NSIndexPath *indexPath) {
+    if (indexPath.section != 0) {
+        NSIndexPath *originalIndexPath = [NSIndexPath indexPathForRow:indexPath.row
+            inSection:s7tv_settingsOriginalSection(indexPath.section)];
+        SEL original = NSSelectorFromString(@"s7tv_tableView:didSelectRowAtIndexPath:");
+        void (*implementation)(id, SEL, UITableView *, NSIndexPath *) =
+            (void (*)(id, SEL, UITableView *, NSIndexPath *))[self methodForSelector:original];
+        implementation(self, original, tableView, originalIndexPath);
+        return;
+    }
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    SevenTVSettingsController *controller = [SevenTVSettingsController new];
+    [((UIViewController *)self).navigationController pushViewController:controller animated:YES];
+    [[SevenTVManager sharedManager] log:@"✅ 7TV Settings ouvert depuis les paramètres Twitch"];
+}
+
+static void s7tv_settingsExchangeMethod(Class target, SEL originalSelector,
+                                         SEL replacementSelector, IMP replacement,
+                                         const char *types) {
+    Method inheritedMethod = class_getInstanceMethod(target, originalSelector);
+    if (!inheritedMethod) return;
+    class_addMethod(target, originalSelector, method_getImplementation(inheritedMethod),
+                    method_getTypeEncoding(inheritedMethod));
+    class_addMethod(target, replacementSelector, replacement, types);
+    Method originalMethod = class_getInstanceMethod(target, originalSelector);
+    Method replacementMethod = class_getInstanceMethod(target, replacementSelector);
+    if (originalMethod && replacementMethod) {
+        method_exchangeImplementations(originalMethod, replacementMethod);
+    }
+}
+
+// ============================================================
 // MARK: - SevenTVSettingsController  (Hub principal)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -355,6 +503,38 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 };
 
 @implementation SevenTVSettingsController
+
++ (void)installTwitchSettingsIntegration {
+    Class target = NSClassFromString(@"_TtC6Twitch25AccountMenuViewController");
+    if (!target) {
+        [[SevenTVManager sharedManager]
+            log:@"⚠️ _TtC6Twitch25AccountMenuViewController introuvable — swizzle ignoré"];
+        return;
+    }
+    s7tv_settingsExchangeMethod(target, @selector(numberOfSectionsInTableView:),
+        NSSelectorFromString(@"s7tv_numberOfSectionsInTableView:"),
+        (IMP)s7tv_settingsNumberOfSections, "q@:@");
+    s7tv_settingsExchangeMethod(target, @selector(tableView:numberOfRowsInSection:),
+        NSSelectorFromString(@"s7tv_tableView:numberOfRowsInSection:"),
+        (IMP)s7tv_settingsNumberOfRows, "q@:@q");
+    s7tv_settingsExchangeMethod(target, @selector(tableView:titleForHeaderInSection:),
+        NSSelectorFromString(@"s7tv_tableView:titleForHeaderInSection:"),
+        (IMP)s7tv_settingsHeaderTitle, "@@:@q");
+    s7tv_settingsExchangeMethod(target, @selector(tableView:viewForHeaderInSection:),
+        NSSelectorFromString(@"s7tv_tableView:viewForHeaderInSection:"),
+        (IMP)s7tv_settingsHeaderView, "@@:@q");
+    s7tv_settingsExchangeMethod(target, @selector(tableView:heightForHeaderInSection:),
+        NSSelectorFromString(@"s7tv_tableView:heightForHeaderInSection:"),
+        (IMP)s7tv_settingsHeaderHeight, "d@:@q");
+    s7tv_settingsExchangeMethod(target, @selector(tableView:cellForRowAtIndexPath:),
+        NSSelectorFromString(@"s7tv_tableView:cellForRowAtIndexPath:"),
+        (IMP)s7tv_settingsCell, "@@:@@");
+    s7tv_settingsExchangeMethod(target, @selector(tableView:didSelectRowAtIndexPath:),
+        NSSelectorFromString(@"s7tv_tableView:didSelectRowAtIndexPath:"),
+        (IMP)s7tv_settingsDidSelect, "v@:@@");
+    [[SevenTVManager sharedManager]
+        log:@"✅ AccountMenuViewController swizzlé — section 7TV Settings injectée"];
+}
 
 - (instancetype)init {
     // InsetGrouped = angles arrondis natifs iOS, identique aux paramètres Twitch

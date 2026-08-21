@@ -50,6 +50,17 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
 
 @implementation SevenTVBadgeProvider
 
++ (NSArray<NSString *> *)identifiersFromIRCTag:(NSString * _Nullable)tagValue {
+    if (!tagValue.length) return @[];
+    NSMutableArray<NSString *> *identifiers = [NSMutableArray array];
+    for (NSString *entry in [tagValue componentsSeparatedByString:@","]) {
+        if (entry.length && [entry containsString:@"/"]) {
+            [identifiers addObject:entry];
+        }
+    }
+    return identifiers;
+}
+
 + (instancetype)sharedProvider {
     static SevenTVBadgeProvider *instance = nil;
     static dispatch_once_t onceToken;

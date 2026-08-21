@@ -142,6 +142,18 @@ typedef NS_ENUM(NSInteger, S7TVChatMessageState) {
     S7TVChatMessageStateDeletedExpanded,    // contenu original ré-affiché, style atténué
 };
 
+// Cause de la suppression locale, conservée avec le message pour enrichir
+// le placeholder sans dépendre du texte IRC après coup. `durationSeconds`
+// n'est renseigné que pour un timeout ; un ban ciblé sans tag
+// `ban-duration` est permanent selon le protocole IRC Twitch.
+typedef NS_ENUM(NSInteger, S7TVChatModerationKind) {
+    S7TVChatModerationKindNone = 0,
+    S7TVChatModerationKindMessageDeleted,
+    S7TVChatModerationKindTimeout,
+    S7TVChatModerationKindPermanentBan,
+    S7TVChatModerationKindChatCleared,
+};
+
 
 // ============================================================
 // MARK: - Messages système (Phase 3 — sub / resub / gift sub)
@@ -215,6 +227,8 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 
 @property (nonatomic, assign) S7TVChatMessageType type;
 @property (nonatomic, assign) S7TVChatMessageState state;
+@property (nonatomic, assign) S7TVChatModerationKind moderationKind;
+@property (nonatomic, assign) NSInteger moderationDurationSeconds;
 
 // YES si le message vient d'un /me (CTCP ACTION en IRC, voir
 // s7tv_parsePRIVMSG dans TweakSevenTV.m qui déballe déjà le wrapper
@@ -319,6 +333,13 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 - (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID;
 
 - (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID
+                              completion:(void (^ _Nullable)(void))completion;
+
+// Variante enrichie utilisée par CLEARCHAT : propage la nature de la
+// sanction et sa durée à tous les messages concernés.
+- (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID
+                         moderationKind:(S7TVChatModerationKind)moderationKind
+                        durationSeconds:(NSInteger)durationSeconds
                               completion:(void (^ _Nullable)(void))completion;
 
 // Bascule .deletedCollapsed <-> .deletedExpanded (tap-to-reveal, Phase 5).

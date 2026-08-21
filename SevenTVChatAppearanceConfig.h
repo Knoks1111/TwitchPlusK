@@ -87,6 +87,13 @@ extern NSString *const S7TVChatAppearanceConfigDidChangeNotification;
 @property (nonatomic, assign) BOOL selfMentionHighlightEnabled;
 @property (nonatomic, strong) UIColor *selfMentionHighlightColor;
 
+// --- Messages supprimés / modération ---
+// Affiche la sanction IRC dans le placeholder replié (timeout avec durée
+// humaine, ou ban permanent). Le corps révélé est atténué sans toucher
+// au pseudo ni aux badges ; son opacité est réglable de 0.25 à 1.0.
+@property (nonatomic, assign) BOOL showModerationDetails;
+@property (nonatomic, assign) CGFloat deletedMessageTextOpacity;
+
 // --- Persistance ---
 // Recharge à chaud depuis NSUserDefaults (ex: après un changement dans un
 // futur écran de réglages custom — Phase 6). Les valeurs non trouvées en

@@ -78,6 +78,8 @@ static NSString *const kS7TVCfgPrimeColor              = @"s7tv_cfg_color_prime"
 static NSString *const kS7TVCfgGiftColor               = @"s7tv_cfg_color_gift";
 static NSString *const kS7TVCfgSelfMentionEnabled       = @"s7tv_cfg_self_mention_enabled";
 static NSString *const kS7TVCfgSelfMentionColor         = @"s7tv_cfg_color_self_mention";
+static NSString *const kS7TVCfgShowModerationDetails    = @"s7tv_cfg_show_moderation_details";
+static NSString *const kS7TVCfgDeletedMessageOpacity    = @"s7tv_cfg_deleted_message_opacity";
 
 static const CGFloat kDefaultEmote7TVSize          = 28.0;
 static const CGFloat kDefaultEmoteTwitchSize        = 28.0; // TODO mesure réelle
@@ -99,6 +101,7 @@ static const CGFloat kDefaultUsernameMessageSpacing = 4.0;  // TODO mesure réel
 // rendu (voir SevenTVChatCustomView.m et 7tv-picker-sizes.m), pas ici.
 static const CGFloat kDefaultEmoteVerticalOffset    = 0.0;
 static const NSInteger kDefaultEmote7TVResolution   = 2;
+static const CGFloat kDefaultDeletedMessageOpacity  = 0.58;
 
 
 @implementation SevenTVChatAppearanceConfig
@@ -137,6 +140,8 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     _giftAccentColor         = S7TVDefaultGiftColor();
     _selfMentionHighlightEnabled = YES;
     _selfMentionHighlightColor   = S7TVDefaultSelfMentionColor();
+    _showModerationDetails       = YES;
+    _deletedMessageTextOpacity   = kDefaultDeletedMessageOpacity;
 }
 
 #pragma mark - Persistance
@@ -182,6 +187,11 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     NSString *selfMentionHex = [prefs stringForKey:kS7TVCfgSelfMentionColor];
     UIColor *selfMentionColor = selfMentionHex ? S7TVColorFromHexString(selfMentionHex) : nil;
     if (selfMentionColor) _selfMentionHighlightColor = selfMentionColor;
+    if ([prefs objectForKey:kS7TVCfgShowModerationDetails] != nil)
+        _showModerationDetails = [prefs boolForKey:kS7TVCfgShowModerationDetails];
+    if ([prefs objectForKey:kS7TVCfgDeletedMessageOpacity] != nil)
+        _deletedMessageTextOpacity = MIN(1.0, MAX(0.25,
+            [prefs doubleForKey:kS7TVCfgDeletedMessageOpacity]));
 
     [[SevenTVManager sharedManager]
         log:@"[ChatCustom] 🏗 Config chargée — emote7TV=%.1f emoteTwitch=%.1f badge=%.1f "
@@ -209,6 +219,8 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     [prefs setObject:S7TVColorToHexString(self.giftAccentColor)     forKey:kS7TVCfgGiftColor];
     [prefs setBool:self.selfMentionHighlightEnabled forKey:kS7TVCfgSelfMentionEnabled];
     [prefs setObject:S7TVColorToHexString(self.selfMentionHighlightColor) forKey:kS7TVCfgSelfMentionColor];
+    [prefs setBool:self.showModerationDetails forKey:kS7TVCfgShowModerationDetails];
+    [prefs setDouble:self.deletedMessageTextOpacity forKey:kS7TVCfgDeletedMessageOpacity];
 }
 
 // Setter custom (toggle simple, pas de table KVC comme les tailles) —
@@ -222,6 +234,12 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
 // Même garanties que setSystemMessageBackgroundsEnabled: ci-dessus.
 - (void)setSelfMentionHighlightEnabled:(BOOL)selfMentionHighlightEnabled {
     _selfMentionHighlightEnabled = selfMentionHighlightEnabled;
+    [self save];
+    [self s7tv_postDidChangeNotification];
+}
+
+- (void)setShowModerationDetails:(BOOL)showModerationDetails {
+    _showModerationDetails = showModerationDetails;
     [self save];
     [self s7tv_postDidChangeNotification];
 }
@@ -259,6 +277,7 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
         @"usernameMessageSpacing": @[@(kDefaultUsernameMessageSpacing),kS7TVCfgUsernameMessageSpacing],
         @"emoteVerticalOffset":    @[@(kDefaultEmoteVerticalOffset),   kS7TVCfgEmoteVerticalOffset],
         @"emote7TVResolution":     @[@(kDefaultEmote7TVResolution),    kS7TVCfgEmote7TVResolution],
+        @"deletedMessageTextOpacity": @[@(kDefaultDeletedMessageOpacity), kS7TVCfgDeletedMessageOpacity],
     };
 }
 
@@ -332,6 +351,7 @@ static const NSInteger kDefaultEmote7TVResolution   = 2;
     }
     [prefs removeObjectForKey:kS7TVCfgSystemBGEnabled];
     [prefs removeObjectForKey:kS7TVCfgSelfMentionEnabled];
+    [prefs removeObjectForKey:kS7TVCfgShowModerationDetails];
     [self save];
     [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Config réinitialisée aux défauts"];
     [self s7tv_postDidChangeNotification];

@@ -717,10 +717,10 @@
                                   mentionBadgeText:nil];
     }
     cell.messageLabel.attributedText = text;
-    // Expanded = contenu original récupéré localement, mais volontairement
-    // atténué (pseudo, badges, texte et emotes ensemble). Réinitialisé à 1 à
-    // chaque configuration pour rendre le cell reuse déterministe.
-    cell.messageLabel.alpha = (msg.state == S7TVChatMessageStateDeletedExpanded) ? 0.58 : 1.0;
+    // L'atténuation d'un message supprimé révélé est appliquée aux
+    // attributs du CORPS seulement (voir s7tv_appendNormalBodyForMessage:).
+    // Le label reste opaque afin que pseudo et badges gardent leurs couleurs.
+    cell.messageLabel.alpha = 1.0;
     // cfg.lineSpacing = espacement ENTRE deux messages (voir
     // SevenTVChatAppearanceConfig.h). Avec les self-sizing cells, il n'y a
     // plus de calcul de hauteur externe où l'ajouter (voir
@@ -1086,9 +1086,14 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
         }
         NSString *linkText = [text substringWithRange:match.range];
         NSURL *url = match.URL ?: [NSURL URLWithString:linkText];
+        // Dans un message supprimé révélé, textColor porte une alpha
+        // réduite : les liens doivent suivre la même atténuation que le
+        // reste du corps au lieu de redevenir bleu vif.
+        UIColor *effectiveLinkColor = CGColorGetAlpha(textColor.CGColor) < 0.999
+            ? textColor : linkColor;
         NSMutableDictionary *linkAttrs = [@{
             NSFontAttributeName: font,
-            NSForegroundColorAttributeName: linkColor,
+            NSForegroundColorAttributeName: effectiveLinkColor,
             NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
         } mutableCopy];
         if (url) linkAttrs[NSLinkAttributeName] = url;
@@ -1103,6 +1108,67 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
                 attributes:@{NSFontAttributeName: font,
                              NSForegroundColorAttributeName: textColor}]];
     }
+}
+
+// Format compact mais lisible des secondes IRC. Twitch conserve certains
+// presets en heures (24h/72h), donc on ne bascule en semaines qu'à partir de
+// 7 jours. Deux composantes max évitent les durées techniques illisibles.
+static NSString *s7tv_humanModerationDuration(NSInteger totalSeconds) {
+    totalSeconds = MAX(0, totalSeconds);
+    if (totalSeconds == 0) return @"";
+
+    NSInteger weeks = totalSeconds / (7 * 24 * 60 * 60);
+    if (weeks > 0) {
+        NSString *weekText = weeks == 1
+            ? L(@"chat_duration_week_one")
+            : [NSString stringWithFormat:L(@"chat_duration_weeks_format"), (long)weeks];
+        NSInteger remainingDays = (totalSeconds % (7 * 24 * 60 * 60)) / (24 * 60 * 60);
+        if (remainingDays > 0) {
+            NSString *daysAsHours = [NSString stringWithFormat:L(@"chat_duration_hours_format"),
+                                                               (long)(remainingDays * 24)];
+            return [NSString stringWithFormat:@"%@ %@", weekText, daysAsHours];
+        }
+        return weekText;
+    }
+
+    NSInteger hours = totalSeconds / 3600;
+    if (hours > 0) {
+        NSString *hoursText = [NSString stringWithFormat:L(@"chat_duration_hours_format"), (long)hours];
+        NSInteger minutes = (totalSeconds % 3600) / 60;
+        return minutes > 0
+            ? [NSString stringWithFormat:@"%@ %@", hoursText,
+                [NSString stringWithFormat:L(@"chat_duration_minutes_format"), (long)minutes]]
+            : hoursText;
+    }
+
+    NSInteger minutes = totalSeconds / 60;
+    if (minutes > 0) {
+        NSString *minutesText = [NSString stringWithFormat:L(@"chat_duration_minutes_format"), (long)minutes];
+        NSInteger seconds = totalSeconds % 60;
+        return seconds > 0
+            ? [NSString stringWithFormat:@"%@ %@", minutesText,
+                [NSString stringWithFormat:L(@"chat_duration_seconds_format"), (long)seconds]]
+            : minutesText;
+    }
+    return [NSString stringWithFormat:L(@"chat_duration_seconds_format"), (long)totalSeconds];
+}
+
+static NSString *s7tv_deletedPlaceholderForMessage(S7TVChatMessage *msg,
+                                                    SevenTVChatAppearanceConfig *cfg) {
+    if (!cfg.showModerationDetails) return L(@"chat_deleted_message_placeholder");
+
+    NSString *detail = nil;
+    if (msg.moderationKind == S7TVChatModerationKindTimeout) {
+        NSString *duration = s7tv_humanModerationDuration(msg.moderationDurationSeconds);
+        detail = duration.length
+            ? [NSString stringWithFormat:L(@"chat_moderation_timeout_format"), duration]
+            : L(@"chat_moderation_timeout");
+    } else if (msg.moderationKind == S7TVChatModerationKindPermanentBan) {
+        detail = L(@"chat_moderation_permanent_ban");
+    }
+    return detail.length
+        ? [NSString stringWithFormat:L(@"chat_deleted_message_with_detail_format"), detail]
+        : L(@"chat_deleted_message_placeholder");
 }
 
 - (NSAttributedString *)s7tv_buildAttributedStringForMessage:(S7TVChatMessage *)msg
@@ -1186,7 +1252,11 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
     // TweakSevenTV.m. Un seul point de bascule : messageColor est déjà
     // réutilisé pour tous les chemins du corps ci-dessous (fallback sans
     // tokens, texte brut, emote non résolue, texte hors mention).
-    UIColor *messageColor  = msg.isActionMessage ? usernameColor : [UIColor whiteColor];
+    BOOL isDeletedExpanded = (msg.state == S7TVChatMessageStateDeletedExpanded);
+    CGFloat deletedOpacity = MIN(1.0, MAX(0.25, cfg.deletedMessageTextOpacity));
+    UIColor *messageColor = isDeletedExpanded
+        ? [UIColor colorWithWhite:1.0 alpha:deletedOpacity]
+        : (msg.isActionMessage ? usernameColor : [UIColor whiteColor]);
 
     NSString *displayName = msg.authorDisplayName.length ? msg.authorDisplayName : @"???";
 
@@ -1220,7 +1290,7 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
 
     if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
         [result appendAttributedString:[[NSAttributedString alloc]
-            initWithString:L(@"chat_deleted_message_placeholder")
+            initWithString:s7tv_deletedPlaceholderForMessage(msg, cfg)
                 attributes:@{NSFontAttributeName: messageFont,
                              NSForegroundColorAttributeName: [UIColor grayColor]}]];
         return;
@@ -1294,9 +1364,9 @@ static void s7tv_appendTextWithLinkDetection(NSMutableAttributedString *result,
             // pour rester lisible sur fond sombre. nil (pseudo jamais vu
             // dans le chat) → couleur normale du texte, pas de couleur
             // devinée.
-            UIColor *mentionColor = token.mentionColor
+            UIColor *mentionColor = isDeletedExpanded ? messageColor : (token.mentionColor
                 ? s7tv_readableColorOnDarkBackground(token.mentionColor)
-                : messageColor;
+                : messageColor);
             [result appendAttributedString:[[NSAttributedString alloc]
                 initWithString:token.text ?: @""
                     attributes:@{NSFontAttributeName: mentionFont,

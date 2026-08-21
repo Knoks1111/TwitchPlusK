@@ -136,6 +136,8 @@
         _badgeIdentifiers  = @[];
         _type              = S7TVChatMessageTypeNormal;
         _state             = S7TVChatMessageStateNormal;
+        _moderationKind    = S7TVChatModerationKindNone;
+        _moderationDurationSeconds = 0;
     }
     return self;
 }
@@ -291,6 +293,8 @@
             // Le contenu original reste intact : seul le mode d'affichage
             // change, conformément au comportement Phase 5.
             msg.state = S7TVChatMessageStateDeletedCollapsed;
+            msg.moderationKind = S7TVChatModerationKindMessageDeleted;
+            msg.moderationDurationSeconds = 0;
         }
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
@@ -302,6 +306,16 @@
 
 - (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID
                               completion:(void (^)(void))completion {
+    [self markAllMessagesDeletedForUserID:authorUserID
+                           moderationKind:S7TVChatModerationKindPermanentBan
+                          durationSeconds:0
+                                completion:completion];
+}
+
+- (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID
+                         moderationKind:(S7TVChatModerationKind)moderationKind
+                        durationSeconds:(NSInteger)durationSeconds
+                              completion:(void (^)(void))completion {
     if (!authorUserID.length) {
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
         return;
@@ -311,6 +325,8 @@
         for (NSString *msgID in ids) {
             S7TVChatMessage *msg = self.messagesByID[msgID];
             msg.state = S7TVChatMessageStateDeletedCollapsed;
+            msg.moderationKind = moderationKind;
+            msg.moderationDurationSeconds = MAX(0, durationSeconds);
         }
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
@@ -348,6 +364,8 @@
     dispatch_barrier_async(self.storeQueue, ^{
         for (S7TVChatMessage *msg in self.orderedMessages) {
             msg.state = S7TVChatMessageStateDeletedCollapsed;
+            msg.moderationKind = S7TVChatModerationKindChatCleared;
+            msg.moderationDurationSeconds = 0;
         }
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });

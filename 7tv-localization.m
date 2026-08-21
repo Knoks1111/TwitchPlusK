@@ -202,6 +202,9 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"sizes_deleted_style_both":        @[@"Les deux", @"Both"],
         @"sizes_moderation_details_label":  @[@"Afficher timeout / ban", @"Show timeout / ban"],
         @"sizes_deleted_opacity_label":     @[@"Opacité du message révélé", @"Revealed message opacity"],
+        @"sizes_category_sizes":            @[@"Tailles", @"Sizes"],
+        @"sizes_category_appearance":       @[@"Apparence", @"Appearance"],
+        @"sizes_category_moderation":       @[@"Modération", @"Moderation"],
         @"preview_sub_phrase":              @[@"a pris un abonnement Tier 1. C'est son 3e mois d'abonnement !",
                                                @"subscribed at Tier 1. This is their 3rd month!"],
         @"preview_prime_phrase":            @[@"s'est abonné(e) avec Prime. C'est son 24e mois d'abonnement !",
@@ -254,12 +257,12 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
                                                     @"%lu newly imported, %lu already favorited."],
 
         // ── Chat custom (rendu live + faux chat de preview) ───────────────
-        @"chat_deleted_message_placeholder": @[@"[message supprimé]", @"[message deleted]"],
+        @"chat_deleted_message_placeholder": @[@"– Supprimé", @"– Deleted"],
         // Détail optionnel injecté dans le placeholder replié.
-        @"chat_deleted_message_with_detail_format": @[@"[message supprimé — %@]", @"[message deleted — %@]"],
-        @"chat_moderation_timeout":          @[@"timeout", @"timeout"],
-        @"chat_moderation_timeout_format":   @[@"timeout %@", @"timeout %@"],
-        @"chat_moderation_permanent_ban":    @[@"ban permanent", @"permanent ban"],
+        @"chat_deleted_message_with_detail_format": @[@"– Supprimé · %@", @"– Deleted · %@"],
+        @"chat_moderation_timeout":          @[@"Timeout", @"Timeout"],
+        @"chat_moderation_timeout_format":   @[@"Timeout %@", @"Timeout %@"],
+        @"chat_moderation_permanent_ban":    @[@"Ban permanent", @"Permanent ban"],
         @"chat_duration_seconds_format":     @[@"%lds", @"%lds"],
         @"chat_duration_minutes_format":     @[@"%ldm", @"%ldm"],
         @"chat_duration_hours_format":       @[@"%ldh", @"%ldh"],

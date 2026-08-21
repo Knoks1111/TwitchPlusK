@@ -83,6 +83,15 @@
 
 @implementation S7TVChatCustomCell
 
+- (void)prepareForReuse {
+    [super prepareForReuse];
+    self.onReplyBannerTap = nil;
+    self.onDeletedMessageTap = nil;
+    self.onReplySelectTap = nil;
+    self.animationKeys = nil;
+    self.messageLabel.alpha = 1.0;
+}
+
 - (instancetype)initWithStyle:(UITableViewCellStyle)style
                reuseIdentifier:(nullable NSString *)reuseIdentifier {
     self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];

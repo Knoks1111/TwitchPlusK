@@ -264,7 +264,9 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
             _systemAccentBarRightWidthConstraint,
 
             [_highlightBadgeLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8],
-            [_highlightBadgeLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            // Collé au bord supérieur pour laisser le badge sur sa propre
+            // ligne sans créer une grande zone vide avant le message.
+            [_highlightBadgeLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:1],
             [_highlightBadgeLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.contentView.leadingAnchor constant:8],
 
             // Même leading que messageLabel (suit isSystem via
@@ -339,7 +341,9 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     self.highlightBadgeLabel.hidden = !showHighlightBadge;
     self.highlightBadgeLabel.textColor = accentColor;
     self.highlightBadgeLabel.text = showHighlightBadge ? highlightBadgeText : nil;
-    self.messageLabelTopConstraint.constant = showHighlightBadge ? 16.0 : 4.0;
+    // 13 pt suffisent pour le petit label de 9 pt placé à y=1 : le texte
+    // reste dessous sans le grand espacement produit auparavant par 16 pt.
+    self.messageLabelTopConstraint.constant = showHighlightBadge ? 13.0 : 4.0;
 
     if (!isSystem) {
         self.contentView.backgroundColor = [UIColor clearColor];

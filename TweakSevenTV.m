@@ -413,6 +413,16 @@ static NSDictionary<NSString *, NSString *> *s7tv_parseIRCTags(NSString *tagBloc
     return tags;
 }
 
+// Twitch fournit tmi-sent-ts en millisecondes sur le flux live. Le service
+// Recent Messages ajoute rm-received-ts aux lignes historiques ; on le
+// préfère car il correspond au moment réellement observé par son relais.
+static NSDate *s7tv_messageTimestampFromTags(NSDictionary<NSString *, NSString *> *tags) {
+    NSString *milliseconds = s7tv_tagValue(tags, @"rm-received-ts", @"");
+    if (!milliseconds.length) milliseconds = s7tv_tagValue(tags, @"tmi-sent-ts", @"");
+    NSTimeInterval value = milliseconds.doubleValue;
+    return value > 0 ? [NSDate dateWithTimeIntervalSince1970:value / 1000.0] : [NSDate date];
+}
+
 // ────────────────────────────────────────────────────────────
 // MARK: - Modération IRC live (CLEARMSG / CLEARCHAT, Phase 5)
 // ────────────────────────────────────────────────────────────
@@ -677,8 +687,8 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     // un switch (chevauchement JOIN/PART sur le même socket, reconnexion,
     // etc.) — sans ce filtre, s7tv_parsePRIVMSG les acceptait tous sans
     // distinction et le store se retrouvait avec un mélange des deux
-    // chaînes, même après le reset fait au ROOMSTATE (voir
-    // s7tv_handleRoomState) puisque de nouveaux messages de l'ancienne
+    // chaînes, même après le reset fait au JOIN (voir
+    // s7tv_sendMessage:completionHandler:) puisque de nouveaux messages de l'ancienne
     // chaîne continuaient d'arriver ENSUITE. Le nom de chaîne ("#xxx") est
     // toujours présent entre "PRIVMSG " et " :" — on l'extrait et on
     // compare à la chaîne actuellement affichée (mgr.currentChannelName,
@@ -745,7 +755,7 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     if (!replyThreadRootID.length) replyThreadRootID = replyParentMsgID; // 1er niveau = racine
 
     S7TVChatMessage *msg = [[S7TVChatMessage alloc] initWithMessageID:messageID
-                                                             timestamp:[NSDate date]
+                                                             timestamp:s7tv_messageTimestampFromTags(tags)
                                                           authorUserID:userID
                                                      authorDisplayName:displayName
                                                                rawText:messageText];
@@ -975,7 +985,7 @@ static S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(NSString *ircLine) {
     }
 
     S7TVChatMessage *msg = [[S7TVChatMessage alloc] initWithMessageID:messageID
-                                                             timestamp:[NSDate date]
+                                                             timestamp:s7tv_messageTimestampFromTags(tags)
                                                           authorUserID:userID
                                                      authorDisplayName:displayName
                                                                rawText:messageText];
@@ -1004,6 +1014,176 @@ static S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(NSString *ircLine) {
     msg.badgeIdentifiers = s7tv_parseBadgesTag(badgesTag);
 
     return msg;
+}
+
+
+// ────────────────────────────────────────────────────────────
+// MARK: - Historique récent au JOIN
+// ────────────────────────────────────────────────────────────
+// Twitch IRC/Helix ne renvoie pas les messages antérieurs à la connexion.
+// Recent Messages expose ces mêmes lignes au format IRC : elles repassent
+// donc dans s7tv_parsePRIVMSG/s7tv_parseUSERNOTICE ci-dessus, sans second
+// parseur ni rendu spécial pour les badges/emotes/réponses.
+static NSUInteger s7tv_recentHistoryGeneration = 0;
+// Dernier salon pour lequel le store a réellement été réinitialisé. Distinct
+// de currentChannelTwitchID : ce dernier peut être prérempli par le cache ou
+// GQL AVANT ROOMSTATE et ne constitue donc pas un signal de transition fiable.
+static NSString *s7tv_recentHistoryInitializedChannel = nil;
+
+static BOOL s7tv_recentHistoryRequestIsCurrent(NSString *channel, NSUInteger generation) {
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    @synchronized (mgr) {
+        return generation == s7tv_recentHistoryGeneration &&
+            channel.length &&
+            [channel caseInsensitiveCompare:mgr.currentChannelName ?: @""] == NSOrderedSame;
+    }
+}
+
+static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
+    if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
+
+    NSString *urlString = [NSString stringWithFormat:
+        @"https://recent-messages.robotty.de/api/v2/recent-messages/%@?limit=50&hideModerationMessages=true&hideModeratedMessages=true",
+        channel.lowercaseString];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
+    request.timeoutInterval = 8.0;
+    [request setValue:@"TwitchPlusK/1.0" forHTTPHeaderField:@"User-Agent"];
+
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request
+        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
+
+        NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]]
+            ? (NSHTTPURLResponse *)response : nil;
+        if (error || http.statusCode < 200 || http.statusCode >= 300 || !data.length) {
+            [[SevenTVManager sharedManager]
+                log:@"[ChatCustom] ⚠️ Historique récent indisponible pour %@ (%@, HTTP %ld)",
+                    channel, error.localizedDescription ?: @"réponse vide", (long)http.statusCode];
+            return;
+        }
+
+        NSError *jsonError = nil;
+        NSDictionary *payload = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+        NSArray *rawMessages = [payload isKindOfClass:[NSDictionary class]] ? payload[@"messages"] : nil;
+        if (jsonError || ![rawMessages isKindOfClass:[NSArray class]]) {
+            [[SevenTVManager sharedManager]
+                log:@"[ChatCustom] ⚠️ Historique récent invalide pour %@: %@",
+                    channel, jsonError.localizedDescription ?: @"champ messages absent"];
+            return;
+        }
+
+        NSMutableArray<S7TVChatMessage *> *history = [NSMutableArray arrayWithCapacity:rawMessages.count];
+        for (id value in rawMessages) {
+            if (![value isKindOfClass:[NSString class]]) continue;
+            NSString *ircLine = [(NSString *)value stringByTrimmingCharactersInSet:
+                [NSCharacterSet newlineCharacterSet]];
+            S7TVChatMessage *message = s7tv_parsePRIVMSG(ircLine);
+            if (!message) message = s7tv_parseUSERNOTICE(ircLine);
+            if (message) [history addObject:message];
+        }
+        [history sortUsingComparator:^NSComparisonResult(S7TVChatMessage *left,
+                                                          S7TVChatMessage *right) {
+            return [left.timestamp compare:right.timestamp];
+        }];
+
+        if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
+        [[SevenTVManager sharedManager].chatMessageStore
+            prependHistoricalMessages:history completion:^{
+                if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
+                [[SevenTVManager sharedManager]
+                    log:@"[ChatCustom] 🕘 %lu messages historiques chargés pour %@",
+                        (unsigned long)history.count, channel];
+                s7tv_reloadActiveChatCustomView();
+            }];
+    }] resume];
+}
+
+static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
+    if (!channel.length) return;
+    // Un fil ouvert appartient au store précédent, même quand le nouvel ID
+    // broadcaster avait déjà été préchargé depuis le cache avant ROOMSTATE.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[S7TVReplyThreadPanel sharedPanel] hide];
+    });
+    NSDate *now = [NSDate date];
+    S7TVChatMessage *welcome = [[S7TVChatMessage alloc]
+        initWithMessageID:[NSString stringWithFormat:@"s7tv-history-welcome-%lu", (unsigned long)generation]
+                timestamp:now
+             authorUserID:@""
+        authorDisplayName:@""
+                  rawText:channel];
+    welcome.type = S7TVChatMessageTypeHistoryWelcome;
+
+    S7TVChatMessage *divider = [[S7TVChatMessage alloc]
+        initWithMessageID:[NSString stringWithFormat:@"s7tv-history-divider-%lu", (unsigned long)generation]
+                timestamp:now
+             authorUserID:@""
+        authorDisplayName:@""
+                  rawText:@""];
+    divider.type = S7TVChatMessageTypeHistoryDivider;
+
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    [mgr.chatMessageStore replaceAllMessages:@[welcome, divider] completion:^{
+        if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
+        [mgr log:@"[ChatCustom] 🏗 Chat initialisé pour %@ (historique en cours)", channel];
+        s7tv_reloadActiveChatCustomView();
+        s7tv_fetchRecentHistory(channel, generation);
+    }];
+}
+
+// Enregistre atomiquement une transition de salon et renvoie sa génération.
+// `force=YES` correspond à un JOIN réellement envoyé : même une reconnexion
+// au salon courant repart sur un transcript propre. ROOMSTATE utilise NO et
+// ne sert que de filet de sécurité si le JOIN n'a exceptionnellement pas été
+// observable par le hook.
+static NSUInteger s7tv_registerRecentHistoryChannel(NSString *channel, BOOL force) {
+    if (!channel.length) return 0;
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    @synchronized (mgr) {
+        BOOL alreadyInitialized = s7tv_recentHistoryInitializedChannel.length &&
+            [s7tv_recentHistoryInitializedChannel caseInsensitiveCompare:channel] == NSOrderedSame;
+        if (!force && alreadyInitialized) return 0;
+        s7tv_recentHistoryInitializedChannel = channel.lowercaseString;
+        return ++s7tv_recentHistoryGeneration;
+    }
+}
+
+static void s7tv_initializeRecentHistoryForChannel(NSString *channel, BOOL force) {
+    NSUInteger generation = s7tv_registerRecentHistoryChannel(channel, force);
+    if (generation > 0) {
+        s7tv_beginRecentHistory(channel, generation);
+    }
+}
+
+// Un envoi WebSocket IRC peut contenir plusieurs commandes séparées par
+// CRLF (typiquement PART puis JOIN) et peut être transporté comme String ou
+// Data. Retourne tous les salons réellement rejoints dans l'ordre du paquet.
+static NSArray<NSString *> *s7tv_joinedChannelsInOutgoingWebSocketMessage(
+    NSURLSessionWebSocketMessage *message) {
+    NSString *payload = nil;
+    if (message.type == NSURLSessionWebSocketMessageTypeString) {
+        payload = message.string;
+    } else if (message.type == NSURLSessionWebSocketMessageTypeData) {
+        payload = [[NSString alloc] initWithData:message.data encoding:NSUTF8StringEncoding];
+    }
+    if (!payload.length) return @[];
+
+    NSMutableArray<NSString *> *channels = [NSMutableArray array];
+    NSArray<NSString *> *lines = [payload componentsSeparatedByCharactersInSet:
+        [NSCharacterSet newlineCharacterSet]];
+    for (NSString *rawLine in lines) {
+        NSString *line = [rawLine stringByTrimmingCharactersInSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (![line hasPrefix:@"JOIN #"]) continue;
+        NSString *tail = [line substringFromIndex:6];
+        NSRange end = [tail rangeOfCharacterFromSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString *channel = end.location == NSNotFound ? tail : [tail substringToIndex:end.location];
+        channel = [channel stringByTrimmingCharactersInSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (channel.length) [channels addObject:channel.lowercaseString];
+    }
+    return channels;
 }
 
 
@@ -1593,6 +1773,24 @@ static void s7tv_handleUserState(NSString *ircLine) {
 // ────────────────────────────────────────────────────────────
 
 static void s7tv_handleRoomState(NSString *ircMessage) {
+    // Lors d'un changement très rapide, l'ancien ROOMSTATE peut arriver
+    // après le nouveau JOIN. Ne jamais l'utiliser pour confirmer/initialiser
+    // le nouveau salon, ni enregistrer son room-id sous le mauvais login.
+    NSRange roomStateCommand = [ircMessage rangeOfString:@" ROOMSTATE #"];
+    if (roomStateCommand.location != NSNotFound) {
+        NSUInteger channelStart = roomStateCommand.location + roomStateCommand.length;
+        NSRange tail = NSMakeRange(channelStart, ircMessage.length - channelStart);
+        NSRange channelEnd = [ircMessage rangeOfCharacterFromSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet] options:0 range:tail];
+        NSUInteger end = channelEnd.location == NSNotFound ? ircMessage.length : channelEnd.location;
+        NSString *roomChannel = [ircMessage substringWithRange:NSMakeRange(channelStart, end - channelStart)];
+        NSString *activeChannel = [SevenTVManager sharedManager].currentChannelName;
+        if (roomChannel.length && activeChannel.length &&
+            [roomChannel caseInsensitiveCompare:activeChannel] != NSOrderedSame) {
+            return;
+        }
+    }
+
     NSRange roomIDRange = [ircMessage rangeOfString:@"room-id="];
     if (roomIDRange.location == NSNotFound) return;
 
@@ -1608,23 +1806,18 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
     [[SevenTVManager sharedManager] log:@"📡 room-id extrait depuis ROOMSTATE: %@", roomID];
     SevenTVManager *mgr = [SevenTVManager sharedManager];
 
-    if (![roomID isEqualToString:mgr.currentChannelTwitchID]) {
+    BOOL didChangeBroadcaster = ![roomID isEqualToString:mgr.currentChannelTwitchID];
+    if (didChangeBroadcaster) {
         [[SevenTVManager sharedManager]
             log:@"📡 Nouveau broadcaster ID (ROOMSTATE): %@ (ancien: %@)",
             roomID, mgr.currentChannelTwitchID ?: @"aucun"];
         mgr.currentChannelTwitchID = roomID;
 
-        // Changement de chaîne détecté → vider le store pour éviter qu'un
-        // message de l'ancienne chaîne fuite dans la nouvelle (exigence
-        // Phase 0 : nettoyage au changement rapide de chaîne).
-        [mgr.chatMessageStore removeAllMessages];
-        [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Store de messages vidé (changement de chaîne)"];
         // Le fil actuellement affiché (s'il y en a un) référence des
-        // messages de l'ancienne chaîne qui viennent d'être vidés du store
+        // messages de l'ancienne chaîne qui vont être remplacés dans le store
         // — plutôt que de laisser un panneau obsolète/vide ouvert, on le
         // ferme purement et simplement.
         [[S7TVReplyThreadPanel sharedPanel] hide];
-        s7tv_reloadActiveChatCustomView();
 
         if (mgr.currentChannelName.length > 0) {
             NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
@@ -1644,6 +1837,11 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                           object:nil
                         userInfo:@{@"channelID": roomID}];
     }
+
+    // Filet de sécurité seulement : le chemin normal initialise le store dès
+    // le JOIN sortant. Cette vérification ne dépend volontairement PAS de
+    // didChangeBroadcaster, puisque l'ID peut déjà provenir du cache/GQL.
+    s7tv_initializeRecentHistoryForChannel(mgr.currentChannelName, NO);
 }
 
 
@@ -1716,15 +1914,16 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
 - (void)s7tv_sendMessage:(NSURLSessionWebSocketMessage *)message
        completionHandler:(void (^)(NSError *))completionHandler {
 
-    if (message.type == NSURLSessionWebSocketMessageTypeString) {
-        NSString *text = message.string;
-        if ([text hasPrefix:@"JOIN #"]) {
-            NSString *channel = [[text substringFromIndex:6]
-                stringByTrimmingCharactersInSet:
-                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            [[SevenTVManager sharedManager] log:@"📺 Rejoint le channel: %@", channel];
-            [[SevenTVManager sharedManager] loadEmotesForChannelName:channel];
-        }
+    for (NSString *channel in s7tv_joinedChannelsInOutgoingWebSocketMessage(message)) {
+        SevenTVManager *mgr = [SevenTVManager sharedManager];
+        [mgr log:@"📺 Rejoint le channel: %@", channel];
+        // Met currentChannelName à jour synchroniquement avant le reset et
+        // avant que l'historique n'entre dans le parseur IRC.
+        [mgr loadEmotesForChannelName:channel];
+        // Le JOIN est la source de vérité de la transition : suppression des
+        // anciens messages immédiate, sans attendre ROOMSTATE ni comparer un
+        // broadcaster ID potentiellement déjà préchargé.
+        s7tv_initializeRecentHistoryForChannel(channel, YES);
     }
     [self s7tv_sendMessage:message completionHandler:completionHandler];
 }

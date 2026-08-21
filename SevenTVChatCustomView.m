@@ -109,6 +109,11 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 // faire côté layout. Masquée par défaut (chat principal) — voir
 // SevenTVChatCustomView.usesThreadReplyIndent.
 @property (nonatomic, strong) UIView *threadBarView;
+// Séparateur local entre l'historique chargé et les PRIVMSG live. Le label
+// de message invisible conserve l'auto-sizing ; ces deux vues dessinent la
+// vraie barre continue et son libellé rouge par-dessus.
+@property (nonatomic, strong) UIView *historyDividerLineView;
+@property (nonatomic, strong) UILabel *historyDividerLabel;
 @end
 
 @implementation S7TVChatCustomCell
@@ -120,6 +125,8 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     self.onReplySelectTap = nil;
     self.animationKeys = nil;
     self.messageLabel.alpha = 1.0;
+    self.historyDividerLineView.hidden = YES;
+    self.historyDividerLabel.hidden = YES;
 }
 
 - (instancetype)initWithStyle:(UITableViewCellStyle)style
@@ -192,6 +199,21 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         [_replyTargetButton addTarget:self action:@selector(s7tv_handleReplyTargetTap:)
                       forControlEvents:UIControlEventTouchUpInside];
         [self.contentView addSubview:_replyTargetButton];
+
+        UIColor *historyRed = [UIColor colorWithRed:0.94 green:0.24 blue:0.30 alpha:1.0];
+        _historyDividerLineView = [[UIView alloc] init];
+        _historyDividerLineView.translatesAutoresizingMaskIntoConstraints = NO;
+        _historyDividerLineView.backgroundColor = historyRed;
+        _historyDividerLineView.hidden = YES;
+        [self.contentView addSubview:_historyDividerLineView];
+
+        _historyDividerLabel = [[UILabel alloc] init];
+        _historyDividerLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _historyDividerLabel.font = [UIFont boldSystemFontOfSize:13];
+        _historyDividerLabel.textColor = historyRed;
+        _historyDividerLabel.text = L(@"chat_history_new_messages");
+        _historyDividerLabel.hidden = YES;
+        [self.contentView addSubview:_historyDividerLabel];
 
         _systemAccentBarWidthConstraint =
             [_systemAccentBar.widthAnchor constraintEqualToConstant:0];
@@ -269,6 +291,13 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
             [_replyTargetButton.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
             [_replyTargetButton.widthAnchor constraintEqualToConstant:26],
             [_replyTargetButton.heightAnchor constraintEqualToConstant:26],
+
+            [_historyDividerLineView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:18],
+            [_historyDividerLineView.trailingAnchor constraintEqualToAnchor:_historyDividerLabel.leadingAnchor constant:-8],
+            [_historyDividerLineView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+            [_historyDividerLineView.heightAnchor constraintEqualToConstant:1],
+            [_historyDividerLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-14],
+            [_historyDividerLabel.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
         ]];
     }
     return self;
@@ -382,6 +411,15 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
 - (void)s7tv_handleReplyBannerTap:(UITapGestureRecognizer *)gesture {
     if (self.onReplyBannerTap) self.onReplyBannerTap();
+}
+
+- (void)s7tv_setHistoryDividerEnabled:(BOOL)enabled {
+    self.historyDividerLineView.hidden = !enabled;
+    self.historyDividerLabel.hidden = !enabled;
+    self.historyDividerLabel.text = enabled ? L(@"chat_history_new_messages") : nil;
+    // Le texte contient volontairement un espace avec la bonne fonte pour
+    // fournir une hauteur intrinsèque stable à la cellule auto-dimensionnée.
+    self.messageLabel.alpha = enabled ? 0.0 : 1.0;
 }
 
 - (NSUInteger)s7tv_characterIndexAtPointInMessageLabel:(CGPoint)point
@@ -790,6 +828,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     // attributs du CORPS seulement (voir s7tv_appendNormalBodyForMessage:).
     // Le label reste opaque afin que pseudo et badges gardent leurs couleurs.
     cell.messageLabel.alpha = 1.0;
+    [cell s7tv_setHistoryDividerEnabled:msg.type == S7TVChatMessageTypeHistoryDivider];
     // cfg.lineSpacing = espacement ENTRE deux messages (voir
     // SevenTVChatAppearanceConfig.h). Avec les self-sizing cells, il n'y a
     // plus de calcul de hauteur externe où l'ajouter (voir
@@ -1446,10 +1485,27 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
                                        collectAnimatedEmotes:(nullable NSMutableArray<id<S7TVResolvedEmote>> *)outAnimatedEmotes {
     NSMutableAttributedString *result = [NSMutableAttributedString new];
 
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    if (msg.type == S7TVChatMessageTypeHistoryWelcome) {
+        NSString *channel = msg.rawText.length ? msg.rawText : @"";
+        [result appendAttributedString:[[NSAttributedString alloc]
+            initWithString:[NSString stringWithFormat:L(@"chat_history_welcome_format"), channel]
+                attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:cfg.messageFontSize],
+                             NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:0.82]}]];
+        s7tv_applyLineBreakParagraphStyle(result);
+        return result;
+    }
+    if (msg.type == S7TVChatMessageTypeHistoryDivider) {
+        [result appendAttributedString:[[NSAttributedString alloc]
+            initWithString:@" "
+                attributes:@{NSFontAttributeName: [UIFont boldSystemFontOfSize:13]}]];
+        return result;
+    }
+
     // CLEARCHAT global peut aussi toucher un message système conservé dans
     // le store. Le placeholder doit alors remplacer TOUT son rendu, pas être
     // ajouté sous la bannière sub/gift originale.
-    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    [self s7tv_appendTimestampForMessage:msg into:result];
     if (s7tv_shouldRenderDeletedCollapsed(msg, cfg)) {
         [self s7tv_appendNormalBodyForMessage:msg into:result
                         collectUncachedEmotes:outUncachedEmotes
@@ -1663,6 +1719,26 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
         s7tv_appendTextWithLinkDetection(result, token.text ?: @"", messageFont, messageColor);
     }
     s7tv_applyDeletedBodyStyle(result, messageBodyStart, msg, cfg);
+}
+
+- (void)s7tv_appendTimestampForMessage:(S7TVChatMessage *)msg
+                                   into:(NSMutableAttributedString *)result {
+    if (!msg.timestamp) return;
+    static NSDateFormatter *formatter;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [[NSDateFormatter alloc] init];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.dateFormat = @"HH:mm";
+    });
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    CGFloat size = MAX(10.0, cfg.messageFontSize - 2.0);
+    UIFont *font = [UIFont monospacedDigitSystemFontOfSize:size weight:UIFontWeightRegular];
+    NSString *time = [[formatter stringFromDate:msg.timestamp] stringByAppendingString:@" "];
+    [result appendAttributedString:[[NSAttributedString alloc]
+        initWithString:time
+            attributes:@{NSFontAttributeName: font,
+                         NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:0.56]}]];
 }
 
 @end

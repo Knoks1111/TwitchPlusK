@@ -298,6 +298,9 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"banner_new_messages_generic":     @[@"nouveaux messages", @"new messages"],
         @"banner_new_messages_one":         @[@"1 nouveau message", @"1 new message"],
         @"banner_new_messages_format":      @[@"%lu nouveaux messages", @"%lu new messages"],
+        // Frontière historique/live affichée au JOIN du chat custom.
+        @"chat_history_welcome_format":      @[@"Bienvenue sur le chat de %@ !", @"Welcome to %@'s chat!"],
+        @"chat_history_new_messages":        @[@"Nouveautés", @"New messages"],
 
         // ── Verrouillage de rotation ──────────────────────────────────────
         @"lock_locked":                     @[@"Verrouillé", @"Locked"],

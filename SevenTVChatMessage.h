@@ -132,6 +132,10 @@ typedef NS_ENUM(NSInteger, S7TVChatMessageType) {
     S7TVChatMessageTypeAnnouncement,
     S7TVChatMessageTypePoll,
     S7TVChatMessageTypePrediction,
+    // Lignes locales sans équivalent IRC, insérées à la jonction entre
+    // l'historique récent et les nouveaux messages reçus en direct.
+    S7TVChatMessageTypeHistoryWelcome,
+    S7TVChatMessageTypeHistoryDivider,
 };
 
 // Voir exigence transverse #2 du plan : la suppression ne vide JAMAIS
@@ -358,6 +362,18 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // Vide entièrement le store (changement de channel — voir Phase 0,
 // nettoyage à la fermeture/réouverture pour éviter les fuites entre chaînes).
 - (void)removeAllMessages;
+
+// Remplace atomiquement le contenu du store. Utilisé au JOIN pour poser les
+// marqueurs Bienvenue/Nouveautés avant que les premiers PRIVMSG live soient
+// ajoutés ; completion est appelée sur le main thread après la barrière.
+- (void)replaceAllMessages:(NSArray<S7TVChatMessage *> *)messages
+                completion:(void (^ _Nullable)(void))completion;
+
+// Insère un lot historique AVANT le contenu déjà présent (marqueurs + live),
+// sans remplacer les doublons déjà reçus en direct. Tous les index du store
+// et les compteurs de réponses sont reconstruits dans la même barrière.
+- (void)prependHistoricalMessages:(NSArray<S7TVChatMessage *> *)messages
+                        completion:(void (^ _Nullable)(void))completion;
 
 // Recalcule les tokens sous une barrière d'écriture, puis appelle completion
 // sur le main thread. Le bloc est exécuté hors du thread UIKit.

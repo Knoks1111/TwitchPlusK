@@ -307,18 +307,32 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // No-op silencieux si l'id est introuvable (déjà purgé, ou jamais reçu).
 - (void)markMessageDeletedByID:(NSString *)messageID;
 
+// Variante avec completion appelée sur le main thread APRÈS que la barrière
+// d'écriture a terminé. Utilisée par la Phase 5 pour ne jamais rafraîchir la
+// cellule avant que son nouvel état soit réellement visible par le renderer.
+- (void)markMessageDeletedByID:(NSString *)messageID
+                    completion:(void (^ _Nullable)(void))completion;
+
 // Passe TOUS les messages actuellement en mémoire d'un utilisateur en
 // .deletedCollapsed — utilisé pour timeout/ban (Phase 5). Retrouve les
 // messages via l'index authorUserID, pas un scan.
 - (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID;
 
+- (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID
+                              completion:(void (^ _Nullable)(void))completion;
+
 // Bascule .deletedCollapsed <-> .deletedExpanded (tap-to-reveal, Phase 5).
 // No-op si le message n'est pas dans un état "supprimé".
 - (void)toggleExpandedForMessageID:(NSString *)messageID;
 
+- (void)toggleExpandedForMessageID:(NSString *)messageID
+                         completion:(void (^ _Nullable)(void))completion;
+
 // CLEARCHAT global (Phase 5) : marque tous les messages actuellement en
 // mémoire comme .deletedCollapsed d'un coup.
 - (void)markAllMessagesDeleted;
+
+- (void)markAllMessagesDeletedWithCompletion:(void (^ _Nullable)(void))completion;
 
 // Vide entièrement le store (changement de channel — voir Phase 0,
 // nettoyage à la fermeture/réouverture pour éviter les fuites entre chaînes).

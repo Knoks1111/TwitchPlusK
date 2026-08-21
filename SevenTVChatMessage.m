@@ -276,44 +276,80 @@
 }
 
 - (void)markMessageDeletedByID:(NSString *)messageID {
-    if (!messageID.length) return;
+    [self markMessageDeletedByID:messageID completion:nil];
+}
+
+- (void)markMessageDeletedByID:(NSString *)messageID
+                    completion:(void (^)(void))completion {
+    if (!messageID.length) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        return;
+    }
     dispatch_barrier_async(self.storeQueue, ^{
         S7TVChatMessage *msg = self.messagesByID[messageID];
-        if (!msg) return; // déjà purgé ou jamais reçu — no-op silencieux
-        msg.state = S7TVChatMessageStateDeletedCollapsed;
+        if (msg) {
+            // Le contenu original reste intact : seul le mode d'affichage
+            // change, conformément au comportement Phase 5.
+            msg.state = S7TVChatMessageStateDeletedCollapsed;
+        }
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
 }
 
 - (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID {
-    if (!authorUserID.length) return;
+    [self markAllMessagesDeletedForUserID:authorUserID completion:nil];
+}
+
+- (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID
+                              completion:(void (^)(void))completion {
+    if (!authorUserID.length) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        return;
+    }
     dispatch_barrier_async(self.storeQueue, ^{
         NSSet<NSString *> *ids = self.messageIDsByUserID[authorUserID];
         for (NSString *msgID in ids) {
             S7TVChatMessage *msg = self.messagesByID[msgID];
             msg.state = S7TVChatMessageStateDeletedCollapsed;
         }
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
 }
 
 - (void)toggleExpandedForMessageID:(NSString *)messageID {
-    if (!messageID.length) return;
+    [self toggleExpandedForMessageID:messageID completion:nil];
+}
+
+- (void)toggleExpandedForMessageID:(NSString *)messageID
+                         completion:(void (^)(void))completion {
+    if (!messageID.length) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        return;
+    }
     dispatch_barrier_async(self.storeQueue, ^{
         S7TVChatMessage *msg = self.messagesByID[messageID];
-        if (!msg) return;
-        if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
-            msg.state = S7TVChatMessageStateDeletedExpanded;
-        } else if (msg.state == S7TVChatMessageStateDeletedExpanded) {
-            msg.state = S7TVChatMessageStateDeletedCollapsed;
+        if (msg) {
+            if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
+                msg.state = S7TVChatMessageStateDeletedExpanded;
+            } else if (msg.state == S7TVChatMessageStateDeletedExpanded) {
+                msg.state = S7TVChatMessageStateDeletedCollapsed;
+            }
+            // .normal : pas de toggle, rien à révéler.
         }
-        // .normal : pas de toggle, rien à révéler.
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
 }
 
 - (void)markAllMessagesDeleted {
+    [self markAllMessagesDeletedWithCompletion:nil];
+}
+
+- (void)markAllMessagesDeletedWithCompletion:(void (^)(void))completion {
     dispatch_barrier_async(self.storeQueue, ^{
         for (S7TVChatMessage *msg in self.orderedMessages) {
             msg.state = S7TVChatMessageStateDeletedCollapsed;
         }
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
 }
 
@@ -322,6 +358,7 @@
         [self.orderedMessages removeAllObjects];
         [self.messagesByID removeAllObjects];
         [self.messageIDsByUserID removeAllObjects];
+        [self.replyIDsByThreadRootID removeAllObjects];
     });
 }
 

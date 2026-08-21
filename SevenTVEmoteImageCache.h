@@ -67,9 +67,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)framesForResolvedEmote:(id<S7TVResolvedEmote>)emote
                      completion:(void (^)(S7TVEmoteAnimatedFrames * _Nullable frames))completion;
 
-// Suspend les opérations de décodage encore en attente. Le picker l'utilise
-// pendant un drag/deceleration afin que ImageIO ne dispute pas les cœurs CPU
-// au scroll ; les opérations déjà terminées restent naturellement en cache.
+// Suspend exceptionnellement les opérations de décodage encore en attente.
+// Le picker ne gèle plus ces files pendant le scroll : ses cellules filtrent
+// elles-mêmes les travaux selon leur visibilité, ce qui permet aux miniatures
+// visibles et aux animations du chat de continuer à progresser.
 - (void)setDecodingSuspended:(BOOL)suspended;
 
 // Vide les images statiques, frames animées et travaux en attente. Les

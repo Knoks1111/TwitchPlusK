@@ -32,6 +32,24 @@ static NSString *s7tv_emoteIDFromURL(NSURL *url) {
     return nil;
 }
 
+static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_t index) {
+    NSTimeInterval duration = 0.1;
+    NSDictionary *props = (__bridge_transfer NSDictionary *)
+        CGImageSourceCopyPropertiesAtIndex(source, index, NULL);
+    NSDictionary *webpProps = props[(__bridge NSString *)kCGImagePropertyWebPDictionary];
+    NSNumber *delay = webpProps[(__bridge NSString *)kCGImagePropertyWebPUnclampedDelayTime]
+                    ?: webpProps[(__bridge NSString *)kCGImagePropertyWebPDelayTime];
+    if (!delay) {
+        // Certaines versions d'ImageIO exposent les délais WebP sous les clés
+        // GIF. Accepter les deux conserve la vitesse réelle de l'animation.
+        NSDictionary *gifProps = props[(__bridge NSString *)kCGImagePropertyGIFDictionary];
+        delay = gifProps[(__bridge NSString *)kCGImagePropertyGIFUnclampedDelayTime]
+              ?: gifProps[(__bridge NSString *)kCGImagePropertyGIFDelayTime];
+    }
+    if (delay && delay.doubleValue > 0) duration = delay.doubleValue;
+    return duration;
+}
+
 @implementation S7TVEmoteAnimatedFrames
 @end
 
@@ -266,8 +284,27 @@ static NSString *s7tv_emoteIDFromURL(NSURL *url) {
         return nil;
     }
 
-    NSMutableArray<UIImage *> *images = [NSMutableArray arrayWithCapacity:count];
-    NSMutableArray<NSNumber *> *durations = [NSMutableArray arrayWithCapacity:count];
+    // Le moteur tourne à 30 Hz : les frames au-delà du nombre réellement
+    // affichable selon la durée de la boucle ne produisent aucun gain visuel,
+    // mais retardent toutes les animations suivantes sur la file série.
+    // On lit d'abord les délais (léger), puis on échantillonne uniquement si
+    // la source dépasse 30 fps. Un plafond de 120 protège aussi des WebP
+    // pathologiques sans dégrader les boucles ordinaires allant jusqu'à 4 s.
+    NSMutableArray<NSNumber *> *sourceDurations = [NSMutableArray arrayWithCapacity:count];
+    NSTimeInterval totalDuration = 0.0;
+    for (size_t i = 0; i < count; i++) {
+        NSTimeInterval duration = s7tv_animationFrameDuration(source, i);
+        [sourceDurations addObject:@(duration)];
+        totalDuration += duration;
+    }
+
+    static const size_t kS7TVMaxDecodedFrames = 120;
+    size_t displayableCount = (size_t)(totalDuration * 30.0 + 0.999);
+    displayableCount = MAX((size_t)1, MIN(displayableCount, kS7TVMaxDecodedFrames));
+    size_t decodedCount = MIN(count, displayableCount);
+
+    NSMutableArray<UIImage *> *images = [NSMutableArray arrayWithCapacity:decodedCount];
+    NSMutableArray<NSNumber *> *durations = [NSMutableArray arrayWithCapacity:decodedCount];
     NSDictionary *decodeOptions = @{
         (__bridge NSString *)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
         (__bridge NSString *)kCGImageSourceCreateThumbnailWithTransform: @YES,
@@ -275,30 +312,23 @@ static NSString *s7tv_emoteIDFromURL(NSURL *url) {
         (__bridge NSString *)kCGImageSourceShouldCacheImmediately: @YES,
     };
 
-    for (size_t i = 0; i < count; i++) {
+    for (size_t sample = 0; sample < decodedCount; sample++) {
         @autoreleasepool {
-            CGImageRef cgImage = CGImageSourceCreateThumbnailAtIndex(source, i,
+            size_t sourceIndex = (sample * count) / decodedCount;
+            size_t nextSourceIndex = ((sample + 1) * count) / decodedCount;
+            nextSourceIndex = MAX(nextSourceIndex, sourceIndex + 1);
+
+            CGImageRef cgImage = CGImageSourceCreateThumbnailAtIndex(source, sourceIndex,
                 (__bridge CFDictionaryRef)decodeOptions);
             if (!cgImage) continue; // frame corrompue isolée → on saute plutôt que d'abandonner toute l'emote
             [images addObject:[UIImage imageWithCGImage:cgImage]];
             CGImageRelease(cgImage);
 
-            NSTimeInterval duration = 0.1; // filet de sécurité si la métadonnée manque
-            NSDictionary *props = (__bridge_transfer NSDictionary *)
-                CGImageSourceCopyPropertiesAtIndex(source, i, NULL);
-            NSDictionary *webpProps = props[(__bridge NSString *)kCGImagePropertyWebPDictionary];
-            NSNumber *delay = webpProps[(__bridge NSString *)kCGImagePropertyWebPUnclampedDelayTime]
-                            ?: webpProps[(__bridge NSString *)kCGImagePropertyWebPDelayTime];
-            if (!delay) {
-                // Repli GIF : constaté que certaines versions d'ImageIO exposent
-                // les WebP animés via les mêmes clés que les GIF plutôt que les
-                // clés WebP dédiées — on couvre les deux plutôt que de supposer
-                // un seul comportement.
-                NSDictionary *gifProps = props[(__bridge NSString *)kCGImagePropertyGIFDictionary];
-                delay = gifProps[(__bridge NSString *)kCGImagePropertyGIFUnclampedDelayTime]
-                      ?: gifProps[(__bridge NSString *)kCGImagePropertyGIFDelayTime];
+            NSTimeInterval duration = 0.0;
+            for (size_t i = sourceIndex; i < nextSourceIndex && i < count; i++) {
+                duration += sourceDurations[i].doubleValue;
             }
-            if (delay && delay.doubleValue > 0) duration = delay.doubleValue;
+            if (duration <= 0) duration = 0.1;
             [durations addObject:@(duration)];
         }
     }

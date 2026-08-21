@@ -212,7 +212,10 @@ static const char kS7TVRowKeyTag = 0;
 
     UIView *categoryIndicator = [[UIView alloc] initWithFrame:
         CGRectMake(0, 0, categoryW / 3.0, categoryH)];
-    categoryIndicator.backgroundColor = accent;
+    // Sélection neutre : le gros fond accentué bleu/violet attirait beaucoup
+    // trop l'œil dans ce panneau. Une légère pastille blanche translucide
+    // conserve l'indication de catégorie active sans ajouter de couleur.
+    categoryIndicator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.10];
     categoryIndicator.layer.cornerRadius = categoryH / 2.0;
     [categoryCapsule addSubview:categoryIndicator];
     categoryCapsule.categoryIndicatorView = categoryIndicator;

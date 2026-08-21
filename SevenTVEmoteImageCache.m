@@ -371,7 +371,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
             } else {
                 frames = nil;
                 [[SevenTVManager sharedManager]
-                    log:@"[ChatCustom] ⚠️ Emote animée non décodable (WebP invalide/vide): %@", url.absoluteString];
+                    log:@"⚠️ Emote animée non décodable (WebP invalide/vide): %@", url.absoluteString];
             }
 
             dispatch_async(self.syncQueue, ^{
@@ -568,7 +568,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
                 [self.decodedCache setObject:image forKey:key cost:s7tv_imageMemoryCost(image)];
             } else {
                 [[SevenTVManager sharedManager]
-                    log:@"[ChatCustom] ⚠️ Emote image introuvable/non décodable: %@", url.absoluteString];
+                    log:@"⚠️ Emote image introuvable/non décodable: %@", url.absoluteString];
             }
 
             dispatch_async(self.syncQueue, ^{

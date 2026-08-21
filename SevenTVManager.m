@@ -708,7 +708,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 - (void)setChatCustomTestEnabled:(BOOL)v {
     _chatCustomTestEnabled = v;
     [self savePreferences];
-    [self log:@"[ChatCustom] 🏗 Test chat custom %@", v ? @"ACTIVÉ" : @"désactivé"];
+    [self log:@"🏗 Test chat custom %@", v ? @"ACTIVÉ" : @"désactivé"];
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter]
             postNotificationName:S7TVChatCustomToggleDidChangeNotification
@@ -1233,7 +1233,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if ([normalizedToken isEqualToString:self.twitchToken]) return; // déjà à jour
     self.twitchToken   = normalizedToken;
     self.twitchClientID = clientID;
-    [self log:@"[ChatCustom] 🏗 Badges: token normalisé OAuth→Bearer et sauvegardé"];
+    [self log:@"🏗 Badges: token normalisé OAuth→Bearer et sauvegardé"];
     // Déclencher le chargement des badges maintenant qu'on a le token
     [[SevenTVBadgeProvider sharedProvider] loadGlobalBadges];
     if (self.currentChannelTwitchID.length) {
@@ -1583,19 +1583,20 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
     // reste du diagnostic (voir TweakSevenTV.m, S7TVGQLSnifferProtocol).
     if (has(@"[NetDump]")) return S7TVLogCategoryDump;
 
-    // 1. Channel Points (autoclaim) — priorité absolue, avant Erreurs :
+    // 1. Diagnostic temporaire des récompenses du chat custom. Priorité
+    // absolue : le payload peut lui-même contenir "Channel Points", des
+    // erreurs ou n'importe quel autre mot-clé de classification.
+    if (has(@"[ChatCustom]")) return S7TVLogCategoryChatCustom;
+
+    // 2. Channel Points (autoclaim) — priorité absolue, avant Erreurs :
     // tous les logs de l'autoclaim (succès 🎁 et échecs "Erreur ...") ont
     // leur propre catégorie dédiée, pas de dispersion en Erreurs/Dump.
     if (has(@"Channel Points")) return S7TVLogCategoryChannelPoints;
 
-    // 2. Erreurs / Avertissements — priorité absolue
+    // 3. Erreurs / Avertissements — priorité absolue
     if (has(@"❌") || has(@"⚠️")) return S7TVLogCategoryError;
 
-    // 3. Chat Custom (diagnostic Phase 0+ du chat maison — tag explicite,
-    // avant le Dump générique pour ne pas y être noyé)
-    if (has(@"[ChatCustom]")) return S7TVLogCategoryChatCustom;
-
-    // 3. Dump (architecture/méthodes — très verbeux, à part)
+    // 4. Dump (architecture/méthodes — très verbeux, à part)
     if (has(@"[DBG-DUMP]") || has(@"🩻")) return S7TVLogCategoryDump;
 
     // 4. Tap Logger

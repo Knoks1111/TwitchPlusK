@@ -109,11 +109,11 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
 
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     if (!mgr.twitchToken.length) {
-        [mgr log:@"[ChatCustom] ⏳ Badges global: token pas encore dispo, attente GQL..."];
+        [mgr log:@"⏳ Badges global: token pas encore dispo, attente GQL..."];
         return; // saveTwitchToken:clientID: rappellera loadGlobalBadges dès que le token arrive
     }
 
-    [mgr log:@"[ChatCustom] 🏗 Badges: chargement catalogue global"];
+    [mgr log:@"🏗 Badges: chargement catalogue global"];
 
     __weak typeof(self) weakSelf = self;
     NSURLRequest *req = [self s7tv_helixRequestWithURL:url];
@@ -138,7 +138,7 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
             });
         });
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] 🏗 Badges globaux chargés (%lu sets)", (unsigned long)parsed.count];
+            log:@"🏗 Badges globaux chargés (%lu sets)", (unsigned long)parsed.count];
     }];
     [task resume];
 }
@@ -165,7 +165,7 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
         // fetch n'a jamais réellement eu lieu. C'était la cause des badges de
         // sub (channel-only, pas de repli global côté Twitch pour ce set)
         // manquants alors que les badges globaux (mod/VIP/turbo) s'affichaient.
-        [mgr log:@"[ChatCustom] ⏳ Badges channel: token pas encore dispo, attente GQL..."];
+        [mgr log:@"⏳ Badges channel: token pas encore dispo, attente GQL..."];
         return;
     }
 
@@ -174,7 +174,7 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
     // silencieusement le rattrapage ultérieur (voir commentaire ci-dessus).
     self.lastLoadedChannelID = channelID;
 
-    [mgr log:@"[ChatCustom] 🏗 Badges: chargement catalogue channel %@", channelID];
+    [mgr log:@"🏗 Badges: chargement catalogue channel %@", channelID];
 
     __weak typeof(self) weakSelf = self;
     NSURLRequest *req = [self s7tv_helixRequestWithURL:url];
@@ -196,7 +196,7 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
             });
         });
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] 🏗 Badges channel chargés (%lu sets) pour %@",
+            log:@"🏗 Badges channel chargés (%lu sets) pour %@",
             (unsigned long)parsed.count, channelID];
     }];
     [task resume];
@@ -210,7 +210,7 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
     s7tv_parseBadgeSetsFromData:(NSData *)data error:(NSError *)networkError {
     if (networkError || !data.length) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] ⚠️ Badges: échec réseau (%@)",
+            log:@"⚠️ Badges: échec réseau (%@)",
             networkError.localizedDescription ?: @"réponse vide"];
         return nil;
     }
@@ -219,7 +219,7 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
     id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
     if (jsonError || ![root isKindOfClass:[NSDictionary class]]) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] ⚠️ Badges: JSON invalide (%@)", jsonError.localizedDescription ?: @"racine non-objet"];
+            log:@"⚠️ Badges: JSON invalide (%@)", jsonError.localizedDescription ?: @"racine non-objet"];
         return nil;
     }
 
@@ -229,7 +229,7 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
         // Pas de clé "data" → très probablement une erreur Helix (401/403,
         // token expiré) plutôt qu'un catalogue vide.
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] ⚠️ Badges: réponse Helix sans clé \"data\" (token invalide/expiré ?)"];
+            log:@"⚠️ Badges: réponse Helix sans clé \"data\" (token invalide/expiré ?)"];
         return @{};
     }
 
@@ -271,7 +271,7 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
     dispatch_barrier_async(self.badgeQueue, ^{
         self.channelBadges = @{};
     });
-    [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Badges channel réinitialisés (changement de chaîne)"];
+    [[SevenTVManager sharedManager] log:@"🏗 Badges channel réinitialisés (changement de chaîne)"];
 }
 
 #pragma mark - Résolution

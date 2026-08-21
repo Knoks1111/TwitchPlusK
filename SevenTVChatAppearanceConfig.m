@@ -247,7 +247,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     [prefs setBool:YES forKey:kS7TVCfgDeletedOpacityMigrated];
 
     [[SevenTVManager sharedManager]
-        log:@"[ChatCustom] 🏗 Config chargée — emote7TV=%.1f emoteTwitch=%.1f badge=%.1f "
+        log:@"🏗 Config chargée — emote7TV=%.1f emoteTwitch=%.1f badge=%.1f "
              @"pseudo=%.1f message=%.1f lineSpacing=%.1f pseudoMsgSpacing=%.1f "
              @"emoteOff=%.1f res=%ldx",
         _emote7TVSize, _emoteTwitchSize, _badgeSize, _usernameFontSize,
@@ -331,7 +331,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
 - (void)setValue:(CGFloat)value forSizeKey:(NSString *)key {
     if (!self.s7tv_resetTable[key]) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] ⚠️ setValue:forSizeKey: clé inconnue '%@'", key];
+            log:@"⚠️ setValue:forSizeKey: clé inconnue '%@'", key];
         return;
     }
     [self setValue:@(value) forKey:key];
@@ -377,7 +377,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
 - (void)setColor:(UIColor *)color forColorKey:(NSString *)key {
     if (!color || !self.s7tv_colorResetTable[key]) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] ⚠️ setColor:forColorKey: clé inconnue ou couleur nil '%@'", key];
+            log:@"⚠️ setColor:forColorKey: clé inconnue ou couleur nil '%@'", key];
         return;
     }
     [self setValue:color forKey:key];
@@ -394,7 +394,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     NSArray *entry = self.s7tv_colorResetTable[key];
     if (!entry) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] ⚠️ resetColorKeyToDefault: clé inconnue '%@'", key];
+            log:@"⚠️ resetColorKeyToDefault: clé inconnue '%@'", key];
         return;
     }
     [self setValue:entry.firstObject forKey:key];
@@ -407,7 +407,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     NSArray *entry = self.s7tv_resetTable[key];
     if (!entry) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] ⚠️ resetKeyToDefault: clé inconnue '%@'", key];
+            log:@"⚠️ resetKeyToDefault: clé inconnue '%@'", key];
         return;
     }
     [self setValue:entry.firstObject forKey:key];
@@ -432,7 +432,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     [prefs removeObjectForKey:kS7TVCfgDeletedRevealMode];
     [prefs removeObjectForKey:kS7TVCfgDeletedMessageStyle];
     [self save];
-    [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Config réinitialisée aux défauts"];
+    [[SevenTVManager sharedManager] log:@"🏗 Config réinitialisée aux défauts"];
     [self s7tv_postDidChangeNotification];
 }
 

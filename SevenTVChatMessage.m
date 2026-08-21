@@ -249,7 +249,7 @@
 - (void)addMessage:(S7TVChatMessage *)message {
     if (!message.messageID.length) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] ⚠️ addMessage: ignoré (messageID vide)"];
+            log:@"⚠️ addMessage: ignoré (messageID vide)"];
         return;
     }
     dispatch_barrier_async(self.storeQueue, ^{

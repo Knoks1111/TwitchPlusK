@@ -15,7 +15,7 @@
 
 #import <Foundation/Foundation.h>
 
-FOUNDATION_EXPORT NSString * _Nonnull const S7TVEmoteCacheCountDidChangeNotification;
+FOUNDATION_EXPORT NSString *const S7TVEmoteCacheCountDidChangeNotification;
 
 @interface SevenTVURLProtocol : NSObject
 
@@ -42,11 +42,11 @@ FOUNDATION_EXPORT NSString * _Nonnull const S7TVEmoteCacheCountDidChangeNotifica
 
 // Nombre actuel d'emotes encore présentes dans le cache WebP natif.
 + (NSInteger)cachedEmoteCount;
-+ (void)refreshCachedEmoteCountWithCompletion:(nullable void (^)(NSInteger count))completion;
++ (void)refreshCachedEmoteCountWithCompletion:(void (^)(NSInteger count))completion;
 
 // Annule les téléchargements CDN en cours et vide entièrement le NSURLCache
 // dédié (mémoire + disque). Les requêtes terminées après l'appel ne peuvent
 // pas repeupler le cache grâce à une génération d'invalidation.
-+ (void)clearAllEmoteCachesWithCompletion:(nullable void (^)(NSUInteger clearedCount))completion;
++ (void)clearAllEmoteCachesWithCompletion:(void (^)(NSUInteger clearedCount))completion;
 
 @end

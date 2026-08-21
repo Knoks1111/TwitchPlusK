@@ -101,6 +101,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 - (nullable UIImage *)s7tv_decodeFirstFrameData:(NSData *)data;
 - (nullable S7TVEmoteAnimatedFrames *)s7tv_decodeAnimatedWebPData:(NSData *)data
                                                 maximumFrameCount:(size_t)maximumFrameCount
+                                            preserveLeadingFrames:(BOOL)preserveLeadingFrames
                                                    shouldContinue:(BOOL (^)(void))shouldContinue;
 - (BOOL)s7tv_hasActiveFrameRequestsForKey:(NSString *)key requiringPreview:(BOOL)requiringPreview;
 - (void)s7tv_publishPreviewFrames:(S7TVEmoteAnimatedFrames *)frames forKey:(NSString *)key;
@@ -311,14 +312,14 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
             if (data && generation == self.cacheGeneration &&
                 [self s7tv_hasActiveFrameRequestsForKey:key requiringPreview:YES]) {
                 previewFrames = [self s7tv_decodeAnimatedWebPData:data
-                                                 maximumFrameCount:12
+                                                 maximumFrameCount:24
+                                            preserveLeadingFrames:YES
                                                     shouldContinue:^BOOL{
                     return generation == self.cacheGeneration &&
                         [self s7tv_hasActiveFrameRequestsForKey:key requiringPreview:YES];
                 }];
             }
             if (previewFrames.images.count > 1 && generation == self.cacheGeneration) {
-                previewFrames.preview = YES;
                 [self s7tv_publishPreviewFrames:previewFrames forKey:key];
             }
             dispatch_async(self.syncQueue, ^{
@@ -342,6 +343,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
             S7TVEmoteAnimatedFrames *frames = data
                 ? [self s7tv_decodeAnimatedWebPData:data
                                   maximumFrameCount:240
+                             preserveLeadingFrames:NO
                                      shouldContinue:^BOOL{
                     BOOL active = generation == self.cacheGeneration &&
                         [self s7tv_hasActiveFrameRequestsForKey:key requiringPreview:NO];
@@ -439,13 +441,12 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
     });
 }
 
-// Décodage WebP animé complet via ImageIO — chaque frame + sa durée
-// (propriété WebP delay time, avec repli sur les clés GIF si ImageIO les
-// expose ainsi selon la version d'OS). Toujours appelé hors main thread
-// (voir s7tv_loadAndDecodeFramesForKey:url:, lui-même dans le completion
-// handler NSURLSession qui ne délivre jamais sur le main thread).
+// Décodage WebP animé via ImageIO — préfixe fluide pour la preview ou boucle
+// complète échantillonnée à 60 fps. Chaque frame conserve sa vraie durée
+// (clés WebP, avec repli GIF selon la version d'iOS). Toujours hors main.
 - (nullable S7TVEmoteAnimatedFrames *)s7tv_decodeAnimatedWebPData:(NSData *)data
                                                 maximumFrameCount:(size_t)maximumFrameCount
+                                            preserveLeadingFrames:(BOOL)preserveLeadingFrames
                                                    shouldContinue:(BOOL (^)(void))shouldContinue {
     if (!data.length) return nil;
     if (shouldContinue && !shouldContinue()) return nil;
@@ -465,9 +466,16 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
     // On lit d'abord les délais (léger), puis on échantillonne uniquement si
     // la source dépasse 60 fps. Un plafond de 240 protège aussi des WebP
     // pathologiques sans dégrader les boucles ordinaires allant jusqu'à 4 s.
-    NSMutableArray<NSNumber *> *sourceDurations = [NSMutableArray arrayWithCapacity:count];
+    maximumFrameCount = MAX((size_t)2, maximumFrameCount);
+    // Une preview doit démarrer vite et rester fluide : lire seulement les
+    // premières frames consécutives. L'ancien échantillonnage de 12 images
+    // réparties sur toute la boucle transformait par exemple une emote de 4 s
+    // en une preview à ~3 fps jusqu'à l'arrivée du décodage complet.
+    size_t durationCount = preserveLeadingFrames ? MIN(count, maximumFrameCount) : count;
+    NSMutableArray<NSNumber *> *sourceDurations =
+        [NSMutableArray arrayWithCapacity:durationCount];
     NSTimeInterval totalDuration = 0.0;
-    for (size_t i = 0; i < count; i++) {
+    for (size_t i = 0; i < durationCount; i++) {
         if ((i % 8) == 0 && shouldContinue && !shouldContinue()) {
             CFRelease(source);
             return nil;
@@ -477,10 +485,14 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
         totalDuration += duration;
     }
 
-    maximumFrameCount = MAX((size_t)2, maximumFrameCount);
-    size_t displayableCount = (size_t)(totalDuration * 60.0 + 0.999);
-    displayableCount = MAX((size_t)1, MIN(displayableCount, maximumFrameCount));
-    size_t decodedCount = MIN(count, displayableCount);
+    size_t decodedCount;
+    if (preserveLeadingFrames) {
+        decodedCount = durationCount;
+    } else {
+        size_t displayableCount = (size_t)(totalDuration * 60.0 + 0.999);
+        displayableCount = MAX((size_t)1, MIN(displayableCount, maximumFrameCount));
+        decodedCount = MIN(count, displayableCount);
+    }
 
     NSMutableArray<UIImage *> *images = [NSMutableArray arrayWithCapacity:decodedCount];
     NSMutableArray<NSNumber *> *durations = [NSMutableArray arrayWithCapacity:decodedCount];
@@ -497,8 +509,10 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
                 CFRelease(source);
                 return nil;
             }
-            size_t sourceIndex = (sample * count) / decodedCount;
-            size_t nextSourceIndex = ((sample + 1) * count) / decodedCount;
+            size_t sourceIndex = preserveLeadingFrames
+                ? sample : (sample * count) / decodedCount;
+            size_t nextSourceIndex = preserveLeadingFrames
+                ? (sample + 1) : ((sample + 1) * count) / decodedCount;
             nextSourceIndex = MAX(nextSourceIndex, sourceIndex + 1);
 
             CGImageRef cgImage = CGImageSourceCreateThumbnailAtIndex(source, sourceIndex,
@@ -508,7 +522,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
             CGImageRelease(cgImage);
 
             NSTimeInterval duration = 0.0;
-            for (size_t i = sourceIndex; i < nextSourceIndex && i < count; i++) {
+            for (size_t i = sourceIndex; i < nextSourceIndex && i < sourceDurations.count; i++) {
                 duration += sourceDurations[i].doubleValue;
             }
             if (duration <= 0) duration = 0.1;
@@ -522,6 +536,9 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
     S7TVEmoteAnimatedFrames *frames = [S7TVEmoteAnimatedFrames new];
     frames.images    = images;
     frames.durations = durations;
+    // Si toute la source tient déjà dans la passe rapide, ce résultat est en
+    // réalité complet et peut être réutilisé comme tel par le moteur.
+    frames.preview = preserveLeadingFrames && decodedCount < count;
     return frames;
 }
 

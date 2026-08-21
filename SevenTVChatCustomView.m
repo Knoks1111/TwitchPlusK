@@ -526,7 +526,16 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 @property (nonatomic, strong) NSMutableSet<NSString *> *deferredMessageReloadIDs;
 @property (nonatomic, assign) BOOL deferredMessageReloadAnimated;
 @property (nonatomic, assign) BOOL messageInteractionInProgress;
-@property (nonatomic, assign) BOOL programmaticScrollInProgress;
+// Quand l'utilisateur remonte, le snapshot visible reste strictement figé.
+// Le store continue de tourner à 300 messages ; seuls ces anciens modèles
+// restent retenus temporairement par displayedMessages jusqu'au retour en bas.
+@property (nonatomic, assign) BOOL transcriptFrozen;
+@property (nonatomic, strong) NSSet<NSString *> *lastObservedStoreMessageIDs;
+@property (nonatomic, assign) NSUInteger lastObservedStoreGeneration;
+// UITableViewDiffableDataSource ne doit recevoir qu'un apply à la fois. Les
+// demandes concurrentes sont fusionnées dans les files différées existantes.
+@property (nonatomic, assign) BOOL snapshotApplyInProgress;
+@property (nonatomic, assign) BOOL widthReloadPending;
 - (void)s7tv_dismissEmotePreview;
 - (nullable NSString *)s7tv_captureVisibleAnchorAmongIDs:(nullable NSSet<NSString *> *)allowedIDs
                                                 viewportY:(CGFloat *)outViewportY;
@@ -534,6 +543,9 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 - (void)s7tv_flushDeferredReloadIfNeeded;
 - (void)s7tv_flushDeferredMessageReloads;
 - (void)s7tv_observeAnimationsForCell:(S7TVChatCustomCell *)cell;
+- (void)s7tv_queueFullReloadAnimated:(BOOL)animated completion:(nullable void (^)(void))completion;
+- (void)s7tv_recordFrozenStoreMessages;
+- (void)s7tv_finishSnapshotApply;
 @end
 
 @implementation SevenTVChatCustomView
@@ -548,6 +560,8 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         _isPinnedToBottom = YES;
         _deferredReloadCompletions = [NSMutableArray array];
         _deferredMessageReloadIDs = [NSMutableSet set];
+        _lastObservedStoreMessageIDs = [NSSet set];
+        _lastObservedStoreGeneration = [store generation];
         _showsReplyBanners = YES;
         _usesThreadReplyIndent = NO;
 
@@ -676,7 +690,8 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     CGFloat visibleWidth = [self s7tv_actualVisibleWidth];
     if (visibleWidth > 0 && visibleWidth != self.cachedContentWidth) {
         self.cachedContentWidth = visibleWidth;
-        [self.tableView reloadData];
+        if (self.snapshotApplyInProgress) self.widthReloadPending = YES;
+        else [self.tableView reloadData];
     }
 }
 
@@ -752,7 +767,44 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     [self.tableView setContentOffset:offset animated:NO];
 }
 
+- (void)s7tv_queueFullReloadAnimated:(BOOL)animated completion:(void (^)(void))completion {
+    self.reloadDeferredUntilScrollEnds = YES;
+    self.deferredReloadAnimated = self.deferredReloadAnimated || animated;
+    if (completion) [self.deferredReloadCompletions addObject:[completion copy]];
+}
+
+- (void)s7tv_recordFrozenStoreMessages {
+    NSArray<S7TVChatMessage *> *storeMessages = [self.store allMessages];
+    NSMutableSet<NSString *> *currentStoreIDs =
+        [NSMutableSet setWithCapacity:storeMessages.count];
+    NSUInteger newlyObserved = 0;
+    for (S7TVChatMessage *message in storeMessages) {
+        if (!message.messageID.length) continue;
+        [currentStoreIDs addObject:message.messageID];
+        if (![self.lastObservedStoreMessageIDs containsObject:message.messageID]) newlyObserved++;
+    }
+    self.lastObservedStoreMessageIDs = [currentStoreIDs copy];
+    if (newlyObserved > 0) self.pendingNewMessagesCount += newlyObserved;
+    [self s7tv_updateNewMessagesBannerText];
+    [self s7tv_showNewMessagesBanner];
+}
+
+- (void)s7tv_finishSnapshotApply {
+    self.snapshotApplyInProgress = NO;
+    if (self.widthReloadPending) {
+        self.widthReloadPending = NO;
+        [self.tableView reloadData];
+        [self.tableView layoutIfNeeded];
+    }
+}
+
 - (void)s7tv_flushDeferredReloadIfNeeded {
+    BOOL tableInteractionActive = self.tableView.isTracking || self.tableView.isDragging ||
+        self.tableView.isDecelerating;
+    if (self.snapshotApplyInProgress || self.transcriptFrozen ||
+        self.messageInteractionInProgress ||
+        tableInteractionActive) return;
+
     if (!self.reloadDeferredUntilScrollEnds) {
         [self s7tv_flushDeferredMessageReloads];
         return;
@@ -774,6 +826,9 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
 - (void)s7tv_flushDeferredMessageReloads {
     if (self.deferredMessageReloadIDs.count == 0) return;
+    if (self.snapshotApplyInProgress || self.transcriptFrozen ||
+        self.messageInteractionInProgress ||
+        self.tableView.isTracking || self.tableView.isDragging || self.tableView.isDecelerating) return;
     NSDiffableDataSourceSnapshot<NSString *, NSString *> *snapshot = [self.dataSource snapshot];
     NSSet<NSString *> *snapshotIDs = [NSSet setWithArray:snapshot.itemIdentifiers];
     NSMutableArray<NSString *> *reloadIDs = [NSMutableArray array];
@@ -782,7 +837,6 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
             [reloadIDs addObject:messageID];
         }
     }
-    BOOL animated = self.deferredMessageReloadAnimated;
     [self.deferredMessageReloadIDs removeAllObjects];
     self.deferredMessageReloadAnimated = NO;
     if (reloadIDs.count == 0) return;
@@ -792,8 +846,14 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         : [self s7tv_captureVisibleAnchorAmongIDs:nil viewportY:&anchorY];
     [snapshot reloadItemsWithIdentifiers:reloadIDs];
     __weak typeof(self) weakSelf = self;
-    [self.dataSource applySnapshot:snapshot animatingDifferences:animated completion:^{
-        [weakSelf s7tv_restoreVisibleAnchorID:anchorID viewportY:anchorY];
+    self.snapshotApplyInProgress = YES;
+    [self.dataSource applySnapshot:snapshot animatingDifferences:NO completion:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf s7tv_finishSnapshotApply];
+        [strongSelf s7tv_restoreVisibleAnchorID:anchorID viewportY:anchorY];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [strongSelf s7tv_flushDeferredReloadIfNeeded];
+        });
     }];
 }
 
@@ -802,18 +862,48 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     NSAssert([NSThread isMainThread],
              @"reloadMessages doit être appelé depuis le main thread (touche UIKit)");
 
+    NSUInteger currentStoreGeneration = [self.store generation];
+    if (self.transcriptFrozen && self.lastObservedStoreGeneration != 0 &&
+        currentStoreGeneration != self.lastObservedStoreGeneration) {
+        // Un changement de chaîne / remplacement global doit toujours gagner
+        // sur le gel local, sinon l'ancienne chaîne resterait visible jusqu'au
+        // retour manuel en bas.
+        self.transcriptFrozen = NO;
+        self.pendingNewMessagesCount = 0;
+        [self s7tv_hideNewMessagesBanner];
+
+        NSArray *queuedCompletions = [self.deferredReloadCompletions copy];
+        [self.deferredReloadCompletions removeAllObjects];
+        BOOL queuedAnimated = self.deferredReloadAnimated;
+        self.reloadDeferredUntilScrollEnds = NO;
+        self.deferredReloadAnimated = NO;
+        void (^requestedCompletion)(void) = [completion copy];
+        completion = ^{
+            if (requestedCompletion) requestedCompletion();
+            for (id completionObject in queuedCompletions) {
+                void (^queuedCompletion)(void) = (void (^)(void))completionObject;
+                if (queuedCompletion) queuedCompletion();
+            }
+        };
+        animated = animated || queuedAnimated;
+    }
+
+    if (self.transcriptFrozen) {
+        [self s7tv_recordFrozenStoreMessages];
+        [self s7tv_queueFullReloadAnimated:animated completion:completion];
+        return;
+    }
+
     // Ne jamais modifier la structure diffable pendant que le doigt/l'inertie
     // pilote encore la table ou qu'un appui long sélectionne son contenu :
     // UIKit et notre restauration d'ancre corrigeraient alors simultanément
     // le contentOffset. Les messages restent reçus dans le store ; un seul
     // snapshot de rattrapage est appliqué à la fin de l'interaction.
-    BOOL scrollingAwayFromBottom = !self.isPinnedToBottom &&
-        (self.tableView.isTracking || self.tableView.isDragging || self.tableView.isDecelerating);
-    if (self.messageInteractionInProgress || self.programmaticScrollInProgress ||
-        scrollingAwayFromBottom) {
-        self.reloadDeferredUntilScrollEnds = YES;
-        self.deferredReloadAnimated = self.deferredReloadAnimated || animated;
-        if (completion) [self.deferredReloadCompletions addObject:[completion copy]];
+    BOOL tableInteractionActive = self.tableView.isTracking || self.tableView.isDragging ||
+        self.tableView.isDecelerating;
+    if (self.snapshotApplyInProgress || self.messageInteractionInProgress ||
+        tableInteractionActive) {
+        [self s7tv_queueFullReloadAnimated:animated completion:completion];
         return;
     }
 
@@ -860,6 +950,8 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     }
     self.displayedMessages = newMessages;
     self.messagesByID       = byID;
+    self.lastObservedStoreMessageIDs = [NSSet setWithArray:identifiers];
+    self.lastObservedStoreGeneration = currentStoreGeneration;
 
     if (wasNearBottom) {
         self.pendingNewMessagesCount = 0;
@@ -890,31 +982,30 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     }
 
     __weak typeof(self) weakSelf = self;
-    [self.dataSource applySnapshot:snapshot animatingDifferences:animated completion:^{
+    self.snapshotApplyInProgress = YES;
+    // Avec UITableViewAutomaticDimension, une animation diffable et le
+    // recalcul de hauteur d'une ligne ne progressent pas toujours au même
+    // rythme : l'ancienne et la nouvelle cellule peuvent alors se chevaucher
+    // pendant la transition (~0,3-0,5 s). Le chat privilégie une mise à jour
+    // atomique ; les animations des emotes restent naturellement actives.
+    [self.dataSource applySnapshot:snapshot animatingDifferences:NO completion:^{
         __strong typeof(weakSelf) self = weakSelf;
         if (!self) {
             if (completion) completion();
             return;
         }
+        [self s7tv_finishSnapshotApply];
 
         if (!wasNearBottom && visibleAnchorID.length > 0) {
             [self s7tv_restoreVisibleAnchorID:visibleAnchorID
                                    viewportY:visibleAnchorViewportY];
-            // Une seconde passe au prochain tour de run loop absorbe le rare
-            // ajustement tardif des hauteurs self-sizing. Elle s'annule si
-            // l'utilisateur a déjà repris le contrôle du scroll.
-            __weak typeof(self) weakSelfForStabilization = self;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __strong typeof(weakSelfForStabilization) strongSelf = weakSelfForStabilization;
-                if (!strongSelf || strongSelf.tableView.isTracking ||
-                    strongSelf.tableView.isDragging || strongSelf.tableView.isDecelerating) return;
-                [strongSelf s7tv_restoreVisibleAnchorID:visibleAnchorID
-                                              viewportY:visibleAnchorViewportY];
-            });
         }
 
         [self s7tv_scrollToBottomIfNeeded:wasNearBottom];
         if (completion) completion();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self s7tv_flushDeferredReloadIfNeeded];
+        });
     }];
 }
 
@@ -1161,10 +1252,11 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
 - (void)s7tv_reloadMessageWithID:(NSString *)messageID animated:(BOOL)animated {
     if (!self.messagesByID[messageID]) return;
-    BOOL scrollingAwayFromBottom = !self.isPinnedToBottom &&
-        (self.tableView.isTracking || self.tableView.isDragging || self.tableView.isDecelerating);
-    if (self.messageInteractionInProgress || self.programmaticScrollInProgress ||
-        scrollingAwayFromBottom) {
+    BOOL tableInteractionActive = self.tableView.isTracking || self.tableView.isDragging ||
+        self.tableView.isDecelerating;
+    if (self.snapshotApplyInProgress || self.transcriptFrozen ||
+        self.messageInteractionInProgress ||
+        tableInteractionActive) {
         [self.deferredMessageReloadIDs addObject:messageID];
         self.deferredMessageReloadAnimated = self.deferredMessageReloadAnimated || animated;
         return;
@@ -1177,14 +1269,15 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     if (![snapshot.itemIdentifiers containsObject:messageID]) return;
     [snapshot reloadItemsWithIdentifiers:@[messageID]];
     __weak typeof(self) weakSelf = self;
-    [self.dataSource applySnapshot:snapshot animatingDifferences:animated completion:^{
+    self.snapshotApplyInProgress = YES;
+    // Une image ou une modération peut modifier la hauteur self-sizing de la
+    // ligne. Appliquer atomiquement évite le bref chevauchement UIKit.
+    [self.dataSource applySnapshot:snapshot animatingDifferences:NO completion:^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf s7tv_finishSnapshotApply];
         [strongSelf s7tv_restoreVisibleAnchorID:anchorID viewportY:anchorY];
-        if (!anchorID.length) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (strongSelf.tableView.isTracking || strongSelf.tableView.isDragging ||
-                strongSelf.tableView.isDecelerating) return;
-            [strongSelf s7tv_restoreVisibleAnchorID:anchorID viewportY:anchorY];
+            [strongSelf s7tv_flushDeferredReloadIfNeeded];
         });
     }];
 }
@@ -1392,21 +1485,23 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         - (scrollView.contentOffset.y + scrollView.bounds.size.height);
     BOOL nowPinned = (distanceFromBottom < 80);
     if (nowPinned && !self.isPinnedToBottom) {
+        self.transcriptFrozen = NO;
         self.pendingNewMessagesCount = 0;
         [self s7tv_hideNewMessagesBanner];
     } else if (!nowPinned && self.isPinnedToBottom) {
+        self.transcriptFrozen = YES;
+        self.pendingNewMessagesCount = 0;
+        self.lastObservedStoreGeneration = [self.store generation];
+        NSMutableSet<NSString *> *visibleSnapshotIDs =
+            [NSMutableSet setWithCapacity:self.displayedMessages.count];
+        for (S7TVChatMessage *message in self.displayedMessages) {
+            if (message.messageID.length) [visibleSnapshotIDs addObject:message.messageID];
+        }
+        self.lastObservedStoreMessageIDs = [visibleSnapshotIDs copy];
         [self s7tv_updateNewMessagesBannerText];
         [self s7tv_showNewMessagesBanner];
     }
     self.isPinnedToBottom = nowPinned;
-}
-
-- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
-    if (scrollView != self.tableView) return;
-    // Un geste utilisateur interrompt éventuellement le retour animé lancé
-    // par la bannière ; le prochain didEndDragging devient alors le point de
-    // reprise du snapshot différé.
-    self.programmaticScrollInProgress = NO;
 }
 
 - (void)scrollViewDidEndDragging:(UIScrollView *)scrollView
@@ -1417,12 +1512,6 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
 - (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
     if (scrollView != self.tableView) return;
-    [self s7tv_flushDeferredReloadIfNeeded];
-}
-
-- (void)scrollViewDidEndScrollingAnimation:(UIScrollView *)scrollView {
-    if (scrollView != self.tableView) return;
-    self.programmaticScrollInProgress = NO;
     [self s7tv_flushDeferredReloadIfNeeded];
 }
 
@@ -1450,14 +1539,14 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 - (void)s7tv_didTapNewMessagesBanner {
     self.pendingNewMessagesCount = 0;
     [self s7tv_hideNewMessagesBanner];
+    self.transcriptFrozen = NO;
     self.isPinnedToBottom = YES;
-    NSInteger count = self.displayedMessages.count;
-    if (count == 0) return;
-    self.programmaticScrollInProgress = YES;
-    NSIndexPath *last = [NSIndexPath indexPathForRow:count - 1 inSection:0];
-    [self.tableView scrollToRowAtIndexPath:last
-                           atScrollPosition:UITableViewScrollPositionBottom
-                                   animated:YES];
+    // Synchroniser d'abord avec les 300 messages courants. Le completion du
+    // snapshot appelle s7tv_scrollToBottomIfNeeded: sans animation : aucun
+    // long scroll à travers des cellules qui viennent simultanément d'être
+    // remplacées, donc aucun chevauchement transitoire.
+    if (self.reloadDeferredUntilScrollEnds) [self s7tv_flushDeferredReloadIfNeeded];
+    else [self reloadMessages];
 }
 
 - (void)tableView:(UITableView *)tableView

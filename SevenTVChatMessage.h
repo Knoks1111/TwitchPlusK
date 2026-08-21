@@ -396,6 +396,11 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // Copie de tous les messages, dans l'ordre chronologique d'ajout.
 - (NSArray<S7TVChatMessage *> *)allMessages;
 
+// Change à chaque reconstruction/vidage complet du store. Permet au renderer
+// de distinguer une simple purge FIFO d'un changement de chaîne ou d'un
+// remplacement global, même lorsqu'il a temporairement figé son transcript.
+- (NSUInteger)generation;
+
 - (nullable S7TVChatMessage *)messageWithID:(NSString *)messageID;
 
 // Tous les messages d'un même fil (replyThreadRootID == threadRootID), dans

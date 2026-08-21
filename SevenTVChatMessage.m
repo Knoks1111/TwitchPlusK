@@ -168,6 +168,7 @@
 // savoir QUELS ids appartiennent au fil sans scanner tout le store).
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<NSString *> *> *replyIDsByThreadRootID;
 @property (nonatomic, strong, readwrite) dispatch_queue_t storeQueue;
+@property (nonatomic, assign) NSUInteger storeGeneration;
 @end
 
 @implementation S7TVChatMessageStore
@@ -180,6 +181,7 @@
         _messagesByID        = [NSMutableDictionary dictionary];
         _messageIDsByUserID  = [NSMutableDictionary dictionary];
         _replyIDsByThreadRootID = [NSMutableDictionary dictionary];
+        _storeGeneration = 1;
         // Même pattern que SevenTVManager.emoteQueue : concurrente, lectures
         // en dispatch_sync, écritures en dispatch_barrier_async.
         _storeQueue = dispatch_queue_create("tv.s7tv.chat-message-store",
@@ -382,6 +384,7 @@
 
 - (void)removeAllMessages {
     dispatch_barrier_async(self.storeQueue, ^{
+        self.storeGeneration += 1;
         [self s7tv_clearAllMessagesAndIndexes];
     });
 }
@@ -390,6 +393,7 @@
                 completion:(void (^)(void))completion {
     NSArray<S7TVChatMessage *> *snapshot = [messages copy] ?: @[];
     dispatch_barrier_async(self.storeQueue, ^{
+        self.storeGeneration += 1;
         [self s7tv_rebuildWithMessages:snapshot];
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
@@ -441,6 +445,14 @@
         snapshot = [self.orderedMessages copy];
     });
     return snapshot;
+}
+
+- (NSUInteger)generation {
+    __block NSUInteger generation;
+    dispatch_sync(self.storeQueue, ^{
+        generation = self.storeGeneration;
+    });
+    return generation;
 }
 
 - (nullable S7TVChatMessage *)messageWithID:(NSString *)messageID {

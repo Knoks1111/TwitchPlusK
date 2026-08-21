@@ -15,6 +15,7 @@
 #import "SevenTVManager.h"
 #import "SevenTVLogsController.h"
 #import "SevenTVURLProtocol.h"
+#import "SevenTVEmoteImageCache.h"
 #import "SevenTVLogo.h"
 #import "SevenTVChatAppearanceConfig.h"
 #import "7tv-localization.h"
@@ -42,6 +43,70 @@ static UIColor *S7TVAccent(void) {
 // Gris secondaire (sous-titres, icônes)
 static UIColor *S7TVGray(void) {
     return [UIColor colorWithWhite:0.55 alpha:1.0];
+}
+
+@interface S7TVSettingsResolvedEmote : NSObject <S7TVResolvedEmote>
+@property (nonatomic, copy) NSString *emoteID;
+@property (nonatomic, assign) CGSize nativeSize;
+@property (nonatomic, assign) BOOL isAnimated;
+@property (nonatomic, strong) NSURL *imageURL;
++ (instancetype)emoteWithID:(NSString *)emoteID;
+@end
+
+@implementation S7TVSettingsResolvedEmote
++ (instancetype)emoteWithID:(NSString *)emoteID {
+    S7TVSettingsResolvedEmote *emote = [S7TVSettingsResolvedEmote new];
+    emote.emoteID = emoteID;
+    emote.nativeSize = CGSizeMake(32.0, 32.0);
+    emote.isAnimated = NO; // Les réglages n'affichent que la première frame.
+    emote.imageURL = [NSURL URLWithString:[NSString stringWithFormat:
+        @"https://cdn.7tv.app/emote/%@/2x.webp", emoteID]];
+    return emote;
+}
+@end
+
+static void S7TVLoadSettingsEmoteImage(NSString *emoteID, UIImageView *imageView) {
+    if (!emoteID.length || !imageView) return;
+    imageView.accessibilityIdentifier = emoteID;
+    imageView.image = nil;
+    S7TVSettingsResolvedEmote *emote = [S7TVSettingsResolvedEmote emoteWithID:emoteID];
+    UIImage *cached = [[SevenTVEmoteImageCache sharedCache] cachedImageForResolvedEmote:emote];
+    if (cached) {
+        imageView.image = cached;
+        return;
+    }
+    __weak UIImageView *weakImageView = imageView;
+    [[SevenTVEmoteImageCache sharedCache] imageForResolvedEmote:emote completion:^(UIImage *image) {
+        UIImageView *strongImageView = weakImageView;
+        if ([strongImageView.accessibilityIdentifier isEqualToString:emoteID]) {
+            strongImageView.image = image;
+        }
+    }];
+}
+
+static UIView *S7TVFavoriteEmotePreview(NSArray<NSString *> *favoriteIDs) {
+    UIView *preview = [[UIView alloc] init];
+    preview.translatesAutoresizingMaskIntoConstraints = NO;
+    NSUInteger count = MIN((NSUInteger)3, favoriteIDs.count);
+    CGFloat width = count > 0 ? 26.0 + (count - 1) * 13.0 : 22.0;
+    [NSLayoutConstraint activateConstraints:@[
+        [preview.widthAnchor constraintEqualToConstant:width],
+        [preview.heightAnchor constraintEqualToConstant:30.0],
+    ]];
+    for (NSUInteger index = 0; index < count; index++) {
+        UIImageView *imageView = [[UIImageView alloc] init];
+        imageView.contentMode = UIViewContentModeScaleAspectFit;
+        imageView.translatesAutoresizingMaskIntoConstraints = NO;
+        [preview addSubview:imageView];
+        [NSLayoutConstraint activateConstraints:@[
+            [imageView.leadingAnchor constraintEqualToAnchor:preview.leadingAnchor constant:index * 13.0],
+            [imageView.centerYAnchor constraintEqualToAnchor:preview.centerYAnchor],
+            [imageView.widthAnchor constraintEqualToConstant:26.0],
+            [imageView.heightAnchor constraintEqualToConstant:26.0],
+        ]];
+        S7TVLoadSettingsEmoteImage(favoriteIDs[index], imageView);
+    }
+    return preview;
 }
 
 
@@ -761,8 +826,7 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
     }
 
     // ── Section Favoris ─────────────────────────────────────────────────────
-    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    NSArray *favs = [prefs arrayForKey:@"s7tv_favorites"] ?: @[];
+    NSArray *favs = [[SevenTVManager sharedManager] favoriteEmoteIDsSnapshot];
 
     UITableViewCell *cell = [[UITableViewCell alloc]
         initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
@@ -779,8 +843,7 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
         cell.selectedBackgroundView = [[UIView alloc] init];
         cell.selectedBackgroundView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.06];
 
-        UIImageView *icon = S7TVIcon(@"star.fill",
-            [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0]);
+        UIView *icon = S7TVFavoriteEmotePreview(favs);
         [cell.contentView addSubview:icon];
 
         UILabel *lbl = [[UILabel alloc] init];
@@ -943,14 +1006,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
 
-    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    NSArray<NSString *> *existing = [prefs arrayForKey:@"s7tv_favorites"] ?: @[];
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    NSArray<NSString *> *existing = [manager favoriteEmoteIDsSnapshot];
     NSMutableOrderedSet<NSString *> *merged =
         [NSMutableOrderedSet orderedSetWithArray:existing];
     NSUInteger beforeCount = merged.count;
     [merged addObjectsFromArray:newIDs];
-    [prefs setObject:merged.array forKey:@"s7tv_favorites"];
-    [prefs synchronize];
+    [manager replaceFavoriteEmoteIDs:merged.array];
 
     NSUInteger added = merged.count - beforeCount;
     NSUInteger skipped = newIDs.count - added;
@@ -1016,8 +1078,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)reloadFavs {
-    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    _favIDs = [[prefs arrayForKey:@"s7tv_favorites"] ?: @[] copy];
+    _favIDs = [[[SevenTVManager sharedManager] favoriteEmoteIDsSnapshot] copy];
 
     // Construire le dictionnaire id → nom à partir des emotes chargées
     SevenTVManager *mgr = [SevenTVManager sharedManager];
@@ -1050,8 +1111,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     NSString *title = _favIDs.count > 0
-        ? [NSString stringWithFormat:@"%lu emote(s) en favoris", (unsigned long)_favIDs.count]
-        : @"Favoris";
+        ? [NSString stringWithFormat:L(@"favorites_count_format"), (unsigned long)_favIDs.count]
+        : L(@"section_favoris");
     return S7TVSectionHeader(title, NO);
 }
 
@@ -1091,39 +1152,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     thumb.clipsToBounds = YES;
     [cell.contentView addSubview:thumb];
 
-    // Essayer de trouver l'image en cache
-    NSString *urlStr = [NSString stringWithFormat:@"https://cdn.7tv.app/emote/%@/1x.webp", emoteID];
-    NSURL *cdnURL = [NSURL URLWithString:urlStr];
-    NSURLRequest *req = [NSURLRequest requestWithURL:cdnURL];
-    NSCachedURLResponse *cached = [[SevenTVURLProtocol sharedEmoteCache] cachedResponseForRequest:req];
-    if (cached) {
-        UIImage *img = [UIImage imageWithData:cached.data];
-        thumb.image = img;
-    } else {
-        // Placeholder étoile violette
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration
-            configurationWithPointSize:16 weight:UIImageSymbolWeightRegular];
-        thumb.image = [UIImage systemImageNamed:@"star.fill" withConfiguration:cfg];
-        thumb.tintColor = [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0];
-
-        // Télécharge en arrière-plan et met à jour si la cellule est encore visible
-        NSIndexPath *indexPath = ip;
-        [SevenTVURLProtocol prefetchEmoteID:emoteID completion:^{
-            dispatch_async(dispatch_get_main_queue(), ^{
-                UITableViewCell *visible = [tv cellForRowAtIndexPath:indexPath];
-                if (!visible) return;
-                UIImageView *iv = (UIImageView *)[visible.contentView viewWithTag:7700];
-                NSCachedURLResponse *r = [[SevenTVURLProtocol sharedEmoteCache]
-                    cachedResponseForRequest:req];
-                if (r) iv.image = [UIImage imageWithData:r.data];
-            });
-        }];
-    }
-    thumb.tag = 7700;
+    S7TVLoadSettingsEmoteImage(emoteID, thumb);
 
     // Labels
     UILabel *nameLbl = [[UILabel alloc] init];
-    nameLbl.text = name ?: @"(emote non chargée)";
+    nameLbl.text = name ?: L(@"favorite_emote_unknown");
     nameLbl.font = [UIFont systemFontOfSize:15 weight:
         name ? UIFontWeightRegular : UIFontWeightLight];
     nameLbl.textColor = name ? [UIColor whiteColor] : S7TVGray();
@@ -1180,11 +1213,10 @@ commitEditingStyle:(UITableViewCellEditingStyle)es
 forRowAtIndexPath:(NSIndexPath *)ip {
     if (es != UITableViewCellEditingStyleDelete) return;
     NSString *removedID = _favIDs[ip.row];
-    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    NSMutableArray *cur = [([prefs arrayForKey:@"s7tv_favorites"] ?: @[]) mutableCopy];
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    NSMutableArray *cur = [[manager favoriteEmoteIDsSnapshot] mutableCopy];
     [cur removeObject:removedID];
-    [prefs setObject:cur forKey:@"s7tv_favorites"];
-    [prefs synchronize];
+    [manager replaceFavoriteEmoteIDs:cur];
     [self reloadFavs];
 }
 
@@ -1199,13 +1231,11 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         alertControllerWithTitle:L(@"alert_clear_favorites_title")
                          message:L(@"alert_clear_favorites_message")
         preferredStyle:UIAlertControllerStyleActionSheet];
-    alert.message = [NSString stringWithFormat:@"Supprimer les %lu emotes en favoris ?",
+    alert.message = [NSString stringWithFormat:L(@"alert_clear_favorites_message"),
                      (unsigned long)_favIDs.count];
     [alert addAction:[UIAlertAction actionWithTitle:L(@"common_empty_action")
         style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
-            NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-            [prefs removeObjectForKey:@"s7tv_favorites"];
-            [prefs synchronize];
+            [[SevenTVManager sharedManager] replaceFavoriteEmoteIDs:@[]];
             [self reloadFavs];
         }]];
     [alert addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
@@ -1225,6 +1255,9 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 // le cache" (ex-"Recharger les emotes" de l'accueil) atterrit ici en premier.
 // ─────────────────────────────────────────────────────────────────────────────
 
+@interface SevenTVAdvancedPageController ()
+@end
+
 @implementation SevenTVAdvancedPageController
 
 - (instancetype)init {
@@ -1236,6 +1269,33 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     [super viewDidLoad];
     self.title = L(@"title_avance");
     S7TVStyleTableView(self.tableView);
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(s7tv_cacheCountDidChange:)
+        name:S7TVEmoteCacheCountDidChangeNotification object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+        name:S7TVEmoteCacheCountDidChangeNotification object:nil];
+}
+
+- (void)s7tv_cacheCountDidChange:(NSNotification *)notification {
+    if (!self.isViewLoaded || !self.view.window) return;
+    NSIndexPath *cacheRow = [NSIndexPath indexPathForRow:0 inSection:0];
+    [self.tableView reloadRowsAtIndexPaths:@[cacheRow]
+                          withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self.tableView reloadData];
+    [SevenTVURLProtocol refreshCachedEmoteCountWithCompletion:^(NSInteger count) {
+        if (self.view.window) {
+            NSIndexPath *cacheRow = [NSIndexPath indexPathForRow:0 inSection:0];
+            [self.tableView reloadRowsAtIndexPaths:@[cacheRow]
+                                  withRowAnimation:UITableViewRowAnimationNone];
+        }
+    }];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
@@ -1312,13 +1372,23 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         lbl.numberOfLines = 1;
         lbl.translatesAutoresizingMaskIntoConstraints = NO;
         [cell.contentView addSubview:lbl];
+
+        UILabel *countLbl = [[UILabel alloc] init];
+        countLbl.text = [NSString stringWithFormat:L(@"cache_emote_count_format"),
+                         (long)[SevenTVURLProtocol cachedEmoteCount]];
+        countLbl.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
+        countLbl.textColor = S7TVGray();
+        countLbl.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:countLbl];
         [NSLayoutConstraint activateConstraints:@[
             [icon.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
             [icon.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
             [lbl.leadingAnchor   constraintEqualToAnchor:icon.trailingAnchor constant:14],
-            [lbl.trailingAnchor  constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+            [lbl.trailingAnchor  constraintLessThanOrEqualToAnchor:countLbl.leadingAnchor constant:-8],
             [lbl.topAnchor       constraintEqualToAnchor:cell.contentView.topAnchor constant:10],
             [lbl.bottomAnchor    constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
+            [countLbl.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+            [countLbl.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
         ]];
         return cell;
     }
@@ -1503,15 +1573,20 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 // SevenTVManager, puis relance le chargement des emotes.
 - (void)clearCache {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
-    [mgr clearAllCaches];
-
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:L(@"alert_cache_cleared_title")
-                         message:L(@"alert_cache_cleared_message")
-                  preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
-        style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    __weak typeof(self) weakSelf = self;
+    [mgr clearAllCachesWithCompletion:^(NSUInteger clearedCount) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf.tableView reloadData];
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:L(@"alert_cache_cleared_title")
+                             message:[NSString stringWithFormat:L(@"alert_cache_cleared_message_format"),
+                                      (unsigned long)clearedCount]
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
+            style:UIAlertActionStyleDefault handler:nil]];
+        [strongSelf presentViewController:alert animated:YES completion:nil];
+    }];
 }
 
 // Grise visuellement une cellule de catégorie/console quand logsEnabled == NO,

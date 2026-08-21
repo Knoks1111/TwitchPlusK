@@ -15,6 +15,8 @@
 
 #import <Foundation/Foundation.h>
 
+FOUNDATION_EXPORT NSString *const S7TVEmoteCacheCountDidChangeNotification;
+
 @interface SevenTVURLProtocol : NSObject
 
 // Préchauffage TCP/TLS vers cdn.7tv.app au JOIN d'un channel.
@@ -34,8 +36,17 @@
 // aucun réseau supplémentaire.
 + (NSURLCache *)sharedEmoteCache;
 
-// Nombre total d'emotes mises en cache (WebP natif) depuis le démarrage.
-// Utilisé par SevenTVManager pour le log bilan de fin de prefetch.
+// Enregistre une écriture faite par un autre pipeline (chat/picker) dans le
+// cache partagé, afin que le compteur reste exact.
++ (void)noteCachedEmoteID:(NSString *)emoteID;
+
+// Nombre actuel d'emotes encore présentes dans le cache WebP natif.
 + (NSInteger)cachedEmoteCount;
++ (void)refreshCachedEmoteCountWithCompletion:(nullable void (^)(NSInteger count))completion;
+
+// Annule les téléchargements CDN en cours et vide entièrement le NSURLCache
+// dédié (mémoire + disque). Les requêtes terminées après l'appel ne peuvent
+// pas repeupler le cache grâce à une génération d'invalidation.
++ (void)clearAllEmoteCachesWithCompletion:(nullable void (^)(NSUInteger clearedCount))completion;
 
 @end

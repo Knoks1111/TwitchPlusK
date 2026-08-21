@@ -50,6 +50,7 @@
 NSString *const S7TVLogsDidUpdateNotification = @"S7TVLogsDidUpdateNotification";
 NSString *const S7TVEmoteCatalogDidUpdateNotification = @"S7TVEmoteCatalogDidUpdateNotification";
 NSString *const S7TVChatCustomToggleDidChangeNotification = @"S7TVChatCustomToggleDidChangeNotification";
+NSString *const S7TVFavoritesDidChangeNotification = @"S7TVFavoritesDidChangeNotification";
 
 // ============================================================
 // TTL du cache en secondes
@@ -125,6 +126,11 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 // Clé = twitchUserID pour les channels, "global" pour les globales.
 // Protégé par @synchronized(self).
 @property (nonatomic, strong) NSMutableSet<NSString *> *activePrefetchKeys;
+// Après un vidage manuel, les images restent chargées à la demande jusqu'au
+// prochain vrai changement de chaîne.
+@property (nonatomic, assign) BOOL suppressBulkPrefetchAfterManualClear;
+
+- (void)s7tv_notifyFavoritesChanged;
 
 @end
 
@@ -621,7 +627,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
 - (void)_saveFavorites {
     NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    [prefs setObject:self.favoriteEmoteIDs.allObjects forKey:@"s7tv_favorites"];
+    [prefs setObject:[self favoriteEmoteIDsSnapshot] forKey:@"s7tv_favorites"];
     [prefs synchronize];
 }
 
@@ -631,20 +637,63 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 // SevenTVEmotePickerController.
 - (BOOL)isEmoteFavorited:(NSString *)emoteID {
     if (!emoteID) return NO;
-    return [self.favoriteEmoteIDs containsObject:emoteID];
+    @synchronized (self.favoriteEmoteIDs) {
+        return [self.favoriteEmoteIDs containsObject:emoteID];
+    }
 }
 
 - (void)setEmote:(NSString *)emoteID favorited:(BOOL)favorited {
-    if (!emoteID) return;
-    if (favorited) {
-        [self.favoriteEmoteIDs addObject:emoteID];
-    } else {
-        [self.favoriteEmoteIDs removeObject:emoteID];
+    if (!emoteID.length) return;
+    @synchronized (self.favoriteEmoteIDs) {
+        if (favorited) {
+            [self.favoriteEmoteIDs addObject:emoteID];
+        } else {
+            [self.favoriteEmoteIDs removeObject:emoteID];
+        }
     }
     [self _saveFavorites];
+    [self s7tv_notifyFavoritesChanged];
+}
+
+- (NSArray<NSString *> *)favoriteEmoteIDsSnapshot {
+    @synchronized (self.favoriteEmoteIDs) {
+        return self.favoriteEmoteIDs.allObjects;
+    }
+}
+
+- (void)replaceFavoriteEmoteIDs:(NSArray<NSString *> *)emoteIDs {
+    NSMutableSet<NSString *> *validIDs = [NSMutableSet set];
+    for (id value in emoteIDs) {
+        if ([value isKindOfClass:[NSString class]] && [(NSString *)value length] > 0) {
+            [validIDs addObject:value];
+        }
+    }
+    @synchronized (self.favoriteEmoteIDs) {
+        [self.favoriteEmoteIDs setSet:validIDs];
+    }
+    [self _saveFavorites];
+    [self s7tv_notifyFavoritesChanged];
+}
+
+- (void)s7tv_notifyFavoritesChanged {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_pickerController) [self->_pickerController favoritesDidChange];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:S7TVFavoritesDidChangeNotification object:self];
+    });
 }
 
 - (void)setIsEnabled:(BOOL)v              { _isEnabled            = v; [self savePreferences]; }
+- (void)setCurrentChannelTwitchID:(NSString *)channelID {
+    BOOL changed = !((_currentChannelTwitchID == channelID) ||
+                     [_currentChannelTwitchID isEqualToString:channelID]);
+    _currentChannelTwitchID = [channelID copy];
+    if (changed) {
+        @synchronized (self) {
+            self.suppressBulkPrefetchAfterManualClear = NO;
+        }
+    }
+}
 - (void)setShowAnimated:(BOOL)v           { _showAnimated          = v; [self savePreferences]; }
 - (void)setShowPickerAnimations:(BOOL)v   { _showPickerAnimations  = v; [self savePreferences]; }
 - (void)setShowPickerAnimationsFavoritesOnly:(BOOL)v { _showPickerAnimationsFavoritesOnly = v; [self savePreferences]; }
@@ -876,6 +925,13 @@ static const CGFloat kS7TVMenuHeight = 520.0;
                     setKey:(NSString *)setKey
                      label:(NSString *)label {
     if (!emotes.count || !setKey.length) return;
+
+    @synchronized(self) {
+        if (self.suppressBulkPrefetchAfterManualClear) {
+            [self log:@"⏭️ Préfetch massif ignoré après vidage manuel (%@)", label];
+            return;
+        }
+    }
 
     // ── Déduplication : une seule session de prefetch par setKey ─────────────
     @synchronized(self) {
@@ -1703,13 +1759,45 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 // ============================================================
 
 - (void)clearAllCaches {
-    [self log:@"🗑️ Vidage du cache 7TV demandé (disque + mémoire)"];
+    [self clearAllCachesWithCompletion:nil];
+}
+
+- (void)clearAllCachesWithCompletion:(void (^)(NSUInteger))completion {
+    NSUInteger clearedEmoteCount = (NSUInteger)[SevenTVURLProtocol cachedEmoteCount];
+    [self log:@"🗑️ Vidage complet du cache 7TV demandé (%lu emotes indexées)",
+     (unsigned long)clearedEmoteCount];
+
+    // Empêche tout téléchargement/décodage déjà en vol de repeupler les
+    // caches après l'action utilisateur.
+    [[SevenTVEmoteImageCache sharedCache] clearAllCaches];
+    [[SevenTVEmoteAnimationEngine sharedEngine] clearAllCachedFrames];
+    @synchronized (self) {
+        [self.activePrefetchKeys removeAllObjects];
+    }
+
+    NSString *channelID = [self.currentChannelTwitchID copy];
+    dispatch_group_t clearing = dispatch_group_create();
+    @synchronized (self) {
+        self.suppressBulkPrefetchAfterManualClear = YES;
+    }
+
+    dispatch_group_enter(clearing);
+    void (^clearRawCache)(void) = ^{
+        [SevenTVURLProtocol clearAllEmoteCachesWithCompletion:^(NSUInteger ignoredCount) {
+            dispatch_group_leave(clearing);
+        }];
+    };
+    if (self->_pickerController) {
+        [self->_pickerController cancelPendingImageLoadsWithCompletion:clearRawCache];
+    } else {
+        clearRawCache();
+    }
 
     // 1) Fichiers JSON du cache disque (Library/Caches/s7tv/*.json —
     // global.json, ch_<twitchID>.json...). Même file d'exécution que la
     // lecture/écriture du cache pour éviter toute course avec un
     // chargement en cours (voir _readCacheFile:/_writeCacheFile:withEmotes:).
-    dispatch_async(self.fileIOQueue, ^{
+    dispatch_group_async(clearing, self.fileIOQueue, ^{
         NSFileManager *fm = [NSFileManager defaultManager];
         NSError *listErr = nil;
         NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:self.cacheDirectory error:&listErr];
@@ -1730,17 +1818,28 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
     // 2) Dictionnaires d'emotes en mémoire — écriture protégée par
     // dispatch_barrier_async sur emoteQueue (même convention que le reste
     // du fichier, voir header de emoteQueue).
+    dispatch_group_enter(clearing);
     dispatch_barrier_async(self.emoteQueue, ^{
         self.globalEmotes  = @{};
         self.channelEmotes = @{};
+        dispatch_group_leave(clearing);
     });
 
-    // 3) Recharger immédiatement pour que l'effet soit visible sans
-    // attendre un changement de chaîne ou un relancement de l'app.
-    [self loadGlobalEmotes];
-    if (self.currentChannelTwitchID) {
-        [self loadEmotesForChannelTwitchID:self.currentChannelTwitchID];
-    }
+    // 3) Ne relire les catalogues qu'une fois les fichiers réellement
+    // supprimés. L'ancienne version lançait le reload immédiatement et
+    // pouvait donc relire le JSON juste avant sa suppression.
+    dispatch_group_notify(clearing, dispatch_get_main_queue(), ^{
+        if (self->_pickerController) {
+            [self->_pickerController invalidateSortCache];
+            [self->_pickerController favoritesDidChange];
+        }
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:S7TVEmoteCatalogDidUpdateNotification object:self];
+
+        [self loadGlobalEmotes];
+        if (channelID.length) [self loadEmotesForChannelTwitchID:channelID];
+        if (completion) completion(clearedEmoteCount);
+    });
 }
 
 @end

@@ -7,9 +7,9 @@
  * même URL — important avec le cell reuse (plusieurs cellules peuvent
  * demander la même emote très fréquente au même moment en scroll rapide).
  *
- * Décodage 1ère frame uniquement pour l'instant (rendu statique) — le
- * pipeline d'animation (démarrage/arrêt selon visibilité, throttle du nombre
- * d'animations simultanées) est un incrément Phase 2 séparé, pas encore fait.
+ * Le chemin statique décompresse uniquement la première frame. Le chemin
+ * animé décode toutes les frames sur une file bornée ; l'activation réelle
+ * reste pilotée par SevenTVEmoteAnimationEngine selon la visibilité.
  */
 
 #import <UIKit/UIKit.h>
@@ -66,6 +66,15 @@ NS_ASSUME_NONNULL_BEGIN
 // affiché (voir S7TVAnimatedEmoteAttachment.staticFallbackImage).
 - (void)framesForResolvedEmote:(id<S7TVResolvedEmote>)emote
                      completion:(void (^)(S7TVEmoteAnimatedFrames * _Nullable frames))completion;
+
+// Suspend les opérations de décodage encore en attente. Le picker l'utilise
+// pendant un drag/deceleration afin que ImageIO ne dispute pas les cœurs CPU
+// au scroll ; les opérations déjà terminées restent naturellement en cache.
+- (void)setDecodingSuspended:(BOOL)suspended;
+
+// Vide les images statiques, frames animées et travaux en attente. Les
+// callbacks déjà inscrits sont terminés avec nil sur le main thread.
+- (void)clearAllCaches;
 
 @end
 

@@ -79,6 +79,7 @@ static NSString *const kS7TVCfgGiftColor               = @"s7tv_cfg_color_gift";
 static NSString *const kS7TVCfgSelfMentionEnabled       = @"s7tv_cfg_self_mention_enabled";
 static NSString *const kS7TVCfgSelfMentionColor         = @"s7tv_cfg_color_self_mention";
 static NSString *const kS7TVCfgShowModerationDetails    = @"s7tv_cfg_show_moderation_details";
+static NSString *const kS7TVCfgDeletedMessageStyle      = @"s7tv_cfg_deleted_message_style";
 static NSString *const kS7TVCfgDeletedMessageOpacity    = @"s7tv_cfg_deleted_message_opacity";
 
 static const CGFloat kDefaultEmote7TVSize          = 28.0;
@@ -102,6 +103,7 @@ static const CGFloat kDefaultUsernameMessageSpacing = 4.0;  // TODO mesure réel
 static const CGFloat kDefaultEmoteVerticalOffset    = 0.0;
 static const NSInteger kDefaultEmote7TVResolution   = 2;
 static const CGFloat kDefaultDeletedMessageOpacity  = 0.58;
+static const S7TVDeletedMessageStyle kDefaultDeletedMessageStyle = S7TVDeletedMessageStyleDimmed;
 
 
 @implementation SevenTVChatAppearanceConfig
@@ -141,6 +143,7 @@ static const CGFloat kDefaultDeletedMessageOpacity  = 0.58;
     _selfMentionHighlightEnabled = YES;
     _selfMentionHighlightColor   = S7TVDefaultSelfMentionColor();
     _showModerationDetails       = YES;
+    _deletedMessageStyle         = kDefaultDeletedMessageStyle;
     _deletedMessageTextOpacity   = kDefaultDeletedMessageOpacity;
 }
 
@@ -189,6 +192,12 @@ static const CGFloat kDefaultDeletedMessageOpacity  = 0.58;
     if (selfMentionColor) _selfMentionHighlightColor = selfMentionColor;
     if ([prefs objectForKey:kS7TVCfgShowModerationDetails] != nil)
         _showModerationDetails = [prefs boolForKey:kS7TVCfgShowModerationDetails];
+    if ([prefs objectForKey:kS7TVCfgDeletedMessageStyle] != nil) {
+        NSInteger style = [prefs integerForKey:kS7TVCfgDeletedMessageStyle];
+        _deletedMessageStyle = (style >= S7TVDeletedMessageStyleDimmed &&
+                                style <= S7TVDeletedMessageStyleDimmedAndStrikethrough)
+            ? (S7TVDeletedMessageStyle)style : kDefaultDeletedMessageStyle;
+    }
     if ([prefs objectForKey:kS7TVCfgDeletedMessageOpacity] != nil)
         _deletedMessageTextOpacity = MIN(1.0, MAX(0.25,
             [prefs doubleForKey:kS7TVCfgDeletedMessageOpacity]));
@@ -220,6 +229,7 @@ static const CGFloat kDefaultDeletedMessageOpacity  = 0.58;
     [prefs setBool:self.selfMentionHighlightEnabled forKey:kS7TVCfgSelfMentionEnabled];
     [prefs setObject:S7TVColorToHexString(self.selfMentionHighlightColor) forKey:kS7TVCfgSelfMentionColor];
     [prefs setBool:self.showModerationDetails forKey:kS7TVCfgShowModerationDetails];
+    [prefs setInteger:self.deletedMessageStyle forKey:kS7TVCfgDeletedMessageStyle];
     [prefs setDouble:self.deletedMessageTextOpacity forKey:kS7TVCfgDeletedMessageOpacity];
 }
 
@@ -240,6 +250,12 @@ static const CGFloat kDefaultDeletedMessageOpacity  = 0.58;
 
 - (void)setShowModerationDetails:(BOOL)showModerationDetails {
     _showModerationDetails = showModerationDetails;
+    [self save];
+    [self s7tv_postDidChangeNotification];
+}
+
+- (void)setDeletedMessageStyle:(S7TVDeletedMessageStyle)deletedMessageStyle {
+    _deletedMessageStyle = deletedMessageStyle;
     [self save];
     [self s7tv_postDidChangeNotification];
 }
@@ -352,6 +368,7 @@ static const CGFloat kDefaultDeletedMessageOpacity  = 0.58;
     [prefs removeObjectForKey:kS7TVCfgSystemBGEnabled];
     [prefs removeObjectForKey:kS7TVCfgSelfMentionEnabled];
     [prefs removeObjectForKey:kS7TVCfgShowModerationDetails];
+    [prefs removeObjectForKey:kS7TVCfgDeletedMessageStyle];
     [self save];
     [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Config réinitialisée aux défauts"];
     [self s7tv_postDidChangeNotification];

@@ -196,6 +196,10 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // voir 7tv-picker-sizes.m, _buildSelfMentionSectionInScrollView:).
         @"sizes_self_mention_row_label":    @[@"Vous êtes mentionné", @"You're mentioned"],
         @"sizes_moderation_section_title":  @[@"Messages supprimés", @"Deleted messages"],
+        @"sizes_deleted_style_label":       @[@"Style du message révélé", @"Revealed message style"],
+        @"sizes_deleted_style_dimmed":      @[@"Atténué", @"Dimmed"],
+        @"sizes_deleted_style_struck":      @[@"Barré", @"Struck"],
+        @"sizes_deleted_style_both":        @[@"Les deux", @"Both"],
         @"sizes_moderation_details_label":  @[@"Afficher timeout / ban", @"Show timeout / ban"],
         @"sizes_deleted_opacity_label":     @[@"Opacité du message révélé", @"Revealed message opacity"],
         @"preview_sub_phrase":              @[@"a pris un abonnement Tier 1. C'est son 3e mois d'abonnement !",

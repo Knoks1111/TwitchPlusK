@@ -434,6 +434,11 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 - (void)mergeChannelPointCompanionMessage:(S7TVChatMessage *)companion
                                 completion:(void (^ _Nullable)(NSString * _Nullable mergedMessageID))completion;
 
+// Applique tardivement l'icône de monnaie personnalisée aux cartes déjà dans
+// le transcript lorsque communityPointsSettings arrive après la rédemption.
+- (void)updateChannelPointCurrencyImageURL:(NSURL *)imageURL
+                                completion:(void (^ _Nullable)(void))completion;
+
 // --- Lecture (thread-safe) ---
 
 // Copie de tous les messages, dans l'ordre chronologique d'ajout.

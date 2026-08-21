@@ -377,6 +377,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
                            highlightBadgeText:nil];
     self.systemIconView.hidden = YES;
     self.messageLabelLeadingConstraint.constant = 18.0;
+    self.messageLabelTopConstraint.constant = 9.0;
     self.contentView.backgroundColor = [UIColor clearColor];
 }
 
@@ -1115,7 +1116,11 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     // en l'ajoutant au constant de la contrainte de bas de label, qu'il doit
     // être appliqué, puisque cette contrainte contribue directement à la
     // hauteur intrinsèque que UIKit va lire pour dimensionner la cellule.
-    cell.messageLabelBottomConstraint.constant = -(4 + cfg.lineSpacing);
+    BOOL isChannelPointCard = msg.state == S7TVChatMessageStateNormal &&
+        msg.type == S7TVChatMessageTypeChannelPointRedemption &&
+        msg.channelPointRewardInfo != nil;
+    CGFloat bottomPadding = isChannelPointCard ? 9.0 : 4.0;
+    cell.messageLabelBottomConstraint.constant = -(bottomPadding + cfg.lineSpacing);
 }
 
 - (void)s7tv_observeAnimationsForCell:(S7TVChatCustomCell *)cell {
@@ -1893,14 +1898,24 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
 
     if (msg.type == S7TVChatMessageTypeChannelPointRedemption &&
         msg.channelPointRewardInfo) {
+        NSUInteger bannerStart = result.length;
         [self s7tv_appendChannelPointBannerForMessage:msg
                                                 into:result
                               collectUncachedEmotes:outUncachedEmotes];
         if (msg.rawText.length) {
             [result appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"]];
+            NSUInteger bannerParagraphLength = result.length - bannerStart;
             [self s7tv_appendNormalBodyForMessage:msg into:result
                             collectUncachedEmotes:outUncachedEmotes
                             collectAnimatedEmotes:outAnimatedEmotes];
+            s7tv_applyLineBreakParagraphStyle(result);
+            NSMutableParagraphStyle *bannerStyle = [NSMutableParagraphStyle new];
+            bannerStyle.lineBreakMode = NSLineBreakByWordWrapping;
+            bannerStyle.paragraphSpacing = 6.0;
+            [result addAttribute:NSParagraphStyleAttributeName
+                           value:bannerStyle
+                           range:NSMakeRange(bannerStart, bannerParagraphLength)];
+            return result;
         }
         s7tv_applyLineBreakParagraphStyle(result);
         return result;

@@ -169,53 +169,6 @@ static BOOL s7tv_channelPointDiagnosticEnabled(void) {
     return mgr.logsEnabled && mgr.logChatCustom;
 }
 
-static BOOL s7tv_isChannelPointRewardKey(NSString *key) {
-    NSString *lower = key.lowercaseString;
-    return [lower containsString:@"reward"] ||
-           [lower containsString:@"redemption"] ||
-           [lower containsString:@"channelpoint"] ||
-           [lower containsString:@"channel_point"] ||
-           [lower containsString:@"communitypoint"] ||
-           [lower containsString:@"community_point"];
-}
-
-// Retourne seulement les branches qui contiennent une clé liée aux rewards.
-// Une clé pertinente conserve sa valeur entière : on ne perd ainsi ni
-// image, ni couleur, ni coût, ni prompt même si leurs noms ne contiennent
-// eux-mêmes pas le mot "reward".
-static id s7tv_extractChannelPointRewardBranches(id json) {
-    if ([json isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *dict = json;
-        NSMutableDictionary *result = [NSMutableDictionary dictionary];
-        [dict enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
-            NSString *keyString = [key isKindOfClass:[NSString class]] ? key : [key description];
-            if (s7tv_isChannelPointRewardKey(keyString)) {
-                result[keyString] = value ?: [NSNull null];
-                return;
-            }
-            id nested = s7tv_extractChannelPointRewardBranches(value);
-            if (nested) result[keyString] = nested;
-        }];
-        return result.count ? result : nil;
-    }
-    if ([json isKindOfClass:[NSArray class]]) {
-        NSMutableArray *result = [NSMutableArray array];
-        for (id value in (NSArray *)json) {
-            id nested = s7tv_extractChannelPointRewardBranches(value);
-            if (nested) [result addObject:nested];
-        }
-        return result.count ? result : nil;
-    }
-    return nil;
-}
-
-static NSString *s7tv_limitedDiagnosticString(NSString *string) {
-    static const NSUInteger kMaximumLength = 120000;
-    if (string.length <= kMaximumLength) return string;
-    return [[string substringToIndex:kMaximumLength]
-        stringByAppendingString:@"\n… [payload tronqué à 120000 caractères]"];
-}
-
 static BOOL s7tv_shouldLogUniqueChannelPointPayload(NSString *source, NSString *payload) {
     static NSMutableSet<NSString *> *seen = nil;
     static dispatch_once_t onceToken;
@@ -228,85 +181,6 @@ static BOOL s7tv_shouldLogUniqueChannelPointPayload(NSString *source, NSString *
         [seen addObject:fingerprint];
     }
     return YES;
-}
-
-static NSString *s7tv_GQLOperationName(NSURLRequest *request) {
-    NSData *body = request.HTTPBody;
-    if (!body.length) return @"inconnue";
-    id json = [NSJSONSerialization JSONObjectWithData:body options:0 error:nil];
-    BOOL found = NO;
-    id operation = json ? s7tv_findValueForKeyRecursive(json, @"operationName", &found) : nil;
-    return (found && [operation isKindOfClass:[NSString class]] && [operation length])
-        ? operation : @"inconnue";
-}
-
-static void s7tv_logChannelPointGQLDiagnostic(NSData *data, NSURLRequest *request) {
-    if (!data.length || !s7tv_channelPointDiagnosticEnabled()) return;
-    NSString *rawPayload = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    NSString *rawLower = rawPayload.lowercaseString;
-    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    id relevant = json ? s7tv_extractChannelPointRewardBranches(json) : nil;
-    NSString *operation = s7tv_GQLOperationName(request);
-    NSString *operationLower = operation.lowercaseString;
-    // Le coffre automatique utilise le même vocabulaire communityPoints,
-    // mais possède déjà sa catégorie dédiée. Ne pas polluer ChatCustom avec
-    // ClaimCommunityPoints sauf si le même payload contient aussi de vraies
-    // données de reward/redemption.
-    BOOL isClaimOnly = ([operationLower containsString:@"claimcommunitypoints"] ||
-                        [rawLower containsString:@"claimcommunitypoints"]) &&
-                       ![rawLower containsString:@"reward"] &&
-                       ![rawLower containsString:@"redemption"];
-    if (isClaimOnly) return;
-    BOOL operationLooksRelevant = s7tv_isChannelPointRewardKey(operation);
-    if (!relevant && !operationLooksRelevant) return;
-
-    NSData *prettyData = relevant
-        ? [NSJSONSerialization dataWithJSONObject:relevant
-                                           options:NSJSONWritingPrettyPrinted
-                                             error:nil]
-        : data;
-    NSString *payload = [[NSString alloc] initWithData:prettyData encoding:NSUTF8StringEncoding];
-    if (!payload.length) payload = [relevant description] ?: @"<payload illisible>";
-    payload = s7tv_limitedDiagnosticString(payload);
-    NSString *dedupeSource = [@"GQL:" stringByAppendingString:operation ?: @"inconnue"];
-    if (!s7tv_shouldLogUniqueChannelPointPayload(dedupeSource, payload)) return;
-    [[SevenTVManager sharedManager]
-        log:@"[ChatCustom][Points:GQL] operation=%@\n%@", operation, payload];
-}
-
-static void s7tv_logChannelPointIRCDiagnostic(NSString *ircLine) {
-    if (!ircLine.length || !s7tv_channelPointDiagnosticEnabled()) return;
-    NSString *lower = ircLine.lowercaseString;
-    if (![lower containsString:@"custom-reward-id"] &&
-        ![lower containsString:@"channel-points"] &&
-        ![lower containsString:@"channel_points"] &&
-        ![lower containsString:@"highlighted-message"] &&
-        ![lower containsString:@"send-highlighted-message"] &&
-        ![lower containsString:@"skip-subs-mode-message"] &&
-        ![lower containsString:@"single-message-bypass"] &&
-        ![lower containsString:@"single_message_bypass"]) return;
-    [[SevenTVManager sharedManager]
-        log:@"[ChatCustom][Points:IRC]\n%@", s7tv_limitedDiagnosticString(ircLine)];
-}
-
-static void s7tv_logChannelPointWebSocketDiagnostic(NSString *text) {
-    if (!text.length || !s7tv_channelPointDiagnosticEnabled()) return;
-    NSString *lower = text.lowercaseString;
-    BOOL containsRewardEvent = [lower containsString:@"reward-redeemed"] ||
-                               [lower containsString:@"reward_redeemed"] ||
-                               [lower containsString:@"customreward"] ||
-                               [lower containsString:@"custom_reward"] ||
-                               [lower containsString:@"redemption"];
-    if (!containsRewardEvent &&
-        ([lower containsString:@"availableclaim"] ||
-         [lower containsString:@"claimcommunitypoints"])) return;
-    BOOL relevant = containsRewardEvent ||
-                    [lower containsString:@"channel_points"] ||
-                    [lower containsString:@"channelpoints"];
-    if (!relevant) return;
-    NSString *payload = s7tv_limitedDiagnosticString(text);
-    if (!s7tv_shouldLogUniqueChannelPointPayload(@"WS", payload)) return;
-    [[SevenTVManager sharedManager] log:@"[ChatCustom][Points:WS]\n%@", payload];
 }
 
 // Cherche la première instance de Twitch.ChatInputView actuellement
@@ -1253,11 +1127,149 @@ static NSURL * _Nullable s7tv_channelPointImageURL(NSDictionary *reward) {
     return urlString.length ? [NSURL URLWithString:urlString] : nil;
 }
 
+static NSURL * _Nullable s7tv_channelPointURLFromJSONValue(id value) {
+    NSString *urlString = nil;
+    if ([value isKindOfClass:[NSDictionary class]]) {
+        urlString = s7tv_channelPointImageURLString(value);
+    } else if ([value isKindOfClass:[NSString class]]) {
+        urlString = value;
+    }
+    return urlString.length ? [NSURL URLWithString:urlString] : nil;
+}
+
+// Recherche de secours dans les propriétés de settings, sans jamais entrer
+// dans les tableaux de récompenses : leurs images sont celles du picker
+// (stylo, highlight, etc.), pas l'icône de monnaie personnalisée.
+static NSURL * _Nullable s7tv_findLikelyCurrencyImageInSettings(id object) {
+    if ([object isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dictionary = object;
+        NSURL *ownURL = s7tv_channelPointURLFromJSONValue(dictionary);
+        NSString *ownPath = ownURL.absoluteString.lowercaseString;
+        if ([ownPath containsString:@"channel-point"] ||
+            [ownPath containsString:@"channel_point"] ||
+            [ownPath containsString:@"community-point"] ||
+            [ownPath containsString:@"community_point"]) {
+            return ownURL;
+        }
+        for (NSString *key in dictionary) {
+            if ([key caseInsensitiveCompare:@"automaticRewards"] == NSOrderedSame ||
+                [key caseInsensitiveCompare:@"customRewards"] == NSOrderedSame ||
+                [key caseInsensitiveCompare:@"automatic_rewards"] == NSOrderedSame ||
+                [key caseInsensitiveCompare:@"custom_rewards"] == NSOrderedSame) {
+                continue;
+            }
+            id value = dictionary[key];
+            if ([value isKindOfClass:[NSDictionary class]] ||
+                [value isKindOfClass:[NSArray class]]) {
+                NSURL *found = s7tv_findLikelyCurrencyImageInSettings(value);
+                if (found) return found;
+            }
+        }
+    } else if ([object isKindOfClass:[NSArray class]]) {
+        for (id value in (NSArray *)object) {
+            NSURL *found = s7tv_findLikelyCurrencyImageInSettings(value);
+            if (found) return found;
+        }
+    }
+    return nil;
+}
+
+static NSDictionary * _Nullable s7tv_findCommunityPointSettingsDictionary(id object) {
+    if ([object isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dictionary = object;
+        NSDictionary *settings = s7tv_JSONDictionaryForKeys(dictionary,
+            @[@"communityPointsSettings", @"community_points_settings"]);
+        if (settings.count) return settings;
+        if ([dictionary[@"automaticRewards"] isKindOfClass:[NSArray class]] ||
+            [dictionary[@"customRewards"] isKindOfClass:[NSArray class]]) {
+            return dictionary;
+        }
+        for (id value in dictionary.allValues) {
+            if ([value isKindOfClass:[NSDictionary class]] ||
+                [value isKindOfClass:[NSArray class]]) {
+                NSDictionary *found = s7tv_findCommunityPointSettingsDictionary(value);
+                if (found) return found;
+            }
+        }
+    } else if ([object isKindOfClass:[NSArray class]]) {
+        for (id value in (NSArray *)object) {
+            NSDictionary *found = s7tv_findCommunityPointSettingsDictionary(value);
+            if (found) return found;
+        }
+    }
+    return nil;
+}
+
+static void s7tv_collectCurrencyImageDiagnosticLines(id object,
+                                                       NSString *path,
+                                                       NSMutableArray<NSString *> *lines) {
+    if (lines.count >= 40) return;
+    if ([object isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dictionary = object;
+        for (NSString *key in dictionary) {
+            NSString *lowerKey = key.lowercaseString;
+            if ([lowerKey isEqualToString:@"automaticrewards"] ||
+                [lowerKey isEqualToString:@"customrewards"] ||
+                [lowerKey isEqualToString:@"automatic_rewards"] ||
+                [lowerKey isEqualToString:@"custom_rewards"]) {
+                continue;
+            }
+            id value = dictionary[key];
+            NSString *childPath = path.length
+                ? [path stringByAppendingFormat:@".%@", key]
+                : key;
+            BOOL imageLikeKey = [lowerKey containsString:@"image"] ||
+                                [lowerKey containsString:@"icon"] ||
+                                [lowerKey containsString:@"currency"];
+            NSURL *url = s7tv_channelPointURLFromJSONValue(value);
+            if (url.absoluteString.length) {
+                [lines addObject:[NSString stringWithFormat:@"%@ = %@",
+                                  childPath, url.absoluteString]];
+            } else if (imageLikeKey && value == [NSNull null]) {
+                [lines addObject:[NSString stringWithFormat:@"%@ = null", childPath]];
+            } else if (imageLikeKey && [value isKindOfClass:[NSString class]]) {
+                [lines addObject:[NSString stringWithFormat:@"%@ = %@", childPath, value]];
+            }
+            if ([value isKindOfClass:[NSDictionary class]] ||
+                [value isKindOfClass:[NSArray class]]) {
+                s7tv_collectCurrencyImageDiagnosticLines(value, childPath, lines);
+            }
+            if (lines.count >= 40) return;
+        }
+    } else if ([object isKindOfClass:[NSArray class]]) {
+        NSUInteger index = 0;
+        for (id value in (NSArray *)object) {
+            NSString *childPath = [path stringByAppendingFormat:@"[%lu]",
+                                   (unsigned long)index++];
+            s7tv_collectCurrencyImageDiagnosticLines(value, childPath, lines);
+            if (lines.count >= 40) return;
+        }
+    }
+}
+
+static void s7tv_logCurrencyImageDiagnostic(id root, NSURL *resolvedURL) {
+    if (!s7tv_channelPointDiagnosticEnabled()) return;
+    NSDictionary *settings = s7tv_findCommunityPointSettingsDictionary(root);
+    if (!settings.count) return;
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    NSArray<NSString *> *keys = [settings.allKeys sortedArrayUsingSelector:
+        @selector(localizedCaseInsensitiveCompare:)];
+    [lines addObject:[NSString stringWithFormat:@"clés settings = %@",
+                      [keys componentsJoinedByString:@", "]]];
+    s7tv_collectCurrencyImageDiagnosticLines(settings,
+                                              @"communityPointsSettings",
+                                              lines);
+    [lines addObject:[NSString stringWithFormat:@"URL retenue = %@",
+                      resolvedURL.absoluteString ?: @"aucune"]];
+    NSString *payload = [lines componentsJoinedByString:@"\n"];
+    if (!s7tv_shouldLogUniqueChannelPointPayload(@"ICON", payload)) return;
+    [[SevenTVManager sharedManager] log:@"[ChatCustom][Points:Icon]\n%@", payload];
+}
+
 // L'icône placée devant le coût sur Twitch PC est l'image de la monnaie de
-// la chaîne (communityPointsSettings.image), pas defaultImage de la
-// récompense automatique — cette dernière est l'illustration « stylo » du
-// bouton dans le picker. Recherche uniquement ce champ précis afin de ne pas
-// confondre l'icône des points avec la première image de récompense imbriquée.
+// la chaîne, pas defaultImage de la récompense automatique. Twitch a utilisé
+// plusieurs noms de champs selon ses requêtes GQL ; ils sont tous lus ici,
+// puis validés dans le contexte exclusif de communityPointsSettings.
 static NSURL * _Nullable s7tv_findChannelPointCurrencyImageURL(id object) {
     if ([object isKindOfClass:[NSDictionary class]]) {
         NSDictionary *dictionary = object;
@@ -1269,10 +1281,19 @@ static NSURL * _Nullable s7tv_findChannelPointCurrencyImageURL(id object) {
             settings = dictionary;
         }
         if (settings.count) {
-            NSDictionary *image = s7tv_JSONDictionaryForKeys(settings,
-                @[@"image", @"channelPointsImage", @"channel_points_image"]);
-            NSString *urlString = s7tv_channelPointImageURLString(image);
-            if (urlString.length) return [NSURL URLWithString:urlString];
+            id image = s7tv_JSONValueForKeys(settings, @[
+                @"image", @"channelPointsImage", @"channel_points_image",
+                @"communityPointsImage", @"community_points_image",
+                @"currencyImage", @"currency_image", @"pointsIcon",
+                @"points_icon", @"pointIcon", @"point_icon",
+                @"customImage", @"custom_image", @"icon",
+                @"defaultImage", @"default_image", @"defaultIcon",
+                @"default_icon"
+            ]);
+            NSURL *exactURL = s7tv_channelPointURLFromJSONValue(image);
+            if (exactURL) return exactURL;
+            NSURL *likelyURL = s7tv_findLikelyCurrencyImageInSettings(settings);
+            if (likelyURL) return likelyURL;
         }
         for (id value in dictionary.allValues) {
             if ([value isKindOfClass:[NSDictionary class]] ||
@@ -1436,6 +1457,7 @@ static void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data) {
     id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (!root) return;
     NSURL *currencyImageURL = s7tv_findChannelPointCurrencyImageURL(root);
+    s7tv_logCurrencyImageDiagnostic(root, currencyImageURL);
 
     NSMutableArray<NSDictionary *> *rawRewards = [NSMutableArray array];
     if (containsAutomaticRewards) {
@@ -1452,7 +1474,9 @@ static void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data) {
         if (!resolvedCurrencyImageURL && sameChannel) {
             resolvedCurrencyImageURL = [s7tv_automaticRewardCurrencyImageURL copy];
         }
-        if (!rawRewards.count && currencyImageURL && sameChannel) {
+        if (!rawRewards.count && currencyImageURL) {
+            if (!sameChannel) [catalog removeAllObjects];
+            s7tv_automaticRewardCatalogChannelID = [currentChannelID copy] ?: @"";
             s7tv_automaticRewardCurrencyImageURL = [currencyImageURL copy];
             for (S7TVChannelPointRewardInfo *existingInfo in catalog.allValues) {
                 if ([existingInfo.pricingType caseInsensitiveCompare:@"BITS"] != NSOrderedSame) {
@@ -1461,7 +1485,14 @@ static void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data) {
             }
         }
     }
-    if (!rawRewards.count) return;
+    if (!rawRewards.count) {
+        if (currencyImageURL) {
+            [[SevenTVManager sharedManager].chatMessageStore
+                updateChannelPointCurrencyImageURL:currencyImageURL
+                completion:^{ s7tv_scheduleChatCustomReload(); }];
+        }
+        return;
+    }
 
     NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *nextCatalog =
         [NSMutableDictionary dictionary];
@@ -1509,6 +1540,11 @@ static void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data) {
         s7tv_automaticRewardCatalogChannelID =
             [[SevenTVManager sharedManager].currentChannelTwitchID copy] ?: @"";
         s7tv_automaticRewardCurrencyImageURL = [resolvedCurrencyImageURL copy];
+    }
+    if (resolvedCurrencyImageURL) {
+        [[SevenTVManager sharedManager].chatMessageStore
+            updateChannelPointCurrencyImageURL:resolvedCurrencyImageURL
+            completion:^{ s7tv_scheduleChatCustomReload(); }];
     }
 }
 
@@ -2348,7 +2384,6 @@ static NSArray<NSString *> *s7tv_joinedChannelsInOutgoingWebSocketMessage(
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
                     s7tv_scanGQLResponseForChannelPointsClaim(data);
                     s7tv_ingestAutomaticRewardsFromGQLData(data);
-                    s7tv_logChannelPointGQLDiagnostic(data, request);
                 }
                 completionHandler(data, response, error);
             };
@@ -2366,7 +2401,6 @@ static NSArray<NSString *> *s7tv_joinedChannelsInOutgoingWebSocketMessage(
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
                     s7tv_scanGQLResponseForChannelPointsClaim(data);
                     s7tv_ingestAutomaticRewardsFromGQLData(data);
-                    s7tv_logChannelPointGQLDiagnostic(data, nil);
                 }
                 completionHandler(data, response, error);
             };
@@ -2461,8 +2495,6 @@ static NSMutableDictionary<NSNumber *, NSMutableData *> *s7tv_apolloBuffers(void
             [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:fullData];
             s7tv_scanGQLResponseForChannelPointsClaim(fullData);
             s7tv_ingestAutomaticRewardsFromGQLData(fullData);
-            s7tv_logChannelPointGQLDiagnostic(fullData,
-                task.currentRequest ?: task.originalRequest);
 
             // Preuve directe du résultat serveur de la mutation de claim —
             // permet de voir un éventuel champ "error" renvoyé par Twitch
@@ -2689,7 +2721,6 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
 
                 if (textToProcess) {
                     s7tv_scanWebSocketTextForChannelPointsClaimAvailable(textToProcess);
-                    s7tv_logChannelPointWebSocketDiagnostic(textToProcess);
 
                     BOOL addedMessage = NO;
                     // Les notifications PubSub sont des enveloppes JSON et
@@ -2709,7 +2740,6 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                         NSString *ircLine = [rawLine stringByTrimmingCharactersInSet:
                             [NSCharacterSet newlineCharacterSet]];
                         if (!ircLine.length) continue;
-                        s7tv_logChannelPointIRCDiagnostic(ircLine);
                         if ([ircLine containsString:@"ROOMSTATE"]) {
                             s7tv_handleRoomState(ircLine);
                         }

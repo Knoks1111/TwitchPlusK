@@ -38,6 +38,10 @@
 @property (nonatomic, strong) UITextField         *emoteSearchField;
 @property (nonatomic, strong) NSArray<SevenTVEmote *> *emotePickerEmotes;
 @property (nonatomic, strong, readwrite) NSArray<SevenTVEmote *> *emotePickerAllEmotes;
+// L'alerte de recherche emprunte temporairement le first responder au champ
+// Twitch. Pendant ce transfert, UITextViewTextDidEndEditingNotification ne
+// doit pas être interprétée comme une vraie fermeture du picker.
+@property (nonatomic, assign) BOOL pickerSearchAlertActive;
 
 // Arrays filtrés pour l'affichage dans le picker (3 sections)
 @property (nonatomic, strong) NSArray<SevenTVEmote *> *emotePickerFavoriteEmotes;
@@ -160,6 +164,7 @@
 - (void)_s7tv_textEntryDidEndEditing:(NSNotification *)note {
     if (note.object != self.emotePickerTextEntryView) return;
     if (!self.emotePickerView || self.emotePickerView.hidden) return; // picker déjà fermé, rien à faire
+    if (self.pickerSearchAlertActive) return; // focus prêté à l'alerte de recherche
 
     // Pas de resignFirstResponder/reloadInputViews ici : la résignation est
     // déjà en cours côté UIKit (c'est elle qui a déclenché cette notif).
@@ -616,6 +621,7 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
 }
 
 - (void)_hideEmotePicker {
+    self.pickerSearchAlertActive = NO;
     [self _s7tv_deactivateVisiblePickerAnimations];
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
@@ -642,6 +648,7 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
 }
 - (void)cleanupPickerForStreamClose {
     [[SevenTVManager sharedManager] log:@"🔒 cleanupPickerForStreamClose → nettoyage picker"];
+    self.pickerSearchAlertActive = NO;
     [self _s7tv_deactivateVisiblePickerAnimations];
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
@@ -1415,14 +1422,15 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 // Cela retire l'inputView du TextEntryView → le picker disparaît et
 // les frappes suivantes vont directement dans la chatbox de Twitch.
 //
-// SOLUTION : bloquer becomeFirstResponder (retourner NO dans le delegate),
-// et afficher à la place un UIAlertController avec un champ texte.
-// L'UIAlertController est une fenêtre modale iOS → le TextEntryView reste
-// firstResponder en arrière-plan, son inputView (le picker) ne bouge pas.
-// Quand l'utilisateur valide, on applique la recherche et on recharge la grille.
+// SOLUTION : bloquer becomeFirstResponder sur le champ intégré (retourner NO
+// dans le delegate), puis afficher un UIAlertController avec un champ texte.
+// Son clavier natif emprunte temporairement le first responder au TextEntryView
+// Twitch ; pickerSearchAlertActive empêche de prendre ce transfert pour une
+// fermeture. À la validation, on recharge la grille puis on restaure le picker.
 //
 - (BOOL)textFieldShouldBeginEditing:(UITextField *)textField {
     if (textField != self.emoteSearchField) return YES;
+    if (self.pickerSearchAlertActive) return NO;
 
     // Capturer la query courante pour pré-remplir l'alerte
     NSString *currentQuery = textField.text ?: @"";
@@ -1470,6 +1478,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         // de deux qui se suivent.
         [alert dismissViewControllerAnimated:NO completion:^{
             [self _restorePickerFocus];
+            self.pickerSearchAlertActive = NO;
         }];
     }];
 
@@ -1481,6 +1490,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         // sans animation pour ne garder qu'une seule transition visible.
         [alert dismissViewControllerAnimated:NO completion:^{
             [self _restorePickerFocus];
+            self.pickerSearchAlertActive = NO;
         }];
     }];
 
@@ -1488,8 +1498,13 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [alert addAction:cancelAction];
     alert.preferredAction = searchAction;
 
-    // Présenter depuis le topViewController (le picker est inputView, pas un VC)
-    [[self topViewController] presentViewController:alert animated:YES completion:nil];
+    // Présenter depuis le topViewController (le picker est inputView, pas un VC).
+    // Le flag doit être levé AVANT la présentation : le champ de l'alerte va
+    // immédiatement faire résigner le TextEntryView de Twitch.
+    UIViewController *presenter = [self topViewController];
+    if (!presenter) return NO;
+    self.pickerSearchAlertActive = YES;
+    [presenter presentViewController:alert animated:YES completion:nil];
 
     // Bloquer le becomeFirstResponder → le picker reste affiché
     return NO;
@@ -1531,6 +1546,13 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         [tv becomeFirstResponder];
     }
     [tv reloadInputViews];
+    // reloadData pendant la recherche coupe volontairement les anciens
+    // observateurs d'animation. Une fois l'inputView réellement remonté,
+    // réactiver immédiatement les seules cellules désormais visibles.
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf _s7tv_activateVisiblePickerAnimations];
+    });
 }
 
 // Appelé par UIControlEventEditingChanged (cas où le champ est modifié

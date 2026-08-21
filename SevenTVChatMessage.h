@@ -6,8 +6,8 @@
  * VOD éventuellement plus tard — voir décision Phase 0 : live d'abord,
  * architecture VOD-ready).
  *
- * Toutes les classes de ce fichier sont pures données + stockage — aucune
- * dépendance UIKit au-delà de UIColor (couleur pseudo), aucun accès réseau.
+ * Le fichier regroupe les données, leur stockage et la conversion des lignes
+ * IRC en messages. Il ne réalise lui-même aucun accès réseau.
  */
 
 #import <Foundation/Foundation.h>
@@ -15,6 +15,30 @@
 #import "SevenTVEmoteProvider.h"
 
 NS_ASSUME_NONNULL_BEGIN
+
+@class S7TVChannelPointRewardInfo;
+@class S7TVChatMessage;
+
+typedef S7TVChannelPointRewardInfo * _Nullable
+    (^S7TVAutomaticRewardResolver)(NSString *messageID);
+
+// Utilitaires IRC partagés avec les hooks de modération/ROOMSTATE restés
+// dans TweakSevenTV.m. Le parsing et la construction des messages vivent
+// désormais avec le modèle plutôt que dans le point d'entrée du tweak.
+FOUNDATION_EXPORT NSString *s7tv_tagValue(NSDictionary<NSString *, NSString *> *tags,
+                                           NSString *key, NSString *defaultValue);
+FOUNDATION_EXPORT NSDictionary<NSString *, NSString *> *s7tv_parseIRCTags(NSString *tagBlock);
+FOUNDATION_EXPORT NSDate *s7tv_messageTimestampFromTags(
+    NSDictionary<NSString *, NSString *> *tags);
+FOUNDATION_EXPORT UIColor * _Nullable s7tv_colorFromHexString(NSString *hex);
+
+FOUNDATION_EXPORT S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(
+    NSString *ircLine,
+    NSArray<id<S7TVEmoteProvider>> *providers,
+    S7TVAutomaticRewardResolver _Nullable automaticRewardResolver);
+FOUNDATION_EXPORT S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(
+    NSString *ircLine,
+    NSArray<id<S7TVEmoteProvider>> *providers);
 
 // ============================================================
 // MARK: - S7TVChatUserColorRegistry
@@ -164,7 +188,7 @@ typedef NS_ENUM(NSInteger, S7TVChatModerationKind) {
 // Kind distingue seulement le gift communautaire du reste : premier sub vs
 // réabonnement se distingue via cumulativeMonths <= 1 (pas de tag IRC dédié
 // pour "premier sub"). Périmètre actuel : sub/resub + gift communautaire
-// (submysterygift) — voir s7tv_parseUSERNOTICE dans TweakSevenTV.m. Subgift
+// (submysterygift) — voir s7tv_parseUSERNOTICE dans SevenTVChatMessage.m. Subgift
 // ciblé (1 destinataire nommé) hors périmètre pour l'instant.
 typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
     S7TVSystemMessageKindSubOrResub = 0,
@@ -253,7 +277,7 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 @property (nonatomic, copy, nullable) NSArray<NSString *> *badgeIdentifiers;
 
 // Phase 3 — nil pour un message normal. systemPhrase est pré-construit par
-// le parser IRC (TweakSevenTV.m, s7tv_buildSystemMessagePhrase) — le
+// le parser IRC (SevenTVChatMessage.m, s7tv_buildSystemMessagePhrase) — le
 // renderer ne fait que de l'affichage, la logique de formulation reste
 // côté parsing, pas dans SevenTVChatCustomView.
 @property (nonatomic, strong, nullable) S7TVSystemMessageInfo *systemInfo;
@@ -276,7 +300,7 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 @property (nonatomic, assign) NSInteger moderationDurationSeconds;
 
 // YES si le message vient d'un /me (CTCP ACTION en IRC, voir
-// s7tv_parsePRIVMSG dans TweakSevenTV.m qui déballe déjà le wrapper
+// s7tv_parsePRIVMSG dans SevenTVChatMessage.m qui déballe déjà le wrapper
 // \x01ACTION ... \x01 avant de remplir rawText/tokens). Comportement
 // Twitch : le corps entier du message prend authorColor au lieu du blanc
 // habituel (le pseudo est déjà coloré dans tous les cas) — voir
@@ -286,7 +310,7 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // YES si CE message (écrit par quelqu'un d'autre) cite le pseudo du viewer
 // connecté — @pseudo ou pseudo nu, même détection que les tokens .mention
 // habituels (voir S7TVChatToken ci-dessus). Calculé une fois à la
-// construction du message par s7tv_parsePRIVMSG (TweakSevenTV.m), comparé
+// construction du message par s7tv_parsePRIVMSG (SevenTVChatMessage.m), comparé
 // à SevenTVManager.currentViewerDisplayName — PAS recalculé au rendu, pour
 // que le résultat reste stable même si le pseudo local change en cours de
 // session (peu probable mais gratuit à garantir ici). Piloté par

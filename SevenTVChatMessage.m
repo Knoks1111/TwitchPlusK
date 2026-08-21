@@ -6,6 +6,9 @@
 
 #import "SevenTVChatMessage.h"
 #import "SevenTVManager.h"
+#import "SevenTVChatTokenizer.h"
+#import "SevenTVBadgeProvider.h"
+#import "7tv-localization.h"
 
 
 // ============================================================
@@ -112,6 +115,472 @@
 
 @implementation S7TVSystemMessageInfo
 @end
+
+
+// Extrait la valeur d'un tag IRC donné depuis le dictionnaire de tags déjà
+// parsé. Retourne defaultValue (jamais nil) si absent/vide.
+NSString *s7tv_tagValue(NSDictionary<NSString *, NSString *> *tags,
+                                NSString *key,
+                                NSString *defaultValue) {
+    NSString *v = tags[key];
+    return v.length ? v : defaultValue;
+}
+
+// Conversion #RRGGBB partagée par les parseurs IRC et PubSub. Une valeur
+// absente ou invalide reste nil : le renderer appliquera son fallback.
+UIColor * _Nullable s7tv_colorFromHexString(NSString *hex) {
+    if (![hex isKindOfClass:[NSString class]] || hex.length < 6) return nil;
+    NSString *digits = [hex hasPrefix:@"#"] ? [hex substringFromIndex:1] : hex;
+    if (digits.length != 6) return nil;
+    unsigned int rgb = 0;
+    NSScanner *scanner = [NSScanner scannerWithString:digits];
+    if (![scanner scanHexInt:&rgb] || !scanner.isAtEnd) return nil;
+    return [UIColor colorWithRed:((rgb >> 16) & 0xFF) / 255.0
+                           green:((rgb >> 8) & 0xFF) / 255.0
+                            blue:(rgb & 0xFF) / 255.0
+                           alpha:1.0];
+}
+
+// Décode l'échappement générique des valeurs de tags IRC (IRCv3 tag
+// escaping) : \s = espace, \: = point-virgule, \\ = backslash, \r, \n.
+// C'est ce qui manquait et causait l'affichage brut "Mais\sdu\sscoup\s..."
+// dans le bandeau reply-parent-msg-body — le seul tag de ce fichier qui
+// contient régulièrement des espaces, donc le seul où l'absence de décodage
+// se voyait à l'écran. Les autres tags (badges=, emotes=, etc.) ne
+// contiennent normalement aucun caractère à échapper → no-op pour eux.
+static NSString *s7tv_unescapeIRCTagValue(NSString *value) {
+    if (![value containsString:@"\\"]) return value; // fast path, cas le plus fréquent
+    NSMutableString *result = [NSMutableString stringWithCapacity:value.length];
+    NSUInteger i = 0;
+    NSUInteger len = value.length;
+    while (i < len) {
+        unichar c = [value characterAtIndex:i];
+        if (c == '\\' && i + 1 < len) {
+            unichar next = [value characterAtIndex:i + 1];
+            switch (next) {
+                case 's': [result appendString:@" "]; break;
+                case ':': [result appendString:@";"]; break;
+                case '\\': [result appendString:@"\\"]; break;
+                case 'r': [result appendString:@"\r"]; break;
+                case 'n': [result appendString:@"\n"]; break;
+                // Séquence inconnue : on garde le caractère tel quel plutôt
+                // que de planter (parsing tolérant, exigence Phase 1a).
+                default: [result appendFormat:@"%C", next]; break;
+            }
+            i += 2;
+        } else {
+            [result appendFormat:@"%C", c];
+            i += 1;
+        }
+    }
+    return result;
+}
+
+// Parse le bloc de tags IRC "@key1=val1;key2=val2;... " en dictionnaire.
+// Tolère les tags sans valeur (key= ou key seul) et les lignes sans tags.
+NSDictionary<NSString *, NSString *> *s7tv_parseIRCTags(NSString *tagBlock) {
+    NSMutableDictionary<NSString *, NSString *> *tags = [NSMutableDictionary dictionary];
+    if (!tagBlock.length) return tags;
+
+    for (NSString *pair in [tagBlock componentsSeparatedByString:@";"]) {
+        if (pair.length == 0) continue;
+        NSRange eq = [pair rangeOfString:@"="];
+        if (eq.location == NSNotFound) {
+            tags[pair] = @""; // tag sans valeur (ex: présence simple)
+            continue;
+        }
+        NSString *key = [pair substringToIndex:eq.location];
+        NSString *val = [pair substringFromIndex:eq.location + 1];
+        if (key.length) tags[key] = s7tv_unescapeIRCTagValue(val);
+    }
+    return tags;
+}
+
+// Twitch fournit tmi-sent-ts en millisecondes sur le flux live. Le service
+// Recent Messages ajoute rm-received-ts aux lignes historiques ; on le
+// préfère car il correspond au moment réellement observé par son relais.
+NSDate *s7tv_messageTimestampFromTags(NSDictionary<NSString *, NSString *> *tags) {
+    NSString *milliseconds = s7tv_tagValue(tags, @"rm-received-ts", @"");
+    if (!milliseconds.length) milliseconds = s7tv_tagValue(tags, @"tmi-sent-ts", @"");
+    NSTimeInterval value = milliseconds.doubleValue;
+    return value > 0 ? [NSDate dateWithTimeIntervalSince1970:value / 1000.0] : [NSDate date];
+}
+
+
+// Parse une ligne IRC complète et retourne un S7TVChatMessage si c'est un
+// PRIVMSG exploitable, nil sinon (autre type de commande, ou PRIVMSG dont
+// le texte n'a pas pu être isolé — on ne construit jamais de message à
+// moitié rempli).
+S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(
+    NSString *ircLine, NSArray<id<S7TVEmoteProvider>> *providers,
+    S7TVAutomaticRewardResolver _Nullable automaticRewardResolver) {
+    if (![ircLine containsString:@"PRIVMSG"]) return nil;
+
+    // Bloc de tags : tout ce qui précède le premier espace, s'il commence
+    // par '@'. Absent sur certains messages (tags malformés/désactivés
+    // côté serveur) — on tolère et on retombe sur des defaults.
+    NSDictionary<NSString *, NSString *> *tags = @{};
+    NSString *rest = ircLine;
+    if ([ircLine hasPrefix:@"@"]) {
+        NSRange firstSpace = [ircLine rangeOfString:@" "];
+        if (firstSpace.location != NSNotFound) {
+            NSString *tagBlock = [ircLine substringWithRange:
+                NSMakeRange(1, firstSpace.location - 1)];
+            tags = s7tv_parseIRCTags(tagBlock);
+            rest = [ircLine substringFromIndex:firstSpace.location + 1];
+        }
+    }
+
+    // Le texte du message suit toujours " :" après "PRIVMSG #channel" —
+    // on cherche la PREMIÈRE occurrence de " :" après "PRIVMSG" précisément
+    // pour ne pas confondre avec un ':' qui apparaîtrait dans le pseudo
+    // (":nick!user@host") plus tôt dans la ligne.
+    NSRange privmsgRange = [rest rangeOfString:@"PRIVMSG"];
+    if (privmsgRange.location == NSNotFound) return nil;
+
+    NSRange searchRange = NSMakeRange(privmsgRange.location,
+                                       rest.length - privmsgRange.location);
+    NSRange textMarker = [rest rangeOfString:@" :" options:0 range:searchRange];
+    if (textMarker.location == NSNotFound) return nil; // pas de texte exploitable
+
+    // Fix mélange de chaînes au changement de channel : le WebSocket IRC
+    // peut continuer à livrer des PRIVMSG de l'ANCIENNE chaîne juste après
+    // un switch (chevauchement JOIN/PART sur le même socket, reconnexion,
+    // etc.) — sans ce filtre, s7tv_parsePRIVMSG les acceptait tous sans
+    // distinction et le store se retrouvait avec un mélange des deux
+    // chaînes, même après le reset fait au JOIN (voir
+    // s7tv_sendMessage:completionHandler:) puisque de nouveaux messages de l'ancienne
+    // chaîne continuaient d'arriver ENSUITE. Le nom de chaîne ("#xxx") est
+    // toujours présent entre "PRIVMSG " et " :" — on l'extrait et on
+    // compare à la chaîne actuellement affichée (mgr.currentChannelName,
+    // déjà à jour de façon synchrone dès l'envoi de "JOIN #channel", voir
+    // s7tv_sendMessage:completionHandler: plus bas). Si ça ne correspond
+    // pas → message ignoré, jamais construit ni ajouté au store. Si
+    // currentChannelName n'est pas encore connu (tout premier message avant
+    // le tout premier JOIN observé), on laisse passer par sécurité plutôt
+    // que de risquer de perdre le tout début de l'historique.
+    NSUInteger channelTokenStart = privmsgRange.location + privmsgRange.length + 1; // +1 = espace après "PRIVMSG"
+    if (channelTokenStart <= textMarker.location) {
+        NSString *channelToken = [rest substringWithRange:
+            NSMakeRange(channelTokenStart, textMarker.location - channelTokenStart)];
+        channelToken = [channelToken stringByTrimmingCharactersInSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([channelToken hasPrefix:@"#"]) {
+            channelToken = [channelToken substringFromIndex:1];
+        }
+        NSString *activeChannel = [SevenTVManager sharedManager].currentChannelName;
+        if (channelToken.length && activeChannel.length &&
+            [channelToken caseInsensitiveCompare:activeChannel] != NSOrderedSame) {
+            return nil; // message d'une autre chaîne — jamais ajouté au store
+        }
+    }
+
+    NSString *messageText = [rest substringFromIndex:textMarker.location + 2];
+    if (!messageText.length) return nil;
+
+    // /me (Twitch l'encode en CTCP ACTION IRC standard) : le texte brut est
+    // enveloppé "\x01ACTION texte\x01". Déballage AVANT tokenisation —
+    // emotesTag utilise des offsets relatifs au texte réellement affiché
+    // (sans le wrapper ACTION), donc décaler l'appel à
+    // tokenizeText:twitchEmotesTag:providers: plus bas casserait l'alignement
+    // des emotes si on ne déballait qu'après.
+    static NSString *const kS7TVActionPrefix = @"\001ACTION ";
+    static NSString *const kS7TVActionSuffix = @"\001";
+    BOOL isActionMessage = NO;
+    if (messageText.length > kS7TVActionPrefix.length &&
+        [messageText hasPrefix:kS7TVActionPrefix] &&
+        [messageText hasSuffix:kS7TVActionSuffix]) {
+        isActionMessage = YES;
+        messageText = [messageText substringWithRange:NSMakeRange(
+            kS7TVActionPrefix.length,
+            messageText.length - kS7TVActionPrefix.length - kS7TVActionSuffix.length)];
+    }
+
+    NSString *messageID    = s7tv_tagValue(tags, @"id", [[NSUUID UUID] UUIDString]);
+    NSString *userID       = s7tv_tagValue(tags, @"user-id", @"");
+    NSString *displayName  = s7tv_tagValue(tags, @"display-name", @"???");
+    NSString *colorHex     = s7tv_tagValue(tags, @"color", @"");
+    NSString *emotesTag    = s7tv_tagValue(tags, @"emotes", @"");
+    NSString *badgesTag    = s7tv_tagValue(tags, @"badges", @"");
+    NSString *customRewardID = s7tv_tagValue(tags, @"custom-reward-id", @"");
+    NSString *ircMessageID = s7tv_tagValue(tags, @"msg-id", @"");
+
+    // ── Réponses / fils de discussion ───────────────────────────────────
+    // reply-parent-msg-id = message immédiatement au-dessus (juste pour le
+    // bandeau "Répond à @X"). reply-thread-parent-msg-id = racine du fil
+    // ENTIER, fournie par Twitch séparément dès le 2e niveau de réponse —
+    // c'est CE champ (jamais reply-parent-msg-id) qui doit servir à
+    // regrouper les messages d'un même fil, voir SevenTVChatMessage.h.
+    // Absent → pas une réponse (defaultValue @"" == non trouvé, testé via
+    // .length ci-dessous plutôt que comparé à une chaîne magique).
+    NSString *replyParentMsgID  = s7tv_tagValue(tags, @"reply-parent-msg-id", @"");
+    NSString *replyThreadRootID = s7tv_tagValue(tags, @"reply-thread-parent-msg-id", @"");
+    if (!replyThreadRootID.length) replyThreadRootID = replyParentMsgID; // 1er niveau = racine
+
+    S7TVChatMessage *msg = [[S7TVChatMessage alloc] initWithMessageID:messageID
+                                                             timestamp:s7tv_messageTimestampFromTags(tags)
+                                                          authorUserID:userID
+                                                     authorDisplayName:displayName
+                                                               rawText:messageText];
+    msg.isActionMessage = isActionMessage;
+    msg.channelPointRewardID = customRewardID.length ? customRewardID : nil;
+    if (replyParentMsgID.length) {
+        msg.replyParentMessageID   = replyParentMsgID;
+        // reply-parent-user-login est le pseudo de connexion (minuscules,
+        // pas le display-name avec casse/accents) — display-name est ce
+        // qu'on affiche partout ailleurs dans ce fichier, donc on le
+        // préfère ici s'il est présent pour rester cohérent visuellement,
+        // avec repli sur user-login sinon.
+        NSString *parentDisplayName = s7tv_tagValue(tags, @"reply-parent-display-name", @"");
+        msg.replyParentUsername = parentDisplayName.length
+            ? parentDisplayName
+            : s7tv_tagValue(tags, @"reply-parent-user-login", @"");
+        msg.replyParentBodyPreview = s7tv_tagValue(tags, @"reply-parent-msg-body", @"");
+        msg.replyThreadRootID = replyThreadRootID;
+    }
+    msg.authorColor = s7tv_colorFromHexString(colorHex);
+
+    // Tokenisation à la construction, pas au rendu (Phase 2) : chaque emote
+    // du message (7TV comme Twitch native) a déjà ses dimensions connues
+    // avant même le premier passage dans la table — c'est ce qui permet de
+    // réserver l'espace exact dès le départ côté renderer, sans jamais avoir
+    // à resize après coup une fois l'image chargée.
+    msg.tokens = [SevenTVChatTokenizer tokenizeText:messageText
+                                  twitchEmotesTag:emotesTag
+                                        providers:providers];
+    msg.twitchEmotesTag = emotesTag;
+    msg.badgeIdentifiers = [SevenTVBadgeProvider identifiersFromIRCTag:badgesTag];
+    msg.isFirstMessage = [s7tv_tagValue(tags, @"first-msg", @"0") isEqualToString:@"1"];
+
+    // Les récompenses automatiques (highlight, contournement du mode sub)
+    // marquent directement leur PRIVMSG avec un msg-id fixe. Le chemin
+    // PubSub construit aussi leur bandeau riche ; celui-ci sert de repli
+    // immédiat et apporte surtout les badges/emotes lors de la fusion.
+    S7TVChannelPointRewardInfo *automaticReward =
+        (automaticRewardResolver ? automaticRewardResolver(ircMessageID) : nil);
+    if (automaticReward) {
+        msg.type = S7TVChatMessageTypeChannelPointRedemption;
+        msg.channelPointRewardInfo = automaticReward;
+        // Même clé que l'événement PubSub automatique : le PRIVMSG attend
+        // brièvement celui-ci afin de fusionner ses badges/emotes dans le
+        // bandeau riche au lieu d'afficher deux lignes.
+        msg.channelPointRewardID = automaticReward.rewardID;
+    }
+
+    // Détection self-mention : scan des tokens .mention déjà résolus par le
+    // tokenizer (@pseudo ET pseudo nu — voir S7TVChatToken), comparés au
+    // pseudo du viewer connecté (voir s7tv_handleUserState plus bas dans ce
+    // fichier). nil/vide tant qu'aucun USERSTATE n'a encore été observé →
+    // mentionsCurrentViewer reste NO par défaut, jamais de faux positif.
+    NSString *viewerName = [SevenTVManager sharedManager].currentViewerDisplayName;
+    if (viewerName.length) {
+        for (S7TVChatToken *token in msg.tokens) {
+            if (token.type != S7TVChatTokenTypeMention) continue;
+            NSString *mentionedName = token.text ?: @"";
+            if ([mentionedName hasPrefix:@"@"]) {
+                mentionedName = [mentionedName substringFromIndex:1];
+            }
+            if ([mentionedName caseInsensitiveCompare:viewerName] == NSOrderedSame) {
+                msg.mentionsCurrentViewer = YES;
+                break;
+            }
+        }
+    }
+
+    return msg;
+}
+
+// ────────────────────────────────────────────────────────────
+// MARK: - Parsing IRC USERNOTICE (Phase 3 — sub / resub / gift sub)
+// ────────────────────────────────────────────────────────────
+//
+// system-msg= n'est PAS utilisé comme source du texte affiché : c'est un
+// fallback généré serveur, alors que le rendu natif Twitch (screenshots
+// Knoks, Phase 3) est reconstruit en français à partir des msg-param-*.
+// Périmètre actuel : sub/resub + gift communautaire (submysterygift).
+// Subgift ciblé (1 destinataire nommé) hors périmètre — pas de screenshot
+// de référence pour cette formulation, voir plan §Phase 3.
+
+static NSString *s7tv_pluralize(NSInteger count, NSString *singular, NSString *plural) {
+    return (count == 1) ? singular : plural;
+}
+
+static NSInteger s7tv_tierFromSubPlan(NSString *subPlan) {
+    if ([subPlan isEqualToString:@"2000"]) return 2;
+    if ([subPlan isEqualToString:@"3000"]) return 3;
+    return 1; // "1000", "Prime", ou absent → niveau 1
+}
+
+// Ordinal du mois d'abonnement — "24e" en français, "24th" en anglais.
+// Seul le compte de mois cumulés (celui qui exprime "c'est son Ne mois")
+// utilise un ordinal ; le streak (voir sysmsg_streak_clause_format) est
+// resté en nombre cardinal simple dans les deux langues — l'ancien code
+// appliquait aussi un "e" français au streak ("dont 6e mois consécutifs"),
+// peu naturel, corrigé au passage de la localisation ("dont 6 mois
+// consécutifs").
+static NSString *s7tv_ordinalMonthString(NSInteger months) {
+    if ([S7TVLocalization shared].currentLanguage == S7TVLanguageEnglish) {
+        NSInteger mod100 = months % 100;
+        NSString *suffix;
+        if (mod100 >= 11 && mod100 <= 13) {
+            suffix = @"th";
+        } else {
+            switch (months % 10) {
+                case 1:  suffix = @"st"; break;
+                case 2:  suffix = @"nd"; break;
+                case 3:  suffix = @"rd"; break;
+                default: suffix = @"th"; break;
+            }
+        }
+        return [NSString stringWithFormat:@"%ld%@", (long)months, suffix];
+    }
+    return [NSString stringWithFormat:@"%lde", (long)months];
+}
+
+// Reproduit les formulations observées sur screenshots (voir 7tv-localization.m,
+// section "Messages système sub/resub/gift", pour le détail des deux langues) :
+//   - resub payant : "<verbe> <plan>. C'est son Ne mois d'abonnement, dont S
+//     mois consécutifs !" (clause streak seulement si should-share-streak=1)
+//   - resub Prime : "<verbe> avec Prime. C'est son Ne mois d'abonnement !"
+//   - premier sub (cumulative<=1) : même verbe/plan, sans la phrase "Ne mois".
+//   - gift communautaire : "offre N abonnement(s) de niveau X à la
+//     communauté de {chaîne}. Cet utilisateur a déjà offert M abonnement(s)
+//     sur cette chaîne !"
+// Localisé via L() (suit le toggle FR/EN interne du tweak) plutôt que lu
+// depuis system-msg= IRC — voir le commentaire en tête de fichier sur ce
+// choix : system-msg est un texte de secours serveur non stylable (pseudo
+// non extractible pour le gras/couleur) et pas garanti dans la langue voulue,
+// alors que le natif Twitch lui-même reconstruit cette phrase depuis les
+// mêmes champs msg-param-* qu'on utilise ici.
+static NSString *s7tv_buildSystemMessagePhrase(S7TVSystemMessageInfo *info) {
+    if (info.kind == S7TVSystemMessageKindCommunityGift) {
+        NSString *giftWord   = s7tv_pluralize(info.massGiftCount,
+            L(@"sysmsg_word_sub_singular"), L(@"sysmsg_word_sub_plural"));
+        NSString *senderWord = s7tv_pluralize(info.senderTotalGiftCount,
+            L(@"sysmsg_word_sub_singular"), L(@"sysmsg_word_sub_plural"));
+        return [NSString stringWithFormat:L(@"sysmsg_gift_format"),
+            (long)info.massGiftCount, giftWord, (long)info.tier,
+            info.channelDisplayName ?: L(@"sysmsg_fallback_channel"),
+            (long)info.senderTotalGiftCount, senderWord];
+    }
+
+    NSString *planPhrase = info.isPrime
+        ? L(@"sysmsg_plan_prime")
+        : [NSString stringWithFormat:L(@"sysmsg_plan_tier_format"), (long)info.tier];
+    NSString *verb = info.isPrime ? L(@"sysmsg_verb_sub_prime") : L(@"sysmsg_verb_sub_tier");
+
+    if (info.cumulativeMonths <= 1) {
+        return [NSString stringWithFormat:L(@"sysmsg_first_sub_format"), verb, planPhrase];
+    }
+
+    NSString *streakClause = (info.streakMonths > 0)
+        ? [NSString stringWithFormat:L(@"sysmsg_streak_clause_format"), (long)info.streakMonths]
+        : @"";
+    NSString *monthOrdinal = s7tv_ordinalMonthString(info.cumulativeMonths);
+    return [NSString stringWithFormat:L(@"sysmsg_resub_format"),
+        verb, planPhrase, monthOrdinal, streakClause];
+}
+
+// Parse une ligne IRC complète et retourne un S7TVChatMessage de type
+// .system si c'est un USERNOTICE exploitable (sub/resub/gift communautaire),
+// nil sinon — même contrat que s7tv_parsePRIVMSG (jamais de message à
+// moitié rempli).
+S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(
+    NSString *ircLine, NSArray<id<S7TVEmoteProvider>> *providers) {
+    if (![ircLine containsString:@"USERNOTICE"]) return nil;
+    if (![ircLine hasPrefix:@"@"]) return nil; // pas de tags → pas de msg-id exploitable
+
+    NSRange firstSpace = [ircLine rangeOfString:@" "];
+    if (firstSpace.location == NSNotFound) return nil;
+    NSDictionary<NSString *, NSString *> *tags =
+        s7tv_parseIRCTags([ircLine substringWithRange:NSMakeRange(1, firstSpace.location - 1)]);
+    NSString *rest = [ircLine substringFromIndex:firstSpace.location + 1];
+
+    NSString *msgID = s7tv_tagValue(tags, @"msg-id", @"");
+    S7TVSystemMessageKind kind;
+    if ([msgID isEqualToString:@"sub"] || [msgID isEqualToString:@"resub"]) {
+        kind = S7TVSystemMessageKindSubOrResub;
+    } else if ([msgID isEqualToString:@"submysterygift"]) {
+        kind = S7TVSystemMessageKindCommunityGift;
+    } else {
+        return nil; // subgift ciblé, raid, giftpaidupgrade... hors périmètre pour l'instant
+    }
+
+    // Même garde-fou changement de chaîne que s7tv_parsePRIVMSG — voir le
+    // commentaire détaillé là-bas.
+    NSRange usernoticeRange = [rest rangeOfString:@"USERNOTICE"];
+    if (usernoticeRange.location == NSNotFound) return nil;
+    NSRange searchRange = NSMakeRange(usernoticeRange.location, rest.length - usernoticeRange.location);
+    NSRange textMarker = [rest rangeOfString:@" :" options:0 range:searchRange];
+    NSUInteger channelTokenEnd = (textMarker.location != NSNotFound) ? textMarker.location : rest.length;
+    NSUInteger channelTokenStart = usernoticeRange.location + usernoticeRange.length + 1;
+    // Le texte après " :" est optionnel pour un USERNOTICE (commentaire de
+    // l'utilisateur ajouté à son propre resub, ex: "ouais") — contrairement
+    // à PRIVMSG où son absence invalide le message.
+    NSString *messageText = (textMarker.location != NSNotFound)
+        ? [rest substringFromIndex:textMarker.location + 2] : @"";
+
+    if (channelTokenStart <= channelTokenEnd) {
+        NSString *channelToken = [rest substringWithRange:
+            NSMakeRange(channelTokenStart, channelTokenEnd - channelTokenStart)];
+        channelToken = [channelToken stringByTrimmingCharactersInSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([channelToken hasPrefix:@"#"]) channelToken = [channelToken substringFromIndex:1];
+        NSString *activeChannel = [SevenTVManager sharedManager].currentChannelName;
+        if (channelToken.length && activeChannel.length &&
+            [channelToken caseInsensitiveCompare:activeChannel] != NSOrderedSame) {
+            return nil;
+        }
+    }
+
+    NSString *messageID   = s7tv_tagValue(tags, @"id", [[NSUUID UUID] UUIDString]);
+    NSString *userID      = s7tv_tagValue(tags, @"user-id", @"");
+    NSString *displayName = s7tv_tagValue(tags, @"display-name", @"???");
+    NSString *colorHex    = s7tv_tagValue(tags, @"color", @"");
+    NSString *badgesTag   = s7tv_tagValue(tags, @"badges", @"");
+    NSString *subPlan     = s7tv_tagValue(tags, @"msg-param-sub-plan", @"1000");
+
+    S7TVSystemMessageInfo *info = [S7TVSystemMessageInfo new];
+    info.kind    = kind;
+    info.isPrime = [subPlan isEqualToString:@"Prime"];
+    info.tier    = s7tv_tierFromSubPlan(subPlan);
+
+    if (kind == S7TVSystemMessageKindSubOrResub) {
+        info.cumulativeMonths = [s7tv_tagValue(tags, @"msg-param-cumulative-months", @"1") integerValue];
+        BOOL shareStreak = [s7tv_tagValue(tags, @"msg-param-should-share-streak", @"0") integerValue] != 0;
+        info.streakMonths = shareStreak
+            ? [s7tv_tagValue(tags, @"msg-param-streak-months", @"0") integerValue] : 0;
+    } else {
+        info.massGiftCount = MAX(1, [s7tv_tagValue(tags, @"msg-param-mass-gift-count", @"1") integerValue]);
+        info.senderTotalGiftCount = [s7tv_tagValue(tags, @"msg-param-sender-count", @"0") integerValue];
+        info.channelDisplayName = [SevenTVManager sharedManager].currentChannelName ?: L(@"sysmsg_fallback_channel");
+    }
+
+    S7TVChatMessage *msg = [[S7TVChatMessage alloc] initWithMessageID:messageID
+                                                             timestamp:s7tv_messageTimestampFromTags(tags)
+                                                          authorUserID:userID
+                                                     authorDisplayName:displayName
+                                                               rawText:messageText];
+    msg.type         = S7TVChatMessageTypeSystem;
+    msg.systemInfo   = info;
+    msg.systemPhrase = s7tv_buildSystemMessagePhrase(info);
+
+    msg.authorColor = s7tv_colorFromHexString(colorHex);
+
+    // Commentaire optionnel attaché (ex: resub avec message) — tokenisé
+    // comme un message normal, rendu sous la bannière système (voir
+    // SevenTVChatCustomView, s7tv_appendNormalBodyForMessage:into:...).
+    if (messageText.length) {
+        msg.tokens = [SevenTVChatTokenizer tokenizeText:messageText
+                                      twitchEmotesTag:s7tv_tagValue(tags, @"emotes", @"")
+                                            providers:providers];
+    }
+    msg.badgeIdentifiers = [SevenTVBadgeProvider identifiersFromIRCTag:badgesTag];
+
+    return msg;
+}
+
+
 
 
 // ============================================================

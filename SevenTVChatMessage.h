@@ -39,6 +39,15 @@ FOUNDATION_EXPORT S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(
 FOUNDATION_EXPORT S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(
     NSString *ircLine,
     NSArray<id<S7TVEmoteProvider>> *providers);
+FOUNDATION_EXPORT S7TVChatMessage * _Nullable s7tv_parseChatMessage(
+    NSString *ircLine, NSArray<id<S7TVEmoteProvider>> *providers);
+
+FOUNDATION_EXPORT void s7tv_ingestAutomaticRewardsFromGQLData(
+    NSData *data, dispatch_block_t _Nullable refresh);
+FOUNDATION_EXPORT NSArray<S7TVChatMessage *> *
+    s7tv_channelPointMessagesFromWebSocketText(NSString *text);
+FOUNDATION_EXPORT BOOL s7tv_shouldSuppressChannelPointCompanion(
+    S7TVChatMessage *message);
 
 // ============================================================
 // MARK: - S7TVChatUserColorRegistry

@@ -153,6 +153,158 @@ id s7tv_findValueForKeyRecursive(id json, NSString *key, BOOL *found) {
     return nil;
 }
 
+// ────────────────────────────────────────────────────────────
+// MARK: - Diagnostic ciblé récompenses de points de chaîne
+// ────────────────────────────────────────────────────────────
+//
+// L'API publique ne permet pas à un simple viewer de lister les récompenses
+// personnalisées d'une autre chaîne. Avant de figer un parser sur le schéma
+// privé de Twitch, on capture donc uniquement les branches pertinentes des
+// réponses que l'app charge déjà, ainsi que les événements IRC/WebSocket.
+// Le tag explicite garde ces trois sources seules dans la catégorie
+// ChatCustom pendant le diagnostic demandé par l'utilisateur.
+
+static BOOL s7tv_channelPointDiagnosticEnabled(void) {
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    return mgr.logsEnabled && mgr.logChatCustom;
+}
+
+static BOOL s7tv_isChannelPointRewardKey(NSString *key) {
+    NSString *lower = key.lowercaseString;
+    return [lower containsString:@"reward"] ||
+           [lower containsString:@"redemption"] ||
+           [lower containsString:@"channelpoint"] ||
+           [lower containsString:@"channel_point"] ||
+           [lower containsString:@"communitypoint"] ||
+           [lower containsString:@"community_point"];
+}
+
+// Retourne seulement les branches qui contiennent une clé liée aux rewards.
+// Une clé pertinente conserve sa valeur entière : on ne perd ainsi ni
+// image, ni couleur, ni coût, ni prompt même si leurs noms ne contiennent
+// eux-mêmes pas le mot "reward".
+static id s7tv_extractChannelPointRewardBranches(id json) {
+    if ([json isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dict = json;
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        [dict enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+            NSString *keyString = [key isKindOfClass:[NSString class]] ? key : [key description];
+            if (s7tv_isChannelPointRewardKey(keyString)) {
+                result[keyString] = value ?: [NSNull null];
+                return;
+            }
+            id nested = s7tv_extractChannelPointRewardBranches(value);
+            if (nested) result[keyString] = nested;
+        }];
+        return result.count ? result : nil;
+    }
+    if ([json isKindOfClass:[NSArray class]]) {
+        NSMutableArray *result = [NSMutableArray array];
+        for (id value in (NSArray *)json) {
+            id nested = s7tv_extractChannelPointRewardBranches(value);
+            if (nested) [result addObject:nested];
+        }
+        return result.count ? result : nil;
+    }
+    return nil;
+}
+
+static NSString *s7tv_limitedDiagnosticString(NSString *string) {
+    static const NSUInteger kMaximumLength = 120000;
+    if (string.length <= kMaximumLength) return string;
+    return [[string substringToIndex:kMaximumLength]
+        stringByAppendingString:@"\n… [payload tronqué à 120000 caractères]"];
+}
+
+static BOOL s7tv_shouldLogUniqueChannelPointPayload(NSString *source, NSString *payload) {
+    static NSMutableSet<NSString *> *seen = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ seen = [NSMutableSet set]; });
+    NSString *fingerprint = [NSString stringWithFormat:@"%@:%lu:%lu", source,
+        (unsigned long)payload.length, (unsigned long)payload.hash];
+    @synchronized (seen) {
+        if ([seen containsObject:fingerprint]) return NO;
+        if (seen.count >= 80) [seen removeAllObjects];
+        [seen addObject:fingerprint];
+    }
+    return YES;
+}
+
+static NSString *s7tv_GQLOperationName(NSURLRequest *request) {
+    NSData *body = request.HTTPBody;
+    if (!body.length) return @"inconnue";
+    id json = [NSJSONSerialization JSONObjectWithData:body options:0 error:nil];
+    BOOL found = NO;
+    id operation = json ? s7tv_findValueForKeyRecursive(json, @"operationName", &found) : nil;
+    return (found && [operation isKindOfClass:[NSString class]] && [operation length])
+        ? operation : @"inconnue";
+}
+
+static void s7tv_logChannelPointGQLDiagnostic(NSData *data, NSURLRequest *request) {
+    if (!data.length || !s7tv_channelPointDiagnosticEnabled()) return;
+    NSString *rawPayload = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    NSString *rawLower = rawPayload.lowercaseString;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    id relevant = json ? s7tv_extractChannelPointRewardBranches(json) : nil;
+    NSString *operation = s7tv_GQLOperationName(request);
+    NSString *operationLower = operation.lowercaseString;
+    // Le coffre automatique utilise le même vocabulaire communityPoints,
+    // mais possède déjà sa catégorie dédiée. Ne pas polluer ChatCustom avec
+    // ClaimCommunityPoints sauf si le même payload contient aussi de vraies
+    // données de reward/redemption.
+    BOOL isClaimOnly = ([operationLower containsString:@"claimcommunitypoints"] ||
+                        [rawLower containsString:@"claimcommunitypoints"]) &&
+                       ![rawLower containsString:@"reward"] &&
+                       ![rawLower containsString:@"redemption"];
+    if (isClaimOnly) return;
+    BOOL operationLooksRelevant = s7tv_isChannelPointRewardKey(operation);
+    if (!relevant && !operationLooksRelevant) return;
+
+    NSData *prettyData = relevant
+        ? [NSJSONSerialization dataWithJSONObject:relevant
+                                           options:NSJSONWritingPrettyPrinted
+                                             error:nil]
+        : data;
+    NSString *payload = [[NSString alloc] initWithData:prettyData encoding:NSUTF8StringEncoding];
+    if (!payload.length) payload = [relevant description] ?: @"<payload illisible>";
+    payload = s7tv_limitedDiagnosticString(payload);
+    NSString *dedupeSource = [@"GQL:" stringByAppendingString:operation ?: @"inconnue"];
+    if (!s7tv_shouldLogUniqueChannelPointPayload(dedupeSource, payload)) return;
+    [[SevenTVManager sharedManager]
+        log:@"[ChatCustom][Points:GQL] operation=%@\n%@", operation, payload];
+}
+
+static void s7tv_logChannelPointIRCDiagnostic(NSString *ircLine) {
+    if (!ircLine.length || !s7tv_channelPointDiagnosticEnabled()) return;
+    NSString *lower = ircLine.lowercaseString;
+    if (![lower containsString:@"custom-reward-id"] &&
+        ![lower containsString:@"channel-points"] &&
+        ![lower containsString:@"channel_points"] &&
+        ![lower containsString:@"highlighted-message"]) return;
+    [[SevenTVManager sharedManager]
+        log:@"[ChatCustom][Points:IRC]\n%@", s7tv_limitedDiagnosticString(ircLine)];
+}
+
+static void s7tv_logChannelPointWebSocketDiagnostic(NSString *text) {
+    if (!text.length || !s7tv_channelPointDiagnosticEnabled()) return;
+    NSString *lower = text.lowercaseString;
+    BOOL containsRewardEvent = [lower containsString:@"reward-redeemed"] ||
+                               [lower containsString:@"reward_redeemed"] ||
+                               [lower containsString:@"customreward"] ||
+                               [lower containsString:@"custom_reward"] ||
+                               [lower containsString:@"redemption"];
+    if (!containsRewardEvent &&
+        ([lower containsString:@"availableclaim"] ||
+         [lower containsString:@"claimcommunitypoints"])) return;
+    BOOL relevant = containsRewardEvent ||
+                    [lower containsString:@"channel_points"] ||
+                    [lower containsString:@"channelpoints"];
+    if (!relevant) return;
+    NSString *payload = s7tv_limitedDiagnosticString(text);
+    if (!s7tv_shouldLogUniqueChannelPointPayload(@"WS", payload)) return;
+    [[SevenTVManager sharedManager] log:@"[ChatCustom][Points:WS]\n%@", payload];
+}
+
 // Cherche la première instance de Twitch.ChatInputView actuellement
 // affichée, tous écrans/fenêtres connectés confondus (couvre normal,
 // théâtre, et PiP si jamais Twitch y instancie sa propre ChatInputView).
@@ -283,7 +435,7 @@ static void s7tv_applyChatCustomTest(UIView *chatView) {
     NSInteger idx = [stack.arrangedSubviews indexOfObject:chatView];
     if (idx == NSNotFound) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] ⚠️ ChatTranscriptView introuvable dans arrangedSubviews"];
+            log:@"⚠️ ChatTranscriptView introuvable dans arrangedSubviews"];
         return;
     }
 
@@ -304,7 +456,7 @@ static void s7tv_applyChatCustomTest(UIView *chatView) {
     [customView reloadMessages];
 
     [[SevenTVManager sharedManager]
-        log:@"[ChatCustom] 🏗 SevenTVChatCustomView insérée (index %ld du UIStackView, chat réel caché)",
+        log:@"🏗 SevenTVChatCustomView insérée (index %ld du UIStackView, chat réel caché)",
         (long)idx];
 }
 
@@ -460,7 +612,7 @@ static BOOL s7tv_handleModerationEvent(NSString *ircLine) {
         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!afterCommand.length) {
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] ⚠️ Modération %@ ignorée (channel absent)", command];
+            log:@"⚠️ Modération %@ ignorée (channel absent)", command];
         return YES;
     }
 
@@ -487,11 +639,11 @@ static BOOL s7tv_handleModerationEvent(NSString *ircLine) {
     if (isClearMessage) {
         NSString *targetMessageID = s7tv_tagValue(tags, @"target-msg-id", @"");
         if (!targetMessageID.length) {
-            [mgr log:@"[ChatCustom] ⚠️ CLEARMSG ignoré (target-msg-id absent)"];
+            [mgr log:@"⚠️ CLEARMSG ignoré (target-msg-id absent)"];
             return YES;
         }
         [store markMessageDeletedByID:targetMessageID completion:^{
-            [mgr log:@"[ChatCustom] 🛡 CLEARMSG appliqué (message id=%@)", targetMessageID];
+            [mgr log:@"🛡 CLEARMSG appliqué (message id=%@)", targetMessageID];
             s7tv_reloadActiveChatMessage(targetMessageID);
         }];
         return YES;
@@ -512,7 +664,7 @@ static BOOL s7tv_handleModerationEvent(NSString *ircLine) {
                                 moderationKind:kind
                                durationSeconds:durationSeconds
                                      completion:^{
-            [mgr log:@"[ChatCustom] 🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@, %@)",
+            [mgr log:@"🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@, %@)",
                 targetUserID, trailing.length ? trailing : @"inconnu",
                 isTimeout ? [NSString stringWithFormat:@"timeout=%lds", (long)durationSeconds]
                           : @"ban permanent"];
@@ -522,11 +674,11 @@ static BOOL s7tv_handleModerationEvent(NSString *ircLine) {
         // Une cible textuelle sans id indique une ligne ciblée malformée.
         // Ne surtout pas la confondre avec un CLEARCHAT global, qui
         // masquerait par erreur tout le transcript.
-        [mgr log:@"[ChatCustom] ⚠️ CLEARCHAT ciblé ignoré (target-user-id absent, login=%@)",
+        [mgr log:@"⚠️ CLEARCHAT ciblé ignoré (target-user-id absent, login=%@)",
             trailing];
     } else {
         [store markAllMessagesDeletedWithCompletion:^{
-            [mgr log:@"[ChatCustom] 🛡 CLEARCHAT global appliqué"];
+            [mgr log:@"🛡 CLEARCHAT global appliqué"];
             s7tv_reloadActiveChatCustomViewAnimated();
         }];
     }
@@ -1058,7 +1210,7 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
             ? (NSHTTPURLResponse *)response : nil;
         if (error || http.statusCode < 200 || http.statusCode >= 300 || !data.length) {
             [[SevenTVManager sharedManager]
-                log:@"[ChatCustom] ⚠️ Historique récent indisponible pour %@ (%@, HTTP %ld)",
+                log:@"⚠️ Historique récent indisponible pour %@ (%@, HTTP %ld)",
                     channel, error.localizedDescription ?: @"réponse vide", (long)http.statusCode];
             return;
         }
@@ -1068,7 +1220,7 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
         NSArray *rawMessages = [payload isKindOfClass:[NSDictionary class]] ? payload[@"messages"] : nil;
         if (jsonError || ![rawMessages isKindOfClass:[NSArray class]]) {
             [[SevenTVManager sharedManager]
-                log:@"[ChatCustom] ⚠️ Historique récent invalide pour %@: %@",
+                log:@"⚠️ Historique récent invalide pour %@: %@",
                     channel, jsonError.localizedDescription ?: @"champ messages absent"];
             return;
         }
@@ -1098,7 +1250,7 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
             prependHistoricalMessages:history completion:^{
                 if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
                 [[SevenTVManager sharedManager]
-                    log:@"[ChatCustom] 🕘 %lu messages historiques chargés pour %@",
+                    log:@"🕘 %lu messages historiques chargés pour %@",
                         (unsigned long)history.count, channel];
                 s7tv_reloadActiveChatCustomView();
             }];
@@ -1132,7 +1284,7 @@ static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     [mgr.chatMessageStore replaceAllMessages:@[welcome, divider] completion:^{
         if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
-        [mgr log:@"[ChatCustom] 🏗 Chat initialisé pour %@ (historique en cours)", channel];
+        [mgr log:@"🏗 Chat initialisé pour %@ (historique en cours)", channel];
         s7tv_reloadActiveChatCustomView();
         s7tv_fetchRecentHistory(channel, generation);
     }];
@@ -1547,6 +1699,7 @@ static NSArray<NSString *> *s7tv_joinedChannelsInOutgoingWebSocketMessage(
                 if (data && !error) {
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
                     s7tv_scanGQLResponseForChannelPointsClaim(data);
+                    s7tv_logChannelPointGQLDiagnostic(data, request);
                 }
                 completionHandler(data, response, error);
             };
@@ -1563,6 +1716,7 @@ static NSArray<NSString *> *s7tv_joinedChannelsInOutgoingWebSocketMessage(
                 if (data && !error) {
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
                     s7tv_scanGQLResponseForChannelPointsClaim(data);
+                    s7tv_logChannelPointGQLDiagnostic(data, nil);
                 }
                 completionHandler(data, response, error);
             };
@@ -1656,6 +1810,8 @@ static NSMutableDictionary<NSNumber *, NSMutableData *> *s7tv_apolloBuffers(void
         if ([host isEqualToString:@"gql.twitch.tv"]) {
             [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:fullData];
             s7tv_scanGQLResponseForChannelPointsClaim(fullData);
+            s7tv_logChannelPointGQLDiagnostic(fullData,
+                task.currentRequest ?: task.originalRequest);
 
             // Preuve directe du résultat serveur de la mutation de claim —
             // permet de voir un éventuel champ "error" renvoyé par Twitch
@@ -1882,6 +2038,7 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
 
                 if (textToProcess) {
                     s7tv_scanWebSocketTextForChannelPointsClaimAvailable(textToProcess);
+                    s7tv_logChannelPointWebSocketDiagnostic(textToProcess);
 
                     BOOL addedMessage = NO;
                     NSArray<NSString *> *ircLines = [textToProcess
@@ -1890,6 +2047,7 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                         NSString *ircLine = [rawLine stringByTrimmingCharactersInSet:
                             [NSCharacterSet newlineCharacterSet]];
                         if (!ircLine.length) continue;
+                        s7tv_logChannelPointIRCDiagnostic(ircLine);
                         if ([ircLine containsString:@"ROOMSTATE"]) {
                             s7tv_handleRoomState(ircLine);
                         }

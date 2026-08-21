@@ -1166,7 +1166,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
             NSString *mode = (updated.state == S7TVChatMessageStateDeletedExpanded)
                 ? @"révélé" : @"masqué";
             [[SevenTVManager sharedManager]
-                log:@"[ChatCustom] 🛡 Message supprimé %@ localement (id=%@)",
+                log:@"🛡 Message supprimé %@ localement (id=%@)",
                     mode, deletedMessageID];
             [innerSelf s7tv_reloadMessageWithID:deletedMessageID animated:YES];
         }];

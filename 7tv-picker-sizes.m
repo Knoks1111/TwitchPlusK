@@ -985,10 +985,11 @@ static const char kS7TVRowKeyTag = 0;
     [self _populateFakeChatStore:self.fakeChatStore];
 
     SevenTVChatCustomView *chatView = [[SevenTVChatCustomView alloc] initWithStore:self.fakeChatStore];
-    // Preview statique : pas de scroll/tap indépendant (le vrai chat en
-    // dessous ne doit pas non plus recevoir les touches à travers la
-    // fenêtre flottante) — le contenu tient dans les 5 messages factices.
-    chatView.userInteractionEnabled = NO;
+    // Preview interactive : le même tap-to-reveal que dans le vrai chat est
+    // testable directement, et la table peut défiler si son contenu dépasse
+    // la hauteur disponible. Le conteneur de fenêtre bloque les touches vers
+    // les vues Twitch situées derrière (voir 7tv-picker-controler.m).
+    chatView.userInteractionEnabled = YES;
     self.fakeChatView = chatView;
     [chatView reloadMessages];
 }
@@ -996,8 +997,7 @@ static const char kS7TVRowKeyTag = 0;
 // 5 messages factices couvrant tous les réglages du panneau : emote 7TV +
 // emote Twitch native + badge + pseudo (normal), sub/resub, prime (24e mois,
 // comme la référence utilisateur), gift communautaire, et un message
-// supprimé (collapsed). Pas de tap-to-reveal ici (chatView non interactive,
-// et la fonctionnalité n'existe pas encore côté chat réel — Phase 5).
+// supprimé (collapsed), directement testable au toucher dans la preview.
 // 7 messages factices couvrant tous les réglages du panneau, dans un ordre
 // volontairement mélangé (pas juste "un de chaque type à la suite") pour se
 // rapprocher d'un vrai fil de chat : gift, normal (badge + emote 7TV + emote
@@ -1005,9 +1005,7 @@ static const char kS7TVRowKeyTag = 0;
 // commentaire, pas seulement la bannière), normal (badge différent, texte
 // seul), mention de soi (highlight barre + fond, voir
 // selfMentionHighlightEnabled/Color), prime avec commentaire (badge + emote
-// 7TV), message supprimé (collapsed). Pas de tap-to-reveal ici (chatView
-// non interactive, et la fonctionnalité n'existe pas encore côté chat réel
-// — Phase 5).
+// 7TV), message supprimé (collapsed) et message supprimé révélé.
 - (void)_populateFakeChatStore:(S7TVChatMessageStore *)store {
     NSDate *now = [NSDate date];
 

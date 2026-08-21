@@ -89,7 +89,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Cache (accueil → Avancé) ─────────────────────────────────────
         @"action_clear_cache":              @[@"Vider le cache", @"Clear cache"],
-        @"cache_emote_count_format":        @[@"%ld emotes", @"%ld emotes"],
+        @"cache_emote_count_format":        @[@"%ld emotes · %ldx", @"%ld emotes · %ldx"],
         @"alert_cache_cleared_title":       @[@"Cache vidé", @"Cache cleared"],
         @"alert_cache_cleared_message_format": @[@"%lu emotes ont été supprimées du cache. Elles se rechargeront à la demande.",
                                                    @"%lu emotes were removed from the cache. They will reload on demand."],
@@ -125,6 +125,11 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"switch_chat_custom":              @[@"Chat custom", @"Custom chat"],
         @"switch_animations_picker":        @[@"Animations dans le picker", @"Animations in picker"],
         @"switch_animations_favorites_only":@[@"Animations uniquement pour les favoris", @"Animations for favorites only"],
+        @"setting_emote_resolution":        @[@"Résolution des emotes 7TV", @"7TV emote resolution"],
+        @"setting_resolution_clears_cache": @[
+            @"Une résolution élevée est plus nette, mais utilise plus de stockage et de mémoire et peut provoquer des ralentissements. Le changement vide le cache et s'applique sans redémarrage.",
+            @"Higher resolutions look sharper, but use more storage and memory and may cause lag. Changing it clears the cache and applies without restarting."
+        ],
         @"switch_floating_button":          @[@"Bouton flottant 7TV", @"7TV floating button"],
         @"switch_enable_logs":              @[@"Activer les logs", @"Enable logs"],
         @"switch_logs_console":             @[@"Logs console (Console.app)", @"Console logs (Console.app)"],

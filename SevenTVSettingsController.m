@@ -60,8 +60,10 @@ static UIColor *S7TVGray(void) {
     emote.emoteID = emoteID;
     emote.nativeSize = CGSizeMake(32.0, 32.0);
     emote.isAnimated = NO; // Les réglages n'affichent que la première frame.
+    NSInteger resolution = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+    resolution = MIN(4, MAX(1, resolution));
     emote.imageURL = [NSURL URLWithString:[NSString stringWithFormat:
-        @"https://cdn.7tv.app/emote/%@/2x.webp", emoteID]];
+        @"https://cdn.7tv.app/emote/%@/%ldx.webp", emoteID, (long)resolution]];
     return emote;
 }
 @end
@@ -636,11 +638,11 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 // Section 0 : Chat custom (promu depuis Débogage — ce n'est plus un test,
 // c'est le mode de rendu du chat)
-// Section 1 : Animations (picker + sous-option favoris uniquement)
+// Section 1 : affichage des emotes (animations + résolution CDN 7TV)
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    return s == 0 ? 1 : 2;
+    return s == 0 ? 1 : 3;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
@@ -685,6 +687,61 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
             [self s7tv_applyPickerAnimSubOptionEnabledState:cell];
             return cell;
         }
+        case 2: {
+            UITableViewCell *cell = [[UITableViewCell alloc]
+                initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.backgroundColor = S7TVCellBg();
+
+            UIImageView *icon = S7TVIcon(@"photo.stack.fill", S7TVAccent());
+            [cell.contentView addSubview:icon];
+
+            UILabel *title = [[UILabel alloc] init];
+            title.text = L(@"setting_emote_resolution");
+            title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
+            title.textColor = [UIColor whiteColor];
+            title.translatesAutoresizingMaskIntoConstraints = NO;
+            [cell.contentView addSubview:title];
+
+            UILabel *subtitle = [[UILabel alloc] init];
+            subtitle.text = L(@"setting_resolution_clears_cache");
+            subtitle.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
+            subtitle.textColor = S7TVGray();
+            subtitle.numberOfLines = 0;
+            subtitle.lineBreakMode = NSLineBreakByWordWrapping;
+            subtitle.translatesAutoresizingMaskIntoConstraints = NO;
+            [cell.contentView addSubview:subtitle];
+
+            UISegmentedControl *resolution = [[UISegmentedControl alloc]
+                initWithItems:@[@"1x", @"2x", @"3x", @"4x"]];
+            NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+            current = MIN(4, MAX(1, current));
+            resolution.selectedSegmentIndex = current - 1;
+            resolution.selectedSegmentTintColor = S7TVAccent();
+            [resolution setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]}
+                                      forState:UIControlStateSelected];
+            [resolution addTarget:self action:@selector(emoteResolutionChanged:)
+                 forControlEvents:UIControlEventValueChanged];
+            resolution.translatesAutoresizingMaskIntoConstraints = NO;
+            [cell.contentView addSubview:resolution];
+
+            [NSLayoutConstraint activateConstraints:@[
+                [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+                [icon.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:12],
+                [title.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],
+                [title.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+                [title.centerYAnchor constraintEqualToAnchor:icon.centerYAnchor],
+                [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+                [subtitle.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+                [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:2],
+                [resolution.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+                [resolution.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+                [resolution.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:8],
+                [resolution.heightAnchor constraintEqualToConstant:30],
+                [resolution.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
+            ]];
+            return cell;
+        }
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -707,6 +764,21 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 }
 - (void)togglePickerAnimationsFavoritesOnly:(UISwitch *)sw {
     [SevenTVManager sharedManager].showPickerAnimationsFavoritesOnly = sw.isOn;
+}
+
+- (void)emoteResolutionChanged:(UISegmentedControl *)seg {
+    NSInteger resolution = seg.selectedSegmentIndex + 1;
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    if (resolution == cfg.emote7TVResolution) return;
+
+    // Enregistrer d'abord : tout nouveau chargement créé pendant le refresh
+    // utilisera immédiatement l'URL /Nx.webp choisie.
+    [cfg setValue:(CGFloat)resolution forSizeKey:@"emote7TVResolution"];
+    seg.enabled = NO;
+    __weak UISegmentedControl *weakSegment = seg;
+    [[SevenTVManager sharedManager] clearAllCachesWithCompletion:^(NSUInteger clearedCount) {
+        weakSegment.enabled = YES;
+    }];
 }
 
 // Grise visuellement la sous-option quand "Animations dans le picker" est
@@ -1482,8 +1554,10 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         [cell.contentView addSubview:lbl];
 
         UILabel *countLbl = [[UILabel alloc] init];
+        NSInteger resolution = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+        resolution = MIN(4, MAX(1, resolution));
         countLbl.text = [NSString stringWithFormat:L(@"cache_emote_count_format"),
-                         (long)[SevenTVURLProtocol cachedEmoteCount]];
+                         (long)[SevenTVURLProtocol cachedEmoteCount], (long)resolution];
         countLbl.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
         countLbl.textColor = S7TVGray();
         countLbl.translatesAutoresizingMaskIntoConstraints = NO;

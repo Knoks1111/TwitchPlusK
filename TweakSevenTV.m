@@ -1080,7 +1080,13 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
                 [NSCharacterSet newlineCharacterSet]];
             S7TVChatMessage *message = s7tv_parsePRIVMSG(ircLine);
             if (!message) message = s7tv_parseUSERNOTICE(ircLine);
-            if (message) [history addObject:message];
+            if (message) {
+                // Les messages live ont eux aussi un timestamp IRC. Ce flag
+                // est donc la seule source fiable pour limiter l'affichage
+                // HH:mm aux anciennes lignes chargées lors du JOIN.
+                message.isHistorical = YES;
+                [history addObject:message];
+            }
         }
         [history sortUsingComparator:^NSComparisonResult(S7TVChatMessage *left,
                                                           S7TVChatMessage *right) {

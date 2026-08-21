@@ -197,6 +197,11 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 
 @property (nonatomic, strong) NSDate *timestamp;
 
+// YES uniquement pour un message provenant du backfill Recent Messages au
+// JOIN. Tous les messages, live compris, possèdent un timestamp : ce flag
+// explicite permet au renderer de réserver l'affichage HH:mm à l'historique.
+@property (nonatomic, assign) BOOL isHistorical;
+
 // Identifiant utilisateur stable (tag IRC `user-id=`) — PAS le pseudo
 // affiché, qui peut changer. Sert à retrouver tous les messages d'un
 // utilisateur lors d'un timeout/ban (Phase 5), indépendamment de son nom.

@@ -22,6 +22,7 @@
 
 #import "SevenTVURLProtocol.h"
 #import "SevenTVManager.h"
+#import "SevenTVChatAppearanceConfig.h"
 
 NSString *const S7TVEmoteCacheCountDidChangeNotification = @"S7TVEmoteCacheCountDidChangeNotification";
 
@@ -113,10 +114,13 @@ static NSURLSession *SevenTVGetUrgentSession(void) {
 }
 
 // ── URL CDN pour un emote ID ─────────────────────────────────────────────────
-// 2x.webp : passage de 1x → 2x pour réduire le flou visible. Servi tel quel
-// (WebP natif, animé ou statique) — aucune conversion, aucun retraitement.
+// Résolution commune chat/picker/préfetch, configurable de 1x à 4x dans les
+// vrais réglages 7TV. Défaut 2x. Le WebP reste servi tel quel.
 static NSURL *SevenTVCDNURLForEmoteID(NSString *emoteID) {
-    NSString *str = [NSString stringWithFormat:@"https://cdn.7tv.app/emote/%@/2x.webp", emoteID];
+    NSInteger resolution = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+    resolution = MIN(4, MAX(1, resolution));
+    NSString *str = [NSString stringWithFormat:
+        @"https://cdn.7tv.app/emote/%@/%ldx.webp", emoteID, (long)resolution];
     return [NSURL URLWithString:str];
 }
 
@@ -391,7 +395,7 @@ static void SevenTVScheduleCacheIndexSave(void) {
 }
 
 + (void)prewarmCDNConnection {
-    NSURL *warmURL = [NSURL URLWithString:@"https://cdn.7tv.app/emote/01F6MSP3NV00001B6E/2x.webp"];
+    NSURL *warmURL = SevenTVCDNURLForEmoteID(@"01F6MSP3NV00001B6E");
     if (!warmURL) return;
 
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:warmURL];

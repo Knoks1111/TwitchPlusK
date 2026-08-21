@@ -1349,8 +1349,11 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
 - (NSURL *)cdnURLForEmote:(SevenTVEmote *)emote {
     if (!emote) return nil;
+    NSInteger resolution = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+    resolution = MIN(4, MAX(1, resolution));
     return [NSURL URLWithString:
-            [NSString stringWithFormat:@"%@/%@/2x.webp", S7TV_CDN_BASE, emote.emoteID]];
+            [NSString stringWithFormat:@"%@/%@/%ldx.webp",
+             S7TV_CDN_BASE, emote.emoteID, (long)resolution]];
 }
 
 

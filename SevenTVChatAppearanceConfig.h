@@ -65,8 +65,8 @@ typedef NS_ENUM(NSInteger, S7TVDeletedMessageRevealMode) {
 // Décalage vertical des emotes (7TV + Twitch natives) dans la ligne de
 // message — fine-tune du bounds des attachments. Négatif = emote plus
 // haute, positif = plus basse. N'affecte PAS les badges.
-// Valeur par défaut -4 : reproduit exactement le rendu d'origine (emote
-// posée sur la ligne du bas).
+// Valeur réelle appliquée directement aux bounds du NSTextAttachment, sans
+// correction cachée. Défaut -6, identique à la valeur affichée dans le picker.
 @property (nonatomic, assign) CGFloat emoteVerticalOffset;
 
 // --- Résolution d'image emotes 7TV (1x/2x/3x/4x — voir Phase 2) ---

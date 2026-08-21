@@ -1979,7 +1979,10 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
             attributes:@{NSFontAttributeName: font,
                          NSForegroundColorAttributeName: color}]];
 
-    if (info.imageURL.absoluteString.length) {
+    // Un PRIVMSG peut exceptionnellement arriver avant toute métadonnée de
+    // récompense. Ne jamais afficher un faux coût « 0 » : PubSub/GQL apporte
+    // normalement le vrai coût et l'icône dans la même fenêtre de fusion.
+    if (info.cost > 0 && info.imageURL.absoluteString.length) {
         UIImage *image = [[SevenTVEmoteImageCache sharedCache]
             cachedImageForResolvedEmote:info];
         if (image) {
@@ -1995,11 +1998,13 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
         }
     }
 
-    NSString *cost = s7tv_channelPointCostString(info.cost);
-    [result appendAttributedString:[[NSAttributedString alloc]
-        initWithString:[@" " stringByAppendingString:cost]
-            attributes:@{NSFontAttributeName: font,
-                         NSForegroundColorAttributeName: color}]];
+    if (info.cost > 0) {
+        NSString *cost = s7tv_channelPointCostString(info.cost);
+        [result appendAttributedString:[[NSAttributedString alloc]
+            initWithString:[@" " stringByAppendingString:cost]
+                attributes:@{NSFontAttributeName: font,
+                             NSForegroundColorAttributeName: color}]];
+    }
 }
 
 // Corps badges + pseudo + tokens — extrait de l'ancien

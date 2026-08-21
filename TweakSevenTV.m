@@ -281,7 +281,10 @@ static void s7tv_logChannelPointIRCDiagnostic(NSString *ircLine) {
         ![lower containsString:@"channel-points"] &&
         ![lower containsString:@"channel_points"] &&
         ![lower containsString:@"highlighted-message"] &&
-        ![lower containsString:@"skip-subs-mode-message"]) return;
+        ![lower containsString:@"send-highlighted-message"] &&
+        ![lower containsString:@"skip-subs-mode-message"] &&
+        ![lower containsString:@"single-message-bypass"] &&
+        ![lower containsString:@"single_message_bypass"]) return;
     [[SevenTVManager sharedManager]
         log:@"[ChatCustom][Points:IRC]\n%@", s7tv_limitedDiagnosticString(ircLine)];
 }
@@ -964,14 +967,18 @@ static S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(NSString *ircLine) {
     msg.isFirstMessage = [s7tv_tagValue(tags, @"first-msg", @"0") isEqualToString:@"1"];
 
     // Les récompenses automatiques (highlight, contournement du mode sub)
-    // ne produisent pas reward-redeemed. Twitch les marque directement sur
-    // le PRIVMSG avec un msg-id fixe ; les données visuelles/coût viennent
-    // néanmoins du catalogue GQL dynamique de la chaîne.
+    // marquent directement leur PRIVMSG avec un msg-id fixe. Le chemin
+    // PubSub construit aussi leur bandeau riche ; celui-ci sert de repli
+    // immédiat et apporte surtout les badges/emotes lors de la fusion.
     S7TVChannelPointRewardInfo *automaticReward =
         s7tv_automaticRewardInfoForIRCMessageID(ircMessageID);
     if (automaticReward) {
         msg.type = S7TVChatMessageTypeChannelPointRedemption;
         msg.channelPointRewardInfo = automaticReward;
+        // Même clé que l'événement PubSub automatique : le PRIVMSG attend
+        // brièvement celui-ci afin de fusionner ses badges/emotes dans le
+        // bandeau riche au lieu d'afficher deux lignes.
+        msg.channelPointRewardID = automaticReward.rewardID;
     }
 
     // Détection self-mention : scan des tokens .mention déjà résolus par le
@@ -1270,12 +1277,24 @@ static NSString * _Nullable s7tv_automaticRewardTitleLocalizationKey(NSString *t
     return nil;
 }
 
-static NSString * _Nullable s7tv_automaticRewardTypeForIRCMessageID(NSString *messageID) {
-    if ([messageID isEqualToString:@"skip-subs-mode-message"])
+static NSString *s7tv_normalizedAutomaticRewardType(NSString *rawType) {
+    if (!rawType.length) return @"";
+    NSString *type = rawType.uppercaseString;
+    type = [type stringByReplacingOccurrencesOfString:@"-" withString:@"_"];
+    type = [type stringByReplacingOccurrencesOfString:@" " withString:@"_"];
+    if ([type isEqualToString:@"SKIP_SUBS_MODE_MESSAGE"] ||
+        [type isEqualToString:@"SINGLE_MESSAGE_BYPASS_SUBS_MODE"]) {
         return @"SINGLE_MESSAGE_BYPASS_SUB_MODE";
-    if ([messageID isEqualToString:@"highlighted-message"])
+    }
+    if ([type isEqualToString:@"HIGHLIGHTED_MESSAGE"]) {
         return @"SEND_HIGHLIGHTED_MESSAGE";
-    return nil;
+    }
+    return type;
+}
+
+static NSString * _Nullable s7tv_automaticRewardTypeForIRCMessageID(NSString *messageID) {
+    NSString *type = s7tv_normalizedAutomaticRewardType(messageID);
+    return s7tv_automaticRewardTitleLocalizationKey(type).length ? type : nil;
 }
 
 static S7TVChannelPointRewardInfo * _Nullable s7tv_copyChannelPointRewardInfo(
@@ -1296,18 +1315,42 @@ static S7TVChannelPointRewardInfo * _Nullable s7tv_copyChannelPointRewardInfo(
 }
 
 static S7TVChannelPointRewardInfo * _Nullable
-s7tv_automaticRewardInfoForIRCMessageID(NSString *messageID) {
-    NSString *type = s7tv_automaticRewardTypeForIRCMessageID(messageID);
+s7tv_automaticRewardInfoForType(NSString *rawType) {
+    NSString *type = s7tv_normalizedAutomaticRewardType(rawType);
     if (!type.length) return nil;
+    NSString *titleKey = s7tv_automaticRewardTitleLocalizationKey(type);
+    if (!titleKey.length) return nil;
+
     NSMutableDictionary *catalog = s7tv_automaticRewardCatalog();
+    S7TVChannelPointRewardInfo *info = nil;
     @synchronized (catalog) {
         NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
-        if (currentChannelID.length && s7tv_automaticRewardCatalogChannelID.length &&
-            ![currentChannelID isEqualToString:s7tv_automaticRewardCatalogChannelID]) {
-            return nil;
+        BOOL catalogMatchesChannel = !currentChannelID.length ||
+            !s7tv_automaticRewardCatalogChannelID.length ||
+            [currentChannelID isEqualToString:s7tv_automaticRewardCatalogChannelID];
+        if (catalogMatchesChannel) {
+            info = s7tv_copyChannelPointRewardInfo(catalog[type]);
         }
-        return s7tv_copyChannelPointRewardInfo(catalog[type]);
     }
+
+    // Le PRIVMSG peut précéder ChannelPointsQuery, ou cette requête peut ne
+    // jamais être rejouée après l'installation du tweak. Le type IRC suffit
+    // à identifier l'action : on rend donc immédiatement le bandeau, puis
+    // l'événement PubSub l'enrichit avec son coût et le catalogue avec son
+    // image/couleur lorsqu'ils sont disponibles.
+    if (!info) info = [S7TVChannelPointRewardInfo new];
+    info.rewardID = type;
+    info.title = @"";
+    info.titleLocalizationKey = titleKey;
+    if (!info.pricingType.length) info.pricingType = @"CHANNEL_POINTS";
+    info.isUserInputRequired = YES;
+    return info;
+}
+
+static S7TVChannelPointRewardInfo * _Nullable
+s7tv_automaticRewardInfoForIRCMessageID(NSString *messageID) {
+    NSString *type = s7tv_automaticRewardTypeForIRCMessageID(messageID);
+    return type.length ? s7tv_automaticRewardInfoForType(type) : nil;
 }
 
 static void s7tv_collectAutomaticRewardDictionaries(id object,
@@ -1347,7 +1390,8 @@ static void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data) {
     NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *nextCatalog =
         [NSMutableDictionary dictionary];
     for (NSDictionary *reward in rawRewards) {
-        NSString *type = s7tv_JSONStringForKeys(reward, @[@"type"]);
+        NSString *type = s7tv_normalizedAutomaticRewardType(
+            s7tv_JSONStringForKeys(reward, @[@"type"]));
         if (!type.length) continue;
         S7TVChannelPointRewardInfo *info = [S7TVChannelPointRewardInfo new];
         info.rewardID = type;
@@ -1515,6 +1559,83 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromRedemption(
     return message;
 }
 
+static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromAutomaticRedemption(
+    NSDictionary *redemption) {
+    if (![redemption isKindOfClass:[NSDictionary class]]) return nil;
+
+    NSDictionary *reward = s7tv_JSONDictionaryForKeys(redemption, @[@"reward"]);
+    NSString *automaticType = s7tv_normalizedAutomaticRewardType(
+        s7tv_JSONStringForKeys(reward, @[@"type", @"id"]));
+    S7TVChannelPointRewardInfo *info =
+        s7tv_automaticRewardInfoForType(automaticType);
+    if (!info) return nil; // Les unlocks personnels ne créent pas de ligne publique.
+
+    NSString *redemptionID = s7tv_JSONStringForKeys(redemption, @[@"id"]);
+    if (!redemptionID.length) return nil;
+
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    NSString *channelID = s7tv_JSONStringForKeys(redemption,
+        @[@"channel_id", @"channelID", @"broadcaster_user_id", @"broadcasterUserID"]);
+    if (!channelID.length) {
+        channelID = s7tv_JSONStringForKeys(reward, @[@"channel_id", @"channelID"]);
+    }
+    if (channelID.length && manager.currentChannelTwitchID.length &&
+        ![channelID isEqualToString:manager.currentChannelTwitchID]) {
+        return nil;
+    }
+
+    NSDictionary *user = s7tv_JSONDictionaryForKeys(redemption, @[@"user"]);
+    NSString *userID = s7tv_JSONStringForKeys(user, @[@"id"]);
+    if (!userID.length) {
+        userID = s7tv_JSONStringForKeys(redemption, @[@"user_id", @"userID"]);
+    }
+    NSString *displayName = s7tv_JSONStringForKeys(user,
+        @[@"display_name", @"displayName", @"login"]);
+    if (!displayName.length) {
+        displayName = s7tv_JSONStringForKeys(redemption,
+            @[@"user_name", @"userName", @"user_login", @"userLogin"]);
+    }
+    if (!displayName.length) displayName = @"???";
+
+    NSInteger eventCost = s7tv_JSONIntegerForKeys(reward,
+        @[@"channel_points", @"channelPoints", @"cost"]);
+    if (eventCost > 0) info.cost = eventCost;
+    NSURL *eventImageURL = s7tv_channelPointImageURL(reward);
+    if (eventImageURL) info.imageURL = eventImageURL;
+    NSString *backgroundHex = s7tv_JSONStringForKeys(reward,
+        @[@"background_color", @"backgroundColor"]);
+    UIColor *eventColor = s7tv_colorFromHexString(backgroundHex);
+    if (eventColor) info.accentColor = eventColor;
+
+    NSString *userInput = s7tv_JSONStringForKeys(redemption,
+        @[@"user_input", @"userInput"]);
+    NSDictionary *messagePayload = s7tv_JSONDictionaryForKeys(redemption, @[@"message"]);
+    if (!userInput.length) {
+        userInput = s7tv_JSONStringForKeys(messagePayload, @[@"text"]);
+    }
+    info.userInput = userInput.length ? userInput : nil;
+    info.isUserInputRequired = YES;
+
+    NSString *rawTimestamp = s7tv_JSONStringForKeys(redemption,
+        @[@"redeemed_at", @"redeemedAt"]);
+    S7TVChatMessage *message = [[S7TVChatMessage alloc]
+        initWithMessageID:redemptionID
+                timestamp:s7tv_channelPointTimestamp(rawTimestamp)
+             authorUserID:userID ?: @""
+        authorDisplayName:displayName
+                  rawText:userInput ?: @""];
+    message.type = S7TVChatMessageTypeChannelPointRedemption;
+    message.channelPointRewardInfo = info;
+    message.channelPointRewardID = automaticType;
+    message.authorColor = [[SevenTVChatUserColorRegistry sharedRegistry]
+        colorForUsername:displayName];
+    if (userInput.length) {
+        message.tokens = s7tv_tokenizeMessageWithNativeEmotes(userInput, @"");
+        s7tv_registerChannelPointCompanionToSuppress(userID, automaticType);
+    }
+    return message;
+}
+
 static void s7tv_collectChannelPointMessages(id object,
                                               NSMutableArray<S7TVChatMessage *> *messages) {
     if ([object isKindOfClass:[NSDictionary class]]) {
@@ -1524,7 +1645,46 @@ static void s7tv_collectChannelPointMessages(id object,
             [type isEqualToString:@"reward_redeemed"]) {
             NSDictionary *data = s7tv_JSONDictionaryForKeys(dictionary, @[@"data"]);
             NSDictionary *redemption = s7tv_JSONDictionaryForKeys(data, @[@"redemption"]);
-            S7TVChatMessage *message = s7tv_channelPointMessageFromRedemption(redemption);
+            NSDictionary *reward = s7tv_JSONDictionaryForKeys(redemption, @[@"reward"]);
+            NSString *possibleAutomaticType = s7tv_normalizedAutomaticRewardType(
+                s7tv_JSONStringForKeys(reward, @[@"type", @"id"]));
+            BOOL isAutomatic =
+                s7tv_automaticRewardTitleLocalizationKey(possibleAutomaticType).length > 0;
+            S7TVChatMessage *message = isAutomatic
+                ? s7tv_channelPointMessageFromAutomaticRedemption(redemption)
+                : s7tv_channelPointMessageFromRedemption(redemption);
+            if (message) [messages addObject:message];
+            return;
+        }
+        NSString *lowerType = type.lowercaseString;
+        BOOL isAutomaticRedemption =
+            [lowerType containsString:@"automatic"] &&
+            [lowerType containsString:@"reward"] &&
+            [lowerType containsString:@"redeem"];
+        if (isAutomaticRedemption) {
+            NSDictionary *data = s7tv_JSONDictionaryForKeys(dictionary, @[@"data"]);
+            NSDictionary *redemption = s7tv_JSONDictionaryForKeys(data, @[@"redemption"]);
+            if (!redemption.count) redemption = s7tv_JSONDictionaryForKeys(data, @[@"event"]);
+            if (!redemption.count) redemption = data;
+            S7TVChatMessage *message =
+                s7tv_channelPointMessageFromAutomaticRedemption(redemption);
+            if (message) [messages addObject:message];
+            return;
+        }
+
+        // EventSub place parfois le type de notification dans metadata et
+        // livre directement l'objet event ici. Son reward.type est alors le
+        // seul marqueur présent dans cette branche du JSON.
+        NSDictionary *directReward = s7tv_JSONDictionaryForKeys(dictionary, @[@"reward"]);
+        NSString *directAutomaticType = s7tv_normalizedAutomaticRewardType(
+            s7tv_JSONStringForKeys(directReward, @[@"type"]));
+        BOOL isDirectAutomaticEvent =
+            s7tv_automaticRewardTitleLocalizationKey(directAutomaticType).length > 0 &&
+            s7tv_JSONStringForKeys(dictionary, @[@"id"]).length > 0 &&
+            s7tv_JSONStringForKeys(dictionary, @[@"redeemed_at", @"redeemedAt"]).length > 0;
+        if (isDirectAutomaticEvent) {
+            S7TVChatMessage *message =
+                s7tv_channelPointMessageFromAutomaticRedemption(dictionary);
             if (message) [messages addObject:message];
             return;
         }
@@ -1555,8 +1715,13 @@ static void s7tv_collectChannelPointMessages(id object,
 
 static NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
     NSString *text) {
-    if (![text containsString:@"reward-redeemed"] &&
-        ![text containsString:@"reward_redeemed"]) return @[];
+    NSString *lower = text.lowercaseString;
+    BOOL containsCustomRedemption = [lower containsString:@"reward-redeemed"] ||
+                                    [lower containsString:@"reward_redeemed"];
+    BOOL containsAutomaticRedemption = [lower containsString:@"automatic"] &&
+                                       [lower containsString:@"reward"] &&
+                                       [lower containsString:@"redeem"];
+    if (!containsCustomRedemption && !containsAutomaticRedemption) return @[];
     NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
     id root = data.length
         ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil]
@@ -2481,7 +2646,8 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                             // PubSub et IRC arrivent presque simultanément,
                             // parfois dans l'ordre inverse. Cette attente ne
                             // touche QUE le PRIVMSG d'une récompense avec
-                            // saisie ; le chat ordinaire reste instantané.
+                            // message (personnalisée ou automatique) ; le
+                            // chat ordinaire reste instantané.
                             S7TVChatMessage *pendingRewardCompanion = chatMsg;
                             S7TVChatMessageStore *rewardStore =
                                 [SevenTVManager sharedManager].chatMessageStore;

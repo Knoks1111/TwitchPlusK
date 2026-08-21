@@ -698,6 +698,36 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
     BOOL wasNearBottom = (self.displayedMessages.count == 0) || self.isPinnedToBottom;
 
+    // Quand le store atteint sa limite (300 messages), chaque nouveau message
+    // retire le plus ancien. Conserver seulement le contentOffset ne suffit
+    // pas : la suppression d'une ligne au-dessus du viewport fait remonter
+    // visuellement tout ce que l'utilisateur lit. On mémorise donc un message
+    // visible qui survivra au nouveau snapshot ainsi que sa position exacte
+    // dans le viewport, puis on le replacera au même endroit après le diff.
+    NSString *visibleAnchorID = nil;
+    CGFloat visibleAnchorViewportY = 0.0;
+    if (!wasNearBottom && self.displayedMessages.count > 0) {
+        NSMutableSet<NSString *> *newIDSet =
+            [NSMutableSet setWithCapacity:newMessages.count];
+        for (S7TVChatMessage *message in newMessages) {
+            if (message.messageID) [newIDSet addObject:message.messageID];
+        }
+
+        [self.tableView layoutIfNeeded];
+        NSArray<NSIndexPath *> *visibleIndexPaths =
+            [[self.tableView indexPathsForVisibleRows]
+                sortedArrayUsingSelector:@selector(compare:)];
+        for (NSIndexPath *indexPath in visibleIndexPaths) {
+            NSString *messageID = [self.dataSource itemIdentifierForIndexPath:indexPath];
+            if (messageID.length == 0 || ![newIDSet containsObject:messageID]) continue;
+
+            CGRect rowRect = [self.tableView rectForRowAtIndexPath:indexPath];
+            visibleAnchorID = [messageID copy];
+            visibleAnchorViewportY = CGRectGetMinY(rowRect) - self.tableView.contentOffset.y;
+            break;
+        }
+    }
+
     NSMutableSet<NSString *> *oldIDs = nil;
     if (!wasNearBottom) {
         oldIDs = [NSMutableSet setWithCapacity:self.displayedMessages.count];
@@ -748,7 +778,30 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
     __weak typeof(self) weakSelf = self;
     [self.dataSource applySnapshot:snapshot animatingDifferences:animated completion:^{
-        [weakSelf s7tv_scrollToBottomIfNeeded:wasNearBottom];
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) {
+            if (completion) completion();
+            return;
+        }
+
+        if (!wasNearBottom && visibleAnchorID.length > 0) {
+            [self.tableView layoutIfNeeded];
+            NSIndexPath *newAnchorIndexPath =
+                [self.dataSource indexPathForItemIdentifier:visibleAnchorID];
+            if (newAnchorIndexPath) {
+                CGRect rowRect = [self.tableView rectForRowAtIndexPath:newAnchorIndexPath];
+                CGFloat targetY = CGRectGetMinY(rowRect) - visibleAnchorViewportY;
+                CGFloat minimumY = -self.tableView.adjustedContentInset.top;
+                CGFloat maximumY = MAX(minimumY,
+                    self.tableView.contentSize.height - self.tableView.bounds.size.height +
+                    self.tableView.adjustedContentInset.bottom);
+                CGPoint offset = self.tableView.contentOffset;
+                offset.y = MIN(maximumY, MAX(minimumY, targetY));
+                [self.tableView setContentOffset:offset animated:NO];
+            }
+        }
+
+        [self s7tv_scrollToBottomIfNeeded:wasNearBottom];
         if (completion) completion();
     }];
 }

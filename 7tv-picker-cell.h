@@ -8,6 +8,8 @@
 
 #import <UIKit/UIKit.h>
 
+@class S7TVEmoteFrameRequest;
+
 // ============================================================
 // Cellule dédiée du picker — remplace le UICollectionViewCell générique
 // utilisé jusqu'ici. L'UIImageView et l'étoile favoris sont créés UNE SEULE
@@ -32,4 +34,7 @@
 // Invalide les activations différées et les callbacks arrivant après un
 // scroll, une fermeture du picker ou une réutilisation de la cellule.
 @property (nonatomic, assign) NSUInteger animationGeneration;
+// Requête de décodage propre au contenu courant. Annulée dès que la cellule
+// quitte l'écran ou est recyclée afin de ne jamais bloquer les suivantes.
+@property (nonatomic, strong) S7TVEmoteFrameRequest *animationFrameRequest;
 @end

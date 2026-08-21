@@ -5,6 +5,7 @@
 
 #import "7tv-picker-cell.h"
 #import "SevenTVEmoteAnimationEngine.h"
+#import "SevenTVEmoteImageCache.h"
 
 @implementation S7TVEmotePickerCell
 
@@ -57,6 +58,8 @@
 
 - (void)prepareForReuse {
     [super prepareForReuse];
+    [self.animationFrameRequest cancel];
+    self.animationFrameRequest = nil;
     self.imageLoadGeneration += 1;
     self.animationGeneration += 1;
     self.wantsAnimation = NO;

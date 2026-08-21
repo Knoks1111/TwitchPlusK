@@ -40,7 +40,7 @@ NS_ASSUME_NONNULL_BEGIN
 // Au-delà, les plus anciennes à l'écran gèlent (voir commentaire de fichier).
 // Pas encore dans SevenTVChatAppearanceConfig (ce n'est pas une taille
 // visuelle, voir exigence transverse #1 du plan) — réglable directement ici.
-@property (nonatomic, assign) NSInteger maxSimultaneousAnimations; // défaut 64 ; scroll borné à 16
+@property (nonatomic, assign) NSInteger maxSimultaneousAnimations; // défaut 128
 
 // À appeler dès que les frames décodées d'une emote sont prêtes
 // (SevenTVEmoteImageCache ne le fait pas lui-même — c'est à l'appelant du
@@ -78,8 +78,8 @@ NS_ASSUME_NONNULL_BEGIN
 // en willDisplayCell (cell reuse) — voir SevenTVChatCustomView.
 - (void)removeObserver:(id)observer;
 
-// Pendant un scroll du picker, conserve un mouvement fluide mais réduit de
-// moitié les redraws et borne à 16 le nombre de clés avancées simultanément.
+// Signale le scroll du picker. Les cellules hors écran restent retirées par
+// leurs callbacks de visibilité ; aucune emote encore visible n'est gelée.
 // La concurrence du décodage est ajustée séparément par le cache d'images.
 - (void)setScrollingPerformanceMode:(BOOL)enabled;
 

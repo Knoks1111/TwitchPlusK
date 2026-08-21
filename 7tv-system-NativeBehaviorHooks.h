@@ -12,6 +12,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
+NS_ASSUME_NONNULL_BEGIN
+
 // ============================================================
 // Channel Points — points d'accroche appelés depuis TweakSevenTV.m
 // ============================================================
@@ -34,6 +36,11 @@ void s7tv_setPendingChannelPointsClaimID(NSString * _Nullable claimID);
 // appelé une fois depuis le constructeur (TweakSevenTV.m).
 void s7tv_scanForChannelPointsLoop(void);
 
+// Valeur partagée avec les logs du hook Apollo resté dans TweakSevenTV.m.
+// Exportée pour garder une source de vérité unique après l'extraction du
+// module (la rendre static ici cassait la compilation du fichier principal).
+FOUNDATION_EXPORT const NSTimeInterval S7TVChannelPointsClaimRetryCooldown;
+
 // ============================================================
 // Verrou d'orientation — points d'accroche appelés depuis TweakSevenTV.m
 // ============================================================
@@ -47,3 +54,5 @@ BOOL s7tv_isOrientationLocked(void);
 // appelé depuis le constructeur (TweakSevenTV.m), symétrique aux autres
 // s7tv_swizzle_*() du fichier principal.
 void s7tv_swizzle_orientation_lock(void);
+
+NS_ASSUME_NONNULL_END

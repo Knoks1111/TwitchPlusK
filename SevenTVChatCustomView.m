@@ -573,10 +573,19 @@
 }
 
 - (void)reloadMessages {
-    [self reloadMessagesWithCompletion:nil];
+    [self reloadMessagesAnimated:NO];
+}
+
+- (void)reloadMessagesAnimated:(BOOL)animated {
+    [self s7tv_reloadMessagesAnimated:animated completion:nil];
 }
 
 - (void)reloadMessagesWithCompletion:(void (^)(void))completion {
+    [self s7tv_reloadMessagesAnimated:NO completion:completion];
+}
+
+- (void)s7tv_reloadMessagesAnimated:(BOOL)animated
+                          completion:(void (^)(void))completion {
     NSAssert([NSThread isMainThread],
              @"reloadMessages doit être appelé depuis le main thread (touche UIKit)");
 
@@ -633,7 +642,7 @@
     [snapshot reloadItemsWithIdentifiers:identifiers];
 
     __weak typeof(self) weakSelf = self;
-    [self.dataSource applySnapshot:snapshot animatingDifferences:NO completion:^{
+    [self.dataSource applySnapshot:snapshot animatingDifferences:animated completion:^{
         [weakSelf s7tv_scrollToBottomIfNeeded:wasNearBottom];
         if (completion) completion();
     }];
@@ -824,6 +833,10 @@
 
 - (void)s7tv_reloadMessageWithID:(NSString *)messageID {
     [self s7tv_reloadMessageWithID:messageID animated:NO];
+}
+
+- (void)refreshMessageWithID:(NSString *)messageID animated:(BOOL)animated {
+    [self s7tv_reloadMessageWithID:messageID animated:animated];
 }
 
 - (void)s7tv_reloadMessageWithID:(NSString *)messageID animated:(BOOL)animated {

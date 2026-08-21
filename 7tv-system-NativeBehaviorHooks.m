@@ -98,7 +98,7 @@ static const char kS7TVChannelPointsPolling = 9;
 static NSString *s_s7tvPendingChannelPointsClaimID = nil;
 
 // Dédup PAR COOLDOWN, pas permanente : on retente le même ID toutes les
-// kS7TVClaimRetryCooldown secondes tant que le GQL continue de le signaler
+// S7TVChannelPointsClaimRetryCooldown secondes tant que le GQL continue de le signaler
 // (voir s7tv_scanGQLResponseForChannelPointsClaim). Nécessaire car
 // performSelector peut s'exécuter "avec succès" (aucune exception) sans
 // que Twitch envoie réellement la mutation — observé en conditions réelles
@@ -110,7 +110,7 @@ static NSString *s_s7tvPendingChannelPointsClaimID = nil;
 // tentative qui n'a peut-être rien fait.
 static NSString      *s_s7tvLastTriggeredChannelPointsClaimID = nil;
 static NSTimeInterval  s_s7tvLastTriggerAttemptTime = 0;
-static const NSTimeInterval kS7TVClaimRetryCooldown = 4.0;
+const NSTimeInterval S7TVChannelPointsClaimRetryCooldown = 4.0;
 
 // Garde-fou anti-spam : plafond de tentatives par coffre. Sans lui, un
 // coffre dont le tap natif ne produit jamais de requête réseau (observé en
@@ -233,7 +233,7 @@ static void s7tv_logAllChatInputViewInstances(void) {
 // secours (cas où aucune ChatInputView n'était encore trouvable au moment
 // de la détection réseau — ex: tout début de chargement du stream).
 // Dédup par COOLDOWN (pas permanente) : voir le commentaire sur
-// kS7TVClaimRetryCooldown plus haut — un performSelector "réussi" (aucune
+// S7TVChannelPointsClaimRetryCooldown plus haut — un performSelector "réussi" (aucune
 // exception) ne garantit pas qu'une vraie requête soit partie.
 static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
     if (!claimID.length) return;
@@ -246,7 +246,7 @@ static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
     }
     NSTimeInterval now = [NSDate date].timeIntervalSince1970;
     BOOL recentlyAttemptedSameClaim = [claimID isEqualToString:lastTriggeredClaimID]
-        && (now - lastAttemptTime) < kS7TVClaimRetryCooldown;
+        && (now - lastAttemptTime) < S7TVChannelPointsClaimRetryCooldown;
     if (recentlyAttemptedSameClaim) return;
 
     // Plafond anti-spam : voir kS7TVMaxRetryDuration plus haut.

@@ -20,6 +20,7 @@
 #import "SevenTVChatAppearanceConfig.h"
 #import "7tv-localization.h"
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
+static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Palette couleurs
@@ -1046,9 +1047,20 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 // Liste de toutes les emotes en favoris (IDs 7TV + noms résolus).
 // ─────────────────────────────────────────────────────────────────────────────
 
+@interface SevenTVFavoritesListController ()
+- (void)s7tv_scheduleFavoriteNameCacheSave;
+- (void)s7tv_scheduleFavoriteNameRowsReload;
+- (void)s7tv_resolveMissingFavoriteNames;
+@end
+
 @implementation SevenTVFavoritesListController {
     NSArray<NSString *> *_favIDs;      // IDs purs (sans préfixe)
     NSDictionary<NSString *, NSString *> *_idToName; // emoteID → emoteName
+    NSMutableDictionary<NSString *, NSString *> *_favoriteNameCache;
+    NSMutableSet<NSString *> *_nameFetchesInFlight;
+    NSURLSession *_favoriteNameSession;
+    BOOL _favoriteNameSaveScheduled;
+    BOOL _favoriteNameReloadScheduled;
 }
 
 - (instancetype)init {
@@ -1060,6 +1072,14 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [super viewDidLoad];
     self.title = L(@"title_mes_favoris");
     S7TVStyleTableView(self.tableView);
+    NSDictionary *savedNames = [[NSUserDefaults standardUserDefaults]
+        dictionaryForKey:kS7TVFavoriteEmoteNamesKey] ?: @{};
+    _favoriteNameCache = [savedNames mutableCopy];
+    _nameFetchesInFlight = [NSMutableSet set];
+    NSURLSessionConfiguration *nameConfig = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    nameConfig.HTTPMaximumConnectionsPerHost = 4;
+    nameConfig.timeoutIntervalForRequest = 15.0;
+    _favoriteNameSession = [NSURLSession sessionWithConfiguration:nameConfig];
     [self reloadFavs];
 
     // Bouton Vider
@@ -1072,6 +1092,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     self.navigationItem.rightBarButtonItem = clear;
 }
 
+- (void)dealloc {
+    [_favoriteNameSession invalidateAndCancel];
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self reloadFavs];
@@ -1080,9 +1104,17 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)reloadFavs {
     _favIDs = [[[SevenTVManager sharedManager] favoriteEmoteIDsSnapshot] copy];
 
-    // Construire le dictionnaire id → nom à partir des emotes chargées
+    // Commencer par les noms persistés : un favori importé peut ne pas faire
+    // partie des emotes globales ou de la chaîne actuellement ouverte.
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     NSMutableDictionary *map = [NSMutableDictionary dictionary];
+    for (NSString *emoteID in _favIDs) {
+        NSString *cachedName = _favoriteNameCache[emoteID];
+        if (cachedName.length) map[emoteID] = cachedName;
+    }
+
+    // Les catalogues chargés localement restent prioritaires et évitent tout
+    // appel réseau pour leurs emotes.
     void (^scan)(NSDictionary<NSString *, SevenTVEmote *> *) = ^(NSDictionary *dict) {
         [dict enumerateKeysAndObjectsUsingBlock:^(NSString *name, SevenTVEmote *emote, BOOL *stop) {
             if (emote.emoteID) map[emote.emoteID] = name;
@@ -1093,8 +1125,84 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         scan(mgr.channelEmotes ?: @{});
     });
     _idToName = [map copy];
+    [_favoriteNameCache addEntriesFromDictionary:map];
+    [self s7tv_scheduleFavoriteNameCacheSave];
 
     [self.tableView reloadData];
+    [self s7tv_resolveMissingFavoriteNames];
+}
+
+- (void)s7tv_scheduleFavoriteNameCacheSave {
+    if (_favoriteNameSaveScheduled) return;
+    _favoriteNameSaveScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf->_favoriteNameSaveScheduled = NO;
+        [[NSUserDefaults standardUserDefaults]
+            setObject:[strongSelf->_favoriteNameCache copy]
+               forKey:kS7TVFavoriteEmoteNamesKey];
+    });
+}
+
+- (void)s7tv_scheduleFavoriteNameRowsReload {
+    if (_favoriteNameReloadScheduled) return;
+    _favoriteNameReloadScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf->_favoriteNameReloadScheduled = NO;
+        [strongSelf.tableView reloadData];
+    });
+}
+
+- (void)s7tv_resolveMissingFavoriteNames {
+    for (NSString *emoteID in _favIDs) {
+        if (_idToName[emoteID].length || [_nameFetchesInFlight containsObject:emoteID]) continue;
+        [_nameFetchesInFlight addObject:emoteID];
+
+        NSString *escapedID = [emoteID stringByAddingPercentEncodingWithAllowedCharacters:
+                               [NSCharacterSet URLPathAllowedCharacterSet]];
+        NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@/emotes/%@",
+                                          S7TV_API_BASE, escapedID ?: emoteID]];
+        if (!url) {
+            [_nameFetchesInFlight removeObject:emoteID];
+            continue;
+        }
+
+        __weak typeof(self) weakSelf = self;
+        [[_favoriteNameSession dataTaskWithURL:url
+            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            NSString *resolvedName = nil;
+            NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
+                ? ((NSHTTPURLResponse *)response).statusCode : 0;
+            if (!error && data.length && status >= 200 && status < 300) {
+                NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                id nameValue = [json isKindOfClass:[NSDictionary class]] ? json[@"name"] : nil;
+                if ([nameValue isKindOfClass:[NSString class]] && [nameValue length]) {
+                    resolvedName = nameValue;
+                }
+            }
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                typeof(self) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                [strongSelf->_nameFetchesInFlight removeObject:emoteID];
+                if (!resolvedName.length || ![strongSelf->_favIDs containsObject:emoteID]) return;
+
+                strongSelf->_favoriteNameCache[emoteID] = resolvedName;
+                NSMutableDictionary *names = [strongSelf->_idToName mutableCopy] ?: [NSMutableDictionary dictionary];
+                names[emoteID] = resolvedName;
+                strongSelf->_idToName = [names copy];
+                [strongSelf s7tv_scheduleFavoriteNameCacheSave];
+                [strongSelf s7tv_scheduleFavoriteNameRowsReload];
+            });
+        }] resume];
+    }
 }
 
 // ── TableView ──
@@ -1156,7 +1264,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
     // Labels
     UILabel *nameLbl = [[UILabel alloc] init];
-    nameLbl.text = name ?: L(@"favorite_emote_unknown");
+    nameLbl.text = name ?: L(@"favorite_emote_loading");
     nameLbl.font = [UIFont systemFontOfSize:15 weight:
         name ? UIFontWeightRegular : UIFontWeightLight];
     nameLbl.textColor = name ? [UIColor whiteColor] : S7TVGray();

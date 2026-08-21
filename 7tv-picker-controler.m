@@ -86,9 +86,9 @@
 @property (nonatomic, weak) UIView    *pickerTabIndicatorView;       // pastille violette qui glisse entre les 3 boutons
 @property (nonatomic, weak) UIView    *pickerSearchCapsuleView;      // bas, pleine largeur (recherche)
 @property (nonatomic, weak) UIButton  *pickerSearchClearBtn;         // petite croix à droite du champ, visible si texte non vide
-// Pendant un drag/deceleration, toutes les animations de la grille sont
-// suspendues. Le scroll garde ainsi son budget CPU/GPU pour le layout et le
-// compositing, puis seules les cellules encore visibles sont réactivées.
+// Pendant un drag/deceleration, seuls les nouveaux décodages sont suspendus.
+// Les animations déjà décodées et visibles continuent via le mode allégé du
+// moteur (un redraw sur deux, nombre de clés borné).
 @property (nonatomic, assign) BOOL pickerScrollInProgress;
 
 // ── Avatar de chaîne (bouton "Chaîne" de la capsule sous-choix) ────────────
@@ -160,6 +160,7 @@
     // déjà en cours côté UIKit (c'est elle qui a déclenché cette notif).
     // On se contente de remettre notre propre état à plat.
     [self _s7tv_deactivateVisiblePickerAnimations];
+    [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
     self.emotePickerTextEntryView = nil;
@@ -610,6 +611,7 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
 
 - (void)_hideEmotePicker {
     [self _s7tv_deactivateVisiblePickerAnimations];
+    [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
     UITextView *tv = self.emotePickerTextEntryView;
@@ -634,6 +636,7 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
 - (void)cleanupPickerForStreamClose {
     [[SevenTVManager sharedManager] log:@"🔒 cleanupPickerForStreamClose → nettoyage picker"];
     [self _s7tv_deactivateVisiblePickerAnimations];
+    [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
     UITextView *tv = self.emotePickerTextEntryView;
@@ -1678,6 +1681,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     BOOL show = !self.pickerSizesPanelVisible;
     if (show) {
         [self _s7tv_deactivateVisiblePickerAnimations];
+        [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
         [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
         self.pickerScrollInProgress = NO;
     }
@@ -1864,7 +1868,6 @@ static CGFloat S7TVRefCols(void) {
                strongCell.window != nil &&
                !strongSelf.emotePickerView.hidden &&
                !strongSelf.emoteCollectionView.hidden &&
-               !strongSelf.pickerScrollInProgress &&
                strongCell.wantsAnimation &&
                strongCell.animationGeneration == generation &&
                [strongCell.currentEmoteKey isEqualToString:key];
@@ -1899,6 +1902,11 @@ static CGFloat S7TVRefCols(void) {
         redraw();
         return;
     }
+
+    // Pendant le scroll, on anime uniquement ce qui était déjà décodé. Une
+    // nouvelle emote reste sur sa miniature statique jusqu'à l'arrêt : aucune
+    // décompression ImageIO ne vient concurrencer UICollectionView.
+    if (self.pickerScrollInProgress) return;
 
     // Rien en cache : afficher au moins la frame statique déjà connue (si
     // elle existe) pendant que les frames animées se décodent en arrière-plan,
@@ -1964,7 +1972,7 @@ static CGFloat S7TVRefCols(void) {
 
 - (void)_s7tv_scheduleAnimationForPickerCell:(S7TVEmotePickerCell *)cell
                                   atIndexPath:(NSIndexPath *)indexPath {
-    if (!cell.wantsAnimation || self.pickerScrollInProgress || self.emoteCollectionView.hidden) return;
+    if (!cell.wantsAnimation || self.emoteCollectionView.hidden) return;
 
     NSString *key = [cell.currentEmoteKey copy];
     if (!key.length) return;
@@ -1975,11 +1983,12 @@ static CGFloat S7TVRefCols(void) {
     // Un court délai filtre les cellules seulement traversées pendant un
     // flick rapide : aucune décompression animée lourde n'est lancée pour
     // elles. Une cellule stable à l'écran s'anime ensuite normalement.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+    NSTimeInterval delay = self.pickerScrollInProgress ? 0.0 : 0.12;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         S7TVEmotePickerCell *strongCell = weakCell;
-        if (!strongSelf || !strongCell || strongSelf.pickerScrollInProgress) return;
+        if (!strongSelf || !strongCell) return;
         if (strongCell.animationGeneration != generation ||
             ![strongCell.currentEmoteKey isEqualToString:key] ||
             [strongSelf.emoteCollectionView cellForItemAtIndexPath:indexPath] != strongCell) return;
@@ -2038,7 +2047,7 @@ static CGFloat S7TVRefCols(void) {
 - (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
     if (scrollView != self.emoteCollectionView) return;
     self.pickerScrollInProgress = YES;
-    [self _s7tv_deactivateVisiblePickerAnimations];
+    [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:YES];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:YES];
 }
 
@@ -2046,6 +2055,7 @@ static CGFloat S7TVRefCols(void) {
                   willDecelerate:(BOOL)decelerate {
     if (scrollView != self.emoteCollectionView || decelerate) return;
     self.pickerScrollInProgress = NO;
+    [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     [self _s7tv_activateVisiblePickerAnimations];
 }
@@ -2053,6 +2063,7 @@ static CGFloat S7TVRefCols(void) {
 - (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
     if (scrollView != self.emoteCollectionView) return;
     self.pickerScrollInProgress = NO;
+    [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     [self _s7tv_activateVisiblePickerAnimations];
 }

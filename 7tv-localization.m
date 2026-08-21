@@ -157,6 +157,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"empty_no_favorites":              @[@"Aucun favori pour l'instant.", @"No favorites yet."],
         @"favorites_count_format":          @[@"%lu emote(s) en favoris", @"%lu favorited emote(s)"],
         @"favorite_emote_unknown":          @[@"Emote non chargée", @"Emote not loaded"],
+        @"favorite_emote_loading":          @[@"Chargement du nom…", @"Loading name…"],
         @"alert_clear_favorites_title":     @[@"Vider les favoris", @"Clear favorites"],
         @"alert_clear_favorites_message":   @[@"Supprimer les %lu emotes en favoris ?",
                                                @"Remove %lu favorited emotes?"],

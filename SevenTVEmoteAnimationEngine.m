@@ -62,6 +62,8 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 // l'observateur, filet de sécurité en plus de removeObserver: explicite).
 @property (nonatomic, strong) NSMapTable<id, NSMutableSet<NSString *> *> *keysByObserver;
 @property (nonatomic, strong) NSMapTable<id, dispatch_block_t> *redrawByObserver;
+@property (nonatomic, assign) BOOL scrollingPerformanceMode;
+@property (nonatomic, assign) BOOL scrollingTickPhase;
 - (void)s7tv_pruneInactiveFrameSets;
 @end
 
@@ -186,6 +188,12 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     [self s7tv_updateDisplayLinkState];
 }
 
+- (void)setScrollingPerformanceMode:(BOOL)enabled {
+    NSAssert([NSThread isMainThread], @"SevenTVEmoteAnimationEngine: main thread uniquement");
+    _scrollingPerformanceMode = enabled;
+    self.scrollingTickPhase = NO;
+}
+
 - (void)clearAllCachedFrames {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self clearAllCachedFrames]; });
@@ -267,13 +275,25 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 - (void)s7tv_tick:(CADisplayLink *)link {
     if (self.observersByKey.count == 0) return;
 
+    NSTimeInterval elapsedStep = link.duration;
+    if (self.scrollingPerformanceMode) {
+        self.scrollingTickPhase = !self.scrollingTickPhase;
+        if (!self.scrollingTickPhase) return;
+        // Un tick sur deux, mais deux intervalles comptabilisés : l'animation
+        // garde sa vitesse normale tout en divisant les redraws par deux.
+        elapsedStep *= 2.0;
+    }
+
     // Throttle : au-delà de maxSimultaneousAnimations clés actives, les plus
     // anciennes (firstSeenAt le plus petit) gèlent — jamais retirées, juste
     // pas avancées ce tick (voir header). Aucune clé n'est jamais désinscrite
     // par le throttle lui-même.
     NSArray<NSString *> *activeKeys = self.observersByKey.allKeys;
     NSSet<NSString *> *frozenSet = nil;
-    if (activeKeys.count > self.maxSimultaneousAnimations) {
+    NSInteger activeLimit = self.scrollingPerformanceMode
+        ? MIN(self.maxSimultaneousAnimations, 16)
+        : self.maxSimultaneousAnimations;
+    if (activeKeys.count > activeLimit) {
         NSArray<NSString *> *sortedByAge = [activeKeys sortedArrayUsingComparator:
             ^NSComparisonResult(NSString *a, NSString *b) {
             CFTimeInterval ta = self.firstSeenAtByKey[a].doubleValue;
@@ -282,7 +302,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
             if (ta > tb) return NSOrderedDescending;
             return NSOrderedSame;
         }];
-        NSInteger frozenCount = sortedByAge.count - self.maxSimultaneousAnimations;
+        NSInteger frozenCount = sortedByAge.count - activeLimit;
         frozenSet = [NSSet setWithArray:[sortedByAge subarrayWithRange:NSMakeRange(0, frozenCount)]];
     }
 
@@ -295,7 +315,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
         if (!frames.images.count) continue; // décodage pas encore terminé pour cette clé
 
         NSUInteger idx = self.frameIndexByKey[key].unsignedIntegerValue;
-        NSTimeInterval elapsed = self.elapsedByKey[key].doubleValue + link.duration;
+        NSTimeInterval elapsed = self.elapsedByKey[key].doubleValue + elapsedStep;
         NSTimeInterval frameDuration = [frames.durations[idx] doubleValue];
         if (frameDuration <= 0) frameDuration = 0.1;
 

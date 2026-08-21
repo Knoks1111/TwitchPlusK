@@ -1916,13 +1916,14 @@ static CGFloat S7TVRefCols(void) {
         if (frame) strongCell.emoteImageView.image = frame;
     };
 
-    // Frames déjà enregistrées auprès de l'engine (emote déjà vue animée,
-    // picker ou chat) → il ne reste qu'à s'abonner, pas de décodage à refaire.
+    // Toute frame déjà enregistrée (y compris une preview courte) est affichée
+    // immédiatement. Seule une boucle COMPLÈTE autorise toutefois un retour
+    // anticipé : une preview ne doit plus bloquer à vie le vrai décodage.
     if ([engine hasFramesForKey:key]) {
         if (!cellIsStillActive()) return NO;
         [engine addObserver:cell keys:[NSSet setWithObject:key] redraw:redraw];
         redraw(); // pose la frame courante immédiatement, sans attendre le prochain tick
-        return YES;
+        if ([engine hasCompleteFramesForKey:key]) return YES;
     }
 
     // Frames décodées et en cache (ex: vues dans le chat) mais pas encore
@@ -1955,6 +1956,9 @@ static CGFloat S7TVRefCols(void) {
         if (!frames.images.count) return;
         S7TVEmotePickerCell *strongCell = weakCellForLoad;
         if (!strongCell || !cellIsStillActive()) return;
+        // La file de preview et la file complète sont indépendantes. Si la
+        // complète a gagné la course, ignorer une preview arrivée plus tard.
+        if (frames.isPreview && [engine hasCompleteFramesForKey:key]) return;
         [engine registerFrames:frames forKey:key];
         [engine addObserver:strongCell keys:[NSSet setWithObject:key] redraw:redraw];
         redraw();

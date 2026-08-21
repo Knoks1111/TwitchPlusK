@@ -25,6 +25,10 @@ NS_ASSUME_NONNULL_BEGIN
 // Durée de chaque frame en secondes (index correspondant à images) — issue
 // des métadonnées WebP (delay time), 0.1s de filet de sécurité si absente.
 @property (nonatomic, copy) NSArray<NSNumber *> *durations;
+// YES uniquement pour la petite boucle rapidement décodée par le picker.
+// Une preview est immédiatement affichable, mais ne doit jamais empêcher le
+// décodage de la boucle complète ni remplacer celle-ci si elle est déjà prête.
+@property (nonatomic, assign, getter=isPreview) BOOL preview;
 @end
 
 // Jeton d'une demande de frames liée à une vue. Le picker l'annule dès que
@@ -67,16 +71,9 @@ NS_ASSUME_NONNULL_BEGIN
 // déjà vue plus haut dans le même chat).
 - (nullable S7TVEmoteAnimatedFrames *)cachedFramesForResolvedEmote:(id<S7TVResolvedEmote>)emote;
 
-// completion appelé une fois sur le main thread : frames si le décodage a
-// réussi (WebP animé valide, ≥1 frame), nil sinon (réseau, décodage échoué,
-// ou emote non animée) — l'appelant garde alors le fallback statique déjà
-// affiché (voir S7TVAnimatedEmoteAttachment.staticFallbackImage).
-- (void)framesForResolvedEmote:(id<S7TVResolvedEmote>)emote
-                     completion:(void (^)(S7TVEmoteAnimatedFrames * _Nullable frames))completion;
-
-// Variante annulable utilisée par le picker. preview reçoit rapidement une
-// boucle légère dès les premières frames décodées ; completion reçoit ensuite
-// la boucle complète. Les deux callbacks s'exécutent sur le main thread et ne
+// Demande annulable utilisée par toute cellule visible (chat et picker).
+// preview reçoit rapidement une boucle légère ; completion reçoit ensuite la
+// boucle complète. Les deux callbacks s'exécutent sur le main thread et ne
 // sont plus appelés après cancel.
 - (S7TVEmoteFrameRequest *)framesForResolvedEmote:(id<S7TVResolvedEmote>)emote
                                           preview:(void (^ _Nullable)(S7TVEmoteAnimatedFrames *frames))preview

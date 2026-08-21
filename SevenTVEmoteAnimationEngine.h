@@ -54,6 +54,11 @@ NS_ASSUME_NONNULL_BEGIN
 // SevenTVChatCustomView.s7tv_cellForMessageID:).
 - (BOOL)hasFramesForKey:(NSString *)key;
 
+// Contrairement à hasFramesForKey:, retourne NO si le moteur ne possède
+// encore qu'une preview courte. Les renderers peuvent ainsi l'afficher tout
+// de suite tout en poursuivant le décodage complet en arrière-plan.
+- (BOOL)hasCompleteFramesForKey:(NSString *)key;
+
 // Frame courante pour une clé, ou nil si pas encore décodée / clé inconnue
 // — l'appelant garde alors son fallback statique (voir
 // S7TVAnimatedEmoteAttachment.staticFallbackImage).

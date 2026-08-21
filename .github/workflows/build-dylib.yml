@@ -1,4 +1,4 @@
-name: 🔧 Build Dylib
+name: 🔧 Build Dylib TwitchPlusK
 
 on:
   workflow_dispatch: {}
@@ -8,6 +8,9 @@ on:
 
 env:
   THEOS: ${{ github.workspace }}/theos
+
+permissions:
+  contents: write
 
 jobs:
   build-dylib:
@@ -204,6 +207,22 @@ jobs:
           path: ${{ env.DEB_PATH }}
           retention-days: 7
 
+      - name: 📋 Préparer le fichier pour la Release (nom fixe)
+        run: |
+          set -euo pipefail
+          cp "$DYLIB_PATH" /tmp/TwitchPlusK.dylib
+          echo "✅ Copié vers /tmp/TwitchPlusK.dylib ($(du -sh /tmp/TwitchPlusK.dylib | cut -f1))"
+
+      - name: 🚀 Publier en Release GitHub (URL fixe)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Dernier build (run #${{ github.run_number }})"
+          files: /tmp/TwitchPlusK.dylib
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: ✅ Résumé
         run: |
           echo "========================================"
@@ -212,4 +231,7 @@ jobs:
           echo "👉 Va dans Actions → ce run → Artifacts"
           echo "👉 Clique-droit sur 'TwitchPlusK-v${{ github.run_number }}-dylib' → Copier le lien"
           echo "👉 Colle ce lien dans le workflow 'Build IPA' pour injecter"
+          echo ""
+          echo "👉 OU utilise l'URL fixe (toujours le dernier build) :"
+          echo "   https://github.com/Knoks1111/TwitchPlusK/releases/download/latest/TwitchPlusK.dylib"
           echo "========================================"

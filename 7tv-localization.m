@@ -195,6 +195,9 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // Ligne fondue dans la section ci-dessus (plus de section dédiée —
         // voir 7tv-picker-sizes.m, _buildSelfMentionSectionInScrollView:).
         @"sizes_self_mention_row_label":    @[@"Vous êtes mentionné", @"You're mentioned"],
+        @"sizes_moderation_section_title":  @[@"Messages supprimés", @"Deleted messages"],
+        @"sizes_moderation_details_label":  @[@"Afficher timeout / ban", @"Show timeout / ban"],
+        @"sizes_deleted_opacity_label":     @[@"Opacité du message révélé", @"Revealed message opacity"],
         @"preview_sub_phrase":              @[@"a pris un abonnement Tier 1. C'est son 3e mois d'abonnement !",
                                                @"subscribed at Tier 1. This is their 3rd month!"],
         @"preview_prime_phrase":            @[@"s'est abonné(e) avec Prime. C'est son 24e mois d'abonnement !",
@@ -248,6 +251,16 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Chat custom (rendu live + faux chat de preview) ───────────────
         @"chat_deleted_message_placeholder": @[@"[message supprimé]", @"[message deleted]"],
+        // Détail optionnel injecté dans le placeholder replié.
+        @"chat_deleted_message_with_detail_format": @[@"[message supprimé — %@]", @"[message deleted — %@]"],
+        @"chat_moderation_timeout":          @[@"timeout", @"timeout"],
+        @"chat_moderation_timeout_format":   @[@"timeout %@", @"timeout %@"],
+        @"chat_moderation_permanent_ban":    @[@"ban permanent", @"permanent ban"],
+        @"chat_duration_seconds_format":     @[@"%lds", @"%lds"],
+        @"chat_duration_minutes_format":     @[@"%ldm", @"%ldm"],
+        @"chat_duration_hours_format":       @[@"%ldh", @"%ldh"],
+        @"chat_duration_week_one":           @[@"1 semaine", @"1 week"],
+        @"chat_duration_weeks_format":       @[@"%ld semaines", @"%ld weeks"],
         // %@ 1 = pseudo répondu, %@ 2 = extrait du message parent (déjà
         // tronqué côté appelant, voir SevenTVChatCustomView.m
         // s7tv_configureReplyBannerWithUsername:bodyPreview:).

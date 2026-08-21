@@ -82,6 +82,12 @@ static const char kS7TVRowKeyTag = 0;
 @property (nonatomic, weak) UISwitch *selfMentionSwitch;
 @property (nonatomic, weak) UIColorWell *selfMentionColorWell;
 @property (nonatomic, weak) UILabel *selfMentionRowLabel;
+@property (nonatomic, weak) UILabel *moderationSectionLabel;
+@property (nonatomic, weak) UILabel *moderationDetailsLabel;
+@property (nonatomic, weak) UISwitch *moderationDetailsSwitch;
+@property (nonatomic, weak) UILabel *deletedOpacityLabel;
+@property (nonatomic, weak) UILabel *deletedOpacityValueLabel;
+@property (nonatomic, weak) UISlider *deletedOpacitySlider;
 @property (nonatomic, strong) S7TVChatMessageStore *fakeChatStore;
 @property (nonatomic, strong) SevenTVChatCustomView *fakeChatView;
 @property (nonatomic, strong) UIColor *panelTextColor;
@@ -166,6 +172,11 @@ static const char kS7TVRowKeyTag = 0;
                                                     sepColor:sepColor accent:accent];
 
     contentY = [self _buildSelfMentionSectionInScrollView:sizesPanel atY:contentY
+                                                      width:frame.size.width
+                                                  textColor:textColor subColor:subColor
+                                                   sepColor:sepColor accent:accent];
+
+    contentY = [self _buildModerationSectionInScrollView:sizesPanel atY:contentY
                                                       width:frame.size.width
                                                   textColor:textColor subColor:subColor
                                                    sepColor:sepColor accent:accent];
@@ -290,6 +301,9 @@ static const char kS7TVRowKeyTag = 0;
     }
 
     self.selfMentionRowLabel.text = L(@"sizes_self_mention_row_label");
+    self.moderationSectionLabel.text = L(@"sizes_moderation_section_title");
+    self.moderationDetailsLabel.text = L(@"sizes_moderation_details_label");
+    self.deletedOpacityLabel.text = L(@"sizes_deleted_opacity_label");
 
     // _sizeOptionsTable rappelle L() à chaque invocation : relire la table
     // suffit à obtenir les libellés dans la nouvelle langue, sans dupliquer
@@ -553,6 +567,161 @@ static const char kS7TVRowKeyTag = 0;
     [self.fakeChatView reloadMessages];
 }
 
+#pragma mark - Section messages supprimés (sanction + atténuation)
+
+- (CGFloat)_buildModerationSectionInScrollView:(UIScrollView *)scrollView
+                                            atY:(CGFloat)y
+                                          width:(CGFloat)width
+                                      textColor:(UIColor *)textColor
+                                       subColor:(UIColor *)subColor
+                                       sepColor:(UIColor *)sepColor
+                                         accent:(UIColor *)accent {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+
+    UILabel *sectionLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, y, width - 24, 24)];
+    sectionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+    sectionLabel.textColor = subColor;
+    sectionLabel.text = L(@"sizes_moderation_section_title");
+    sectionLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [scrollView addSubview:sectionLabel];
+    self.moderationSectionLabel = sectionLabel;
+    y += 26;
+
+    UIView *toggleRow = [[UIView alloc] initWithFrame:CGRectMake(0, y, width, 44)];
+    toggleRow.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    const CGFloat switchW = 51, resetW = 28, gap = 6;
+    CGFloat switchLeft = width - 12 - switchW;
+    CGFloat resetLeft = switchLeft - gap - resetW;
+
+    UILabel *toggleLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 12, resetLeft - 20, 20)];
+    toggleLabel.font = [UIFont systemFontOfSize:13];
+    toggleLabel.textColor = textColor;
+    toggleLabel.text = L(@"sizes_moderation_details_label");
+    toggleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    toggleLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [toggleRow addSubview:toggleLabel];
+    self.moderationDetailsLabel = toggleLabel;
+
+    UIButton *toggleReset = [UIButton buttonWithType:UIButtonTypeSystem];
+    toggleReset.frame = CGRectMake(resetLeft, 8, resetW, 28);
+    toggleReset.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    UIImageSymbolConfiguration *resetCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
+    [toggleReset setImage:[UIImage systemImageNamed:@"arrow.counterclockwise" withConfiguration:resetCfg]
+                 forState:UIControlStateNormal];
+    toggleReset.tintColor = subColor;
+    [toggleReset addTarget:self action:@selector(_moderationDetailsResetTapped:)
+          forControlEvents:UIControlEventTouchUpInside];
+    [toggleRow addSubview:toggleReset];
+
+    UISwitch *detailsSwitch = [[UISwitch alloc] init];
+    detailsSwitch.frame = CGRectMake(switchLeft, 6, switchW, 31);
+    detailsSwitch.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    detailsSwitch.onTintColor = accent;
+    detailsSwitch.on = cfg.showModerationDetails;
+    [detailsSwitch addTarget:self action:@selector(_moderationDetailsChanged:)
+            forControlEvents:UIControlEventValueChanged];
+    [toggleRow addSubview:detailsSwitch];
+    self.moderationDetailsSwitch = detailsSwitch;
+
+    UIView *toggleSep = [[UIView alloc] initWithFrame:CGRectMake(12, 43.5, width - 24, 0.5)];
+    toggleSep.backgroundColor = sepColor;
+    toggleSep.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [toggleRow addSubview:toggleSep];
+    [scrollView addSubview:toggleRow];
+    y += 44;
+
+    UIView *opacityRow = [[UIView alloc] initWithFrame:CGRectMake(0, y, width, 60)];
+    opacityRow.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    const CGFloat pillW = 44;
+    resetLeft = width - 32;
+    CGFloat pillLeft = resetLeft - 8 - pillW;
+
+    UILabel *opacityLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 11, pillLeft - 18, 16)];
+    opacityLabel.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    opacityLabel.textColor = textColor;
+    opacityLabel.text = L(@"sizes_deleted_opacity_label");
+    opacityLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    opacityLabel.adjustsFontSizeToFitWidth = YES;
+    opacityLabel.minimumScaleFactor = 0.7;
+    opacityLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [opacityRow addSubview:opacityLabel];
+    self.deletedOpacityLabel = opacityLabel;
+
+    UILabel *opacityValue = [[UILabel alloc] initWithFrame:CGRectMake(pillLeft, 7, pillW, 20)];
+    opacityValue.font = [UIFont boldSystemFontOfSize:11];
+    opacityValue.textColor = [UIColor whiteColor];
+    opacityValue.textAlignment = NSTextAlignmentCenter;
+    opacityValue.backgroundColor = accent;
+    opacityValue.layer.cornerRadius = 6;
+    opacityValue.layer.masksToBounds = YES;
+    opacityValue.text = [NSString stringWithFormat:@"%ld%%", (long)llround(cfg.deletedMessageTextOpacity * 100)];
+    opacityValue.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [opacityRow addSubview:opacityValue];
+    self.deletedOpacityValueLabel = opacityValue;
+
+    UIButton *opacityReset = [UIButton buttonWithType:UIButtonTypeSystem];
+    opacityReset.frame = CGRectMake(resetLeft, 4, 28, 24);
+    opacityReset.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [opacityReset setImage:[UIImage systemImageNamed:@"arrow.counterclockwise" withConfiguration:resetCfg]
+                  forState:UIControlStateNormal];
+    opacityReset.tintColor = subColor;
+    [opacityReset addTarget:self action:@selector(_deletedOpacityResetTapped:)
+           forControlEvents:UIControlEventTouchUpInside];
+    [opacityRow addSubview:opacityReset];
+
+    UISlider *opacitySlider = [[UISlider alloc] initWithFrame:CGRectMake(12, 34, width - 24, 22)];
+    opacitySlider.minimumValue = 0.25;
+    opacitySlider.maximumValue = 1.0;
+    opacitySlider.value = cfg.deletedMessageTextOpacity;
+    opacitySlider.minimumTrackTintColor = accent;
+    opacitySlider.maximumTrackTintColor = [UIColor colorWithRed:0.25 green:0.25 blue:0.28 alpha:1.0];
+    opacitySlider.thumbTintColor = accent;
+    opacitySlider.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [opacitySlider addTarget:self action:@selector(_deletedOpacityChanged:)
+             forControlEvents:UIControlEventValueChanged];
+    [opacityRow addSubview:opacitySlider];
+    self.deletedOpacitySlider = opacitySlider;
+
+    UIView *opacitySep = [[UIView alloc] initWithFrame:CGRectMake(12, 59.5, width - 24, 0.5)];
+    opacitySep.backgroundColor = sepColor;
+    opacitySep.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [opacityRow addSubview:opacitySep];
+    [scrollView addSubview:opacityRow];
+    return y + 68;
+}
+
+- (void)_moderationDetailsChanged:(UISwitch *)sw {
+    [SevenTVChatAppearanceConfig sharedConfig].showModerationDetails = sw.on;
+    [self.fakeChatView reloadMessages];
+}
+
+- (void)_moderationDetailsResetTapped:(UIButton *)btn {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    cfg.showModerationDetails = YES;
+    self.moderationDetailsSwitch.on = YES;
+    [self.fakeChatView reloadMessages];
+}
+
+- (void)_deletedOpacityChanged:(UISlider *)slider {
+    NSInteger percent = (NSInteger)llround(slider.value * 100.0);
+    CGFloat value = percent / 100.0;
+    slider.value = value;
+    [[SevenTVChatAppearanceConfig sharedConfig] setValue:value
+                                              forSizeKey:@"deletedMessageTextOpacity"];
+    self.deletedOpacityValueLabel.text = [NSString stringWithFormat:@"%ld%%", (long)percent];
+    [self.fakeChatView reloadMessages];
+}
+
+- (void)_deletedOpacityResetTapped:(UIButton *)btn {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    [cfg resetKeyToDefault:@"deletedMessageTextOpacity"];
+    self.deletedOpacitySlider.value = cfg.deletedMessageTextOpacity;
+    self.deletedOpacityValueLabel.text = [NSString stringWithFormat:@"%ld%%",
+        (long)llround(cfg.deletedMessageTextOpacity * 100.0)];
+    [self.fakeChatView reloadMessages];
+}
+
 - (void)_systemBGToggleChanged:(UISwitch *)sw {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
     cfg.systemMessageBackgroundsEnabled = sw.on;
@@ -748,7 +917,23 @@ static const char kS7TVRowKeyTag = 0;
          authorDisplayName:L(@"preview_username")
                    rawText:L(@"preview_deleted_message")];
     deleted.state = S7TVChatMessageStateDeletedCollapsed;
+    deleted.moderationKind = S7TVChatModerationKindTimeout;
+    deleted.moderationDurationSeconds = 10 * 60;
     [store addMessage:deleted];
+
+    // Deuxième exemple, déjà révélé, pour que le slider d'opacité
+    // montre son effet immédiatement sans rendre le faux chat interactif.
+    S7TVChatMessage *deletedExpanded = [[S7TVChatMessage alloc]
+        initWithMessageID:@"s7tv_preview_deleted_expanded"
+                 timestamp:now
+              authorUserID:@"s7tv_preview_u8"
+         authorDisplayName:L(@"preview_username_3")
+                   rawText:L(@"preview_deleted_message")];
+    deletedExpanded.authorColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.25 alpha:1.0];
+    deletedExpanded.badgeIdentifiers = @[@"vip/1"];
+    deletedExpanded.state = S7TVChatMessageStateDeletedExpanded;
+    deletedExpanded.moderationKind = S7TVChatModerationKindPermanentBan;
+    [store addMessage:deletedExpanded];
 }
 
 // Façade historique appelée par 7tv-picker-controler.m à chaque ouverture

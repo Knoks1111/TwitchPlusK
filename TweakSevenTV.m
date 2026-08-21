@@ -485,9 +485,23 @@ static BOOL s7tv_handleModerationEvent(NSString *ircLine) {
 
     NSString *targetUserID = s7tv_tagValue(tags, @"target-user-id", @"");
     if (targetUserID.length) {
-        [store markAllMessagesDeletedForUserID:targetUserID completion:^{
-            [mgr log:@"[ChatCustom] 🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@)",
-                targetUserID, trailing.length ? trailing : @"inconnu"];
+        // Twitch envoie `ban-duration` (secondes) uniquement pour un
+        // timeout. Son absence sur un CLEARCHAT ciblé signifie ban
+        // permanent. On conserve cette distinction dans chaque message.
+        NSString *rawBanDuration = tags[@"ban-duration"];
+        BOOL isTimeout = (rawBanDuration != nil);
+        NSInteger durationSeconds = isTimeout ? MAX(0, rawBanDuration.integerValue) : 0;
+        S7TVChatModerationKind kind = isTimeout
+            ? S7TVChatModerationKindTimeout
+            : S7TVChatModerationKindPermanentBan;
+        [store markAllMessagesDeletedForUserID:targetUserID
+                                moderationKind:kind
+                               durationSeconds:durationSeconds
+                                     completion:^{
+            [mgr log:@"[ChatCustom] 🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@, %@)",
+                targetUserID, trailing.length ? trailing : @"inconnu",
+                isTimeout ? [NSString stringWithFormat:@"timeout=%lds", (long)durationSeconds]
+                          : @"ban permanent"];
             s7tv_reloadActiveChatCustomViewAnimated();
         }];
     } else if (trailing.length) {
@@ -2177,6 +2191,16 @@ static void TwitchSevenTVInit(void) {
         // même mécanisme que le reload badges ci-dessus.
         [[NSNotificationCenter defaultCenter]
             addObserverForName:S7TVChatAppearanceConfigDidChangeNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *note) {
+            s7tv_reloadActiveChatCustomView();
+        }];
+        // Les placeholders de modération et leurs unités sont traduits au
+        // moment du rendu. Un changement FR/EN doit donc invalider aussi le
+        // vrai chat et le panneau de fil, sans redémarrage de l'application.
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:S7TVLanguageDidChangeNotification
                         object:nil
                          queue:nil
                     usingBlock:^(NSNotification *note) {

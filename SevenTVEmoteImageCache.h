@@ -50,9 +50,9 @@ NS_ASSUME_NONNULL_BEGIN
 //
 // Ne s'applique qu'aux emotes avec emote.isAnimated == YES ; retourne nil
 // immédiatement pour une emote statique (utiliser imageForResolvedEmote:
-// dans ce cas). Le décodage de TOUTES les frames se fait hors thread
-// principal (ImageIO), jamais pendant le scroll — voir exigence transverse
-// #3 du plan chat-twitch-custom.
+// dans ce cas). Le décodage se fait hors thread principal (ImageIO). Pendant
+// le scroll du picker, la file repasse temporairement à un seul travail ; une
+// fois immobile, deux emotes peuvent être décodées en parallèle.
 //
 // Cache-first, synchrone, main thread — même rôle que
 // cachedImageForResolvedEmote: pour le chemin statique : évite un
@@ -72,6 +72,10 @@ NS_ASSUME_NONNULL_BEGIN
 // elles-mêmes les travaux selon leur visibilité, ce qui permet aux miniatures
 // visibles et aux animations du chat de continuer à progresser.
 - (void)setDecodingSuspended:(BOOL)suspended;
+
+// Ajuste uniquement la concurrence des frames animées : 1 pendant le scroll
+// pour préserver UICollectionView, 2 au repos pour vider rapidement la file.
+- (void)setScrollingPerformanceMode:(BOOL)enabled;
 
 // Vide les images statiques, frames animées et travaux en attente. Les
 // callbacks déjà inscrits sont terminés avec nil sur le main thread.

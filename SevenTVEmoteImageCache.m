@@ -114,7 +114,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
         _animatedDecodeQueue = [[NSOperationQueue alloc] init];
         _animatedDecodeQueue.name = @"tv.s7tv.emote-animation-decode";
         _animatedDecodeQueue.qualityOfService = NSQualityOfServiceUserInitiated;
-        _animatedDecodeQueue.maxConcurrentOperationCount = 1;
+        _animatedDecodeQueue.maxConcurrentOperationCount = 2;
     }
     return self;
 }
@@ -236,6 +236,13 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 - (void)setDecodingSuspended:(BOOL)suspended {
     self.staticDecodeQueue.suspended = suspended;
     self.animatedDecodeQueue.suspended = suspended;
+}
+
+- (void)setScrollingPerformanceMode:(BOOL)enabled {
+    // NSOperationQueue accepte le changement à chaud. Les opérations déjà en
+    // cours terminent normalement ; les suivantes respectent immédiatement
+    // la nouvelle concurrence.
+    self.animatedDecodeQueue.maxConcurrentOperationCount = enabled ? 1 : 2;
 }
 
 - (void)clearAllCaches {

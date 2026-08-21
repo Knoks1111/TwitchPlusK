@@ -9,7 +9,12 @@
 #import "SevenTVManager.h"
 #import <float.h>
 
-static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 24;
+// Le picker peut afficher plus de 24 emotes animées distinctes en même temps,
+// auxquelles s'ajoutent celles du chat encore visible derrière lui. La limite
+// précédente gelait donc certaines cellules pourtant durablement à l'écran.
+// 64 couvre confortablement les deux vues ; le mode scroll reste borné à 16
+// plus bas afin de conserver la fluidité du défilement.
+static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 64;
 static const NSUInteger kS7TVMaxRegisteredFrameSets = 32;
 static const NSUInteger kS7TVMaxRegisteredFramesCost = 48 * 1024 * 1024;
 
@@ -64,7 +69,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 @property (nonatomic, strong) NSMapTable<id, dispatch_block_t> *redrawByObserver;
 @property (nonatomic, assign) BOOL scrollingPerformanceMode;
 @property (nonatomic, assign) BOOL scrollingTickPhase;
-- (void)s7tv_pruneInactiveFrameSets;
+- (void)s7tv_pruneInactiveFrameSetsPreservingKey:(NSString *)protectedKey;
 - (void)s7tv_pruneEmptyObserverKeys;
 @end
 
@@ -114,7 +119,11 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     self.elapsedByKey[key]    = @0.0;
     self.lastAccessByKey[key] = @(CACurrentMediaTime());
     self.frameCostByKey[key]  = @(s7tv_engineFramesCost(frames));
-    [self s7tv_pruneInactiveFrameSets];
+    // registerFrames: précède nécessairement addObserver:. Protéger cette clé
+    // pendant le prune empêche qu'elle soit considérée comme inactive puis
+    // évincée immédiatement lorsque le chat + le picker dépassent déjà la
+    // limite du cache interne.
+    [self s7tv_pruneInactiveFrameSetsPreservingKey:key];
 
     // Redraw immédiat : sans ça, une clé qui vient tout juste d'être décodée
     // n'affiche sa vraie frame 0 qu'au PROCHAIN avancement de frame (jusqu'à
@@ -199,7 +208,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     [self.keysByObserver removeObjectForKey:observer];
     [self.redrawByObserver removeObjectForKey:observer];
 
-    [self s7tv_pruneInactiveFrameSets];
+    [self s7tv_pruneInactiveFrameSetsPreservingKey:nil];
     [self s7tv_updateDisplayLinkState];
 }
 
@@ -232,7 +241,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 // long scroll, cette table devenait donc un cache illimité. On garde un petit
 // LRU borné à la fois en nombre et à ~48 Mo, sans jamais évincer une clé
 // actuellement visible.
-- (void)s7tv_pruneInactiveFrameSets {
+- (void)s7tv_pruneInactiveFrameSetsPreservingKey:(NSString *)protectedKey {
     NSUInteger totalCost = 0;
     for (NSNumber *cost in self.frameCostByKey.allValues) totalCost += cost.unsignedIntegerValue;
     while (self.framesByKey.count > kS7TVMaxRegisteredFrameSets ||
@@ -240,6 +249,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
         NSString *oldestKey = nil;
         CFTimeInterval oldestAccess = DBL_MAX;
         for (NSString *candidate in self.framesByKey) {
+            if ([candidate isEqualToString:protectedKey]) continue;
             if (self.observersByKey[candidate].count > 0) continue;
             CFTimeInterval access = self.lastAccessByKey[candidate].doubleValue;
             if (!oldestKey || access < oldestAccess) {

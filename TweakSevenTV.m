@@ -292,6 +292,10 @@ static void s7tv_applyChatCustomTest(UIView *chatView) {
     SevenTVChatCustomView *customView =
         [[SevenTVChatCustomView alloc] initWithStore:[SevenTVManager sharedManager].chatMessageStore];
     customView.delegate = [S7TVReplyThreadPanel sharedPanel];
+    customView.onReplyTargetSelected = ^(NSString *messageID, NSString *username) {
+        [[S7TVReplyThreadPanel sharedPanel]
+            selectReplyTargetForMessageID:messageID username:username];
+    };
 
     [stack insertArrangedSubview:customView atIndex:idx];
     objc_setAssociatedObject(chatView, &kS7TVChatCustomInstalledView, customView, OBJC_ASSOCIATION_RETAIN);

@@ -486,6 +486,16 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         }];
         _tableView.dataSource = _dataSource;
 
+        // Un seul recognizer pour toute la table : pas de geste recréé sur
+        // chaque cellule réutilisée. Le callback partagé décide ensuite quoi
+        // faire de la cible (chat principal = réponse, previews sans callback
+        // = no-op), ce composant reste uniquement responsable du hit-testing.
+        UILongPressGestureRecognizer *replyLongPress =
+            [[UILongPressGestureRecognizer alloc] initWithTarget:self
+                                                           action:@selector(s7tv_handleMessageLongPress:)];
+        replyLongPress.minimumPressDuration = 0.45;
+        [_tableView addGestureRecognizer:replyLongPress];
+
         self.backgroundColor = [UIColor clearColor];
         [self addSubview:_tableView];
         [NSLayoutConstraint activateConstraints:@[
@@ -873,6 +883,25 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 }
 
 #pragma mark - UITableViewDelegate
+
+- (void)s7tv_handleMessageLongPress:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateBegan) return;
+    if (!self.onReplyTargetSelected) return;
+
+    CGPoint point = [gesture locationInView:self.tableView];
+    NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
+    if (!indexPath) return;
+
+    NSString *messageID = [self.dataSource itemIdentifierForIndexPath:indexPath];
+    S7TVChatMessage *message = self.messagesByID[messageID];
+    NSString *username = message.authorDisplayName;
+    if (!messageID.length || !username.length) return;
+
+    UIImpactFeedbackGenerator *feedback =
+        [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [feedback impactOccurred];
+    self.onReplyTargetSelected(messageID, username);
+}
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
     if (!scrollView.isTracking && !scrollView.isDragging && !scrollView.isDecelerating) {

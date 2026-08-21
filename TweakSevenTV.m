@@ -1253,11 +1253,46 @@ static NSURL * _Nullable s7tv_channelPointImageURL(NSDictionary *reward) {
     return urlString.length ? [NSURL URLWithString:urlString] : nil;
 }
 
+// L'icône placée devant le coût sur Twitch PC est l'image de la monnaie de
+// la chaîne (communityPointsSettings.image), pas defaultImage de la
+// récompense automatique — cette dernière est l'illustration « stylo » du
+// bouton dans le picker. Recherche uniquement ce champ précis afin de ne pas
+// confondre l'icône des points avec la première image de récompense imbriquée.
+static NSURL * _Nullable s7tv_findChannelPointCurrencyImageURL(id object) {
+    if ([object isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dictionary = object;
+        NSDictionary *settings = s7tv_JSONDictionaryForKeys(dictionary,
+            @[@"communityPointsSettings", @"community_points_settings"]);
+        if (!settings.count &&
+            ([dictionary[@"automaticRewards"] isKindOfClass:[NSArray class]] ||
+             [dictionary[@"customRewards"] isKindOfClass:[NSArray class]])) {
+            settings = dictionary;
+        }
+        if (settings.count) {
+            NSDictionary *image = s7tv_JSONDictionaryForKeys(settings,
+                @[@"image", @"channelPointsImage", @"channel_points_image"]);
+            NSString *urlString = s7tv_channelPointImageURLString(image);
+            if (urlString.length) return [NSURL URLWithString:urlString];
+        }
+        for (id value in dictionary.allValues) {
+            if ([value isKindOfClass:[NSDictionary class]] ||
+                [value isKindOfClass:[NSArray class]]) {
+                NSURL *found = s7tv_findChannelPointCurrencyImageURL(value);
+                if (found) return found;
+            }
+        }
+    } else if ([object isKindOfClass:[NSArray class]]) {
+        for (id value in (NSArray *)object) {
+            NSURL *found = s7tv_findChannelPointCurrencyImageURL(value);
+            if (found) return found;
+        }
+    }
+    return nil;
+}
+
 // ── Catalogue des récompenses automatiques Twitch ──────────────────────
-// Contrairement aux récompenses personnalisées, Twitch n'envoie pas de
-// reward-redeemed pour ces actions. ChannelPointsQuery fournit néanmoins
-// leur coût/image/couleur courants ; seuls le type et le msg-id sont des
-// identifiants de protocole fixes.
+// ChannelPointsQuery fournit coût/image/couleur des récompenses automatiques;
+// le type de protocole relie ce catalogue aux événements PubSub et msg-id IRC.
 
 static NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *
 s7tv_automaticRewardCatalog(void) {
@@ -1268,6 +1303,18 @@ s7tv_automaticRewardCatalog(void) {
 }
 
 static NSString *s7tv_automaticRewardCatalogChannelID = nil;
+static NSURL *s7tv_automaticRewardCurrencyImageURL = nil;
+
+static NSURL * _Nullable s7tv_currentChannelPointCurrencyImageURL(void) {
+    NSMutableDictionary *catalog = s7tv_automaticRewardCatalog();
+    @synchronized (catalog) {
+        NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+        BOOL sameChannel = !currentChannelID.length ||
+            !s7tv_automaticRewardCatalogChannelID.length ||
+            [currentChannelID isEqualToString:s7tv_automaticRewardCatalogChannelID];
+        return sameChannel ? [s7tv_automaticRewardCurrencyImageURL copy] : nil;
+    }
+}
 
 static NSString * _Nullable s7tv_automaticRewardTitleLocalizationKey(NSString *type) {
     if ([type isEqualToString:@"SINGLE_MESSAGE_BYPASS_SUB_MODE"])
@@ -1323,6 +1370,7 @@ s7tv_automaticRewardInfoForType(NSString *rawType) {
 
     NSMutableDictionary *catalog = s7tv_automaticRewardCatalog();
     S7TVChannelPointRewardInfo *info = nil;
+    NSURL *currencyImageURL = nil;
     @synchronized (catalog) {
         NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
         BOOL catalogMatchesChannel = !currentChannelID.length ||
@@ -1330,6 +1378,7 @@ s7tv_automaticRewardInfoForType(NSString *rawType) {
             [currentChannelID isEqualToString:s7tv_automaticRewardCatalogChannelID];
         if (catalogMatchesChannel) {
             info = s7tv_copyChannelPointRewardInfo(catalog[type]);
+            currencyImageURL = [s7tv_automaticRewardCurrencyImageURL copy];
         }
     }
 
@@ -1344,6 +1393,7 @@ s7tv_automaticRewardInfoForType(NSString *rawType) {
     info.titleLocalizationKey = titleKey;
     if (!info.pricingType.length) info.pricingType = @"CHANNEL_POINTS";
     info.isUserInputRequired = YES;
+    if (currencyImageURL) info.imageURL = currencyImageURL;
     return info;
 }
 
@@ -1379,12 +1429,38 @@ static void s7tv_collectAutomaticRewardDictionaries(id object,
 static void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data) {
     if (!data.length) return;
     NSString *raw = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (![raw containsString:@"automaticRewards"]) return;
+    BOOL containsAutomaticRewards = [raw containsString:@"automaticRewards"];
+    BOOL containsPointSettings = [raw containsString:@"communityPointsSettings"] ||
+                                 [raw containsString:@"community_points_settings"];
+    if (!containsAutomaticRewards && !containsPointSettings) return;
     id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (!root) return;
+    NSURL *currencyImageURL = s7tv_findChannelPointCurrencyImageURL(root);
 
     NSMutableArray<NSDictionary *> *rawRewards = [NSMutableArray array];
-    s7tv_collectAutomaticRewardDictionaries(root, rawRewards);
+    if (containsAutomaticRewards) {
+        s7tv_collectAutomaticRewardDictionaries(root, rawRewards);
+    }
+
+    NSMutableDictionary *catalog = s7tv_automaticRewardCatalog();
+    NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+    NSURL *resolvedCurrencyImageURL = currencyImageURL;
+    @synchronized (catalog) {
+        BOOL sameChannel = !currentChannelID.length ||
+            !s7tv_automaticRewardCatalogChannelID.length ||
+            [currentChannelID isEqualToString:s7tv_automaticRewardCatalogChannelID];
+        if (!resolvedCurrencyImageURL && sameChannel) {
+            resolvedCurrencyImageURL = [s7tv_automaticRewardCurrencyImageURL copy];
+        }
+        if (!rawRewards.count && currencyImageURL && sameChannel) {
+            s7tv_automaticRewardCurrencyImageURL = [currencyImageURL copy];
+            for (S7TVChannelPointRewardInfo *existingInfo in catalog.allValues) {
+                if ([existingInfo.pricingType caseInsensitiveCompare:@"BITS"] != NSOrderedSame) {
+                    existingInfo.imageURL = currencyImageURL;
+                }
+            }
+        }
+    }
     if (!rawRewards.count) return;
 
     NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *nextCatalog =
@@ -1414,7 +1490,13 @@ static void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data) {
                 @[@"defaultBackgroundColor", @"default_background_color"]);
         }
         info.accentColor = s7tv_colorFromHexString(backgroundHex);
-        NSURL *imageURL = s7tv_channelPointImageURL(reward);
+        // Pour les récompenses payées en points, Twitch PC affiche l'icône
+        // de la monnaie de la chaîne devant le coût. L'image automatique
+        // (highlight/subsonly) appartient au picker et ne doit pas apparaître
+        // dans la ligne de chat. Les Power-ups Bits conservent leur image.
+        NSURL *imageURL = usesBits
+            ? s7tv_channelPointImageURL(reward)
+            : resolvedCurrencyImageURL;
         if (imageURL) info.imageURL = imageURL;
         // Ces msg-id accompagnent toujours le texte saisi par l'utilisateur.
         info.isUserInputRequired = info.titleLocalizationKey.length > 0;
@@ -1422,11 +1504,11 @@ static void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data) {
     }
 
     if (!nextCatalog.count) return;
-    NSMutableDictionary *catalog = s7tv_automaticRewardCatalog();
     @synchronized (catalog) {
         [catalog setDictionary:nextCatalog];
         s7tv_automaticRewardCatalogChannelID =
             [[SevenTVManager sharedManager].currentChannelTwitchID copy] ?: @"";
+        s7tv_automaticRewardCurrencyImageURL = [resolvedCurrencyImageURL copy];
     }
 }
 
@@ -1536,8 +1618,11 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromRedemption(
     info.userInput = userInput.length ? userInput : nil;
     info.accentColor = s7tv_colorFromHexString(s7tv_JSONStringForKeys(reward,
         @[@"background_color", @"backgroundColor"]));
-    NSURL *rewardImageURL = s7tv_channelPointImageURL(reward);
-    if (rewardImageURL) info.imageURL = rewardImageURL;
+    // Même visuel que les récompenses automatiques dans le chat Twitch PC :
+    // l'icône de la monnaie de la chaîne, jamais l'illustration du bouton de
+    // récompense personnalisée affichée dans le picker.
+    NSURL *currencyImageURL = s7tv_currentChannelPointCurrencyImageURL();
+    if (currencyImageURL) info.imageURL = currencyImageURL;
 
     NSString *rawTimestamp = s7tv_JSONStringForKeys(redemption,
         @[@"redeemed_at", @"redeemedAt"]);
@@ -1600,8 +1685,8 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromAutomaticRedempti
     NSInteger eventCost = s7tv_JSONIntegerForKeys(reward,
         @[@"channel_points", @"channelPoints", @"cost"]);
     if (eventCost > 0) info.cost = eventCost;
-    NSURL *eventImageURL = s7tv_channelPointImageURL(reward);
-    if (eventImageURL) info.imageURL = eventImageURL;
+    // Ne pas remplacer l'icône de monnaie par defaultImage de la récompense
+    // automatique (le stylo/subsonly affiché dans le picker Twitch).
     NSString *backgroundHex = s7tv_JSONStringForKeys(reward,
         @[@"background_color", @"backgroundColor"]);
     UIColor *eventColor = s7tv_colorFromHexString(backgroundHex);

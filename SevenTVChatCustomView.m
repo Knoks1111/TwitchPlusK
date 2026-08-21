@@ -367,18 +367,17 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     }
 }
 
-// Les utilisations de points reprennent la barre/fond des messages système,
-// mais pas leur icône SF Symbol : l'icône réelle de la récompense est déjà
-// affichée dans le texte, juste avant son coût. L'inset réduit évite donc un
-// trou vide à gauche tout en laissant respirer la barre.
-- (void)s7tv_configureChannelPointAccentWithColor:(nullable UIColor *)accentColor {
-    UIColor *resolvedColor = accentColor ?: [UIColor colorWithWhite:0.72 alpha:1.0];
-    [self s7tv_configureSystemAccentWithColor:resolvedColor
+// Toutes les utilisations de points suivent le même rendu Twitch PC, quelle
+// que soit l'origine de la récompense : barre blanche pure, aucun fond ajouté
+// et icône réelle des points dans le texte juste avant le coût.
+- (void)s7tv_configureChannelPointAccent {
+    [self s7tv_configureSystemAccentWithColor:[UIColor whiteColor]
                                       iconName:nil
                              backgroundEnabled:NO
                            highlightBadgeText:nil];
     self.systemIconView.hidden = YES;
     self.messageLabelLeadingConstraint.constant = 18.0;
+    self.contentView.backgroundColor = [UIColor clearColor];
 }
 
 // username nil/vide → pas une réponse, bandeau masqué, messageLabel reprend
@@ -1053,8 +1052,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     if (msg.state == S7TVChatMessageStateNormal &&
         msg.type == S7TVChatMessageTypeChannelPointRedemption &&
         msg.channelPointRewardInfo) {
-        [cell s7tv_configureChannelPointAccentWithColor:
-            msg.channelPointRewardInfo.accentColor];
+        [cell s7tv_configureChannelPointAccent];
     } else if (msg.state == S7TVChatMessageStateNormal &&
         msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
         UIColor *accentColor; NSString *iconName;

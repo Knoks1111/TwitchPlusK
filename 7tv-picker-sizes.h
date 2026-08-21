@@ -1,10 +1,9 @@
 /*
  * 7tv-picker-sizes.h
  *
- * Panneau des 5 tailles (emotes 7TV, emotes Twitch, badges, texte pseudo,
- * texte message) affiché par-dessus la grille du picker quand on tape sur
- * le bouton ⚙️. Toutes les lignes sont empilées et réglables en même temps,
- * chacune avec son slider + une preview live à droite.
+ * Panneau des réglages visuels du chat affiché par-dessus la grille du
+ * picker quand on tape sur le bouton ⚙️. Les options sont regroupées en
+ * trois catégories (Tailles / Apparence / Modération), avec aperçu live.
  *
  * Composant ENFANT de SevenTVEmotePickerController : ne gère pas sa propre
  * fenêtre/présentation, il dessine ses lignes dans la vue qu'on lui donne
@@ -32,11 +31,12 @@
 // Référence faible vers le picker hôte (voir note ci-dessus).
 @property (nonatomic, weak) SevenTVEmotePickerController *picker;
 
-// Vue racine du panneau (UIScrollView), construite par -buildInView:...
+// Vue racine du panneau, avec trois catégories (Tailles / Apparence /
+// Modération) contenant chacune leur propre UIScrollView.
 // Le picker en gère lui-même le hidden/frame (visibilité + redimensionnement).
 @property (nonatomic, weak, readonly) UIView *panelView;
 
-// Hauteur réelle du contenu (5 lignes + section Couleurs), utilisée par le
+// Hauteur du panneau catégorisé, utilisée par le
 // picker pour adapter sa propre hauteur quand le panneau est affiché.
 @property (nonatomic, assign, readonly) CGFloat contentHeight;
 
@@ -49,8 +49,7 @@
 @property (nonatomic, strong, readonly) SevenTVChatCustomView *fakeChatView;
 @property (nonatomic, strong, readonly) S7TVChatMessageStore *fakeChatStore;
 
-// Construit les 5 lignes (nom + slider + pastille valeur + bouton reset +
-// preview live) dans `container`, avec le style visuel transmis par le picker
+// Construit les trois catégories dans `container`, avec le style transmis par le picker
 // (couleurs déjà résolues). Doit être appelé une seule fois, à la création
 // du picker.
 - (void)buildInView:(UIView *)container

@@ -4,10 +4,10 @@
  *
  * Refonte (mi-août 2026) : les anciennes mini-previews par ligne
  * (_buildPreviewContentForKey:/_updatePreviewForKey:) sont remplacées par un
- * seul faux chat en haut du panneau, une vraie instance de
+ * seul faux chat flottant, une vraie instance de
  * SevenTVChatCustomView alimentée par un S7TVChatMessageStore factice —
  * garanti 100% identique au rendu réel, sans double maintenance. Ajout
- * également d'une section "Couleurs" pour les fonds sub/resub/prime/gift
+ * également des catégories Tailles / Apparence / Modération et des couleurs
  * (toggle unique + 3 UIColorWell), auparavant en dur dans
  * SevenTVChatCustomView.m.
  */
@@ -94,6 +94,10 @@ static const char kS7TVRowKeyTag = 0;
 @property (nonatomic, strong) SevenTVChatCustomView *fakeChatView;
 @property (nonatomic, strong) UIColor *panelTextColor;
 @property (nonatomic, strong) UIColor *panelSubColor;
+@property (nonatomic, weak) UISegmentedControl *categoryControl;
+@property (nonatomic, weak) UIScrollView *sizesCategoryView;
+@property (nonatomic, weak) UIScrollView *appearanceCategoryView;
+@property (nonatomic, weak) UIScrollView *moderationCategoryView;
 @end
 
 @implementation SevenTVPickerSizesPanel
@@ -143,7 +147,7 @@ static const char kS7TVRowKeyTag = 0;
              accent:(UIColor *)accent
           cardColor:(UIColor *)cardColor {
 
-    UIScrollView *sizesPanel = [[UIScrollView alloc] initWithFrame:
+    UIView *sizesPanel = [[UIView alloc] initWithFrame:
         CGRectMake(0, 0, frame.size.width, frame.size.height)];
     sizesPanel.backgroundColor = bgColor;
     sizesPanel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -157,7 +161,38 @@ static const char kS7TVRowKeyTag = 0;
     self.panelTextColor    = textColor;
     self.panelSubColor     = subColor;
 
-    CGFloat contentY = 12.0;
+    // Trois catégories seulement : suffisamment larges pour organiser tous
+    // les réglages sans recréer une liste de dizaines de mini-sections.
+    UISegmentedControl *categoryControl = [[UISegmentedControl alloc] initWithItems:@[
+        L(@"sizes_category_sizes"),
+        L(@"sizes_category_appearance"),
+        L(@"sizes_category_moderation"),
+    ]];
+    categoryControl.frame = CGRectMake(12, 8, frame.size.width - 24, 32);
+    categoryControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    categoryControl.selectedSegmentIndex = 0;
+    categoryControl.selectedSegmentTintColor = accent;
+    [categoryControl setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]}
+                                    forState:UIControlStateSelected];
+    [categoryControl addTarget:self action:@selector(_categoryChanged:)
+              forControlEvents:UIControlEventValueChanged];
+    [sizesPanel addSubview:categoryControl];
+    self.categoryControl = categoryControl;
+
+    CGRect categoryFrame = CGRectMake(0, 48, frame.size.width, frame.size.height - 48);
+    UIScrollView *sizesCategory = [[UIScrollView alloc] initWithFrame:categoryFrame];
+    UIScrollView *appearanceCategory = [[UIScrollView alloc] initWithFrame:categoryFrame];
+    UIScrollView *moderationCategory = [[UIScrollView alloc] initWithFrame:categoryFrame];
+    for (UIScrollView *category in @[sizesCategory, appearanceCategory, moderationCategory]) {
+        category.backgroundColor = [UIColor clearColor];
+        category.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [sizesPanel addSubview:category];
+    }
+    appearanceCategory.hidden = YES;
+    moderationCategory.hidden = YES;
+    self.sizesCategoryView = sizesCategory;
+    self.appearanceCategoryView = appearanceCategory;
+    self.moderationCategoryView = moderationCategory;
 
     // Le faux chat n'est plus construit ici : il vit dans une fenêtre
     // flottante séparée gérée par le picker (voir -[SevenTVEmotePickerController
@@ -168,21 +203,26 @@ static const char kS7TVRowKeyTag = 0;
     // que le controller puisse les récupérer via les accesseurs publics.
     [self _setupFakeChatView];
 
-    contentY = [self _buildSystemColorsSectionInScrollView:sizesPanel atY:contentY
+    CGFloat appearanceY = 8.0;
+    appearanceY = [self _buildSystemColorsSectionInScrollView:appearanceCategory atY:appearanceY
                                                        width:frame.size.width
                                                    textColor:textColor subColor:subColor
                                                     sepColor:sepColor accent:accent];
 
-    contentY = [self _buildSelfMentionSectionInScrollView:sizesPanel atY:contentY
+    appearanceY = [self _buildSelfMentionSectionInScrollView:appearanceCategory atY:appearanceY
                                                       width:frame.size.width
                                                   textColor:textColor subColor:subColor
                                                    sepColor:sepColor accent:accent];
+    appearanceCategory.contentSize = CGSizeMake(frame.size.width, appearanceY);
 
-    contentY = [self _buildModerationSectionInScrollView:sizesPanel atY:contentY
+    CGFloat moderationY = 8.0;
+    moderationY = [self _buildModerationSectionInScrollView:moderationCategory atY:moderationY
                                                       width:frame.size.width
                                                   textColor:textColor subColor:subColor
                                                    sepColor:sepColor accent:accent];
+    moderationCategory.contentSize = CGSizeMake(frame.size.width, moderationY);
 
+    CGFloat contentY = 8.0;
     CGFloat rowH = 60.0;
     for (NSArray *entry in self._sizeOptionsTable) {
         NSString *key = entry[0], *label = entry[1];
@@ -254,11 +294,13 @@ static const char kS7TVRowKeyTag = 0;
         [row addSubview:slider];
         self.sizeSliders[key] = slider;
 
-        [sizesPanel addSubview:row];
+        [sizesCategory addSubview:row];
         contentY += rowH;
     }
-    sizesPanel.contentSize = CGSizeMake(frame.size.width, contentY);
-    self.contentHeight = contentY + 8;
+    sizesCategory.contentSize = CGSizeMake(frame.size.width, contentY);
+    // Chaque catégorie scrolle indépendamment dans la hauteur habituelle
+    // du picker : changer d'onglet ne fait pas sauter le clavier ni l'aperçu.
+    self.contentHeight = frame.size.height;
     [container addSubview:sizesPanel];
 
     // buildInView: n'est appelé qu'une fois par panneau (voir le controller) —
@@ -290,6 +332,9 @@ static const char kS7TVRowKeyTag = 0;
 }
 
 - (void)_refreshLocalizedStrings {
+    [self.categoryControl setTitle:L(@"sizes_category_sizes") forSegmentAtIndex:0];
+    [self.categoryControl setTitle:L(@"sizes_category_appearance") forSegmentAtIndex:1];
+    [self.categoryControl setTitle:L(@"sizes_category_moderation") forSegmentAtIndex:2];
     self.colorsSectionLabel.text = L(@"sizes_colors_section_title");
     self.colorsToggleLabel.text  = L(@"sizes_colors_toggle_label");
 
@@ -756,6 +801,13 @@ static const char kS7TVRowKeyTag = 0;
     [SevenTVChatAppearanceConfig sharedConfig].deletedMessageStyle = style;
     [self _updateDeletedOpacityControlsForStyle:style];
     [self.fakeChatView reloadMessages];
+}
+
+- (void)_categoryChanged:(UISegmentedControl *)control {
+    NSInteger selected = control.selectedSegmentIndex;
+    self.sizesCategoryView.hidden = (selected != 0);
+    self.appearanceCategoryView.hidden = (selected != 1);
+    self.moderationCategoryView.hidden = (selected != 2);
 }
 
 - (void)_deletedStyleResetTapped:(UIButton *)btn {

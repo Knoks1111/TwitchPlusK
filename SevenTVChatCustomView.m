@@ -1309,7 +1309,7 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
     if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
         [result appendAttributedString:[[NSAttributedString alloc]
             initWithString:s7tv_deletedPlaceholderForMessage(msg, cfg)
-                attributes:@{NSFontAttributeName: messageFont,
+                attributes:@{NSFontAttributeName: [UIFont italicSystemFontOfSize:cfg.messageFontSize],
                              NSForegroundColorAttributeName: [UIColor grayColor]}]];
         return;
     }

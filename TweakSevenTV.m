@@ -387,6 +387,102 @@ static NSDictionary<NSString *, NSString *> *s7tv_parseIRCTags(NSString *tagBloc
 }
 
 // ────────────────────────────────────────────────────────────
+// MARK: - Modération IRC live (CLEARMSG / CLEARCHAT, Phase 5)
+// ────────────────────────────────────────────────────────────
+//
+// CLEARMSG  : suppression d'un message précis via target-msg-id.
+// CLEARCHAT : avec target-user-id = timeout/ban d'un utilisateur ; sans
+//             cible = vidage global. Dans tous les cas, le store conserve
+//             rawText/tokens et ne change que l'état d'affichage local.
+//
+// Retourne YES dès que la ligne est une commande de modération, même si elle
+// est malformée ou vise une ancienne chaîne. L'appelant ne doit alors pas la
+// faire passer dans les parseurs de messages normaux.
+static BOOL s7tv_handleModerationEvent(NSString *ircLine) {
+    BOOL isClearMessage = [ircLine containsString:@" CLEARMSG "];
+    BOOL isClearChat    = [ircLine containsString:@" CLEARCHAT "];
+    if (!isClearMessage && !isClearChat) return NO;
+
+    NSDictionary<NSString *, NSString *> *tags = @{};
+    NSString *rest = ircLine;
+    if ([ircLine hasPrefix:@"@"] ) {
+        NSRange firstSpace = [ircLine rangeOfString:@" "];
+        if (firstSpace.location != NSNotFound) {
+            tags = s7tv_parseIRCTags([ircLine substringWithRange:
+                NSMakeRange(1, firstSpace.location - 1)]);
+            rest = [ircLine substringFromIndex:firstSpace.location + 1];
+        }
+    }
+
+    NSString *command = isClearMessage ? @"CLEARMSG" : @"CLEARCHAT";
+    NSRange commandRange = [rest rangeOfString:command];
+    if (commandRange.location == NSNotFound) return YES;
+
+    NSString *afterCommand = [rest substringFromIndex:NSMaxRange(commandRange)];
+    afterCommand = [afterCommand stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!afterCommand.length) {
+        [[SevenTVManager sharedManager]
+            log:@"[ChatCustom] ⚠️ Modération %@ ignorée (channel absent)", command];
+        return YES;
+    }
+
+    NSRange channelEnd = [afterCommand rangeOfCharacterFromSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *channelToken = (channelEnd.location == NSNotFound)
+        ? afterCommand : [afterCommand substringToIndex:channelEnd.location];
+    NSString *trailing = (channelEnd.location == NSNotFound)
+        ? @"" : [afterCommand substringFromIndex:channelEnd.location + 1];
+    trailing = [trailing stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([trailing hasPrefix:@":"]) trailing = [trailing substringFromIndex:1];
+    if ([channelToken hasPrefix:@"#"]) channelToken = [channelToken substringFromIndex:1];
+
+    // Même garde-fou que PRIVMSG/USERNOTICE : une commande tardive provenant
+    // de l'ancienne chaîne ne doit jamais modifier le store de la nouvelle.
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    if (channelToken.length && mgr.currentChannelName.length &&
+        [channelToken caseInsensitiveCompare:mgr.currentChannelName] != NSOrderedSame) {
+        return YES;
+    }
+
+    S7TVChatMessageStore *store = mgr.chatMessageStore;
+    if (isClearMessage) {
+        NSString *targetMessageID = s7tv_tagValue(tags, @"target-msg-id", @"");
+        if (!targetMessageID.length) {
+            [mgr log:@"[ChatCustom] ⚠️ CLEARMSG ignoré (target-msg-id absent)"];
+            return YES;
+        }
+        [store markMessageDeletedByID:targetMessageID completion:^{
+            [mgr log:@"[ChatCustom] 🛡 CLEARMSG appliqué (message id=%@)", targetMessageID];
+            s7tv_reloadActiveChatCustomView();
+        }];
+        return YES;
+    }
+
+    NSString *targetUserID = s7tv_tagValue(tags, @"target-user-id", @"");
+    if (targetUserID.length) {
+        [store markAllMessagesDeletedForUserID:targetUserID completion:^{
+            [mgr log:@"[ChatCustom] 🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@)",
+                targetUserID, trailing.length ? trailing : @"inconnu"];
+            s7tv_reloadActiveChatCustomView();
+        }];
+    } else if (trailing.length) {
+        // Une cible textuelle sans id indique une ligne ciblée malformée.
+        // Ne surtout pas la confondre avec un CLEARCHAT global, qui
+        // masquerait par erreur tout le transcript.
+        [mgr log:@"[ChatCustom] ⚠️ CLEARCHAT ciblé ignoré (target-user-id absent, login=%@)",
+            trailing];
+    } else {
+        [store markAllMessagesDeletedWithCompletion:^{
+            [mgr log:@"[ChatCustom] 🛡 CLEARCHAT global appliqué"];
+            s7tv_reloadActiveChatCustomView();
+        }];
+    }
+    return YES;
+}
+
+// ────────────────────────────────────────────────────────────
 // MARK: - Emotes Twitch natives (tag IRC emotes=)
 // ────────────────────────────────────────────────────────────
 //
@@ -1555,6 +1651,10 @@ static void s7tv_handleRoomState(NSString *ircMessage) {
                         // termine par ce mot) — voir s7tv_handleUserState.
                         if ([ircLine containsString:@"USERSTATE"]) {
                             s7tv_handleUserState(ircLine);
+                        }
+
+                        if (s7tv_handleModerationEvent(ircLine)) {
+                            continue;
                         }
 
                         S7TVChatMessage *chatMsg = s7tv_parsePRIVMSG(ircLine);

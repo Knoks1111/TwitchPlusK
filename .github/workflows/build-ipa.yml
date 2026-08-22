@@ -20,7 +20,7 @@ jobs:
 
     steps:
 
-      - name: 🔑 Installer ldid + lief
+      - name: 🔑 Install ldid + lief
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -34,19 +34,19 @@ jobs:
           pip3 install "lief==0.17.6" --quiet --break-system-packages
           python3 -c "import lief; print('✅ lief', lief.__version__)"
 
-      - name: 📥 Récupérer le .dylib
+      - name: 📥 Fetch the .dylib
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           RAW_URL="${{ github.event.inputs.dylib_artifact_url }}"
-          echo "🔗 Lien fourni: $RAW_URL"
+          echo "🔗 Provided link: $RAW_URL"
 
           mkdir -p dylib_extracted
 
           if echo "$RAW_URL" | grep -qE '/actions/runs/[0-9]+/artifacts/[0-9]+'; then
-            echo "📦 Lien artifact GitHub Actions détecté"
+            echo "📦 GitHub Actions artifact link detected"
             ARTIFACT_ID=$(echo "$RAW_URL" | grep -oE '[0-9]+$')
             echo "🆔 Artifact ID: $ARTIFACT_ID"
 
@@ -58,102 +58,102 @@ jobs:
 
             echo "HTTP: $HTTP_CODE"
             if [ "$HTTP_CODE" != "200" ] || [ ! -s "dylib_download" ]; then
-              echo "❌ Téléchargement de l'artifact échoué (HTTP $HTTP_CODE)"
-              echo "   L'artifact a peut-être expiré (retention-days) ou l'ID est faux"
+              echo "❌ Artifact download failed (HTTP $HTTP_CODE)"
+              echo "   The artifact may have expired (retention-days) or the ID is wrong"
               exit 1
             fi
           else
-            echo "🔗 Lien direct détecté — téléchargement"
+            echo "🔗 Direct link detected — downloading"
             HTTP_CODE=$(curl --silent --location --output dylib_download \
               --write-out "%{http_code}" "$RAW_URL" 2>/dev/null || echo "000")
 
             echo "HTTP: $HTTP_CODE"
             if [ "$HTTP_CODE" != "200" ] || [ ! -s "dylib_download" ]; then
-              echo "❌ Téléchargement échoué (HTTP $HTTP_CODE)"
+              echo "❌ Download failed (HTTP $HTTP_CODE)"
               exit 1
             fi
           fi
 
           FILE_TYPE=$(file --brief dylib_download)
-          echo "Type détecté: $FILE_TYPE"
+          echo "Detected type: $FILE_TYPE"
 
           if echo "$FILE_TYPE" | grep -qiE "zip|archive"; then
-            echo "📂 Archive détectée — extraction"
+            echo "📂 Archive detected — extracting"
             unzip -q dylib_download -d dylib_extracted
             DYLIB_PATH=$(find dylib_extracted -name "*.dylib" | head -1)
           elif echo "$FILE_TYPE" | grep -qiE "mach-o"; then
-            echo "⚙️  Binaire Mach-O direct détecté (pas une archive)"
+            echo "⚙️  Direct Mach-O binary detected (not an archive)"
             cp dylib_download dylib_extracted/TwitchPlusK.dylib
             DYLIB_PATH="dylib_extracted/TwitchPlusK.dylib"
           else
-            echo "❌ Fichier téléchargé non reconnu (ni archive, ni Mach-O)"
+            echo "❌ Downloaded file not recognized (neither archive nor Mach-O)"
             exit 1
           fi
 
           if [ -z "$DYLIB_PATH" ]; then
-            echo "❌ Aucun .dylib trouvé"
+            echo "❌ No .dylib found"
             ls -R dylib_extracted
             exit 1
           fi
 
-          echo "🔑 Signature ldid: $DYLIB_PATH"
+          echo "🔑 ldid signing: $DYLIB_PATH"
           ldid -S "$DYLIB_PATH"
 
-          echo "✅ .dylib récupéré: $DYLIB_PATH ($(du -sh "$DYLIB_PATH" | cut -f1))"
+          echo "✅ .dylib fetched: $DYLIB_PATH ($(du -sh "$DYLIB_PATH" | cut -f1))"
           echo "DYLIB_PATH=$DYLIB_PATH" >> $GITHUB_ENV
 
-      - name: 📲 Télécharger l'IPA Twitch
+      - name: 📲 Download the Twitch IPA
         run: |
           set -euo pipefail
 
           IPA_SOURCE="${{ github.event.inputs.ipa_url }}"
           if [ -z "$IPA_SOURCE" ]; then
-            echo "❌ Aucun lien IPA fourni"
+            echo "❌ No IPA link provided"
             exit 1
           fi
 
           if echo "$IPA_SOURCE" | grep -q "drive.google.com"; then
             FILE_ID=$(echo "$IPA_SOURCE" | grep -oE '[-\w]{25,}' | head -1)
-            echo "📎 Google Drive détecté, ID: $FILE_ID"
+            echo "📎 Google Drive detected, ID: $FILE_ID"
             pip3 install gdown --quiet --break-system-packages
 
             gdown "https://drive.google.com/uc?id=${FILE_ID}" -O Twitch.ipa || \
             gdown --fuzzy "$IPA_SOURCE" -O Twitch.ipa || {
-              echo "❌ gdown échoué — Google bloque le téléchargement"
+              echo "❌ gdown failed — Google is blocking the download"
               exit 1
             }
 
           else
-            echo "🔗 Lien direct détecté"
+            echo "🔗 Direct link detected"
             HTTP_CODE=$(curl --silent --location --output Twitch.ipa \
               --write-out "%{http_code}" "$IPA_SOURCE" 2>/dev/null || echo "000")
             echo "HTTP: $HTTP_CODE"
             if [ "$HTTP_CODE" != "200" ] || [ ! -s "Twitch.ipa" ]; then
-              echo "❌ Téléchargement IPA échoué (HTTP $HTTP_CODE)"
+              echo "❌ IPA download failed (HTTP $HTTP_CODE)"
               exit 1
             fi
           fi
 
           if [ ! -s "Twitch.ipa" ]; then
-            echo "❌ Fichier vide après téléchargement"
+            echo "❌ Empty file after download"
             exit 1
           fi
 
           FILE_TYPE=$(file --brief Twitch.ipa)
           echo "Type: $FILE_TYPE"
           if ! echo "$FILE_TYPE" | grep -qiE "zip|archive"; then
-            echo "❌ Pas une IPA valide (reçu: $FILE_TYPE)"
+            echo "❌ Not a valid IPA (got: $FILE_TYPE)"
             exit 1
           fi
 
           echo "✅ IPA: $(du -sh Twitch.ipa | cut -f1)"
 
-      - name: 💉 Injecter TwitchPlusK dans l'IPA Twitch
+      - name: 💉 Inject TwitchPlusK into the Twitch IPA
         run: |
           set -euo pipefail
           DYLIB_PATH="${{ env.DYLIB_PATH }}"
 
-          echo "📱 IPA source: $(du -sh Twitch.ipa | cut -f1)"
+          echo "📱 Source IPA: $(du -sh Twitch.ipa | cut -f1)"
           echo "🔧 .dylib:     $DYLIB_PATH"
 
           mkdir -p IPA_work
@@ -161,7 +161,7 @@ jobs:
 
           APP_PATH=$(find IPA_work/Payload -maxdepth 1 -name "*.app" -type d | head -1)
           if [ -z "$APP_PATH" ]; then
-            echo "❌ Aucun .app dans Payload/"
+            echo "❌ No .app in Payload/"
             ls IPA_work/Payload/ || true
             exit 1
           fi
@@ -169,7 +169,7 @@ jobs:
 
           TWITCH_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" \
             "$APP_PATH/Info.plist" 2>/dev/null || echo "unknown")
-          echo "📱 Version Twitch détectée: $TWITCH_VERSION"
+          echo "📱 Detected Twitch version: $TWITCH_VERSION"
           echo "TWITCH_VERSION=$TWITCH_VERSION" >> $GITHUB_ENV
 
           APP_NAME=$(basename "$APP_PATH" .app)
@@ -187,14 +187,14 @@ jobs:
           fi
 
           if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
-            echo "❌ Binaire principal introuvable dans $APP_PATH"
+            echo "❌ Main binary not found in $APP_PATH"
             ls "$APP_PATH" | head -20
             exit 1
           fi
-          echo "⚙️  Binaire: $BINARY"
+          echo "⚙️  Binary: $BINARY"
 
           cp "$DYLIB_PATH" "$APP_PATH/TwitchPlusK.dylib"
-          echo "✅ .dylib copié"
+          echo "✅ .dylib copied"
 
           python3 << PYEOF
           import lief, sys
@@ -204,37 +204,37 @@ jobs:
 
           fat = lief.MachO.parse(binary_path)
           if fat is None:
-              print("❌ lief: impossible de parser le binaire Mach-O")
+              print("❌ lief: unable to parse the Mach-O binary")
               sys.exit(1)
 
           modified = False
           for macho in fat:
               libs = [str(cmd.name) for cmd in macho.commands if hasattr(cmd, 'name')]
               if any(dylib_ref in lib for lib in libs):
-                  print(f"⚠️  Déjà injecté dans cette slice — skip")
+                  print(f"⚠️  Already injected in this slice — skipping")
                   continue
               macho.add_library(dylib_ref)
               modified = True
               arch = str(macho.header.cpu_type).split('.')[-1]
-              print(f"✅ Injecté dans slice {arch}")
+              print(f"✅ Injected into {arch} slice")
 
           fat.write(binary_path)
-          print(f"✅ Binaire écrit: {binary_path}")
+          print(f"✅ Binary written: {binary_path}")
           PYEOF
 
-          echo "🔍 Vérification otool -L:"
+          echo "🔍 Verifying with otool -L:"
           otool -L "$BINARY" | grep -E "TwitchPlusK|twitchplusk" || {
-            echo "❌ TwitchPlusK.dylib absent des dépendances — injection échouée"
+            echo "❌ TwitchPlusK.dylib missing from dependencies — injection failed"
             otool -L "$BINARY" | head -10
             exit 1
           }
-          echo "✅ Injection confirmée"
+          echo "✅ Injection confirmed"
 
           ldid -S "$APP_PATH/TwitchPlusK.dylib"
           echo "✅ ldid .dylib OK"
 
-          ldid -S "$BINARY" 2>/dev/null && echo "✅ ldid binaire OK" \
-            || echo "⚠️  ldid binaire non-critique — SideStore re-signe au sideload"
+          ldid -S "$BINARY" 2>/dev/null && echo "✅ ldid binary OK" \
+            || echo "⚠️  ldid binary non-critical — SideStore re-signs on sideload"
 
           cd IPA_work
           find . -name ".DS_Store" -delete 2>/dev/null || true
@@ -246,16 +246,16 @@ jobs:
           cd ..
 
           if [ ! -s "TwitchPlusK_patched.ipa" ]; then
-            echo "❌ IPA patchée vide"
+            echo "❌ Patched IPA is empty"
             exit 1
           fi
 
           IPA_NAME="twitchplusk-${TWITCH_VERSION}.ipa"
           mv TwitchPlusK_patched.ipa "$IPA_NAME"
-          echo "✅ IPA finale: $IPA_NAME ($(du -sh "$IPA_NAME" | cut -f1))"
+          echo "✅ Final IPA: $IPA_NAME ($(du -sh "$IPA_NAME" | cut -f1))"
           echo "IPA_NAME=$IPA_NAME" >> $GITHUB_ENV
 
-      - name: 🚀 Publier l'IPA en Release
+      - name: 🚀 Publish the IPA to Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -276,25 +276,25 @@ jobs:
           NOTESEOF
 
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "📦 Release '$TAG' existe déjà — upload de l'asset"
+            echo "📦 Release '$TAG' already exists — uploading asset"
             gh release upload "$TAG" "$IPA_NAME" \
               --repo "${{ github.repository }}" \
               --clobber
           else
-            echo "🆕 Création de la release '$TAG'"
+            echo "🆕 Creating release '$TAG'"
             gh release create "$TAG" "$IPA_NAME" \
               --repo "${{ github.repository }}" \
               --title "$TITLE" \
               --notes-file "$NOTES_FILE"
           fi
 
-          echo "✅ IPA publiée: https://github.com/${{ github.repository }}/releases/tag/$TAG"
+          echo "✅ IPA published: https://github.com/${{ github.repository }}/releases/tag/$TAG"
           echo "RELEASE_TAG=$TAG" >> $GITHUB_ENV
 
-      - name: ✅ Résumé
+      - name: ✅ Summary
         run: |
           echo "========================================"
-          echo "  IPA buildée et publiée en release ! 🎉"
+          echo "  IPA built and published as a release! 🎉"
           echo "========================================"
           echo "Tag: ${{ env.RELEASE_TAG }}"
           echo "https://github.com/${{ github.repository }}/releases/tag/${{ env.RELEASE_TAG }}"

@@ -37,7 +37,7 @@ LIBRARY_NAME = TwitchPlusK
 #                 contient des SDKs et templates qui ne doivent JAMAIS
 #                 être traités comme du code source du projet)
 #   - packages/  (paquets .deb générés)
-TwitchPlusK_FILES = $(shell find . \
+TwitchPlusK_FILES := $(shell find . \
     -name '*.m' \
     -not -path './.theos/*' \
     -not -path './.git/*' \
@@ -51,7 +51,7 @@ TwitchPlusK_FILES = $(shell find . \
 # pas tous les dossiers du repo) pour éviter d'aspirer par erreur des
 # répertoires contenant leurs propres module.modulemap (comme dans
 # theos/) qui cassent la résolution des modules système de Clang.
-TwitchPlusK_CFLAGS = \
+TwitchPlusK_CFLAGS := \
     -fobjc-arc \
     -I$(THEOS_PROJECT_DIR) \
     $(shell find . -name '*.h' \

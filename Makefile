@@ -37,12 +37,17 @@ LIBRARY_NAME = TwitchPlusK
 #                 contient des SDKs et templates qui ne doivent JAMAIS
 #                 être traités comme du code source du projet)
 #   - packages/  (paquets .deb générés)
+# Trié par taille décroissante (gros fichiers en premier) plutôt que
+# par ordre alphabétique : avec la compilation parallèle (-j), ça évite
+# qu'un seul gros fichier programmé en dernier fasse attendre tous les
+# autres cœurs qui ont déjà fini leurs petits fichiers.
 TwitchPlusK_FILES := $(shell find . \
     -name '*.m' \
     -not -path './.theos/*' \
     -not -path './.git/*' \
     -not -path './theos/*' \
-    -not -path './packages/*')
+    -not -path './packages/*' \
+    -exec ls -S {} + 2>/dev/null)
 
 # ── Options de compilation ──
 # Ajoute comme chemin d'include chaque dossier du projet QUI CONTIENT

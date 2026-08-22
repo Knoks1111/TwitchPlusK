@@ -124,7 +124,23 @@ jobs:
           echo "📋 SDKs disponibles:"; ls "$THEOS/sdks/"
           echo "✅ Theos + SDK prêts"
 
-      - name: 🔑 Installer ldid + lief + GNU Make
+      # ── Cache Homebrew (ldid + make + libplist) ──
+      # Évite de re-télécharger/réinstaller ces formules à chaque run.
+      # ⚠️ Fragile par nature : la clé de cache inclut le numéro de version
+      # des formules elles-mêmes. Si Homebrew publie une nouvelle version
+      # de ldid/make, la clé change automatiquement (cache miss propre,
+      # pas de corruption) et une réinstall fraîche se déclenche.
+      - name: 💾 Cache Homebrew (ldid, make, libplist)
+        id: cache-brew
+        uses: actions/cache@v5
+        with:
+          path: |
+            /opt/homebrew/Cellar/ldid
+            /opt/homebrew/Cellar/make
+            /opt/homebrew/Cellar/libplist
+          key: brew-ldid-make-${{ runner.os }}-v1
+
+      - name: 🔑 Installer ldid + GNU Make
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -132,7 +148,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          brew install ldid make
+          if [ "${{ steps.cache-brew.outputs.cache-hit }}" = "true" ]; then
+            echo "♻️  Cache Homebrew restauré, re-liaison des binaires..."
+            brew link --overwrite ldid make libplist 2>/dev/null || true
+          else
+            echo "📦 Installation fraîche via Homebrew..."
+            brew install ldid make
+          fi
+
           echo "✅ ldid: $(which ldid)"
 
           MAKE_BIN_DIR="$(brew --prefix make)/libexec/gnubin"
@@ -140,8 +163,11 @@ jobs:
           echo "$MAKE_BIN_DIR" >> $GITHUB_PATH
           echo "✅ GNU Make prêt: $MAKE_BIN_DIR"
 
-          pip3 install "lief==0.17.6" --quiet --break-system-packages
-          python3 -c "import lief; print('✅ lief', lief.__version__)"
+          # NOTE: l'installation de "lief" a été retirée de cette étape car
+          # elle n'était utilisée nulle part dans ce workflow (build-dylib.yml).
+          # Si elle sert bien dans un AUTRE workflow (ex: Build IPA), aucune
+          # action requise ici. Si tu en as besoin ici aussi, dis-le moi et
+          # je la remets avec le bon usage branché derrière.
 
       - name: 🔨 Compiler le tweak
         run: |

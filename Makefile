@@ -10,16 +10,16 @@ include $(THEOS)/makefiles/common.mk
 # ── Nom du dylib ──
 LIBRARY_NAME = TwitchPlusK
 
-# ── Fichiers source (auto-détectés dans tout le projet) ──
+# ── Fichiers source (auto-détectés dans le projet) ──
 # ⚠️ TEMPORAIRE — le projet est en cours de rangement (racine plate
 # avec ~40 fichiers .m/.h → arborescence par domaine, ex: Sources/Chat,
 # Sources/Emotes, Sources/Moderation, Sources/Network, Sources/UI...).
 # Tant que le rangement n'est pas terminé, ce Makefile cherche PARTOUT
-# dans le repo pour ne rien casser pendant la transition.
+# dans le repo (hors toolchain/build) pour ne rien casser en transition.
 #
 # UNE FOIS le rangement terminé et TOUS les fichiers déplacés dans
-# Sources/ (plus aucun .m/.h à la racine 
-# il faut resserrer le scope pour ne chercher que
+# Sources/ (plus aucun .m/.h à la racine sauf TweakSevenTV.m si tu le
+# gardes à la racine), il faut resserrer le scope pour ne chercher que
 # dans Sources/ — ça évite de compiler par erreur un fichier oublié
 # ailleurs (backup, brouillon, dossier de test) et ça documente
 # clairement où vit le code source du projet :
@@ -30,26 +30,36 @@ LIBRARY_NAME = TwitchPlusK
 #       $(shell find Sources -type d -exec echo -I{} \;) \
 #       -Wno-unused-variable -Wno-unused-function
 #
-# Cherche tous les .m où qu'ils soient, en excluant les dossiers
-# techniques qui ne doivent jamais être compilés.
+# Cherche tous les .m du projet, en excluant explicitement:
+#   - .theos/    (cache de build généré par Theos)
+#   - .git/      (métadonnées git)
+#   - theos/     (le TOOLCHAIN Theos lui-même, checké dans le repo —
+#                 contient des SDKs et templates qui ne doivent JAMAIS
+#                 être traités comme du code source du projet)
+#   - packages/  (paquets .deb générés)
 TwitchPlusK_FILES = $(shell find . \
     -name '*.m' \
     -not -path './.theos/*' \
     -not -path './.git/*' \
+    -not -path './theos/*' \
     -not -path './packages/*')
 
 # ── Options de compilation ──
-# Ajoute automatiquement TOUS les dossiers du projet aux chemins
-# d'include, donc #import "Fichier.h" marche peu importe où se
-# trouve Fichier.h par rapport au fichier qui l'importe.
+# Ajoute comme chemin d'include chaque dossier du projet QUI CONTIENT
+# AU MOINS UN HEADER (.h), en excluant les mêmes dossiers techniques
+# que ci-dessus. On ne prend que les dossiers avec un .h dedans (et
+# pas tous les dossiers du repo) pour éviter d'aspirer par erreur des
+# répertoires contenant leurs propres module.modulemap (comme dans
+# theos/) qui cassent la résolution des modules système de Clang.
 TwitchPlusK_CFLAGS = \
     -fobjc-arc \
     -I$(THEOS_PROJECT_DIR) \
-    $(shell find . -type d \
-        -not -path './.theos*' \
-        -not -path './.git*' \
-        -not -path './packages*' \
-        -exec echo -I{} \;) \
+    $(shell find . -name '*.h' \
+        -not -path './.theos/*' \
+        -not -path './.git/*' \
+        -not -path './theos/*' \
+        -not -path './packages/*' \
+        -exec dirname {} \; | sort -u | sed 's/^/-I/') \
     -Wno-unused-variable \
     -Wno-unused-function
 

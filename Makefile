@@ -10,34 +10,15 @@ include $(THEOS)/makefiles/common.mk
 # ── Nom du dylib ──
 LIBRARY_NAME = TwitchPlusK
 
-# ── Headers ──
-# ── Fichiers source ──
-TwitchPlusK_FILES = \
-    TweakSevenTV.m \
-    SevenTVManager.m \
-    7tv-picker-controler.m \
-    7tv-picker-sizes.m \
-    7tv-picker-cell.m \
-    7tv-picker-resolved-emote.m \
-    7tv-localization.m \
-    SevenTVURLProtocol.m \
-    SevenTVSettingsController.m \
-    SevenTVLogsController.m \
-    SevenTVChatMessage.m \
-    SevenTVChatAppearanceConfig.m \
-    SevenTVChatCustomView.m \
-    7tv-chat-ReplyThreadPanel.m \
-    7tv-system-NativeBehaviorHooks.m \
-    SevenTVEmoteProvider.m \
-    SevenTVChatTokenizer.m \
-    SevenTVEmoteImageCache.m \
-    SevenTVEmoteAnimationEngine.m \
-    SevenTVBadgeProvider.m
+# ── Fichiers source (auto-détectés dans Sources/) ──
+TwitchPlusK_FILES = $(shell find Sources -name '*.m')
 
 # ── Options de compilation ──
 TwitchPlusK_CFLAGS = \
     -fobjc-arc \
     -I$(THEOS_PROJECT_DIR) \
+    -I$(THEOS_PROJECT_DIR)/Sources \
+    $(shell find Sources -type d -exec echo -I{} \;) \
     -Wno-unused-variable \
     -Wno-unused-function
 

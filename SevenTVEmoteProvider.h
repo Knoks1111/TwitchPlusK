@@ -57,10 +57,15 @@ NS_ASSUME_NONNULL_BEGIN
 @interface S7TVSevenTVEmoteProvider : NSObject <S7TVEmoteProvider>
 @end
 
+// Registre partagé et immuable des fournisseurs essayés par le tokenizer.
+// Centralisé ici pour que le live, l'historique et les Channel Points utilisent
+// exactement les mêmes instances sans dépendre de TweakSevenTV.m.
+FOUNDATION_EXPORT NSArray<id<S7TVEmoteProvider>> *s7tv_chatEmoteProviders(void);
+
 
 // Emotes Twitch natives : contrairement à 7TV, on ne les résout PAS par nom
 // — Twitch envoie déjà l'ID exact et la position dans le tag IRC `emotes=`
-// de chaque PRIVMSG (voir s7tv_parsePRIVMSG dans TweakSevenTV.m), donc pas
+// de chaque PRIVMSG (voir s7tv_parsePRIVMSG dans SevenTVChatMessage.m), donc pas
 // besoin de dictionnaire nom→ID à maintenir. Construction directe depuis
 // l'ID, pas de protocole S7TVEmoteProvider ici (qui suppose une résolution
 // par nom, inadaptée à ce cas).

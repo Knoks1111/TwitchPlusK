@@ -22,6 +22,10 @@
 @class SevenTVPickerSizesPanel;
 @class SevenTVEmote;
 
+// Point d'entrée du hook UIView.didMoveToWindow : initialise/nettoie le
+// bouton 7TV uniquement lorsqu'une Twitch.ChatInputView change de fenêtre.
+void s7tv_handleChatInputViewLifecycle(UIView *view);
+
 @interface SevenTVEmotePickerController : NSObject <UICollectionViewDataSource, UICollectionViewDelegate, UITextFieldDelegate>
 
 // --- Affichage / fermeture (façade appelée par SevenTVManager) ------------

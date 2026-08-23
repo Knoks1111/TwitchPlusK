@@ -11,7 +11,181 @@
 #import "SevenTVBadgeProvider.h"
 #import "7tv-localization.h"
 #import "SevenTVManager.h"
+#import "7tv-chat-ReplyThreadPanel.h"
+#import "SevenTVChatTokenizer.h"
+#import "SevenTVEmoteProvider.h"
+#import <objc/runtime.h>
 #import <math.h>
+
+// ============================================================
+// MARK: - Intégration dans le transcript Twitch
+// ============================================================
+
+static const char kS7TVChatCustomInstalledView = 21;
+static __weak SevenTVChatCustomView *s_activeChatCustomView = nil;
+static __weak UIView *s_activeNativeChatView = nil;
+static BOOL s_chatReloadScheduled = NO;
+
+UIView *s7tv_findChatInputView(void) {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        for (UIWindow *window in windowScene.windows) {
+            NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:window];
+            while (views.count > 0) {
+                UIView *view = views.firstObject;
+                [views removeObjectAtIndex:0];
+                if ([NSStringFromClass(view.class) isEqualToString:@"Twitch.ChatInputView"]) {
+                    return view;
+                }
+                [views addObjectsFromArray:view.subviews];
+            }
+        }
+    }
+    return nil;
+}
+
+SevenTVChatCustomView *s7tv_activeChatCustomView(void) {
+    return s_activeChatCustomView;
+}
+
+void s7tv_reloadActiveChatCustomView(void) {
+    SevenTVChatCustomView *view = s_activeChatCustomView;
+    if (!view) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [view reloadMessages];
+        [[S7TVReplyThreadPanel sharedPanel] refreshIfNeeded];
+    });
+}
+
+void s7tv_reloadActiveChatCustomViewAnimated(void) {
+    SevenTVChatCustomView *view = s_activeChatCustomView;
+    if (!view) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [view reloadMessagesAnimated:YES];
+        [[S7TVReplyThreadPanel sharedPanel] refreshIfNeeded];
+    });
+}
+
+void s7tv_reloadActiveChatMessage(NSString *messageID) {
+    if (!messageID.length) return;
+    SevenTVChatCustomView *view = s_activeChatCustomView;
+    if (!view) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [view refreshMessageWithID:messageID animated:YES];
+        [[S7TVReplyThreadPanel sharedPanel] refreshIfNeeded];
+    });
+}
+
+void s7tv_scheduleChatCustomReload(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (s_chatReloadScheduled) return;
+        s_chatReloadScheduled = YES;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            s_chatReloadScheduled = NO;
+            s7tv_reloadActiveChatCustomView();
+        });
+    });
+}
+
+static void s7tv_installChatCustomView(UIView *chatView) {
+    s_activeNativeChatView = chatView;
+    UIStackView *stack = [chatView.superview isKindOfClass:UIStackView.class]
+        ? (UIStackView *)chatView.superview : nil;
+    if (!stack) return;
+
+    SevenTVChatCustomView *existing =
+        objc_getAssociatedObject(chatView, &kS7TVChatCustomInstalledView);
+    if (existing && existing.superview == stack) {
+        chatView.hidden = YES;
+        existing.hidden = NO;
+        s_activeChatCustomView = existing;
+        [existing reloadMessages];
+        return;
+    }
+
+    NSInteger index = [stack.arrangedSubviews indexOfObject:chatView];
+    if (index == NSNotFound) {
+        [[SevenTVManager sharedManager]
+            log:@"⚠️ ChatTranscriptView introuvable dans arrangedSubviews"];
+        return;
+    }
+
+    chatView.hidden = YES;
+    SevenTVChatCustomView *customView = [[SevenTVChatCustomView alloc]
+        initWithStore:[SevenTVManager sharedManager].chatMessageStore];
+    customView.delegate = [S7TVReplyThreadPanel sharedPanel];
+    customView.onReplyTargetSelected = ^(NSString *messageID, NSString *username) {
+        [[S7TVReplyThreadPanel sharedPanel]
+            selectReplyTargetForMessageID:messageID username:username];
+    };
+    [stack insertArrangedSubview:customView atIndex:index];
+    objc_setAssociatedObject(chatView, &kS7TVChatCustomInstalledView, customView,
+                             OBJC_ASSOCIATION_RETAIN);
+    s_activeChatCustomView = customView;
+    [customView reloadMessages];
+    [[SevenTVManager sharedManager]
+        log:@"🏗 SevenTVChatCustomView insérée (index %ld du UIStackView, chat réel caché)",
+        (long)index];
+}
+
+void s7tv_applyChatCustomToggle(void) {
+    UIView *chatView = s_activeNativeChatView;
+    if (!chatView || ![chatView.superview isKindOfClass:UIStackView.class]) return;
+    if ([SevenTVManager sharedManager].chatCustomTestEnabled) {
+        s7tv_installChatCustomView(chatView);
+        return;
+    }
+
+    SevenTVChatCustomView *customView =
+        objc_getAssociatedObject(chatView, &kS7TVChatCustomInstalledView);
+    chatView.hidden = NO;
+    customView.hidden = YES;
+    if (s_activeChatCustomView == customView) s_activeChatCustomView = nil;
+}
+
+void s7tv_handleNativeChatViewLifecycle(UIView *view) {
+    if (![NSStringFromClass(view.class) isEqualToString:@"Twitch.ChatTranscriptView"] ||
+        !view.window || ![view.superview isKindOfClass:UIStackView.class]) return;
+    s_activeNativeChatView = view;
+    s7tv_applyChatCustomToggle();
+}
+
+void s7tv_setupChatCustomIntegration(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        SevenTVManager *manager = [SevenTVManager sharedManager];
+        NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+        [center addObserverForName:S7TVChatCustomToggleDidChangeNotification
+                           object:manager queue:NSOperationQueue.mainQueue
+                       usingBlock:^(__unused NSNotification *note) {
+            s7tv_applyChatCustomToggle();
+        }];
+        [center addObserverForName:S7TVEmoteCatalogDidUpdateNotification
+                           object:manager queue:NSOperationQueue.mainQueue
+                       usingBlock:^(__unused NSNotification *note) {
+            [manager.chatMessageStore
+                retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
+                    return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
+                                              twitchEmotesTag:message.twitchEmotesTag ?: @""
+                                                    providers:s7tv_chatEmoteProviders()];
+                } completion:^{
+                    s7tv_reloadActiveChatCustomView();
+                }];
+        }];
+        for (NSString *notificationName in @[
+            S7TVBadgesCatalogUpdatedNotification,
+            S7TVChatAppearanceConfigDidChangeNotification,
+            S7TVLanguageDidChangeNotification
+        ]) {
+            [center addObserverForName:notificationName object:nil queue:nil
+                            usingBlock:^(__unused NSNotification *note) {
+                s7tv_reloadActiveChatCustomView();
+            }];
+        }
+    });
+}
 
 // Métadonnée privée posée uniquement sur le caractère d'attachement d'une
 // emote. Le hit-test de l'appui long récupère directement le token déjà
@@ -1944,7 +2118,7 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
 }
 
 // Phase 3 — pseudo (couleur chat) + phrase système pré-construite par le
-// parser IRC (voir TweakSevenTV.m, s7tv_buildSystemMessagePhrase). Le
+// parser IRC (voir SevenTVChatMessage.m). Le
 // renderer ne fait qu'afficher, aucune logique de formulation ici.
 - (void)s7tv_appendSystemBannerForMessage:(S7TVChatMessage *)msg
                                       into:(NSMutableAttributedString *)result {
@@ -2040,7 +2214,7 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
     // /me : le corps entier prend la couleur du pseudo (comportement
     // Twitch) au lieu du blanc habituel — voir isActionMessage sur
     // S7TVChatMessage, déballé du CTCP ACTION par s7tv_parsePRIVMSG dans
-    // TweakSevenTV.m. Un seul point de bascule : messageColor est déjà
+    // SevenTVChatMessage.m. Un seul point de bascule : messageColor est déjà
     // réutilisé pour tous les chemins du corps ci-dessous (fallback sans
     // tokens, texte brut, emote non résolue, texte hors mention).
     BOOL isDeletedExpanded = s7tv_shouldRenderDeletedExpanded(msg, cfg);

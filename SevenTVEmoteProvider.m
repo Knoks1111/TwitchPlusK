@@ -9,6 +9,15 @@
 #import "SevenTVChatAppearanceConfig.h"
 #import "SevenTVChatMessage.h" // S7TVChatTokenTypeEmote7TV
 
+NSArray<id<S7TVEmoteProvider>> *s7tv_chatEmoteProviders(void) {
+    static NSArray<id<S7TVEmoteProvider>> *providers = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        providers = @[[S7TVSevenTVEmoteProvider new]];
+    });
+    return providers;
+}
+
 
 // ============================================================
 // MARK: - S7TVResolved7TVEmote

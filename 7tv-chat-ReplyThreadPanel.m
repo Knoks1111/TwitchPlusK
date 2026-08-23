@@ -12,13 +12,9 @@
  * encore implémenté — ça touche l'envoi WebSocket réel, prévu comme étape
  * séparée. Pour l'instant : consultation seule, fermeture via le bouton ✕.
  *
- * Extrait de TweakSevenTV.m (voir migration-panneau-fil.md) — dépend de
- * deux fonctions restées dans TweakSevenTV.m et exposées via
- * SevenTVManager.h : s7tv_findChatInputView() (positionnement au-dessus de
- * la barre de saisie, aussi utilisée par le channel points autoclaim) et
- * s7tv_activeChatCustomView() (getter en lecture seule vers la vue de chat
- * custom actuellement affichée, dont la mutation reste privée au hooking
- * dans TweakSevenTV.m).
+ * Extrait de TweakSevenTV.m (voir migration-panneau-fil.md). Les accès à la
+ * barre de saisie et à la vue de chat active sont exposés par
+ * SevenTVChatCustomView.h, qui possède désormais leur cycle de vie.
  */
 
 #import "7tv-chat-ReplyThreadPanel.h"

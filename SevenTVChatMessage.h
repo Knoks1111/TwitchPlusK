@@ -22,9 +22,9 @@ NS_ASSUME_NONNULL_BEGIN
 typedef S7TVChannelPointRewardInfo * _Nullable
     (^S7TVAutomaticRewardResolver)(NSString *messageID);
 
-// Utilitaires IRC partagés avec les hooks de modération/ROOMSTATE restés
-// dans TweakSevenTV.m. Le parsing et la construction des messages vivent
-// désormais avec le modèle plutôt que dans le point d'entrée du tweak.
+// Utilitaires IRC partagés avec le gestionnaire de session chat. Le parsing
+// et la construction des messages vivent avec le modèle plutôt que dans le
+// point d'entrée du tweak.
 FOUNDATION_EXPORT NSString *s7tv_tagValue(NSDictionary<NSString *, NSString *> *tags,
                                            NSString *key, NSString *defaultValue);
 FOUNDATION_EXPORT NSDictionary<NSString *, NSString *> *s7tv_parseIRCTags(NSString *tagBlock);
@@ -44,6 +44,8 @@ FOUNDATION_EXPORT S7TVChatMessage * _Nullable s7tv_parseChatMessage(
 
 FOUNDATION_EXPORT void s7tv_ingestAutomaticRewardsFromGQLData(
     NSData *data, dispatch_block_t _Nullable refresh);
+// Primitives de conversion PubSub/IRC utilisées par le gestionnaire de
+// session pour fusionner une récompense et son éventuel PRIVMSG compagnon.
 FOUNDATION_EXPORT NSArray<S7TVChatMessage *> *
     s7tv_channelPointMessagesFromWebSocketText(
         NSString *text, NSArray<id<S7TVEmoteProvider>> *providers);

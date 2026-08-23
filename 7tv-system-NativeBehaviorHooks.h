@@ -46,9 +46,13 @@ FOUNDATION_EXPORT const NSTimeInterval S7TVChannelPointsClaimRetryCooldown;
 // ============================================================
 
 // Lecture seule de l'état du verrou — utilisé par le hijack du bouton Share
-// (TweakSevenTV.m) pour l'icône/tint/label initiaux, avant même le premier
+// du module pour l'icône/tint/label initiaux, avant même le premier
 // lock. La variable réelle reste privée à ce fichier.
 BOOL s7tv_isOrientationLocked(void);
+
+// Appelé par le hook UIView.didMoveToWindow. Ne traite que
+// Twitch.TheaterPlayerControlsView et installe le bouton de verrouillage.
+void s7tv_handleTheaterControlsViewLifecycle(UIView *view);
 
 // Installe les swizzles orientation à la demande (no-op au lancement) —
 // appelé depuis le constructeur (TweakSevenTV.m), symétrique aux autres

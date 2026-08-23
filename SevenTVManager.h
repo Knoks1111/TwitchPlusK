@@ -10,7 +10,6 @@
 FOUNDATION_EXPORT NSString *const S7TVFavoritesDidChangeNotification;
 
 @class S7TVChatMessageStore;
-@class SevenTVChatCustomView;
 
 // ============================================================
 // CONFIGURATION - Modifie ces valeurs selon tes besoins
@@ -38,24 +37,8 @@ extern NSString *const S7TVEmoteCatalogDidUpdateNotification;
 extern NSString *const S7TVChatCustomToggleDidChangeNotification;
 
 // ============================================================
-// Fonctions C partagées (définies dans TweakSevenTV.m)
+// Fonctions C partagées encore définies dans TweakSevenTV.m
 // ============================================================
-// Cherche l'instance actuellement affichée de Twitch.ChatInputView (tous
-// écrans/fenêtres connectés confondus). Utilisée par le système de channel
-// points autoclaim (voir 7tv-system-NativeBehaviorHooks.m) ET par
-// S7TVReplyThreadPanel (voir 7tv-chat-ReplyThreadPanel.m) pour le
-// positionnement du panneau au-dessus de la barre de saisie et
-// l'insertion/retrait de mention.
-UIView *s7tv_findChatInputView(void);
-
-// Retourne la SevenTVChatCustomView actuellement montée à l'écran (chat
-// custom Phase 1a+), ou nil si aucune n'est active. Lecture seule : la
-// variable réelle (s_activeChatCustomView) reste privée à TweakSevenTV.m,
-// mutée uniquement par le hook didMoveToWindow/s7tv_applyChatCustomTest.
-// Utilisée par S7TVReplyThreadPanel (voir 7tv-chat-ReplyThreadPanel.m) pour
-// retrouver la window hôte.
-SevenTVChatCustomView *s7tv_activeChatCustomView(void);
-
 // Recherche récursive d'une clé dans un JSON déjà parsé (NSDictionary/
 // NSArray imbriqués). `*found` distingue "clé absente" de "clé présente
 // mais valant null". Utilitaire générique utilisé par le parsing GQL/PubSub
@@ -111,7 +94,6 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, assign) NSInteger height;
 @end
 
-
 // ============================================================
 // Interface principale du gestionnaire
 // ============================================================
@@ -166,7 +148,7 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, strong) NSString *currentChannelTwitchID;
 
 // Pseudo Twitch (display-name) du viewer connecté dans l'app — alimenté par
-// s7tv_handleUserState (TweakSevenTV.m) depuis les tags IRC USERSTATE/
+// -handleIRCUserState: depuis les tags IRC USERSTATE/
 // GLOBALUSERSTATE (envoyés par Twitch à la connexion et à chaque JOIN/
 // message, tag display-name toujours présent). nil tant qu'aucun de ces
 // deux messages IRC n'a encore été observé. Sert à détecter les mentions du
@@ -180,8 +162,8 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 
 // --- Chat custom (Phase 1a+) ---
 // Store des messages du chat en cours. Réinitialisé automatiquement à
-// chaque changement de chaîne détecté (voir handleRoomState dans
-// TweakSevenTV.m) pour éviter qu'un message de l'ancienne chaîne fuite
+// chaque changement de chaîne détecté (voir -handleIRCRoomState:) pour
+// éviter qu'un message de l'ancienne chaîne fuite
 // dans la nouvelle (exigence Phase 0).
 @property (nonatomic, strong, readonly) S7TVChatMessageStore *chatMessageStore;
 
@@ -238,7 +220,8 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // chatInputView: la Twitch.ChatInputView (pour positionner le picker et insérer le nom).
 - (void)toggleEmotePickerForChatInputView:(UIView *)chatInputView;
 
-// Appelé par TweakSevenTV quand le stream se ferme (ChatInputView.window → nil).
+// Appelé par le contrôleur du picker quand le stream se ferme
+// (ChatInputView.window → nil).
 // Nettoie le picker sans toucher au responder chain (UIKit crashe sans fenêtre).
 - (void)cleanupPickerForStreamClose;
 
@@ -266,4 +249,16 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 - (void)clearAllCaches;
 - (void)clearAllCachesWithCompletion:(void (^)(NSUInteger clearedEmoteCount))completion;
 
+@end
+
+// Cycle de vie de l'historique récent du salon. Le hook WebSocket transmet
+// seulement les JOIN sortants ; le manager possède la génération, la requête
+// réseau et la remise à zéro atomique du store.
+@interface SevenTVManager (RecentChatHistory)
+- (void)initializeRecentHistoryForChannel:(NSString *)channel force:(BOOL)force;
+- (void)handleOutgoingChatWebSocketMessage:(NSURLSessionWebSocketMessage *)message;
+@end
+
+@interface SevenTVManager (IRCSessionState)
+- (void)handleIncomingChatWebSocketText:(NSString *)text;
 @end

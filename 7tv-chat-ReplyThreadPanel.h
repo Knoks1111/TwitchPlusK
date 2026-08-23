@@ -12,7 +12,7 @@
 @interface S7TVReplyThreadPanel : NSObject <SevenTVChatCustomViewDelegate>
 + (instancetype)sharedPanel;
 // Reçoit directement le tap depuis la vue de chat réelle — voir l'assignation
-// de .delegate sur customView dans s7tv_applyChatCustomTest (TweakSevenTV.m).
+// de .delegate lors de l'installation dans SevenTVChatCustomView.m.
 // tappedMessageID garde en mémoire le message précis ayant ouvert le fil,
 // distinct de sa racine. L'ouverture reste en mode consultation : seule une
 // sélection explicite (flèche ou appui long) préremplit la saisie Twitch.
@@ -22,7 +22,7 @@
 - (void)selectReplyTargetForMessageID:(NSString *)messageID username:(NSString *)username;
 - (void)hide;
 // Appelé après chaque reload du chat principal (voir
-// s7tv_reloadActiveChatCustomView dans TweakSevenTV.m) — no-op si le
+// s7tv_reloadActiveChatCustomView dans SevenTVChatCustomView.m) — no-op si le
 // panneau est fermé.
 - (void)refreshIfNeeded;
 @end

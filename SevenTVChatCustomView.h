@@ -8,8 +8,8 @@
  * quelle en Phase 2 (cell reuse déjà en place).
  *
  * Activation : gardée par le kill switch de Phase 0
- * (SevenTVManager.chatCustomTestEnabled) — voir TweakSevenTV.m,
- * s7tv_applyChatCustomTest().
+ * (SevenTVManager.chatCustomTestEnabled). L'installation et le cycle de vie
+ * du transcript sont gérés dans SevenTVChatCustomView.m.
  */
 
 #import <UIKit/UIKit.h>
@@ -18,6 +18,19 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @class SevenTVChatCustomView;
+
+// Intégration du composant dans la hiérarchie native Twitch. L'état de la
+// vue active et toute la logique de remplacement du transcript vivent avec
+// le renderer ; TweakSevenTV.m ne fait que transmettre didMoveToWindow.
+UIView * _Nullable s7tv_findChatInputView(void);
+SevenTVChatCustomView * _Nullable s7tv_activeChatCustomView(void);
+void s7tv_handleNativeChatViewLifecycle(UIView *view);
+void s7tv_applyChatCustomToggle(void);
+void s7tv_reloadActiveChatCustomView(void);
+void s7tv_reloadActiveChatCustomViewAnimated(void);
+void s7tv_reloadActiveChatMessage(NSString *messageID);
+void s7tv_scheduleChatCustomReload(void);
+void s7tv_setupChatCustomIntegration(void);
 
 // Notifie l'hôte (le vrai chat, PAS ce composant) quand l'utilisateur tape
 // sur un message qui répond à quelqu'un (bandeau OU message lui-même — voir
@@ -44,14 +57,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, weak) id<SevenTVChatCustomViewDelegate> delegate;
 
 // YES par défaut (chat principal). Passer à NO pour un usage "panneau Fil"
-// (voir S7TVReplyThreadPanel, TweakSevenTV.m) : à l'intérieur d'un fil déjà
+// (voir S7TVReplyThreadPanel) : à l'intérieur d'un fil déjà
 // filtré, réafficher "Répond à @X" sur chaque message est redondant — Twitch
 // masque ce bandeau dans ce contexte précis (mais pas dans le flux
 // principal, où il reste indispensable).
 @property (nonatomic, assign) BOOL showsReplyBanners;
 
 // NO par défaut (chat principal). YES uniquement pour la sous-vue
-// "réponses" du panneau Fil (voir S7TVReplyThreadPanel, TweakSevenTV.m) :
+// "réponses" du panneau Fil (voir S7TVReplyThreadPanel) :
 // décale chaque message vers la droite avec une barre grise verticale
 // continue à gauche, pour les distinguer visuellement du message racine
 // épinglé au-dessus (rendu par une AUTRE instance de cette classe, sans ce
@@ -90,7 +103,7 @@ NS_ASSUME_NONNULL_BEGIN
 // animatingDifferences:NO). À utiliser quand on doit mesurer le contenu
 // juste après (s7tvContentHeight) — mesurer immédiatement après
 // -reloadMessages simple lit une hauteur pas encore à jour. Voir
-// S7TVReplyThreadPanel dans TweakSevenTV.m.
+// 7tv-chat-ReplyThreadPanel.m.
 - (void)reloadMessagesWithCompletion:(void (^ _Nullable)(void))completion;
 
 // Recharge une seule cellule sans reconstruire/recharger tout le transcript.

@@ -21,6 +21,173 @@
 #import "SevenTVEmoteAnimationEngine.h"
 #import "SevenTVURLProtocol.h"
 #import "SevenTVLogo.h"
+#import <objc/runtime.h>
+
+static const char kS7TVTextFieldTagged = 5;
+static const char kS7TVBitsHijacked = 6;
+
+@interface S7TVPickerWeakRef : NSObject
+@property (nonatomic, weak) id object;
++ (instancetype)refWithObject:(id)object;
+@end
+
+@implementation S7TVPickerWeakRef
++ (instancetype)refWithObject:(id)object {
+    S7TVPickerWeakRef *reference = [S7TVPickerWeakRef new];
+    reference.object = object;
+    return reference;
+}
+@end
+
+@interface SevenTVManager (S7TVChatBarButton)
+- (void)s7tv_emoteButtonTappedForButton:(UIButton *)sender;
+@end
+
+@implementation SevenTVManager (S7TVChatBarButton)
+- (void)s7tv_emoteButtonTappedForButton:(UIButton *)sender {
+    id association = objc_getAssociatedObject(sender, &kS7TVTextFieldTagged);
+    UIView *chatInputView = [association isKindOfClass:S7TVPickerWeakRef.class]
+        ? ((S7TVPickerWeakRef *)association).object : association;
+    if (!chatInputView.window) return;
+    [self toggleEmotePickerForChatInputView:chatInputView];
+}
+@end
+
+void s7tv_handleChatInputViewLifecycle(UIView *view) {
+    if (![NSStringFromClass(view.class) isEqualToString:@"Twitch.ChatInputView"]) return;
+    if (!view.window) {
+        if (objc_getAssociatedObject(view, &kS7TVTextFieldTagged)) {
+            [[SevenTVManager sharedManager] cleanupPickerForStreamClose];
+            objc_setAssociatedObject(view, &kS7TVTextFieldTagged, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+    if (objc_getAssociatedObject(view, &kS7TVTextFieldTagged)) return;
+    objc_setAssociatedObject(view, &kS7TVTextFieldTagged, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    __weak UIView *weakChatInputView = view;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *chatInputView = weakChatInputView;
+        if (!chatInputView || !chatInputView.window) return;
+        SevenTVManager *manager = [SevenTVManager sharedManager];
+        __block UIButton *bitsButton = nil;
+        __block UIView *emoticonButton = nil;
+        NSMutableArray<UIView *> *views =
+            [NSMutableArray arrayWithArray:chatInputView.subviews];
+        while (views.count > 0) {
+            UIView *candidate = views.firstObject;
+            [views removeObjectAtIndex:0];
+            [views addObjectsFromArray:candidate.subviews];
+            NSString *className = NSStringFromClass(candidate.class);
+            if ([className containsString:@"BitsButton"] ||
+                [className containsString:@"bitsButton"] ||
+                [candidate.accessibilityIdentifier isEqualToString:@"chat_input_bits_button"]) {
+                bitsButton = (UIButton *)candidate;
+            }
+            if ([className containsString:@"Emoticon"] ||
+                [className containsString:@"emoticon"]) emoticonButton = candidate;
+            if (bitsButton && emoticonButton) break;
+        }
+
+        if (bitsButton &&
+            ![objc_getAssociatedObject(bitsButton, &kS7TVBitsHijacked) boolValue]) {
+            objc_setAssociatedObject(bitsButton, &kS7TVBitsHijacked, @YES,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            for (id target in bitsButton.allTargets) {
+                for (NSString *action in [bitsButton actionsForTarget:target
+                                                       forControlEvent:UIControlEventTouchUpInside]) {
+                    [bitsButton removeTarget:target action:NSSelectorFromString(action)
+                            forControlEvents:UIControlEventTouchUpInside];
+                    [manager log:@"🔌 Bits: action retirée — %@->%@",
+                        NSStringFromClass([target class]), action];
+                }
+            }
+
+            NSData *logoData = [[NSData alloc]
+                initWithBase64EncodedString:kS7TVLogoBase64
+                                    options:NSDataBase64DecodingIgnoreUnknownCharacters];
+            UIImage *icon = [UIImage imageWithData:logoData scale:2.0];
+            if (icon) {
+                CGFloat targetHeight = emoticonButton
+                    ? MIN(emoticonButton.bounds.size.height,
+                          emoticonButton.bounds.size.width) * 0.75 : 22.0;
+                if (targetHeight < 14.0) targetHeight = 22.0;
+                CGFloat targetWidth = targetHeight *
+                    (icon.size.width / MAX(icon.size.height, 1.0));
+                UIGraphicsBeginImageContextWithOptions(
+                    CGSizeMake(targetWidth, targetHeight), NO, UIScreen.mainScreen.scale);
+                [icon drawInRect:CGRectMake(0, 0, targetWidth, targetHeight)];
+                UIImage *resizedIcon = UIGraphicsGetImageFromCurrentImageContext();
+                UIGraphicsEndImageContext();
+                if (resizedIcon) icon = resizedIcon;
+                for (NSNumber *state in @[@(UIControlStateNormal),
+                                          @(UIControlStateHighlighted),
+                                          @(UIControlStateSelected),
+                                          @(UIControlStateDisabled)]) {
+                    [bitsButton setImage:icon forState:state.unsignedIntegerValue];
+                }
+                bitsButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
+                bitsButton.tintColor = UIColor.whiteColor;
+            }
+            bitsButton.accessibilityLabel = @"7TV Emotes";
+            objc_setAssociatedObject(bitsButton, &kS7TVTextFieldTagged,
+                                     [S7TVPickerWeakRef refWithObject:chatInputView],
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [bitsButton addTarget:manager
+                           action:@selector(s7tv_emoteButtonTappedForButton:)
+                 forControlEvents:UIControlEventTouchUpInside];
+            [manager log:@"✅ Bouton Bits hijacké → 7TV (frame=%.0f,%.0f,%.0f,%.0f)",
+                bitsButton.frame.origin.x, bitsButton.frame.origin.y,
+                bitsButton.frame.size.width, bitsButton.frame.size.height];
+            return;
+        }
+
+        if (!bitsButton) {
+            [manager log:@"⚠️ ChatInputViewBitsButton introuvable — fallback injection"];
+            UIView *target = emoticonButton.superview ?: chatInputView;
+            for (UIView *subview in target.subviews) if (subview.tag == 0x7777) return;
+
+            UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+            button.tag = 0x7777;
+            UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration
+                configurationWithPointSize:15 weight:UIImageSymbolWeightMedium];
+            UIImage *icon = [UIImage systemImageNamed:@"sparkles"
+                                    withConfiguration:configuration];
+            UIColor *purple = [UIColor colorWithRed:0.55 green:0.25 blue:0.95 alpha:1.0];
+            if (icon) {
+                [button setImage:icon forState:UIControlStateNormal];
+                button.tintColor = purple;
+            } else {
+                [button setTitle:L(@"label_7tv_badge") forState:UIControlStateNormal];
+                [button setTitleColor:purple forState:UIControlStateNormal];
+                button.titleLabel.font = [UIFont boldSystemFontOfSize:10];
+            }
+            CGFloat size = 36.0;
+            CGFloat x = emoticonButton
+                ? emoticonButton.frame.origin.x - size - 4.0
+                : MAX(0, target.frame.size.width - size - 4.0);
+            CGFloat y = emoticonButton
+                ? emoticonButton.frame.origin.y + (emoticonButton.frame.size.height - size) / 2.0
+                : (target.frame.size.height - size) / 2.0;
+            button.frame = CGRectMake(MAX(0, x), y, size, size);
+            button.autoresizingMask = UIViewAutoresizingFlexibleRightMargin |
+                UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+            objc_setAssociatedObject(button, &kS7TVTextFieldTagged,
+                                     [S7TVPickerWeakRef refWithObject:chatInputView],
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [button addTarget:manager action:@selector(s7tv_emoteButtonTappedForButton:)
+              forControlEvents:UIControlEventTouchUpInside];
+            [target addSubview:button];
+            [target bringSubviewToFront:button];
+            [manager log:@"🎹 Bouton 7TV fallback injecté — x=%.0f y=%.0f", x, y];
+        } else {
+            [manager log:@"ℹ️ Bouton Bits déjà hijacké, rien à faire"];
+        }
+    });
+}
 
 @interface SevenTVEmotePickerController ()
 
@@ -136,8 +303,8 @@
         _emotePickerOtherEmotes    = @[];
         _pickerChannelAvatarCache  = [NSMutableDictionary dictionary];
 
-        // Abonnement permanent à S7TVChannelJoined (postée depuis
-        // s7tv_handleRoomState dans TweakSevenTV.m) — même logique que
+        // Abonnement permanent à S7TVChannelJoined (postée par
+        // SevenTVManager lors du ROOMSTATE) — même logique que
         // SevenTVBadgeProvider : ce controller n'est jamais désalloué en
         // cours de vie de l'app (cleanupPickerForStreamClose masque juste la
         // vue, ne détruit pas l'objet), donc pas de -dealloc pour se
@@ -350,13 +517,13 @@ static const CGFloat kS7TVPickerGridDefaultH =
 // ── Avatar de la chaîne (bouton "Chaîne" de la capsule sous-choix) ─────────
 //
 // Point d'entrée notif : S7TVChannelJoined n'est postée que pour un VRAI
-// changement de broadcaster ID (voir s7tv_handleRoomState), jamais pour un
+// changement de broadcaster ID (voir -handleIRCRoomState:), jamais pour un
 // simple re-join du même channel — pas de refetch inutile.
 - (void)_s7tv_channelJoinedNotification:(NSNotification *)note {
     NSString *channelID = note.userInfo[@"channelID"];
     if (!channelID.length) return;
 
-    // CRITIQUE : S7TVChannelJoined est postée depuis s7tv_handleRoomState
+    // CRITIQUE : S7TVChannelJoined est postée depuis -handleIRCRoomState:
     // pendant le traitement des messages IRC (WebSocket), donc HORS main
     // thread. NSNotificationCenter exécute les observers de façon SYNCHRONE
     // sur le thread qui poste — sans ce dispatch, tout ce qui suit (UIButton

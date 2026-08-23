@@ -13,12 +13,9 @@
  *     verrouiller l'orientation de l'écran (requestGeometryUpdate iOS 16+,
  *     fallback setStatusBarOrientation: sinon), avec toast de confirmation.
  *
- * Extrait de TweakSevenTV.m. Dépend de deux fonctions restées dans
- * TweakSevenTV.m et exposées via SevenTVManager.h : s7tv_findChatInputView()
- * (déjà exposée pour le panneau Fil) et s7tv_findValueForKeyRecursive()
- * (utilitaire JSON générique, aussi utilisé par le parsing GQL/pubsub resté
- * dans TweakSevenTV.m), ainsi que s7tv_swizzle() (helper swizzle partagé
- * par tout le tweak).
+ * Extrait de TweakSevenTV.m. Le scan de la barre de saisie est partagé avec
+ * SevenTVChatCustomView ; seuls l'utilitaire JSON et le helper de swizzle
+ * restent fournis par le point d'entrée réseau.
  *
  * Fonctions exposées par ce fichier (déclarées dans SevenTVManager.h) pour
  * les points d'accroche restés dans TweakSevenTV.m :
@@ -34,6 +31,7 @@
 
 #import "7tv-system-NativeBehaviorHooks.h"
 #import "SevenTVManager.h"
+#import "SevenTVChatCustomView.h"
 #import "7tv-localization.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -47,6 +45,73 @@
 // associated objects" de TweakSevenTV.m où elle vivait aux côtés de clés
 // sans rapport (kS7TVBitsHijacked, kS7TVShareHijacked, etc.).
 static const char kS7TVChannelPointsPolling = 9;
+static const char kS7TVShareHijacked = 8;
+
+void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
+    if (![NSStringFromClass(view.class) isEqualToString:@"Twitch.TheaterPlayerControlsView"] ||
+        !view.window || objc_getAssociatedObject(view, &kS7TVShareHijacked)) return;
+
+    __weak UIView *weakView = view;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *controls = weakView;
+        if (!controls || !controls.window ||
+            ![NSStringFromClass(controls.window.class)
+                isEqualToString:@"Twitch.PictureInPictureWindow"] ||
+            objc_getAssociatedObject(controls, &kS7TVShareHijacked)) return;
+        objc_setAssociatedObject(controls, &kS7TVShareHijacked, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        UIButton *shareButton = nil;
+        NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:controls];
+        while (views.count > 0) {
+            UIView *candidate = views.firstObject;
+            [views removeObjectAtIndex:0];
+            if ([candidate isKindOfClass:UIButton.class] &&
+                [candidate.accessibilityIdentifier isEqualToString:@"share_button"]) {
+                shareButton = (UIButton *)candidate;
+                break;
+            }
+            [views addObjectsFromArray:candidate.subviews];
+        }
+        if (!shareButton) {
+            [[SevenTVManager sharedManager]
+                log:@"⚠️ share_button introuvable dans TheaterPlayerControlsView"];
+            return;
+        }
+
+        for (id target in shareButton.allTargets) {
+            for (NSString *action in [shareButton actionsForTarget:target
+                                                   forControlEvent:UIControlEventTouchUpInside]) {
+                [shareButton removeTarget:target action:NSSelectorFromString(action)
+                         forControlEvents:UIControlEventTouchUpInside];
+                [[SevenTVManager sharedManager] log:@"🔌 Share: action retirée — %@->%@",
+                    NSStringFromClass([target class]), action];
+            }
+        }
+
+        UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration
+            configurationWithPointSize:20 weight:UIImageSymbolWeightMedium];
+        NSString *symbol = s7tv_isOrientationLocked()
+            ? @"lock.rotation" : @"lock.rotation.open";
+        UIImage *icon = [UIImage systemImageNamed:symbol withConfiguration:configuration];
+        for (NSNumber *state in @[@(UIControlStateNormal), @(UIControlStateHighlighted),
+                                  @(UIControlStateSelected), @(UIControlStateDisabled)]) {
+            [shareButton setImage:icon forState:state.unsignedIntegerValue];
+        }
+        shareButton.tintColor = s7tv_isOrientationLocked()
+            ? [UIColor colorWithRed:0.55 green:0.25 blue:0.95 alpha:1.0]
+            : UIColor.whiteColor;
+        shareButton.accessibilityLabel = s7tv_isOrientationLocked()
+            ? L(@"a11y_unlock_orientation") : L(@"a11y_lock_orientation");
+        shareButton.accessibilityIdentifier = @"s7tv_lock_button";
+        [shareButton addTarget:[SevenTVManager sharedManager]
+                        action:@selector(s7tv_toggleOrientationLock:)
+              forControlEvents:UIControlEventTouchUpInside];
+        [[SevenTVManager sharedManager]
+            log:@"✅ Bouton Share hijacké → verrou orientation"];
+    });
+}
 
 // ────────────────────────────────────────────────────────────
 // MARK: - Auto Collect Channel Points (module 100% autonome)
@@ -433,7 +498,7 @@ void s7tv_scanWebSocketTextForChannelPointsClaimAvailable(NSString *text) {
 // État global verrou d'orientation — déplacées depuis le haut de
 // TweakSevenTV.m (section "Clés associated objects") où elles vivaient sans
 // rapport avec les autres clés qui y restent. s_orientationLocked est lue en
-// lecture seule par le hijack du bouton Share (TweakSevenTV.m, avant même le
+// lecture seule par le hijack du bouton Share ci-dessus, avant même le
 // premier lock, pour l'état initial de l'icône) via s7tv_isOrientationLocked().
 static BOOL s_orientationLocked = NO;
 static UIInterfaceOrientationMask s_lockedOrientationMask = UIInterfaceOrientationMaskAll;
@@ -722,8 +787,8 @@ static void s7tv_install_orientation_swizzles(void) {
 
 @end
 
-// Getter en lecture seule vers s_orientationLocked, pour TweakSevenTV.m —
-// utilisé par le hijack du bouton Share (icône/tint/label initiaux, avant
+// Getter en lecture seule vers s_orientationLocked — utilisé par le hijack
+// du bouton Share (icône/tint/label initiaux, avant
 // même le premier lock). La variable elle-même reste privée à ce fichier.
 BOOL s7tv_isOrientationLocked(void) {
     return s_orientationLocked;

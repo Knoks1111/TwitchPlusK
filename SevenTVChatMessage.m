@@ -11,7 +11,6 @@
 #import "SevenTVEmoteImageCache.h"
 #import "7tv-localization.h"
 
-
 // ============================================================
 // MARK: - S7TVChatUserColorRegistry
 // ============================================================
@@ -370,8 +369,8 @@ S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(
 
     // Détection self-mention : scan des tokens .mention déjà résolus par le
     // tokenizer (@pseudo ET pseudo nu — voir S7TVChatToken), comparés au
-    // pseudo du viewer connecté (voir s7tv_handleUserState plus bas dans ce
-    // fichier). nil/vide tant qu'aucun USERSTATE n'a encore été observé →
+    // pseudo du viewer connecté (alimenté par SevenTVManager via USERSTATE).
+    // nil/vide tant qu'aucun USERSTATE n'a encore été observé →
     // mentionsCurrentViewer reste NO par défaut, jamais de faux positif.
     NSString *viewerName = [SevenTVManager sharedManager].currentViewerDisplayName;
     if (viewerName.length) {

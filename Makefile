@@ -10,61 +10,34 @@ include $(THEOS)/makefiles/common.mk
 # ── Nom du dylib ──
 LIBRARY_NAME = TwitchPlusK
 
-# ── Fichiers source (auto-détectés dans le projet) ──
-# ⚠️ TEMPORAIRE — le projet est en cours de rangement (racine plate
-# avec ~40 fichiers .m/.h → arborescence par domaine, ex: Sources/Chat,
-# Sources/Emotes, Sources/Moderation, Sources/Network, Sources/UI...).
-# Tant que le rangement n'est pas terminé, ce Makefile cherche PARTOUT
-# dans le repo (hors toolchain/build) pour ne rien casser en transition.
-#
-# UNE FOIS le rangement terminé et TOUS les fichiers déplacés dans
-# Sources/ (plus aucun .m/.h à la racine sauf TweakSevenTV.m si tu le
-# gardes à la racine), il faut resserrer le scope pour ne chercher que
-# dans Sources/ — ça évite de compiler par erreur un fichier oublié
-# ailleurs (backup, brouillon, dossier de test) et ça documente
-# clairement où vit le code source du projet :
-#
-#   TwitchPlusK_FILES = $(shell find Sources -name '*.m')
-#   TwitchPlusK_CFLAGS = -fobjc-arc -I$(THEOS_PROJECT_DIR) \
-#       -I$(THEOS_PROJECT_DIR)/Sources \
-#       $(shell find Sources -type d -exec echo -I{} \;) \
-#       -Wno-unused-variable -Wno-unused-function
-#
-# Cherche tous les .m du projet, en excluant explicitement:
-#   - .theos/    (cache de build généré par Theos)
-#   - .git/      (métadonnées git)
-#   - theos/     (le TOOLCHAIN Theos lui-même, checké dans le repo —
-#                 contient des SDKs et templates qui ne doivent JAMAIS
-#                 être traités comme du code source du projet)
-#   - packages/  (paquets .deb générés)
-# Trié par taille décroissante (gros fichiers en premier) plutôt que
-# par ordre alphabétique : avec la compilation parallèle (-j), ça évite
-# qu'un seul gros fichier programmé en dernier fasse attendre tous les
-# autres cœurs qui ont déjà fini leurs petits fichiers.
-TwitchPlusK_FILES := $(shell find . \
-    -name '*.m' \
-    -not -path './.theos/*' \
-    -not -path './.git/*' \
-    -not -path './theos/*' \
-    -not -path './packages/*' \
-    -exec ls -S {} + 2>/dev/null)
+# ── Fichiers source regroupés par domaine ──
+TwitchPlusK_FILES = \
+    Sources/Core/7tv-core-runtime-hooks.m \
+    Sources/Core/7tv-core-manager.m \
+    Sources/Network/7tv-network-emote-cache.m \
+    Sources/Settings/7tv-settings-controller.m \
+    Sources/Logs/7tv-logs-controller.m \
+    Sources/Chat/7tv-chat-appearance-config.m \
+    Sources/Chat/7tv-chat-custom-view.m \
+    Sources/Chat/7tv-chat-message.m \
+    Sources/Chat/7tv-chat-reply-thread-panel.m \
+    Sources/Chat/7tv-chat-tokenizer.m \
+    Sources/Emote/7tv-emote-animation-engine.m \
+    Sources/Emote/7tv-emote-image-cache.m \
+    Sources/Emote/7tv-emote-provider.m \
+    Sources/Badge/7tv-badge-provider.m \
+    Sources/Picker/7tv-picker-cell.m \
+    Sources/Picker/7tv-picker-controller.m \
+    Sources/Picker/7tv-picker-resolved-emote.m \
+    Sources/Picker/7tv-picker-settings-panel.m \
+    Sources/Localization/7tv-localization-manager.m \
+    Sources/System/7tv-system-native-behavior-hooks.m
 
 # ── Options de compilation ──
-# Ajoute comme chemin d'include chaque dossier du projet QUI CONTIENT
-# AU MOINS UN HEADER (.h), en excluant les mêmes dossiers techniques
-# que ci-dessus. On ne prend que les dossiers avec un .h dedans (et
-# pas tous les dossiers du repo) pour éviter d'aspirer par erreur des
-# répertoires contenant leurs propres module.modulemap (comme dans
-# theos/) qui cassent la résolution des modules système de Clang.
 TwitchPlusK_CFLAGS := \
     -fobjc-arc \
     -I$(THEOS_PROJECT_DIR) \
-    $(shell find . -name '*.h' \
-        -not -path './.theos/*' \
-        -not -path './.git/*' \
-        -not -path './theos/*' \
-        -not -path './packages/*' \
-        -exec dirname {} \; | sort -u | sed 's/^/-I/') \
+    -I$(THEOS_PROJECT_DIR)/Sources \
     -Wno-unused-variable \
     -Wno-unused-function
 

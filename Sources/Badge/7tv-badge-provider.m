@@ -53,6 +53,8 @@ static NSURL *S7TVUserURL(NSString *channelID) {
 // dispatch_barrier_async.
 @property (nonatomic, strong) dispatch_queue_t badgeQueue;
 @property (nonatomic, strong) NSString *lastLoadedChannelID; // évite un refetch si join répété sur le même channel
+@property (nonatomic, assign) BOOL fetchingGlobalBadges;
+@property (nonatomic, strong) NSMutableSet<NSString *> *fetchingBadgeChannelIDs;
 // Avatars des chaînes d'origine du Shared Chat. Le cache est global à la
 // session : contrairement aux badges channel, un avatar est lié à un user ID
 // Twitch et reste valide lorsqu'on change de chaîne.
@@ -88,6 +90,7 @@ static NSURL *S7TVUserURL(NSString *channelID) {
     if (self) {
         _globalBadges  = @{};
         _channelBadges = @{};
+        _fetchingBadgeChannelIDs = [NSMutableSet set];
         _sharedChatAvatarURLs = @{};
         _fetchingSharedChatAvatarChannelIDs = [NSMutableSet set];
         _sharedChatAvatarRetryAfter = [NSMutableDictionary dictionary];
@@ -135,24 +138,42 @@ static NSURL *S7TVUserURL(NSString *channelID) {
     if (!url) return;
 
     SevenTVManager *mgr = [SevenTVManager sharedManager];
-    if (!mgr.twitchToken.length) {
-        [mgr log:@"⏳ Badges global: token pas encore dispo, attente GQL..."];
+    if (!mgr.twitchToken.length || !mgr.twitchClientID.length) {
+        [mgr log:@"⏳ Badges global: credentials pas encore disponibles, attente GQL..."];
         return; // saveTwitchToken:clientID: rappellera loadGlobalBadges dès que le token arrive
+    }
+
+    @synchronized (self) {
+        if (self.fetchingGlobalBadges) return;
+        self.fetchingGlobalBadges = YES;
     }
 
     [mgr log:@"🏗 Badges: chargement catalogue global"];
 
     __weak typeof(self) weakSelf = self;
     NSURLRequest *req = [self s7tv_helixRequestWithURL:url];
+    NSString *requestToken = [req valueForHTTPHeaderField:@"Authorization"];
+    NSString *requestClientID = [req valueForHTTPHeaderField:@"Client-ID"];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
         dataTaskWithRequest:req
       completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
 
+        @synchronized (strongSelf) {
+            strongSelf.fetchingGlobalBadges = NO;
+        }
+
         NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *parsed =
-            [strongSelf s7tv_parseBadgeSetsFromData:data error:error];
-        if (!parsed) return; // déjà logué dans le parsing, no-op silencieux sinon
+            [strongSelf s7tv_parseBadgeSetsFromData:data response:response error:error];
+        if (!parsed) {
+            SevenTVManager *currentManager = [SevenTVManager sharedManager];
+            BOOL credentialsChanged =
+                ![requestToken isEqualToString:currentManager.twitchToken] ||
+                ![requestClientID isEqualToString:currentManager.twitchClientID];
+            if (credentialsChanged) [strongSelf loadGlobalBadges];
+            return;
+        }
 
         dispatch_barrier_async(strongSelf.badgeQueue, ^{
             strongSelf.globalBadges = parsed;
@@ -173,16 +194,11 @@ static NSURL *S7TVUserURL(NSString *channelID) {
 - (void)loadBadgesForChannelID:(NSString *)channelID {
     if (!channelID.length) return;
 
-    // Évite un refetch identique si plusieurs ROOMSTATE arrivent pour la
-    // même chaîne (ex: reconnexion WebSocket sans vrai changement de
-    // channel) — pas une exigence stricte, juste évite du réseau superflu.
-    if ([channelID isEqualToString:self.lastLoadedChannelID]) return;
-
     NSURL *url = [NSURL URLWithString:S7TVChannelBadgesURL(channelID)];
     if (!url) return;
 
     SevenTVManager *mgr = [SevenTVManager sharedManager];
-    if (!mgr.twitchToken.length) {
+    if (!mgr.twitchToken.length || !mgr.twitchClientID.length) {
         // CRITIQUE : ne PAS marquer lastLoadedChannelID ici. S7TVChannelJoined
         // arrive souvent avant que le token (capturé depuis les headers GQL)
         // ne soit disponible — si on marquait la chaîne comme "chargée"
@@ -192,28 +208,58 @@ static NSURL *S7TVUserURL(NSString *channelID) {
         // fetch n'a jamais réellement eu lieu. C'était la cause des badges de
         // sub (channel-only, pas de repli global côté Twitch pour ce set)
         // manquants alors que les badges globaux (mod/VIP/turbo) s'affichaient.
-        [mgr log:@"⏳ Badges channel: token pas encore dispo, attente GQL..."];
+        [mgr log:@"⏳ Badges channel: credentials pas encore disponibles, attente GQL..."];
         return;
     }
 
-    // On ne marque la chaîne comme "chargée" qu'une fois certain qu'un vrai
-    // fetch part — sinon un appel prématuré (token pas encore prêt) bloquerait
-    // silencieusement le rattrapage ultérieur (voir commentaire ci-dessus).
-    self.lastLoadedChannelID = channelID;
+    @synchronized (self) {
+        if ([channelID isEqualToString:self.lastLoadedChannelID] ||
+            [self.fetchingBadgeChannelIDs containsObject:channelID]) return;
+        [self.fetchingBadgeChannelIDs addObject:channelID];
+    }
 
     [mgr log:@"🏗 Badges: chargement catalogue channel %@", channelID];
 
     __weak typeof(self) weakSelf = self;
     NSURLRequest *req = [self s7tv_helixRequestWithURL:url];
+    NSString *requestToken = [req valueForHTTPHeaderField:@"Authorization"];
+    NSString *requestClientID = [req valueForHTTPHeaderField:@"Client-ID"];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
         dataTaskWithRequest:req
       completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
 
+        @synchronized (strongSelf) {
+            [strongSelf.fetchingBadgeChannelIDs removeObject:channelID];
+        }
+
         NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *parsed =
-            [strongSelf s7tv_parseBadgeSetsFromData:data error:error];
-        if (!parsed) return;
+            [strongSelf s7tv_parseBadgeSetsFromData:data response:response error:error];
+        if (!parsed) {
+            SevenTVManager *currentManager = [SevenTVManager sharedManager];
+            BOOL credentialsChanged =
+                ![requestToken isEqualToString:currentManager.twitchToken] ||
+                ![requestClientID isEqualToString:currentManager.twitchClientID];
+            if (credentialsChanged &&
+                [channelID isEqualToString:currentManager.currentChannelTwitchID]) {
+                [strongSelf loadBadgesForChannelID:channelID];
+            }
+            return;
+        }
+
+        // Une réponse arrivée après un changement rapide de chaîne ne doit
+        // jamais remplacer le catalogue de la chaîne actuellement affichée.
+        NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+        if (currentChannelID.length && ![currentChannelID isEqualToString:channelID]) {
+            [[SevenTVManager sharedManager]
+                log:@"ℹ️ Réponse badges ignorée pour ancienne chaîne %@", channelID];
+            return;
+        }
+
+        @synchronized (strongSelf) {
+            strongSelf.lastLoadedChannelID = channelID;
+        }
 
         dispatch_barrier_async(strongSelf.badgeQueue, ^{
             strongSelf.channelBadges = parsed;
@@ -234,11 +280,21 @@ static NSURL *S7TVUserURL(NSString *channelID) {
 // Format Helix : { "data": [ { "set_id": "<setID>", "versions": [
 //   { "id": "<version>", "image_url_4x": "...", ... } ] } ] }
 - (nullable NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *)
-    s7tv_parseBadgeSetsFromData:(NSData *)data error:(NSError *)networkError {
+    s7tv_parseBadgeSetsFromData:(NSData *)data
+                       response:(NSURLResponse *)response
+                          error:(NSError *)networkError {
     if (networkError || !data.length) {
         [[SevenTVManager sharedManager]
             log:@"⚠️ Badges: échec réseau (%@)",
             networkError.localizedDescription ?: @"réponse vide"];
+        return nil;
+    }
+
+    NSInteger statusCode = [response isKindOfClass:[NSHTTPURLResponse class]]
+        ? ((NSHTTPURLResponse *)response).statusCode : 0;
+    if (statusCode < 200 || statusCode >= 300) {
+        [[SevenTVManager sharedManager]
+            log:@"⚠️ Badges: réponse Helix HTTP %ld", (long)statusCode];
         return nil;
     }
 
@@ -257,7 +313,7 @@ static NSURL *S7TVUserURL(NSString *channelID) {
         // token expiré) plutôt qu'un catalogue vide.
         [[SevenTVManager sharedManager]
             log:@"⚠️ Badges: réponse Helix sans clé \"data\" (token invalide/expiré ?)"];
-        return @{};
+        return nil;
     }
 
     NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *result =
@@ -295,6 +351,9 @@ static NSURL *S7TVUserURL(NSString *channelID) {
 #pragma mark - Reset au changement de chaîne
 
 - (void)resetChannelBadges {
+    @synchronized (self) {
+        self.lastLoadedChannelID = nil;
+    }
     dispatch_barrier_async(self.badgeQueue, ^{
         self.channelBadges = @{};
     });
@@ -336,6 +395,8 @@ static NSURL *S7TVUserURL(NSString *channelID) {
     }
 
     NSURLRequest *request = [self s7tv_helixRequestWithURL:url];
+    NSString *requestToken = [request valueForHTTPHeaderField:@"Authorization"];
+    NSString *requestClientID = [request valueForHTTPHeaderField:@"Client-ID"];
     __weak typeof(self) weakSelf = self;
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
         dataTaskWithRequest:request
@@ -362,12 +423,18 @@ static NSURL *S7TVUserURL(NSString *channelID) {
         }
 
         BOOL succeeded = avatarURLString.length > 0;
+        SevenTVManager *currentManager = [SevenTVManager sharedManager];
+        BOOL credentialsChanged =
+            ![requestToken isEqualToString:currentManager.twitchToken] ||
+            ![requestClientID isEqualToString:currentManager.twitchClientID];
         dispatch_barrier_async(strongSelf.badgeQueue, ^{
             [strongSelf.fetchingSharedChatAvatarChannelIDs removeObject:channelID];
             if (succeeded) {
                 NSMutableDictionary *updated = [strongSelf.sharedChatAvatarURLs mutableCopy];
                 updated[channelID] = avatarURLString;
                 strongSelf.sharedChatAvatarURLs = [updated copy];
+                [strongSelf.sharedChatAvatarRetryAfter removeObjectForKey:channelID];
+            } else if (credentialsChanged) {
                 [strongSelf.sharedChatAvatarRetryAfter removeObjectForKey:channelID];
             } else {
                 // Évite une rafale de requêtes si Helix/token est temporairement
@@ -380,6 +447,10 @@ static NSURL *S7TVUserURL(NSString *channelID) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [[NSNotificationCenter defaultCenter]
                         postNotificationName:S7TVBadgesCatalogUpdatedNotification object:nil];
+                });
+            } else if (credentialsChanged) {
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                    [strongSelf s7tv_loadSharedChatAvatarForChannelID:channelID];
                 });
             }
         });

@@ -241,6 +241,14 @@ NSURLRequest *S7TVAdblockPrepareRequest(NSURLRequest *request, BOOL *blocked) {
         if (blocked) *blocked = YES;
         return request;
     }
+    // Le proxy ne doit jamais toucher aux requêtes Helix (badges/avatars),
+    // aux CDN d'images, ni au reste de l'application. Seuls GQL et les
+    // playlists vidéo font partie de son pipeline.
+    NSString *host = request.URL.host.lowercaseString;
+    BOOL isGQLRequest = [host isEqualToString:@"gql.twitch.tv"];
+    BOOL isMasterPlaylistRequest = S7TVAdblockIsMasterPlaylistHost(host);
+    if (!isGQLRequest && !isMasterPlaylistRequest) return request;
+
     NSMutableURLRequest *prepared = request.mutableCopy;
     NSData *body = S7TVAdblockTransformRequestData(request.HTTPBody, request);
     if (body != request.HTTPBody) prepared.HTTPBody = body;

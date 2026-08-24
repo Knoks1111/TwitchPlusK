@@ -236,6 +236,39 @@ static BOOL s7tv_try_swizzle_apollo_gql(void);
 static char kS7TVGQLRequestChannelIDKey;
 static char kS7TVGQLRequestAmbiguousKey;
 
+static BOOL s7tv_requestTargetsTwitchGQL(NSURLRequest *request) {
+    return [request.URL.host caseInsensitiveCompare:@"gql.twitch.tv"] == NSOrderedSame;
+}
+
+static NSString *s7tv_HTTPHeaderValue(NSDictionary<NSString *, NSString *> *headers,
+                                      NSString *expectedField) {
+    for (NSString *field in headers) {
+        if ([field caseInsensitiveCompare:expectedField] == NSOrderedSame) {
+            NSString *value = headers[field];
+            return [value isKindOfClass:[NSString class]] ? value : nil;
+        }
+    }
+    return nil;
+}
+
+// Capture le couple provenant de LA MEME requête GQL. Sauvegarder les deux
+// valeurs atomiquement est important : les hooks partiels peuvent sinon
+// associer un nouveau token à un ancien Client-ID (Helix répond alors 401).
+static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
+    if (!s7tv_requestTargetsTwitchGQL(request)) return;
+
+    NSDictionary<NSString *, NSString *> *headers = request.allHTTPHeaderFields;
+    NSString *auth = s7tv_HTTPHeaderValue(headers, @"Authorization");
+    NSString *clientID = s7tv_HTTPHeaderValue(headers, @"Client-ID");
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    if (auth.length && clientID.length) {
+        [manager saveTwitchToken:auth clientID:clientID];
+    } else {
+        if (auth.length) [manager s7tv_captureAuthorizationHeader:auth];
+        if (clientID.length) [manager s7tv_captureClientIDHeader:clientID];
+    }
+}
+
 @interface NSURLSession (SevenTV)
 - (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request
                                  completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
@@ -259,6 +292,7 @@ static char kS7TVGQLRequestAmbiguousKey;
     if (S7TVAdblockIsInternalProxyDispatch()) {
         return [self s7tv_dataTaskWithRequest:request];
     }
+    s7tv_captureTwitchCredentialsFromGQLRequest(request);
     BOOL blocked = NO;
     request = S7TVAdblockPrepareRequest(request, &blocked);
     if (blocked) return nil;
@@ -296,6 +330,7 @@ static char kS7TVGQLRequestAmbiguousKey;
     if (S7TVAdblockIsInternalProxyDispatch()) {
         return [self s7tv_dataTaskWithRequest:request completionHandler:completionHandler];
     }
+    s7tv_captureTwitchCredentialsFromGQLRequest(request);
     BOOL blocked = NO;
     request = S7TVAdblockPrepareRequest(request, &blocked);
     if (blocked) return nil;
@@ -303,16 +338,6 @@ static char kS7TVGQLRequestAmbiguousKey;
         BOOL requestChannelIDAmbiguous = NO;
         NSString *requestChannelID = s7tv_channelIDFromGQLRequest(
             request, YES, &requestChannelIDAmbiguous);
-        // Capture de secours : si les headers Authorization/Client-ID sont
-        // posés directement sur l'objet request (plutôt que via
-        // setValue:/setAllHTTPHeaderFields:/setHTTPAdditionalHeaders:, déjà
-        // captés en amont), on les récupère quand même ici.
-        NSDictionary *headers = request.allHTTPHeaderFields;
-        NSString *auth = headers[@"Authorization"];
-        NSString *clientID = headers[@"Client-ID"];
-        if (auth.length && clientID.length) {
-            [[SevenTVManager sharedManager] saveTwitchToken:auth clientID:clientID];
-        }
         void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
             ^(NSData *data, NSURLResponse *response, NSError *error) {
                 NSData *filteredData = data && !error
@@ -360,6 +385,7 @@ static char kS7TVGQLRequestAmbiguousKey;
                                               fromData:(NSData *)bodyData {
     if (S7TVAdblockIsInternalProxyDispatch())
         return [self s7tv_uploadTaskWithRequest:request fromData:bodyData];
+    s7tv_captureTwitchCredentialsFromGQLRequest(request);
     BOOL blocked = NO;
     request = S7TVAdblockPrepareRequest(request, &blocked);
     if (blocked) return nil;
@@ -670,10 +696,6 @@ static void s7tv_swizzle_apollo_gql(void) {
 // sur la requête individuelle. On capture donc à la source, aux deux
 // endroits possibles où ces headers peuvent être écrits.
 
-static BOOL s7tv_requestTargetsTwitchGQL(NSURLRequest *request) {
-    return [request.URL.host caseInsensitiveCompare:@"gql.twitch.tv"] == NSOrderedSame;
-}
-
 @interface NSMutableURLRequest (S7TVTokenCapture)
 - (void)s7tv_setValue:(NSString *)value forHTTPHeaderField:(NSString *)field;
 - (void)s7tv_setAllHTTPHeaderFields:(NSDictionary<NSString *, NSString *> *)headerFields;
@@ -699,14 +721,14 @@ static BOOL s7tv_requestTargetsTwitchGQL(NSURLRequest *request) {
 // field — sans ce hook, ce cas échappe complètement à setValue:forHTTPHeaderField:.
 - (void)s7tv_setAllHTTPHeaderFields:(NSDictionary<NSString *, NSString *> *)headerFields {
     if (s7tv_requestTargetsTwitchGQL(self)) {
-        for (NSString *field in headerFields) {
-            NSString *value = headerFields[field];
-            if (!value.length) continue;
-            if ([field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame) {
-                [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:value];
-            } else if ([field caseInsensitiveCompare:@"Client-ID"] == NSOrderedSame) {
-                [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:value];
-            }
+        NSString *auth = s7tv_HTTPHeaderValue(headerFields, @"Authorization");
+        NSString *clientID = s7tv_HTTPHeaderValue(headerFields, @"Client-ID");
+        SevenTVManager *manager = [SevenTVManager sharedManager];
+        if (auth.length && clientID.length) {
+            [manager saveTwitchToken:auth clientID:clientID];
+        } else {
+            if (auth.length) [manager s7tv_captureAuthorizationHeader:auth];
+            if (clientID.length) [manager s7tv_captureClientIDHeader:clientID];
         }
     }
     [self s7tv_setAllHTTPHeaderFields:headerFields];
@@ -719,10 +741,15 @@ static BOOL s7tv_requestTargetsTwitchGQL(NSURLRequest *request) {
 
 @implementation NSURLSessionConfiguration (S7TVTokenCapture)
 - (void)s7tv_setHTTPAdditionalHeaders:(NSDictionary *)headers {
-    NSString *auth = headers[@"Authorization"] ?: headers[@"authorization"];
-    NSString *clientID = headers[@"Client-ID"] ?: headers[@"client-id"];
-    if (auth.length)     [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:auth];
-    if (clientID.length) [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:clientID];
+    NSString *auth = s7tv_HTTPHeaderValue(headers, @"Authorization");
+    NSString *clientID = s7tv_HTTPHeaderValue(headers, @"Client-ID");
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    if (auth.length && clientID.length) {
+        [manager saveTwitchToken:auth clientID:clientID];
+    } else {
+        if (auth.length) [manager s7tv_captureAuthorizationHeader:auth];
+        if (clientID.length) [manager s7tv_captureClientIDHeader:clientID];
+    }
     [self s7tv_setHTTPAdditionalHeaders:headers];
 }
 @end

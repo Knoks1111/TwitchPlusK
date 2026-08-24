@@ -24,11 +24,14 @@
 
 static const char kS7TVChatCustomInstalledView = 21;
 static const char kS7TVNativeChatChannelName = 22;
+static const char kS7TVNativeChatChannelConfirmed = 23;
 static __weak SevenTVChatCustomView *s_activeChatCustomView = nil;
 static __weak UIView *s_activeNativeChatView = nil;
 static NSString *s_activeNativeChatChannelName = nil;
 static NSString *s_pendingNativeChatChannelName = nil;
 static CFTimeInterval s_pendingNativeChatChannelTimestamp = 0;
+static CFTimeInterval s_activeNativeChatViewTimestamp = 0;
+static CFTimeInterval s_activeNativeChatChannelConfirmationTimestamp = 0;
 static BOOL s_chatReloadScheduled = NO;
 
 static NSString *s7tv_normalizedChatChannelName(NSString *channel) {
@@ -44,10 +47,22 @@ static void s7tv_bindNativeChatViewToChannel(UIView *view, NSString *channel) {
     if (!view || !normalized.length) return;
     objc_setAssociatedObject(view, &kS7TVNativeChatChannelName,
                              normalized, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(view, &kS7TVNativeChatChannelConfirmed,
+                             @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static NSString *s7tv_channelBoundToNativeChatView(UIView *view) {
     return view ? objc_getAssociatedObject(view, &kS7TVNativeChatChannelName) : nil;
+}
+
+static BOOL s7tv_nativeChatViewChannelIsConfirmed(UIView *view) {
+    return [objc_getAssociatedObject(view, &kS7TVNativeChatChannelConfirmed) boolValue];
+}
+
+static void s7tv_confirmChannelBoundToNativeChatView(UIView *view) {
+    if (!view) return;
+    objc_setAssociatedObject(view, &kS7TVNativeChatChannelConfirmed,
+                             @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void s7tv_activateChatChannelForVisibleNativeView(NSString *channel, BOOL forceReset) {
@@ -67,6 +82,18 @@ NSString *s7tv_activeNativeChatChannelName(void) {
     @synchronized ([SevenTVManager sharedManager]) {
         return [s_activeNativeChatChannelName copy];
     }
+}
+
+BOOL s7tv_visibleNativeChatViewHasConfirmedChannel(void) {
+    __block BOOL confirmed = NO;
+    dispatch_block_t read = ^{
+        UIView *activeView = s_activeNativeChatView;
+        confirmed = activeView.window &&
+            s7tv_nativeChatViewChannelIsConfirmed(activeView);
+    };
+    if (NSThread.isMainThread) read();
+    else dispatch_sync(dispatch_get_main_queue(), read);
+    return confirmed;
 }
 
 void s7tv_noteOutgoingChatJoinForChannel(NSString *channel) {
@@ -90,11 +117,11 @@ void s7tv_noteOutgoingChatJoinForChannel(NSString *channel) {
             boundChannel = normalized;
         }
 
-        if (!boundChannel.length ||
-            [boundChannel caseInsensitiveCompare:normalized] == NSOrderedSame) {
-            if (activeView && !boundChannel.length) {
-                s7tv_bindNativeChatViewToChannel(activeView, normalized);
-            }
+        if ([boundChannel caseInsensitiveCompare:normalized] == NSOrderedSame) {
+            // Le JOIN sortant est seulement une intention réseau. Attendre la
+            // réponse du serveur avant d'afficher le chat custom ; Twitch peut
+            // aussi envoyer JOIN #viewer pour son salon technique.
+            if (!s7tv_nativeChatViewChannelIsConfirmed(activeView)) return;
             s_pendingNativeChatChannelName = nil;
             s_pendingNativeChatChannelTimestamp = 0;
             s7tv_activateChatChannelForVisibleNativeView(normalized, NO);
@@ -109,6 +136,74 @@ void s7tv_noteOutgoingChatJoinForChannel(NSString *channel) {
             log:@"ℹ️ JOIN %@ différé : le transcript visible représente encore %@",
                 normalized, boundChannel];
     });
+}
+
+BOOL s7tv_confirmVisibleChatChannelFromIRC(NSString *channel) {
+    NSString *normalized = s7tv_normalizedChatChannelName(channel);
+    if (!normalized.length) return NO;
+
+    __block BOOL accepted = NO;
+    dispatch_block_t confirm = ^{
+        UIView *activeView = s_activeNativeChatView;
+        if (!activeView || !activeView.window) return;
+
+        NSString *boundChannel = s7tv_channelBoundToNativeChatView(activeView);
+        BOOL wasConfirmed = s7tv_nativeChatViewChannelIsConfirmed(activeView);
+        BOOL changesConfirmedChannel = wasConfirmed && boundChannel.length &&
+            [boundChannel caseInsensitiveCompare:normalized] != NSOrderedSame;
+        if (changesConfirmedChannel) {
+            SevenTVManager *manager = [SevenTVManager sharedManager];
+            NSString *viewer = s7tv_normalizedChatChannelName(
+                manager.currentViewerLogin.length
+                    ? manager.currentViewerLogin : manager.currentViewerDisplayName);
+            BOOL wrongViewerRoomWasSelected = viewer.length &&
+                [boundChannel caseInsensitiveCompare:viewer] == NSOrderedSame;
+            BOOL pendingIsFresh = s_pendingNativeChatChannelName.length &&
+                CACurrentMediaTime() - s_pendingNativeChatChannelTimestamp <= 10.0;
+            BOOL visibleViewIsFresh = CACurrentMediaTime() -
+                s_activeNativeChatViewTimestamp <= 10.0;
+            BOOL firstConfirmationIsFresh =
+                s_activeNativeChatChannelConfirmationTimestamp > 0 &&
+                CACurrentMediaTime() -
+                    s_activeNativeChatChannelConfirmationTimestamp <= 2.0;
+            BOOL pendingSupportsChannel = pendingIsFresh &&
+                ([s_pendingNativeChatChannelName caseInsensitiveCompare:normalized] == NSOrderedSame ||
+                 (viewer.length &&
+                  [s_pendingNativeChatChannelName caseInsensitiveCompare:viewer] == NSOrderedSame));
+
+            // Un paquet tardif d'un ancien socket ne peut pas détourner une
+            // vue stable. Deux corrections restent permises : remplacer le
+            // faux salon du viewer, ou confirmer une transition UIKit fraîche.
+            if (!wrongViewerRoomWasSelected &&
+                !(visibleViewIsFresh &&
+                  (pendingSupportsChannel || firstConfirmationIsFresh))) return;
+        }
+
+        BOOL changed = !boundChannel.length ||
+            [boundChannel caseInsensitiveCompare:normalized] != NSOrderedSame;
+        if (changed) s7tv_bindNativeChatViewToChannel(activeView, normalized);
+        s7tv_confirmChannelBoundToNativeChatView(activeView);
+        if (!wasConfirmed) {
+            s_activeNativeChatChannelConfirmationTimestamp = CACurrentMediaTime();
+        } else if (changed) {
+            // Une seule correction de la première confirmation est permise ;
+            // après elle, les ROOMSTATE tardifs des anciens sockets sont
+            // verrouillés hors du transcript visible.
+            s_activeNativeChatChannelConfirmationTimestamp = 0;
+        }
+        s_pendingNativeChatChannelName = nil;
+        s_pendingNativeChatChannelTimestamp = 0;
+
+        SevenTVChatCustomView *customView =
+            objc_getAssociatedObject(activeView, &kS7TVChatCustomInstalledView);
+        if (changed) [customView resetTransientTranscriptState];
+        s7tv_activateChatChannelForVisibleNativeView(normalized, changed);
+        s7tv_applyChatCustomToggle();
+        accepted = YES;
+    };
+    if (NSThread.isMainThread) confirm();
+    else dispatch_sync(dispatch_get_main_queue(), confirm);
+    return accepted;
 }
 
 static UIView *s7tv_findVisibleChatInputViewInWindow(UIWindow *window) {
@@ -306,7 +401,8 @@ void s7tv_applyChatCustomToggle(void) {
     // Pendant les quelques millisecondes où une nouvelle vue précède son
     // JOIN, garder le transcript natif visible plutôt que d'y injecter le
     // store de la chaîne précédente.
-    if (!s7tv_channelBoundToNativeChatView(chatView).length) return;
+    if (!s7tv_channelBoundToNativeChatView(chatView).length ||
+        !s7tv_nativeChatViewChannelIsConfirmed(chatView)) return;
     if ([SevenTVManager sharedManager].chatCustomTestEnabled) {
         s7tv_installChatCustomView(chatView);
         return;
@@ -334,7 +430,9 @@ void s7tv_handleNativeChatViewLifecycle(UIView *view) {
     }
 
     s_activeNativeChatView = view;
-    if (!boundChannel.length) return;
+    s_activeNativeChatViewTimestamp = CACurrentMediaTime();
+    if (!boundChannel.length || !s7tv_nativeChatViewChannelIsConfirmed(view)) return;
+    s_activeNativeChatChannelConfirmationTimestamp = 0;
     NSString *currentChannel = [SevenTVManager sharedManager].currentChannelName;
     BOOL returningToRetainedTranscript = currentChannel.length &&
         [currentChannel caseInsensitiveCompare:boundChannel] != NSOrderedSame;

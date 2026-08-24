@@ -1939,6 +1939,7 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 // son bloc arrive physiquement après le dernier reset.
 static NSUInteger s7tv_recentHistoryGeneration = 0;
 static NSString *s7tv_recentHistoryInitializedChannel = nil;
+static NSUInteger s7tv_roomStateResolutionGeneration = 0;
 
 static NSUInteger s7tv_currentChatSessionGeneration(void) {
     SevenTVManager *manager = [SevenTVManager sharedManager];
@@ -2142,6 +2143,60 @@ static NSString *s7tv_channelNameFromIRCLine(NSString *ircLine) {
         if (!ircLine.length) continue;
         NSString *lineChannel = s7tv_channelNameFromIRCLine(ircLine);
         NSString *visibleChannel = s7tv_activeNativeChatChannelName();
+        BOOL isRoomState = [ircLine containsString:@" ROOMSTATE #"];
+        BOOL isPrivateMessage = [ircLine containsString:@" PRIVMSG #"];
+
+        if (isRoomState && lineChannel.length) {
+            // ROOMSTATE est la confirmation serveur du salon réellement
+            // rejoint. Le JOIN sortant n'est qu'un candidat et peut viser le
+            // compte connecté au lieu du broadcaster affiché.
+            NSString *viewer = self.currentViewerLogin.length
+                ? self.currentViewerLogin.lowercaseString
+                : self.currentViewerDisplayName.lowercaseString;
+            if (viewer.length &&
+                [lineChannel caseInsensitiveCompare:viewer] == NSOrderedSame) {
+                // Twitch peut confirmer d'abord le salon technique du viewer.
+                // Lui laisser une très courte priorité basse évite même le
+                // flash « Bienvenue sur mon chat » ; si aucun autre ROOMSTATE
+                // n'arrive, c'est une vraie visite de sa propre chaîne.
+                __block NSUInteger resolutionTicket = 0;
+                @synchronized (self) {
+                    resolutionTicket = ++s7tv_roomStateResolutionGeneration;
+                }
+                NSString *deferredRoomState = [ircLine copy];
+                NSString *deferredChannel = [lineChannel copy];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                               (int64_t)(0.4 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    @synchronized (self) {
+                        if (resolutionTicket != s7tv_roomStateResolutionGeneration) return;
+                    }
+                    NSString *confirmedChannel = s7tv_activeNativeChatChannelName();
+                    if (s7tv_visibleNativeChatViewHasConfirmedChannel() &&
+                        confirmedChannel.length &&
+                        [confirmedChannel caseInsensitiveCompare:deferredChannel] != NSOrderedSame) {
+                        return;
+                    }
+                    if (!s7tv_confirmVisibleChatChannelFromIRC(deferredChannel)) return;
+                    [self handleIRCRoomState:deferredRoomState];
+                });
+                continue;
+            }
+            @synchronized (self) {
+                ++s7tv_roomStateResolutionGeneration;
+            }
+            if (!s7tv_confirmVisibleChatChannelFromIRC(lineChannel)) continue;
+            visibleChannel = s7tv_activeNativeChatChannelName();
+        } else if (isPrivateMessage && lineChannel.length &&
+                   (!visibleChannel.length ||
+                    [lineChannel caseInsensitiveCompare:visibleChannel] != NSOrderedSame)) {
+            // Repli si une version de Twitch omet/diffère ROOMSTATE : le
+            // premier PRIVMSG du transcript peut confirmer une vue encore
+            // indéterminée. Le routeur refuse lui-même ce paquet si la vue est
+            // déjà stable et qu'il vient d'un ancien socket.
+            if (!s7tv_confirmVisibleChatChannelFromIRC(lineChannel)) continue;
+            visibleChannel = s7tv_activeNativeChatChannelName();
+        }
         if (lineChannel.length && visibleChannel.length &&
             [lineChannel caseInsensitiveCompare:visibleChannel] != NSOrderedSame) {
             // Un ancien Chat WebSocket peut rester connecté après A→B→A.
@@ -2149,7 +2204,7 @@ static NSString *s7tv_channelNameFromIRCLine(NSString *ircLine) {
             // génération courante, même s'ils arrivent après le reset.
             continue;
         }
-        if ([ircLine containsString:@"ROOMSTATE"]) [self handleIRCRoomState:ircLine];
+        if (isRoomState) [self handleIRCRoomState:ircLine];
         // "USERSTATE" couvre aussi GLOBALUSERSTATE, qui se termine par ce mot.
         if ([ircLine containsString:@"USERSTATE"]) [self handleIRCUserState:ircLine];
         if ([self s7tv_handleIRCModerationEvent:ircLine]) continue;
@@ -2348,7 +2403,38 @@ static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
     return channels;
 }
 
+- (NSString *)viewerLoginInOutgoingWebSocketMessage:
+    (NSURLSessionWebSocketMessage *)message {
+    NSString *payload = nil;
+    if (message.type == NSURLSessionWebSocketMessageTypeString) {
+        payload = message.string;
+    } else if (message.type == NSURLSessionWebSocketMessageTypeData) {
+        payload = [[NSString alloc] initWithData:message.data encoding:NSUTF8StringEncoding];
+    }
+    if (!payload.length) return nil;
+
+    for (NSString *rawLine in [payload componentsSeparatedByCharactersInSet:
+                               NSCharacterSet.newlineCharacterSet]) {
+        NSString *line = [rawLine stringByTrimmingCharactersInSet:
+                          NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (![line hasPrefix:@"NICK "]) continue;
+        NSString *login = [[line substringFromIndex:5]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSRange end = [login rangeOfCharacterFromSet:
+                       NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (end.location != NSNotFound) login = [login substringToIndex:end.location];
+        return login.lowercaseString;
+    }
+    return nil;
+}
+
 - (void)handleOutgoingChatWebSocketMessage:(NSURLSessionWebSocketMessage *)message {
+    NSString *viewerLogin = [self viewerLoginInOutgoingWebSocketMessage:message];
+    if (viewerLogin.length &&
+        [viewerLogin caseInsensitiveCompare:self.currentViewerLogin ?: @""] != NSOrderedSame) {
+        self.currentViewerLogin = viewerLogin;
+        [self log:@"👤 Login viewer IRC détecté (NICK): %@", viewerLogin];
+    }
     for (NSString *channel in [self joinedChannelsInOutgoingWebSocketMessage:message]) {
         [self log:@"📺 Rejoint le channel: %@", channel];
         // Plusieurs sockets/vues Twitch peuvent rester vivants en parallèle.

@@ -29,6 +29,12 @@ void s7tv_handleNativeChatViewLifecycle(UIView *view);
 // quelle chaîne est à l'écran. Une vue Twitch déjà conservée peut redevenir
 // visible sans nouveau JOIN, tandis qu'un socket hors écran peut se reconnecter.
 void s7tv_noteOutgoingChatJoinForChannel(NSString *channel);
+// Confirme synchroniquement la chaîne réellement portée par une ligne IRC
+// serveur (ROOMSTATE/PRIVMSG). Un JOIN sortant reste un simple candidat : il
+// peut viser le salon technique du viewer connecté et ne doit jamais suffire
+// à construire Bienvenue/historique/chat live.
+BOOL s7tv_confirmVisibleChatChannelFromIRC(NSString *channel);
+BOOL s7tv_visibleNativeChatViewHasConfirmedChannel(void);
 // Identité UI actuellement autoritaire, lisible sans toucher UIKit depuis les
 // callbacks réseau afin de rejeter les réponses GQL d'une ancienne chaîne.
 NSString * _Nullable s7tv_activeNativeChatChannelName(void);

@@ -154,6 +154,10 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // deux messages IRC n'a encore été observé. Sert à détecter les mentions du
 // viewer lui-même dans le chat (voir S7TVChatMessage.mentionsCurrentViewer).
 @property (nonatomic, copy) NSString *currentViewerDisplayName;
+// Login IRC exact annoncé par `NICK`, disponible avant USERSTATE. Contrairement
+// au display-name, il peut être comparé directement à un `#channel` afin de
+// reconnaître le salon technique du compte connecté.
+@property (nonatomic, copy) NSString *currentViewerLogin;
 
 // File de dispatch protégeant globalEmotes/channelEmotes (concurrent).
 // Utiliser dispatch_sync(mgr.emoteQueue, ^{ ... }) pour lire,

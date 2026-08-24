@@ -20,6 +20,7 @@
 #import "Chat/7tv-chat-appearance-config.h"
 #import "Localization/7tv-localization-manager.h"
 #import "System/7tv-system-native-behavior-hooks.h"
+#import "Adblock/7tv-adblock-settings.h"
 #import <objc/runtime.h>
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names";
@@ -770,31 +771,125 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - SevenTVAdblockPageController
-// Catégorie réservée pour les futures options d'adblock — volontairement
-// vide pour l'instant, juste l'entrée de navigation depuis l'accueil.
+// Réglages du moteur TwitchAdBlock importé : le moteur et le proxy restent
+// séparables, et l'adresse intégrée peut être remplacée sans toucher au code.
 // ─────────────────────────────────────────────────────────────────────────────
 
 @implementation SevenTVAdblockPageController
 
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    return self;
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = L(@"title_adblock");
-    self.view.backgroundColor = S7TVBg();
+    S7TVStyleTableView(self.tableView);
+    S7TVAdblockRegisterDefaults();
+}
 
-    UILabel *lbl = [[UILabel alloc] init];
-    lbl.text = L(@"adblock_coming_soon");
-    lbl.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
-    lbl.textColor = S7TVGray();
-    lbl.textAlignment = NSTextAlignmentCenter;
-    lbl.numberOfLines = 0;
-    lbl.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:lbl];
-    [NSLayoutConstraint activateConstraints:@[
-        [lbl.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [lbl.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
-        [lbl.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:32],
-        [lbl.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-32],
-    ]];
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return section == 0 ? 1 : 3;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    return S7TVSectionHeader(section == 0 ? L(@"section_general")
+                                         : L(@"adblock_section_proxy"), NO);
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section == 0) return L(@"adblock_engine_footer");
+    return L(@"adblock_proxy_privacy_footer");
+}
+
+- (void)s7tv_applyAdblockDependencyState:(UITableViewCell *)cell enabled:(BOOL)enabled {
+    cell.userInteractionEnabled = enabled;
+    cell.contentView.alpha = enabled ? 1.0 : 0.4;
+    for (UIView *view in cell.contentView.subviews) {
+        if ([view isKindOfClass:UISwitch.class]) ((UISwitch *)view).enabled = enabled;
+    }
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0) {
+        return S7TVSwitchCell(L(@"adblock_enable"), @"shield.lefthalf.filled",
+            S7TVAccent(), S7TVAdblockIsEnabled(), self, @selector(toggleAdblock:));
+    }
+
+    BOOL engineEnabled = S7TVAdblockIsEnabled();
+    BOOL proxyEnabled = S7TVAdblockProxyIsEnabled();
+    if (indexPath.row == 0) {
+        UITableViewCell *cell = S7TVSwitchCell(L(@"adblock_video_proxy"),
+            @"network", [UIColor colorWithWhite:0.75 alpha:1.0], proxyEnabled,
+            self, @selector(toggleAdblockProxy:));
+        [self s7tv_applyAdblockDependencyState:cell enabled:engineEnabled];
+        return cell;
+    }
+    if (indexPath.row == 1) {
+        UITableViewCell *cell = S7TVSwitchCell(L(@"adblock_custom_proxy"),
+            @"server.rack", [UIColor colorWithWhite:0.75 alpha:1.0],
+            S7TVAdblockCustomProxyIsEnabled(), self,
+            @selector(toggleAdblockCustomProxy:));
+        [self s7tv_applyAdblockDependencyState:cell
+            enabled:engineEnabled && proxyEnabled];
+        return cell;
+    }
+
+    NSString *subtitle = S7TVAdblockCustomProxyAddress().length
+        ? L(@"adblock_proxy_configured") : L(@"adblock_proxy_not_configured");
+    UITableViewCell *cell = S7TVNavCell(L(@"adblock_proxy_address"), subtitle,
+        @"slider.horizontal.3", [UIColor colorWithWhite:0.75 alpha:1.0]);
+    [self s7tv_applyAdblockDependencyState:cell
+        enabled:engineEnabled && proxyEnabled && S7TVAdblockCustomProxyIsEnabled()];
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section != 1 || indexPath.row != 2 ||
+        !S7TVAdblockIsEnabled() || !S7TVAdblockProxyIsEnabled() ||
+        !S7TVAdblockCustomProxyIsEnabled()) return;
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:L(@"adblock_proxy_address")
+        message:L(@"adblock_proxy_format")
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"user:pass@host:port";
+        field.text = S7TVAdblockCustomProxyAddress();
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.keyboardType = UIKeyboardTypeURL;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+        style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            S7TVAdblockSetCustomProxyAddress(alert.textFields.firstObject.text);
+            [weakSelf.tableView reloadData];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)toggleAdblock:(UISwitch *)sender {
+    S7TVAdblockSetEnabled(sender.isOn);
+    [self.tableView reloadData];
+}
+
+- (void)toggleAdblockProxy:(UISwitch *)sender {
+    S7TVAdblockSetProxyEnabled(sender.isOn);
+    [self.tableView reloadData];
+}
+
+- (void)toggleAdblockCustomProxy:(UISwitch *)sender {
+    S7TVAdblockSetCustomProxyEnabled(sender.isOn);
+    [self.tableView reloadData];
 }
 
 @end

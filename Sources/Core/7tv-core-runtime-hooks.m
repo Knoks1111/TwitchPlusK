@@ -37,6 +37,10 @@
 #import "Badge/7tv-badge-provider.h"
 #import "Picker/7tv-picker-controller.h"
 #import "System/7tv-system-native-behavior-hooks.h"
+#import "Adblock/7tv-adblock-data.h"
+#import "Adblock/7tv-adblock-proxy.h"
+#import "Adblock/7tv-adblock-runtime.h"
+#import "Adblock/7tv-adblock-settings.h"
 
 
 // Variable de compat : le Tap Logger (diagnostic de reverse-engineering du
@@ -243,11 +247,22 @@ static char kS7TVGQLRequestAmbiguousKey;
 // (donc confirmer qu'une ClaimChannelPointsMutation part bien) qu'ici —
 // didReceiveData:/didCompleteWithError: ne donnent que la réponse.
 - (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request;
+- (NSURLSessionUploadTask *)s7tv_uploadTaskWithRequest:(NSURLRequest *)request
+                                              fromData:(NSData *)bodyData;
 @end
 
 @implementation NSURLSession (SevenTV)
 
 - (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request {
+    // A proxy-configured fallback session re-enters this same concrete
+    // NSURLSession class. Let it reach Apple's implementation directly.
+    if (S7TVAdblockIsInternalProxyDispatch()) {
+        return [self s7tv_dataTaskWithRequest:request];
+    }
+    BOOL blocked = NO;
+    request = S7TVAdblockPrepareRequest(request, &blocked);
+    if (blocked) return nil;
+
     // À cet instant Apollo.URLSessionClient est forcément chargé si cette
     // requête vient d'Apollo. Le hook sera en place avant la première réponse,
     // même si l'utilisateur ouvre son premier stream bien après les retries
@@ -264,7 +279,8 @@ static char kS7TVGQLRequestAmbiguousKey;
                 log:@"🎁 Channel Points debug: requête ClaimChannelPointsMutation envoyée — corps :\n%@", bodyStr];
         }
     }
-    NSURLSessionDataTask *task = [self s7tv_dataTaskWithRequest:request];
+    NSURLSessionDataTask *task = S7TVAdblockCreateConnectTaskIfNeeded(self, request);
+    if (!task) task = [self s7tv_dataTaskWithRequest:request];
     if (requestChannelID.length) {
         objc_setAssociatedObject(task, &kS7TVGQLRequestChannelIDKey,
                                  requestChannelID, OBJC_ASSOCIATION_COPY_NONATOMIC);
@@ -277,6 +293,12 @@ static char kS7TVGQLRequestAmbiguousKey;
 }
 - (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request
                                  completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    if (S7TVAdblockIsInternalProxyDispatch()) {
+        return [self s7tv_dataTaskWithRequest:request completionHandler:completionHandler];
+    }
+    BOOL blocked = NO;
+    request = S7TVAdblockPrepareRequest(request, &blocked);
+    if (blocked) return nil;
     if ([request.URL.host isEqualToString:@"gql.twitch.tv"] && completionHandler) {
         BOOL requestChannelIDAmbiguous = NO;
         NSString *requestChannelID = s7tv_channelIDFromGQLRequest(
@@ -293,21 +315,32 @@ static char kS7TVGQLRequestAmbiguousKey;
         }
         void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
             ^(NSData *data, NSURLResponse *response, NSError *error) {
-                if (data && !error) {
-                    [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
-                    s7tv_scanGQLResponseForChannelPointsClaim(data);
+                NSData *filteredData = data && !error
+                    ? S7TVAdblockTransformResponseData(data, request) : data;
+                if (filteredData && !error) {
+                    [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:filteredData];
+                    s7tv_scanGQLResponseForChannelPointsClaim(filteredData);
                     s7tv_ingestChannelPointMetadata(
-                        data, requestChannelID, requestChannelIDAmbiguous);
+                        filteredData, requestChannelID, requestChannelIDAmbiguous);
                 }
-                completionHandler(data, response, error);
+                completionHandler(filteredData, response, error);
             };
         return [self s7tv_dataTaskWithRequest:request completionHandler:wrapped];
     }
+    NSURLSessionDataTask *proxyTask =
+        S7TVAdblockCreateConnectTaskWithCompletionIfNeeded(
+            self, request, completionHandler);
+    if (proxyTask) return proxyTask;
     return [self s7tv_dataTaskWithRequest:request completionHandler:completionHandler];
 }
 
 - (NSURLSessionDataTask *)s7tv_dataTaskWithURL:(NSURL *)url
                              completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    if (S7TVAdblockIsEnabled() &&
+        (S7TVAdblockIsAdHost(url.host) || S7TVAdblockIsMasterPlaylistHost(url.host))) {
+        return [self dataTaskWithRequest:[NSURLRequest requestWithURL:url]
+                       completionHandler:completionHandler];
+    }
     if ([url.host isEqualToString:@"gql.twitch.tv"] && completionHandler) {
         void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
             ^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -321,6 +354,17 @@ static char kS7TVGQLRequestAmbiguousKey;
         return [self s7tv_dataTaskWithURL:url completionHandler:wrapped];
     }
     return [self s7tv_dataTaskWithURL:url completionHandler:completionHandler];
+}
+
+- (NSURLSessionUploadTask *)s7tv_uploadTaskWithRequest:(NSURLRequest *)request
+                                              fromData:(NSData *)bodyData {
+    if (S7TVAdblockIsInternalProxyDispatch())
+        return [self s7tv_uploadTaskWithRequest:request fromData:bodyData];
+    BOOL blocked = NO;
+    request = S7TVAdblockPrepareRequest(request, &blocked);
+    if (blocked) return nil;
+    NSData *preparedBody = S7TVAdblockTransformRequestData(bodyData, request);
+    return [self s7tv_uploadTaskWithRequest:request fromData:preparedBody];
 }
 
 @end
@@ -372,6 +416,9 @@ static char kS7TVApolloResponseBufferKey;
                       dataTask:(NSURLSessionDataTask *)dataTask
                 didReceiveData:(NSData *)data {
     NSString *host = dataTask.currentRequest.URL.host ?: dataTask.originalRequest.URL.host;
+    NSURLRequest *request = dataTask.currentRequest ?: dataTask.originalRequest;
+    NSData *filteredData = [host isEqualToString:@"gql.twitch.tv"]
+        ? S7TVAdblockTransformResponseData(data, request) : data;
     if ([host isEqualToString:@"gql.twitch.tv"]) {
         @synchronized (dataTask) {
             NSMutableData *buf = objc_getAssociatedObject(
@@ -381,12 +428,12 @@ static char kS7TVApolloResponseBufferKey;
                 objc_setAssociatedObject(dataTask, &kS7TVApolloResponseBufferKey,
                                          buf, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
-            [buf appendData:data];
+            [buf appendData:filteredData];
         }
     }
     // Appelle l'implémentation originale (échangée par le swizzle) —
     // indispensable pour qu'Apollo reçoive bien ses propres données.
-    [self s7tv_apolloURLSession:session dataTask:dataTask didReceiveData:data];
+    [self s7tv_apolloURLSession:session dataTask:dataTask didReceiveData:filteredData];
 }
 
 - (void)s7tv_apolloURLSession:(NSURLSession *)session
@@ -719,9 +766,11 @@ static void s7tv_swizzle_session(void) {
     SEL selRequest  = @selector(dataTaskWithRequest:completionHandler:);
     SEL selURL      = @selector(dataTaskWithURL:completionHandler:);
     SEL selReqOnly  = @selector(dataTaskWithRequest:);
+    SEL selUpload   = @selector(uploadTaskWithRequest:fromData:);
     SEL swizRequest = @selector(s7tv_dataTaskWithRequest:completionHandler:);
     SEL swizURL     = @selector(s7tv_dataTaskWithURL:completionHandler:);
     SEL swizReqOnly = @selector(s7tv_dataTaskWithRequest:);
+    SEL swizUpload  = @selector(s7tv_uploadTaskWithRequest:fromData:);
 
     NSURLSession *probeStd = [NSURLSession sessionWithConfiguration:
                               [NSURLSessionConfiguration defaultSessionConfiguration]];
@@ -731,6 +780,7 @@ static void s7tv_swizzle_session(void) {
     s7tv_swizzle(classStd, [NSURLSession class], selRequest, swizRequest);
     s7tv_swizzle(classStd, [NSURLSession class], selURL, swizURL);
     s7tv_swizzle(classStd, [NSURLSession class], selReqOnly, swizReqOnly);
+    s7tv_swizzle(classStd, [NSURLSession class], selUpload, swizUpload);
 
     Class classShared = object_getClass([NSURLSession sharedSession]);
     [[SevenTVManager sharedManager] log:@"🔍 NSURLSession shared: %@",
@@ -739,6 +789,7 @@ static void s7tv_swizzle_session(void) {
         s7tv_swizzle(classShared, [NSURLSession class], selRequest, swizRequest);
         s7tv_swizzle(classShared, [NSURLSession class], selURL, swizURL);
         s7tv_swizzle(classShared, [NSURLSession class], selReqOnly, swizReqOnly);
+        s7tv_swizzle(classShared, [NSURLSession class], selUpload, swizUpload);
     } else {
         [[SevenTVManager sharedManager] log:@"ℹ️  sharedSession même classe que standard"];
     }
@@ -786,6 +837,11 @@ static void TwitchSevenTVInit(void) {
 
     s7tv_setupChatCustomIntegration();
 
+    // Adblock TwitchAdBlock-derived : AVFoundation, contrôleurs pub Swift et
+    // hooks Twitch tardifs. Les interceptions NSURLSession/Apollo restent
+    // volontairement dans ce fichier afin de ne jamais les swizzler deux fois.
+    S7TVAdblockInstallRuntimeHooks();
+
     // Verrou d'orientation (bouton Share hijacké)
     s7tv_swizzle_orientation_lock();
 
@@ -824,9 +880,6 @@ static void TwitchSevenTVInit(void) {
     // swizzles ci-dessus. Démarré directement ici, pas via didMoveToWindow.
     s7tv_scanForChannelPointsLoop();
 
-    // Blocked URLs + HLS Sanitizer
-
-
     // Setup sur le main thread
     dispatch_async(dispatch_get_main_queue(), ^{
         [[SevenTVManager sharedManager] setup];
@@ -834,8 +887,6 @@ static void TwitchSevenTVInit(void) {
         // gestionnaire de session IRC — voir 7tv-badge-provider.h.
         [SevenTVBadgeProvider setup];
         [[SevenTVManager sharedManager] log:@"✅ SevenTVManager prêt"];
-
-        // Démarrer le local proxy si activé
 
         dispatch_after(
             dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),

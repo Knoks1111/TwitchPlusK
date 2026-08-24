@@ -12,6 +12,12 @@ LIBRARY_NAME = TwitchPlusK
 
 # ── Fichiers source regroupés par domaine ──
 TwitchPlusK_FILES = \
+    Sources/Adblock/7tv-adblock-settings.m \
+    Sources/Adblock/7tv-adblock-data.m \
+    Sources/Adblock/7tv-adblock-proxy.m \
+    Sources/Adblock/7tv-adblock-resource-loader.m \
+    Sources/Adblock/7tv-adblock-runtime.m \
+    Sources/Adblock/Fishhook/fishhook.c \
     Sources/Core/7tv-core-runtime-hooks.m \
     Sources/Core/7tv-core-manager.m \
     Sources/Network/7tv-network-emote-cache.m \
@@ -47,7 +53,7 @@ TwitchPlusK_LDFLAGS = \
     -Wl,-w
 
 # ── Frameworks Apple ──
-TwitchPlusK_FRAMEWORKS = UIKit Foundation QuartzCore ImageIO
+TwitchPlusK_FRAMEWORKS = UIKit Foundation QuartzCore ImageIO AVFoundation
 
 include $(THEOS_MAKE_PATH)/library.mk
 

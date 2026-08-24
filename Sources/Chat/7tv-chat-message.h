@@ -298,6 +298,12 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // moment du rendu, pas ici — ce modèle ne fait que porter la donnée brute.
 @property (nonatomic, copy, nullable) NSArray<NSString *> *badgeIdentifiers;
 
+// `source-room-id` des PRIVMSG/USERNOTICE du Shared Chat. Il est présent
+// également sur la chaîne d'origine (où il est égal à `room-id`) et absent
+// du chat normal. Le renderer l'utilise pour placer l'avatar de la chaîne
+// source avant tous les badges uniquement lorsque Twitch signale ce mode.
+@property (nonatomic, copy, nullable) NSString *sharedChatSourceChannelID;
+
 // Phase 3 — nil pour un message normal. systemPhrase est pré-construit par
 // le parser IRC (7tv-chat-message.m, s7tv_buildSystemMessagePhrase) — le
 // renderer ne fait que de l'affichage, la logique de formulation reste

@@ -54,6 +54,9 @@ extern NSString *const S7TVBadgesCatalogUpdatedNotification;
 @property (nonatomic, assign) CGSize    nativeSize;  // toujours carré (1,1) — voir .m
 @property (nonatomic, assign) BOOL      isAnimated;  // toujours NO, badges PNG statiques
 @property (nonatomic, strong) NSURL    *imageURL;
+// YES uniquement pour l'avatar de chaîne placé devant les badges d'un
+// message Shared Chat. Le renderer applique alors un masque circulaire.
+@property (nonatomic, assign) BOOL      rendersCircular;
 @end
 
 
@@ -78,6 +81,12 @@ extern NSString *const S7TVBadgesCatalogUpdatedNotification;
 // channel) — ex: fetch pas encore terminé, ou set/version inconnu (nouveau
 // badge Twitch pas encore dans le catalogue mis en cache).
 - (nullable id<S7TVResolvedEmote>)resolvedBadgeForIdentifier:(NSString *)identifier;
+
+// Retourne l'avatar Twitch de la chaîne d'origine d'un message Shared Chat.
+// Au premier appel, déclenche si nécessaire un fetch Helix dédupliqué puis
+// poste S7TVBadgesCatalogUpdatedNotification afin de recharger le message.
+// nil pendant le chargement ou si l'identifiant est invalide.
+- (nullable id<S7TVResolvedEmote>)resolvedSharedChatAvatarForChannelID:(NSString *)channelID;
 
 // Chargement explicite (aussi appelé automatiquement par +setup pour le
 // global, et par la notification S7TVChannelJoined pour le channel).

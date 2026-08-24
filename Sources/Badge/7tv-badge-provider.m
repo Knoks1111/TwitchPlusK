@@ -20,6 +20,13 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
         @"https://api.twitch.tv/helix/chat/badges?broadcaster_id=%@", channelID];
 }
 
+static NSURL *S7TVUserURL(NSString *channelID) {
+    NSURLComponents *components = [NSURLComponents componentsWithString:
+        @"https://api.twitch.tv/helix/users"];
+    components.queryItems = @[[NSURLQueryItem queryItemWithName:@"id" value:channelID]];
+    return components.URL;
+}
+
 
 // ============================================================
 // MARK: - S7TVResolvedBadge
@@ -46,6 +53,12 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
 // dispatch_barrier_async.
 @property (nonatomic, strong) dispatch_queue_t badgeQueue;
 @property (nonatomic, strong) NSString *lastLoadedChannelID; // évite un refetch si join répété sur le même channel
+// Avatars des chaînes d'origine du Shared Chat. Le cache est global à la
+// session : contrairement aux badges channel, un avatar est lié à un user ID
+// Twitch et reste valide lorsqu'on change de chaîne.
+@property (nonatomic, strong) NSDictionary<NSString *, NSString *> *sharedChatAvatarURLs;
+@property (nonatomic, strong) NSMutableSet<NSString *> *fetchingSharedChatAvatarChannelIDs;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *sharedChatAvatarRetryAfter;
 @end
 
 @implementation SevenTVBadgeProvider
@@ -75,6 +88,9 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
     if (self) {
         _globalBadges  = @{};
         _channelBadges = @{};
+        _sharedChatAvatarURLs = @{};
+        _fetchingSharedChatAvatarChannelIDs = [NSMutableSet set];
+        _sharedChatAvatarRetryAfter = [NSMutableDictionary dictionary];
         _badgeQueue = dispatch_queue_create("tv.s7tv.badge-provider", DISPATCH_QUEUE_CONCURRENT);
     }
     return self;
@@ -286,6 +302,120 @@ static NSString *S7TVChannelBadgesURL(NSString *channelID) {
 }
 
 #pragma mark - Résolution
+
+- (void)s7tv_loadSharedChatAvatarForChannelID:(NSString *)channelID {
+    if (!channelID.length) return;
+
+    SevenTVManager *mgr = [SevenTVManager sharedManager];
+    if (!mgr.twitchToken.length || !mgr.twitchClientID.length) {
+        // Ne pas marquer comme "en cours" : le chargement des catalogues de
+        // badges, relancé à la capture du token, provoquera un nouveau rendu.
+        return;
+    }
+
+    __block BOOL shouldFetch = NO;
+    NSDate *now = [NSDate date];
+    dispatch_barrier_sync(self.badgeQueue, ^{
+        NSDate *retryAfter = self.sharedChatAvatarRetryAfter[channelID];
+        BOOL retryAllowed = !retryAfter || [retryAfter compare:now] != NSOrderedDescending;
+        if (!self.sharedChatAvatarURLs[channelID] &&
+            ![self.fetchingSharedChatAvatarChannelIDs containsObject:channelID] &&
+            retryAllowed) {
+            [self.fetchingSharedChatAvatarChannelIDs addObject:channelID];
+            shouldFetch = YES;
+        }
+    });
+    if (!shouldFetch) return;
+
+    NSURL *url = S7TVUserURL(channelID);
+    if (!url) {
+        dispatch_barrier_async(self.badgeQueue, ^{
+            [self.fetchingSharedChatAvatarChannelIDs removeObject:channelID];
+        });
+        return;
+    }
+
+    NSURLRequest *request = [self s7tv_helixRequestWithURL:url];
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession]
+        dataTaskWithRequest:request
+      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        NSString *avatarURLString = nil;
+        NSInteger statusCode = [response isKindOfClass:[NSHTTPURLResponse class]]
+            ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        if (!error && data.length && statusCode >= 200 && statusCode < 300) {
+            id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            NSArray *users = [root isKindOfClass:[NSDictionary class]] ? root[@"data"] : nil;
+            NSDictionary *user = [users isKindOfClass:[NSArray class]] ? users.firstObject : nil;
+            NSString *returnedID = [user isKindOfClass:[NSDictionary class]] ? user[@"id"] : nil;
+            NSString *candidateURL = [user isKindOfClass:[NSDictionary class]]
+                ? user[@"profile_image_url"] : nil;
+            if ([returnedID isKindOfClass:[NSString class]] &&
+                [returnedID isEqualToString:channelID] &&
+                [candidateURL isKindOfClass:[NSString class]] &&
+                candidateURL.length && [NSURL URLWithString:candidateURL]) {
+                avatarURLString = candidateURL;
+            }
+        }
+
+        BOOL succeeded = avatarURLString.length > 0;
+        dispatch_barrier_async(strongSelf.badgeQueue, ^{
+            [strongSelf.fetchingSharedChatAvatarChannelIDs removeObject:channelID];
+            if (succeeded) {
+                NSMutableDictionary *updated = [strongSelf.sharedChatAvatarURLs mutableCopy];
+                updated[channelID] = avatarURLString;
+                strongSelf.sharedChatAvatarURLs = [updated copy];
+                [strongSelf.sharedChatAvatarRetryAfter removeObjectForKey:channelID];
+            } else {
+                // Évite une rafale de requêtes si Helix/token est temporairement
+                // indisponible pendant que plusieurs cellules sont rendues.
+                strongSelf.sharedChatAvatarRetryAfter[channelID] =
+                    [NSDate dateWithTimeIntervalSinceNow:30.0];
+            }
+
+            if (succeeded) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[NSNotificationCenter defaultCenter]
+                        postNotificationName:S7TVBadgesCatalogUpdatedNotification object:nil];
+                });
+            }
+        });
+
+        if (!succeeded) {
+            [[SevenTVManager sharedManager] log:
+                @"⚠️ Avatar Shared Chat: échec Helix pour la chaîne %@ (HTTP %ld, %@)",
+                channelID, (long)statusCode, error.localizedDescription ?: @"réponse invalide"];
+        }
+    }];
+    [task resume];
+}
+
+- (nullable id<S7TVResolvedEmote>)resolvedSharedChatAvatarForChannelID:(NSString *)channelID {
+    if (!channelID.length) return nil;
+
+    __block NSString *imageURLString = nil;
+    dispatch_sync(self.badgeQueue, ^{
+        imageURLString = self.sharedChatAvatarURLs[channelID];
+    });
+    if (!imageURLString.length) {
+        [self s7tv_loadSharedChatAvatarForChannelID:channelID];
+        return nil;
+    }
+
+    NSURL *url = [NSURL URLWithString:imageURLString];
+    if (!url) return nil;
+
+    S7TVResolvedBadge *avatar = [S7TVResolvedBadge new];
+    avatar.emoteID = [@"shared-chat-avatar/" stringByAppendingString:channelID];
+    avatar.nativeSize = CGSizeMake(1, 1);
+    avatar.isAnimated = NO;
+    avatar.imageURL = url;
+    avatar.rendersCircular = YES;
+    return avatar;
+}
 
 - (nullable id<S7TVResolvedEmote>)resolvedBadgeForIdentifier:(NSString *)identifier {
     if (!identifier.length) return nil;

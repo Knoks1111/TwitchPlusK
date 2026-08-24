@@ -206,6 +206,16 @@ NSDate *s7tv_messageTimestampFromTags(NSDictionary<NSString *, NSString *> *tags
     return value > 0 ? [NSDate dateWithTimeIntervalSince1970:value / 1000.0] : [NSDate date];
 }
 
+// Twitch ajoute `source-room-id` à TOUS les messages émis pendant un Shared
+// Chat : sur la chaîne source il est égal à `room-id`, et sur les autres
+// chaînes il contient l'ID de la chaîne d'origine. Son absence est donc aussi
+// le garde-fou natif qui empêche d'afficher l'avatar hors Shared Chat.
+static NSString * _Nullable s7tv_sharedChatSourceChannelID(
+    NSDictionary<NSString *, NSString *> *tags) {
+    NSString *sourceRoomID = s7tv_tagValue(tags, @"source-room-id", @"");
+    return sourceRoomID.length ? sourceRoomID : nil;
+}
+
 
 // Parse une ligne IRC complète et retourne un S7TVChatMessage si c'est un
 // PRIVMSG exploitable, nil sinon (autre type de commande, ou PRIVMSG dont
@@ -324,6 +334,7 @@ S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(
                                                                rawText:messageText];
     msg.isActionMessage = isActionMessage;
     msg.channelPointRewardID = customRewardID.length ? customRewardID : nil;
+    msg.sharedChatSourceChannelID = s7tv_sharedChatSourceChannelID(tags);
     if (replyParentMsgID.length) {
         msg.replyParentMessageID   = replyParentMsgID;
         // reply-parent-user-login est le pseudo de connexion (minuscules,
@@ -564,6 +575,7 @@ S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(
     msg.type         = S7TVChatMessageTypeSystem;
     msg.systemInfo   = info;
     msg.systemPhrase = s7tv_buildSystemMessagePhrase(info);
+    msg.sharedChatSourceChannelID = s7tv_sharedChatSourceChannelID(tags);
 
     msg.authorColor = s7tv_colorFromHexString(colorHex);
 
@@ -1752,6 +1764,9 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
             matched.tokens = companion.tokens;
             matched.twitchEmotesTag = companion.twitchEmotesTag ?: @"";
             matched.badgeIdentifiers = companion.badgeIdentifiers ?: @[];
+            if (companion.sharedChatSourceChannelID.length) {
+                matched.sharedChatSourceChannelID = companion.sharedChatSourceChannelID;
+            }
             if (companion.authorColor) matched.authorColor = companion.authorColor;
             matched.isActionMessage = companion.isActionMessage;
         }

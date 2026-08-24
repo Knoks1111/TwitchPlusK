@@ -830,7 +830,14 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         [self.currentChannelName caseInsensitiveCompare:channelName] != NSOrderedSame;
     [self log:@"Channel rejoint: %@, recherche ID Twitch...", channelName];
     self.currentChannelName = channelName;
-    if (shouldResetChannelCatalog) [self s7tv_clearChannelEmotesAndNotify];
+    if (shouldResetChannelCatalog) {
+        [self s7tv_clearChannelEmotesAndNotify];
+        // Tant que ROOMSTATE n'a pas identifié la nouvelle chaîne, conserver
+        // l'ID de l'ancienne ferait charger ses emotes/badges et accepter ses
+        // événements Channel Points dans le nouveau transcript.
+        self.currentChannelTwitchID = nil;
+        [[SevenTVBadgeProvider sharedProvider] resetChannelBadges];
+    }
 
     // Préchauffer la connexion CDN maintenant — les messages arrivent
     // ~1-2s après le JOIN, donc la connexion sera chaude à temps.
@@ -885,9 +892,11 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     // Première visite : pas de mapping → attendre le ROOMSTATE.
     // Timeout de sécurité à 5s au cas où le ROOMSTATE n'arriverait pas.
     [self log:@"⏳ Pas de twitchID en cache pour %@, attente ROOMSTATE...", channelName];
+    NSString *expectedChannelName = channelName.lowercaseString;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
                    dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (self.currentChannelTwitchID) {
+        if ([self.currentChannelName caseInsensitiveCompare:expectedChannelName] == NSOrderedSame &&
+            self.currentChannelTwitchID.length) {
             [self loadEmotesForChannelTwitchID:self.currentChannelTwitchID];
         }
     });
@@ -1320,6 +1329,15 @@ static const CGFloat kS7TVMenuHeight = 520.0;
             NSString *broadcasterID = [self findBroadcasterIDInObject:response
                                                          channelLogin:&channelLogin];
             if (!broadcasterID) continue;
+
+            NSString *visibleChannel = s7tv_activeNativeChatChannelName();
+            if (visibleChannel.length &&
+                (!channelLogin.length ||
+                 [channelLogin caseInsensitiveCompare:visibleChannel] != NSOrderedSame)) {
+                [self log:@"ℹ️ Réponse GQL ignorée pour transcript non visible (%@, actif=%@)",
+                    channelLogin.length ? channelLogin : @"chaîne indéterminée", visibleChannel];
+                continue;
+            }
 
             if (channelLogin.length > 0) {
                 self.currentChannelName = channelLogin;
@@ -1910,6 +1928,20 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 @end
 
 
+// Génération unique de la session de chat visible. Elle est incrémentée avant
+// chaque reconstruction et accompagne ensuite toutes les mutations réseau.
+// Le store rejette ainsi un callback A après une transition A→B→A, même si
+// son bloc arrive physiquement après le dernier reset.
+static NSUInteger s7tv_recentHistoryGeneration = 0;
+static NSString *s7tv_recentHistoryInitializedChannel = nil;
+
+static NSUInteger s7tv_currentChatSessionGeneration(void) {
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    @synchronized (manager) {
+        return s7tv_recentHistoryGeneration;
+    }
+}
+
 @implementation SevenTVManager (IRCSessionState)
 
 - (void)handleIRCUserState:(NSString *)ircLine {
@@ -2019,13 +2051,16 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
     }
 
     S7TVChatMessageStore *store = self.chatMessageStore;
+    NSUInteger chatSessionGeneration = s7tv_currentChatSessionGeneration();
     if (isClearMessage) {
         NSString *targetMessageID = s7tv_tagValue(tags, @"target-msg-id", @"");
         if (!targetMessageID.length) {
             [self log:@"⚠️ CLEARMSG ignoré (target-msg-id absent)"];
             return YES;
         }
-        [store markMessageDeletedByID:targetMessageID completion:^{
+        [store markMessageDeletedByID:targetMessageID
+                chatSessionGeneration:chatSessionGeneration completion:^{
+            if (s7tv_currentChatSessionGeneration() != chatSessionGeneration) return;
             [self log:@"🛡 CLEARMSG appliqué (message id=%@)", targetMessageID];
             s7tv_applyModerationStateToRetainedMessage(
                 targetMessageID, S7TVChatMessageStateDeletedCollapsed,
@@ -2045,7 +2080,9 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
         [store markAllMessagesDeletedForUserID:targetUserID
                                 moderationKind:kind
                                durationSeconds:durationSeconds
+                         chatSessionGeneration:chatSessionGeneration
                                      completion:^{
+            if (s7tv_currentChatSessionGeneration() != chatSessionGeneration) return;
             s7tv_applyModerationToRetainedMessagesForUser(
                 targetUserID, trailing, kind, durationSeconds);
             [self log:@"🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@, %@)",
@@ -2058,7 +2095,9 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
         [self log:@"⚠️ CLEARCHAT ciblé ignoré (target-user-id absent, login=%@)",
             trailing];
     } else {
-        [store markAllMessagesDeletedWithCompletion:^{
+        [store markAllMessagesDeletedForChatSessionGeneration:chatSessionGeneration
+                                                      completion:^{
+            if (s7tv_currentChatSessionGeneration() != chatSessionGeneration) return;
             s7tv_applyModerationToAllRetainedMessages();
             [self log:@"🛡 CLEARCHAT global appliqué"];
             s7tv_reloadActiveChatCustomViewAnimated();
@@ -2074,9 +2113,11 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 
     // Les notifications PubSub sont des enveloppes JSON, pas des lignes IRC.
     // Le store déduplique les abonnements Twitch grâce à redemption.id.
+    NSUInteger pubSubSessionGeneration = s7tv_currentChatSessionGeneration();
     for (S7TVChatMessage *rewardMessage in
          s7tv_channelPointMessagesFromWebSocketText(text, providers)) {
-        [self.chatMessageStore addMessage:rewardMessage];
+        [self.chatMessageStore addMessage:rewardMessage
+                 forChatSessionGeneration:pubSubSessionGeneration];
         addedMessage = YES;
     }
 
@@ -2092,35 +2133,39 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 
         S7TVChatMessage *chatMessage = s7tv_parseChatMessage(ircLine, providers);
         if (!chatMessage) continue;
+        NSUInteger messageSessionGeneration = s7tv_currentChatSessionGeneration();
         if (chatMessage.channelPointRewardID.length) {
             // PubSub et IRC arrivent presque simultanément, parfois dans
             // l'ordre inverse. Seul le PRIVMSG de récompense attend 350 ms.
             S7TVChatMessage *pendingCompanion = chatMessage;
             S7TVChatMessageStore *rewardStore = self.chatMessageStore;
-            NSUInteger storeGeneration = rewardStore.generation;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                            (int64_t)(0.35 * NSEC_PER_SEC)),
                            dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                 // Un JOIN intervenu entre-temps a reconstruit le store.
-                if (rewardStore.generation != storeGeneration) return;
+                if (s7tv_currentChatSessionGeneration() != messageSessionGeneration) return;
                 if (s7tv_shouldSuppressChannelPointCompanion(pendingCompanion)) {
                     [rewardStore mergeChannelPointCompanionMessage:pendingCompanion
+                        chatSessionGeneration:messageSessionGeneration
                         completion:^(NSString *mergedID) {
                         if (mergedID.length) {
                             s7tv_reloadActiveChatMessage(mergedID);
-                        } else if (rewardStore.generation == storeGeneration) {
-                            [rewardStore addMessage:pendingCompanion];
+                        } else if (s7tv_currentChatSessionGeneration() == messageSessionGeneration) {
+                            [rewardStore addMessage:pendingCompanion
+                          forChatSessionGeneration:messageSessionGeneration];
                             s7tv_scheduleChatCustomReload();
                         }
                     }];
                     return;
                 }
-                [rewardStore addMessage:pendingCompanion];
+                [rewardStore addMessage:pendingCompanion
+               forChatSessionGeneration:messageSessionGeneration];
                 s7tv_scheduleChatCustomReload();
             });
             continue;
         }
-        [self.chatMessageStore addMessage:chatMessage];
+        [self.chatMessageStore addMessage:chatMessage
+                 forChatSessionGeneration:messageSessionGeneration];
         addedMessage = YES;
     }
     if (addedMessage) s7tv_scheduleChatCustomReload();
@@ -2132,9 +2177,6 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 // ============================================================
 // MARK: - Historique récent au JOIN
 // ============================================================
-
-static NSUInteger s7tv_recentHistoryGeneration = 0;
-static NSString *s7tv_recentHistoryInitializedChannel = nil;
 
 static BOOL s7tv_recentHistoryRequestIsCurrent(NSString *channel,
                                                 NSUInteger generation) {
@@ -2199,7 +2241,8 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
 
         if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
         [[SevenTVManager sharedManager].chatMessageStore
-            prependHistoricalMessages:history completion:^{
+            prependHistoricalMessages:history
+            chatSessionGeneration:generation completion:^{
                 if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
                 [[SevenTVManager sharedManager]
                     log:@"🕘 %lu messages historiques chargés pour %@",
@@ -2211,9 +2254,11 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
 
 static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
     if (!channel.length) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_block_t hideThread = ^{
         [[S7TVReplyThreadPanel sharedPanel] hide];
-    });
+    };
+    if (NSThread.isMainThread) hideThread();
+    else dispatch_async(dispatch_get_main_queue(), hideThread);
 
     NSDate *now = NSDate.date;
     S7TVChatMessage *welcome = [[S7TVChatMessage alloc]
@@ -2228,12 +2273,13 @@ static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
     divider.type = S7TVChatMessageTypeHistoryDivider;
 
     SevenTVManager *manager = [SevenTVManager sharedManager];
-    [manager.chatMessageStore replaceAllMessages:@[welcome, divider] completion:^{
-        if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
-        [manager log:@"🏗 Chat initialisé pour %@ (historique en cours)", channel];
-        s7tv_reloadActiveChatCustomView();
-        s7tv_fetchRecentHistory(channel, generation);
-    }];
+    BOOL applied = [manager.chatMessageStore
+        beginChatSessionWithMessages:@[welcome, divider]
+        sessionGeneration:generation];
+    if (!applied || !s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
+    [manager log:@"🏗 Chat vidé et initialisé pour %@ (historique en cours)", channel];
+    s7tv_reloadActiveChatCustomView();
+    s7tv_fetchRecentHistory(channel, generation);
 }
 
 @implementation SevenTVManager (RecentChatHistory)
@@ -2282,12 +2328,11 @@ static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
 - (void)handleOutgoingChatWebSocketMessage:(NSURLSessionWebSocketMessage *)message {
     for (NSString *channel in [self joinedChannelsInOutgoingWebSocketMessage:message]) {
         [self log:@"📺 Rejoint le channel: %@", channel];
-        // Met currentChannelName à jour avant le reset et avant que
-        // l'historique n'entre dans le parseur IRC.
-        [self loadEmotesForChannelName:channel];
-        // Le JOIN est la source de vérité de la transition : suppression des
-        // anciens messages immédiate, sans attendre ROOMSTATE.
-        [self initializeRecentHistoryForChannel:channel force:YES];
+        // Plusieurs sockets/vues Twitch peuvent rester vivants en parallèle.
+        // Le dernier JOIN réseau n'est donc pas forcément la chaîne visible :
+        // le routeur UIKit le rapproche du ChatTranscriptView actif avant de
+        // changer la session et de vider le store.
+        s7tv_noteOutgoingChatJoinForChannel(channel);
     }
 }
 

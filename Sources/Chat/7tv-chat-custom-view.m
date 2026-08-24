@@ -15,6 +15,7 @@
 #import "Chat/7tv-chat-tokenizer.h"
 #import "Emote/7tv-emote-provider.h"
 #import <objc/runtime.h>
+#import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
 // ============================================================
@@ -22,9 +23,86 @@
 // ============================================================
 
 static const char kS7TVChatCustomInstalledView = 21;
+static const char kS7TVNativeChatChannelName = 22;
 static __weak SevenTVChatCustomView *s_activeChatCustomView = nil;
 static __weak UIView *s_activeNativeChatView = nil;
+static NSString *s_activeNativeChatChannelName = nil;
+static NSString *s_pendingNativeChatChannelName = nil;
+static CFTimeInterval s_pendingNativeChatChannelTimestamp = 0;
 static BOOL s_chatReloadScheduled = NO;
+
+static NSString *s7tv_normalizedChatChannelName(NSString *channel) {
+    NSString *normalized = [[channel ?: @""
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+        lowercaseString];
+    if ([normalized hasPrefix:@"#"]) normalized = [normalized substringFromIndex:1];
+    return normalized;
+}
+
+static void s7tv_bindNativeChatViewToChannel(UIView *view, NSString *channel) {
+    NSString *normalized = s7tv_normalizedChatChannelName(channel);
+    if (!view || !normalized.length) return;
+    objc_setAssociatedObject(view, &kS7TVNativeChatChannelName,
+                             normalized, OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
+static NSString *s7tv_channelBoundToNativeChatView(UIView *view) {
+    return view ? objc_getAssociatedObject(view, &kS7TVNativeChatChannelName) : nil;
+}
+
+static void s7tv_activateChatChannelForVisibleNativeView(NSString *channel, BOOL forceReset) {
+    NSString *normalized = s7tv_normalizedChatChannelName(channel);
+    if (!normalized.length) return;
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    @synchronized (manager) {
+        s_activeNativeChatChannelName = normalized;
+    }
+    BOOL changed = !manager.currentChannelName.length ||
+        [manager.currentChannelName caseInsensitiveCompare:normalized] != NSOrderedSame;
+    if (changed) [manager loadEmotesForChannelName:normalized];
+    [manager initializeRecentHistoryForChannel:normalized force:(forceReset || changed)];
+}
+
+NSString *s7tv_activeNativeChatChannelName(void) {
+    @synchronized ([SevenTVManager sharedManager]) {
+        return [s_activeNativeChatChannelName copy];
+    }
+}
+
+void s7tv_noteOutgoingChatJoinForChannel(NSString *channel) {
+    NSString *normalized = s7tv_normalizedChatChannelName(channel);
+    if (!normalized.length) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        s_pendingNativeChatChannelName = normalized;
+        s_pendingNativeChatChannelTimestamp = CACurrentMediaTime();
+
+        UIView *activeView = s_activeNativeChatView;
+        NSString *boundChannel = s7tv_channelBoundToNativeChatView(activeView);
+        if (activeView.window && !boundChannel.length) {
+            s7tv_bindNativeChatViewToChannel(activeView, normalized);
+            boundChannel = normalized;
+        }
+
+        if (!activeView || !boundChannel.length ||
+            [boundChannel caseInsensitiveCompare:normalized] == NSOrderedSame) {
+            if (activeView && !boundChannel.length) {
+                s7tv_bindNativeChatViewToChannel(activeView, normalized);
+            }
+            s_pendingNativeChatChannelName = nil;
+            s_pendingNativeChatChannelTimestamp = 0;
+            s7tv_activateChatChannelForVisibleNativeView(normalized, NO);
+            s7tv_applyChatCustomToggle();
+            return;
+        }
+
+        // Un socket associé à une vue conservée hors écran peut se reconnecter.
+        // Tant qu'aucune nouvelle ChatTranscriptView ne devient visible, la vue
+        // déjà liée reste l'autorité et son chat ne doit surtout pas être vidé.
+        [[SevenTVManager sharedManager]
+            log:@"ℹ️ JOIN %@ différé : le transcript visible représente encore %@",
+                normalized, boundChannel];
+    });
+}
 
 static UIView *s7tv_findVisibleChatInputViewInWindow(UIWindow *window) {
     if (!window || window.hidden || window.alpha <= 0.01) return nil;
@@ -218,6 +296,10 @@ static void s7tv_installChatCustomView(UIView *chatView) {
 void s7tv_applyChatCustomToggle(void) {
     UIView *chatView = s_activeNativeChatView;
     if (!chatView || ![chatView.superview isKindOfClass:UIStackView.class]) return;
+    // Pendant les quelques millisecondes où une nouvelle vue précède son
+    // JOIN, garder le transcript natif visible plutôt que d'y injecter le
+    // store de la chaîne précédente.
+    if (!s7tv_channelBoundToNativeChatView(chatView).length) return;
     if ([SevenTVManager sharedManager].chatCustomTestEnabled) {
         s7tv_installChatCustomView(chatView);
         return;
@@ -233,7 +315,35 @@ void s7tv_applyChatCustomToggle(void) {
 void s7tv_handleNativeChatViewLifecycle(UIView *view) {
     if (![NSStringFromClass(view.class) isEqualToString:@"Twitch.ChatTranscriptView"] ||
         !view.window || ![view.superview isKindOfClass:UIStackView.class]) return;
+
+    UIView *previousActiveView = s_activeNativeChatView;
+    NSString *boundChannel = s7tv_channelBoundToNativeChatView(view);
+    BOOL pendingJoinIsFresh = s_pendingNativeChatChannelName.length &&
+        CACurrentMediaTime() - s_pendingNativeChatChannelTimestamp <= 3.0;
+    if (!boundChannel.length && pendingJoinIsFresh) {
+        boundChannel = s_pendingNativeChatChannelName;
+        s7tv_bindNativeChatViewToChannel(view, boundChannel);
+        s_pendingNativeChatChannelName = nil;
+        s_pendingNativeChatChannelTimestamp = 0;
+    } else if (!boundChannel.length && !previousActiveView) {
+        // Premier transcript de la session : le JOIN ou GQL a généralement
+        // déjà posé currentChannelName avant la construction UIKit.
+        boundChannel = [SevenTVManager sharedManager].currentChannelName;
+        s7tv_bindNativeChatViewToChannel(view, boundChannel);
+    }
+
     s_activeNativeChatView = view;
+    if (!boundChannel.length) return;
+    NSString *currentChannel = [SevenTVManager sharedManager].currentChannelName;
+    BOOL returningToRetainedTranscript = currentChannel.length &&
+        [currentChannel caseInsensitiveCompare:boundChannel] != NSOrderedSame;
+    s7tv_activateChatChannelForVisibleNativeView(
+        boundChannel, returningToRetainedTranscript);
+    if (returningToRetainedTranscript) {
+        SevenTVChatCustomView *retainedCustomView =
+            objc_getAssociatedObject(view, &kS7TVChatCustomInstalledView);
+        [retainedCustomView resetTransientTranscriptState];
+    }
     s7tv_applyChatCustomToggle();
 }
 
@@ -349,17 +459,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 // lien/réponse : le placeholder et le contenu révélé partagent ainsi la
 // même zone interactive, sans ajouter de geste concurrent sur contentView.
 @property (nonatomic, copy, nullable) void (^onDeletedMessageTap)(void);
-// ── Bouton "répondre à ce message" (panneau Fil uniquement) ────────────
-// Icône à droite de la cellule, tap immédiat = sélectionne CE message comme
-// cible (pas de confirmation supplémentaire, voir onReplySelectTap). Séparé
-// de onReplyBannerTap : deux contextes différents — celui-ci sert
-// exclusivement DANS le panneau Fil pour choisir à qui répondre parmi les
-// messages déjà affichés, l'autre sert à OUVRIR le panneau depuis le chat
-// principal. Invisible par défaut, activé par
-// SevenTVChatCustomView.showsReplyTargetButton.
-@property (nonatomic, strong) UIButton *replyTargetButton;
 @property (nonatomic, strong) NSLayoutConstraint *messageLabelTrailingConstraint;
-@property (nonatomic, copy, nullable) void (^onReplySelectTap)(void);
 // ── Barre "fil de discussion" (panneau Fil, réponses uniquement) ───────
 // Barre grise verticale pleine hauteur de cellule (contentView.top →
 // contentView.bottom, sans marge) : comme les cellules se touchent sans
@@ -391,7 +491,6 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     [self s7tv_cancelAnimationFrameRequests];
     self.onReplyBannerTap = nil;
     self.onDeletedMessageTap = nil;
-    self.onReplySelectTap = nil;
     self.animationKeys = nil;
     self.messageLabel.alpha = 1.0;
     self.historyDividerLineView.hidden = YES;
@@ -455,19 +554,6 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         _threadBarView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.35];
         _threadBarView.hidden = YES;
         [self.contentView addSubview:_threadBarView];
-
-        _replyTargetButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        UIImageSymbolConfiguration *replyTargetIconConfig =
-            [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightMedium];
-        [_replyTargetButton setImage:[UIImage systemImageNamed:@"arrowshape.turn.up.left"
-                                          withConfiguration:replyTargetIconConfig]
-                              forState:UIControlStateNormal];
-        _replyTargetButton.tintColor = [UIColor colorWithWhite:1.0 alpha:0.55];
-        _replyTargetButton.translatesAutoresizingMaskIntoConstraints = NO;
-        _replyTargetButton.hidden = YES;
-        [_replyTargetButton addTarget:self action:@selector(s7tv_handleReplyTargetTap:)
-                      forControlEvents:UIControlEventTouchUpInside];
-        [self.contentView addSubview:_replyTargetButton];
 
         UIColor *historyRed = [UIColor colorWithRed:0.94 green:0.24 blue:0.30 alpha:1.0];
         _historyDividerLineView = [[UIView alloc] init];
@@ -557,11 +643,6 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
             [_threadBarView.widthAnchor constraintEqualToConstant:3],
             [_threadBarView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
             [_threadBarView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
-
-            [_replyTargetButton.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-6],
-            [_replyTargetButton.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-            [_replyTargetButton.widthAnchor constraintEqualToConstant:26],
-            [_replyTargetButton.heightAnchor constraintEqualToConstant:26],
 
             [_historyDividerLineView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:18],
             [_historyDividerLineView.trailingAnchor constraintEqualToAnchor:_historyDividerLabel.leadingAnchor constant:-8],
@@ -681,18 +762,6 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     }
 }
 
-// enabled : affiche le bouton flèche à droite et réduit la largeur dispo du
-// texte du message pour lui laisser la place (34 = 8 marge de base + ~26
-// pour le bouton). Même logique de bascule que s7tv_setThreadIndentEnabled:.
-- (void)s7tv_setReplyTargetButtonEnabled:(BOOL)enabled {
-    self.replyTargetButton.hidden = !enabled;
-    self.messageLabelTrailingConstraint.constant = enabled ? -34.0 : -8.0;
-}
-
-- (void)s7tv_handleReplyTargetTap:(UIButton *)sender {
-    if (self.onReplySelectTap) self.onReplySelectTap();
-}
-
 - (void)s7tv_handleReplyBannerTap:(UITapGestureRecognizer *)gesture {
     if (self.onReplyBannerTap) self.onReplyBannerTap();
 }
@@ -793,6 +862,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 @property (nonatomic, strong) S7TVChatToken *previewedEmoteToken;
 @property (nonatomic, weak) UIImageView *emotePreviewImageView;
 @property (nonatomic, weak) UIButton *emotePreviewFavoriteButton;
+@property (nonatomic, strong) S7TVEmoteFrameRequest *emotePreviewFrameRequest;
 @property (nonatomic, assign) BOOL reloadDeferredUntilScrollEnds;
 @property (nonatomic, assign) BOOL deferredReloadAnimated;
 @property (nonatomic, strong) NSMutableArray *deferredReloadCompletions;
@@ -811,6 +881,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 @property (nonatomic, assign) BOOL snapshotApplyInProgress;
 @property (nonatomic, assign) BOOL widthReloadPending;
 - (void)s7tv_dismissEmotePreview;
+- (void)s7tv_observeAnimatedEmotePreview:(id<S7TVResolvedEmote>)emote;
 - (nullable NSString *)s7tv_captureVisibleAnchorAmongIDs:(nullable NSSet<NSString *> *)allowedIDs
                                                 viewportY:(CGFloat *)outViewportY;
 - (void)s7tv_restoreVisibleAnchorID:(nullable NSString *)messageID viewportY:(CGFloat)viewportY;
@@ -954,6 +1025,8 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 }
 
 - (void)dealloc {
+    [self.emotePreviewFrameRequest cancel];
+    [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:self.emotePreviewImageView];
     [self.emotePreviewOverlay removeFromSuperview];
     [[NSNotificationCenter defaultCenter] removeObserver:self
         name:UIDeviceOrientationDidChangeNotification object:nil];
@@ -1000,6 +1073,12 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     [self layoutIfNeeded];
     [self.tableView layoutIfNeeded];
     return self.tableView.contentSize.height;
+}
+
+- (void)setScrollingEnabled:(BOOL)enabled {
+    self.tableView.scrollEnabled = enabled;
+    self.tableView.bounces = enabled;
+    self.tableView.alwaysBounceVertical = enabled;
 }
 
 - (void)setFreezesTranscriptWhenScrolled:(BOOL)freezesTranscriptWhenScrolled {
@@ -1518,12 +1597,10 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         // où un snapshot diffable et sa map de modèles se croisent.
         cell.onReplyBannerTap = nil;
         cell.onDeletedMessageTap = nil;
-        cell.onReplySelectTap = nil;
         cell.animationKeys = nil;
         cell.messageLabel.attributedText = [[NSAttributedString alloc] initWithString:@""];
         cell.messageLabel.alpha = 1.0;
         [cell s7tv_configureReplyBannerWithUsername:nil bodyPreview:nil];
-        [cell s7tv_setReplyTargetButtonEnabled:NO];
         [cell s7tv_setThreadIndentEnabled:NO];
         [cell s7tv_setHistoryDividerEnabled:NO];
         [cell s7tv_configureSystemAccentWithColor:nil iconName:nil backgroundEnabled:NO
@@ -1601,16 +1678,6 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     } : nil;
 
     [cell s7tv_setThreadIndentEnabled:self.usesThreadReplyIndent];
-
-    [cell s7tv_setReplyTargetButtonEnabled:self.showsReplyTargetButton && !isCollapsed];
-    NSString *targetMessageID = msg.messageID;
-    NSString *targetAuthor = msg.authorDisplayName;
-    __weak typeof(self) weakSelfForTarget = self;
-    cell.onReplySelectTap = self.showsReplyTargetButton ? ^{
-        __strong typeof(weakSelfForTarget) strongSelf = weakSelfForTarget;
-        if (!strongSelf || !strongSelf.onReplyTargetSelected) return;
-        strongSelf.onReplyTargetSelected(targetMessageID, targetAuthor);
-    } : nil;
 
     if (!self.renderingSuspended && animatedEmotes.count > 0) {
         NSMutableSet<NSString *> *animationKeys = [NSMutableSet setWithCapacity:animatedEmotes.count];
@@ -1787,11 +1854,58 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 #pragma mark - UITableViewDelegate
 
 - (void)s7tv_dismissEmotePreview {
+    [self.emotePreviewFrameRequest cancel];
+    self.emotePreviewFrameRequest = nil;
+    [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:self.emotePreviewImageView];
     [self.emotePreviewOverlay removeFromSuperview];
     self.emotePreviewOverlay = nil;
     self.previewedEmoteToken = nil;
     self.emotePreviewImageView = nil;
     self.emotePreviewFavoriteButton = nil;
+}
+
+- (void)s7tv_observeAnimatedEmotePreview:(id<S7TVResolvedEmote>)emote {
+    UIImageView *imageView = self.emotePreviewImageView;
+    NSString *animationKey = [emote.imageURL.absoluteString copy];
+    if (!emote.isAnimated || !imageView || !animationKey.length) return;
+
+    SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
+    __weak typeof(self) weakSelf = self;
+    __weak UIImageView *weakImageView = imageView;
+    [engine addObserver:imageView keys:[NSSet setWithObject:animationKey] redraw:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        UIImageView *strongImageView = weakImageView;
+        if (!strongSelf || !strongImageView ||
+            strongSelf.emotePreviewImageView != strongImageView) return;
+        NSString *currentKey = strongSelf.previewedEmoteToken.resolvedEmote.imageURL.absoluteString;
+        if (![currentKey isEqualToString:animationKey]) return;
+        UIImage *frame = [[SevenTVEmoteAnimationEngine sharedEngine]
+            currentFrameForKey:animationKey];
+        if (frame) strongImageView.image = frame;
+    }];
+
+    UIImage *currentFrame = [engine currentFrameForKey:animationKey];
+    if (currentFrame) imageView.image = currentFrame;
+    if ([engine hasCompleteFramesForKey:animationKey]) return;
+
+    SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
+    S7TVEmoteAnimatedFrames *cachedFrames = [imageCache cachedFramesForResolvedEmote:emote];
+    if (cachedFrames) {
+        [engine registerFrames:cachedFrames forKey:animationKey];
+        return;
+    }
+
+    // Même pipeline que les cellules du chat : preview légère puis boucle
+    // complète, toutes deux enregistrées dans l'unique moteur partagé.
+    self.emotePreviewFrameRequest = [imageCache framesForResolvedEmote:emote
+        preview:^(S7TVEmoteAnimatedFrames *previewFrames) {
+            if (![engine hasCompleteFramesForKey:animationKey]) {
+                [engine registerFrames:previewFrames forKey:animationKey];
+            }
+        }
+        completion:^(S7TVEmoteAnimatedFrames * _Nullable frames) {
+            if (frames) [engine registerFrames:frames forKey:animationKey];
+        }];
 }
 
 - (void)s7tv_refreshEmotePreviewFavoriteState {
@@ -1923,9 +2037,16 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf ||
                 ![strongSelf.previewedEmoteToken.providerEmoteID isEqualToString:expectedEmoteID]) return;
-            strongSelf.emotePreviewImageView.image = image;
+            id<S7TVResolvedEmote> currentEmote = strongSelf.previewedEmoteToken.resolvedEmote;
+            UIImage *currentFrame = currentEmote.isAnimated
+                ? [[SevenTVEmoteAnimationEngine sharedEngine]
+                    currentFrameForKey:currentEmote.imageURL.absoluteString]
+                : nil;
+            strongSelf.emotePreviewImageView.image = currentFrame ?: image;
         }];
     }
+
+    [self s7tv_observeAnimatedEmotePreview:emote];
 
     [self s7tv_refreshEmotePreviewFavoriteState];
     [window bringSubviewToFront:overlay];

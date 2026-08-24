@@ -16,11 +16,10 @@ NS_ASSUME_NONNULL_BEGIN
 // Reçoit directement le tap depuis la vue de chat réelle — voir l'assignation
 // de .delegate lors de l'installation dans 7tv-chat-custom-view.m.
 // tappedMessageID garde en mémoire le message précis ayant ouvert le fil,
-// distinct de sa racine. L'ouverture reste en mode consultation : seule une
-// sélection explicite (flèche ou appui long) préremplit la saisie Twitch.
+// distinct de sa racine. L'ouverture reste en mode consultation : seul un
+// appui long explicite préremplit la saisie Twitch.
 - (void)showForThreadRootID:(NSString *)threadRootID tappedMessageID:(NSString *)tappedMessageID;
-// Point d'entrée unique pour toute sélection de cible : flèche d'un thread
-// ou appui long dans le chat principal.
+// Point d'entrée unique pour l'appui long du chat principal et des threads.
 - (void)selectReplyTargetForMessageID:(NSString *)messageID username:(NSString *)username;
 - (void)hide;
 // Appelé après chaque reload du chat principal (voir

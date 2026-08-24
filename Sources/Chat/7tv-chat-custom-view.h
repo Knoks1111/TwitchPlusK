@@ -21,10 +21,16 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Intégration du composant dans la hiérarchie native Twitch. L'état de la
 // vue active et toute la logique de remplacement du transcript vivent avec
-// le renderer ; 7tv-core-runtime-hooks.m ne fait que transmettre didMoveToWindow.
+// le renderer ; 7tv-core-runtime-hooks.m transmet les signaux de visibilité
+// UIKit sans prendre de décision sur la chaîne.
 UIView * _Nullable s7tv_findChatInputView(void);
 SevenTVChatCustomView * _Nullable s7tv_activeChatCustomView(void);
 void s7tv_handleNativeChatViewLifecycle(UIView *view);
+// Une ChatTranscriptView peut rester dans la même UIWindow pendant A→B→A :
+// didMoveToWindow ne sera alors jamais rappelé. Ces deux points d'entrée
+// réconcilient l'état avec la vue réellement visible après layout/navigation.
+void s7tv_handleNativeChatViewVisibility(UIView *view);
+void s7tv_reconcileVisibleNativeChatViewInRootView(UIView * _Nullable rootView);
 // Le hook WebSocket transmet les JOIN observés ici au lieu de décider seul
 // quelle chaîne est à l'écran. Une vue Twitch déjà conservée peut redevenir
 // visible sans nouveau JOIN, tandis qu'un socket hors écran peut se reconnecter.

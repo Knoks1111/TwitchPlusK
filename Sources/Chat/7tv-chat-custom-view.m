@@ -18,6 +18,14 @@
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
+// Lien inverse faible vers le transcript Twitch remplacé. Il permet au layout
+// de notre propre vue de signaler une réapparition même si le transcript natif
+// caché ne reçoit lui-même aucun layoutSubviews. Déclaré avant le routeur qui
+// installe le renderer ; les autres propriétés privées sont regroupées plus bas.
+@interface SevenTVChatCustomView ()
+@property (nonatomic, weak) UIView *s7tvHostNativeChatView;
+@end
+
 // ============================================================
 // MARK: - Intégration dans le transcript Twitch
 // ============================================================
@@ -32,7 +40,13 @@ static NSString *s_activeNativeChatChannelName = nil;
 static NSString *s_pendingNativeChatChannelName = nil;
 static CFTimeInterval s_pendingNativeChatChannelTimestamp = 0;
 static __weak UIView *s_pendingNativeChatJoinSourceView = nil;
+static NSMutableDictionary<NSString *, NSNumber *> *s_recentIRCChannelEvidence = nil;
 static BOOL s_chatReloadScheduled = NO;
+
+static BOOL s7tv_isNativeChatTranscriptView(UIView *view) {
+    return [NSStringFromClass(view.class)
+        isEqualToString:@"Twitch.ChatTranscriptView"];
+}
 
 static NSString *s7tv_normalizedChatChannelName(NSString *channel) {
     NSString *normalized = [[channel ?: @""
@@ -190,6 +204,18 @@ BOOL s7tv_confirmVisibleChatChannelFromIRC(NSString *channel) {
 
     __block BOOL accepted = NO;
     dispatch_block_t confirm = ^{
+        CFTimeInterval now = CACurrentMediaTime();
+        if (!s_recentIRCChannelEvidence) {
+            s_recentIRCChannelEvidence = [NSMutableDictionary dictionary];
+        }
+        s_recentIRCChannelEvidence[normalized] = @(now);
+        for (NSString *knownChannel in
+             [s_recentIRCChannelEvidence.allKeys copy]) {
+            if (now - s_recentIRCChannelEvidence[knownChannel].doubleValue > 10.0) {
+                [s_recentIRCChannelEvidence removeObjectForKey:knownChannel];
+            }
+        }
+
         UIView *activeView = s_activeNativeChatView;
         if (!activeView || !activeView.window) return;
 
@@ -414,6 +440,7 @@ static void s7tv_installChatCustomView(UIView *chatView) {
     SevenTVChatCustomView *existing =
         objc_getAssociatedObject(chatView, &kS7TVChatCustomInstalledView);
     if (existing && existing.superview == stack) {
+        existing.s7tvHostNativeChatView = chatView;
         chatView.hidden = YES;
         existing.hidden = NO;
         s_activeChatCustomView = existing;
@@ -436,6 +463,7 @@ static void s7tv_installChatCustomView(UIView *chatView) {
         [[S7TVReplyThreadPanel sharedPanel]
             selectReplyTargetForMessageID:messageID username:username];
     };
+    customView.s7tvHostNativeChatView = chatView;
     [stack insertArrangedSubview:customView atIndex:index];
     objc_setAssociatedObject(chatView, &kS7TVChatCustomInstalledView, customView,
                              OBJC_ASSOCIATION_RETAIN);
@@ -467,17 +495,94 @@ void s7tv_applyChatCustomToggle(void) {
     if (s_activeChatCustomView == customView) s_activeChatCustomView = nil;
 }
 
-void s7tv_handleNativeChatViewLifecycle(UIView *view) {
-    if (![NSStringFromClass(view.class) isEqualToString:@"Twitch.ChatTranscriptView"] ||
-        !view.window || ![view.superview isKindOfClass:UIStackView.class]) return;
+static UIView *s7tv_presentationViewForNativeChatView(UIView *view) {
+    SevenTVChatCustomView *customView =
+        objc_getAssociatedObject(view, &kS7TVChatCustomInstalledView);
+    if (customView.window == view.window && !customView.hidden &&
+        customView.alpha > 0.01) {
+        return customView;
+    }
+    return view;
+}
 
+static BOOL s7tv_hitViewBelongsToPresentationView(UIView *hitView,
+                                                   UIView *presentationView) {
+    return hitView == presentationView ||
+        [hitView isDescendantOfView:presentationView];
+}
+
+// Retourne l'aire réellement présentée dans la fenêtre, ou -1 si la vue est
+// seulement conservée hors écran/sous un autre contrôleur. Le transcript natif
+// lui-même est volontairement hidden lorsque notre renderer est actif : dans
+// ce cas, on mesure et hit-test sa vue custom sœur.
+static CGFloat s7tv_visiblePresentationAreaForNativeChatView(UIView *view) {
+    if (!s7tv_isNativeChatTranscriptView(view) || !view.window ||
+        ![view.superview isKindOfClass:UIStackView.class]) return -1.0;
+
+    UIWindow *window = view.window;
+    if (window.hidden || window.alpha <= 0.01) return -1.0;
+    if (window.windowScene &&
+        window.windowScene.activationState != UISceneActivationStateForegroundActive) {
+        return -1.0;
+    }
+
+    UIView *presentationView = s7tv_presentationViewForNativeChatView(view);
+    if (!presentationView || presentationView.window != window ||
+        presentationView.hidden || presentationView.alpha <= 0.01 ||
+        CGRectIsEmpty(presentationView.bounds)) return -1.0;
+
+    CGRect visibleRect = [presentationView convertRect:presentationView.bounds
+                                                 toView:window];
+    visibleRect = CGRectIntersection(visibleRect, window.bounds);
+    for (UIView *ancestor = presentationView.superview;
+         ancestor && ancestor != window;
+         ancestor = ancestor.superview) {
+        if (ancestor.hidden || ancestor.alpha <= 0.01) return -1.0;
+        if (ancestor.clipsToBounds) {
+            CGRect clippingRect = [ancestor convertRect:ancestor.bounds toView:window];
+            visibleRect = CGRectIntersection(visibleRect, clippingRect);
+        }
+    }
+    if (CGRectIsNull(visibleRect) || CGRectIsEmpty(visibleRect)) return -1.0;
+
+    CGFloat fullArea = CGRectGetWidth(presentationView.bounds) *
+        CGRectGetHeight(presentationView.bounds);
+    CGFloat visibleArea = CGRectGetWidth(visibleRect) * CGRectGetHeight(visibleRect);
+    if (fullArea <= 1.0 || visibleArea / fullArea < 0.55) return -1.0;
+
+    // Deux contrôleurs retenus peuvent avoir des frames valides dans la même
+    // fenêtre. Trois points suffisent à écarter celui qui est dessous ou déjà
+    // translaté hors écran, sans dépendre du nom privé de son controller.
+    CGFloat sampleXs[] = {
+        CGRectGetMinX(visibleRect) + CGRectGetWidth(visibleRect) * 0.25,
+        CGRectGetMidX(visibleRect),
+        CGRectGetMinX(visibleRect) + CGRectGetWidth(visibleRect) * 0.75
+    };
+    CGFloat sampleY = CGRectGetMidY(visibleRect);
+    BOOL ownsVisiblePoint = NO;
+    for (NSUInteger index = 0; index < 3; index++) {
+        UIView *hitView = [window hitTest:CGPointMake(sampleXs[index], sampleY)
+                                withEvent:nil];
+        if (s7tv_hitViewBelongsToPresentationView(hitView, presentationView)) {
+            ownsVisiblePoint = YES;
+            break;
+        }
+    }
+    return ownsVisiblePoint ? visibleArea : -1.0;
+}
+
+static void s7tv_routeActuallyVisibleNativeChatView(UIView *view) {
     NSString *boundChannel = s7tv_channelBoundToNativeChatView(view);
     BOOL pendingJoinIsFresh = s_pendingNativeChatChannelName.length &&
         CACurrentMediaTime() - s_pendingNativeChatChannelTimestamp <= 10.0;
     if (pendingJoinIsFresh && view == s_pendingNativeChatJoinSourceView &&
-        s_activeNativeChatView && s_activeNativeChatView != view) {
-        // didMoveToWindow tardif de l'ancienne vue pendant que la nouvelle a
-        // déjà pris l'autorité. Ne pas laisser A reprendre la place de B.
+        boundChannel.length &&
+        [boundChannel caseInsensitiveCompare:s_pendingNativeChatChannelName] !=
+            NSOrderedSame) {
+        // Le JOIN cible peut partir alors que l'ancienne vue est encore à
+        // l'écran. Un layout de cette source pendant l'animation ne doit pas
+        // annuler la transition ; la nouvelle vue prendra le candidat, ou
+        // ROOMSTATE rebranchera cette même vue si Twitch la réutilise en place.
         return;
     }
     if (!boundChannel.length && pendingJoinIsFresh) {
@@ -489,6 +594,16 @@ void s7tv_handleNativeChatViewLifecycle(UIView *view) {
     }
 
     s_activeNativeChatView = view;
+    NSNumber *recentEvidence = boundChannel.length
+        ? s_recentIRCChannelEvidence[boundChannel] : nil;
+    BOOL hasFreshServerEvidence = recentEvidence &&
+        CACurrentMediaTime() - recentEvidence.doubleValue <= 10.0;
+    if (!s7tv_nativeChatViewChannelIsConfirmed(view) && hasFreshServerEvidence) {
+        // ROOMSTATE peut arriver avant le layout/viewDidAppear d'une vue neuve.
+        // Conserver cette preuve serveur évite qu'un seul paquet trop précoce
+        // condamne le transcript jusqu'au prochain message du salon.
+        s7tv_confirmChannelBoundToNativeChatView(view);
+    }
     if (!boundChannel.length || !s7tv_nativeChatViewChannelIsConfirmed(view)) {
         s7tv_suspendCustomChatForNativeView(view);
         return;
@@ -512,6 +627,75 @@ void s7tv_handleNativeChatViewLifecycle(UIView *view) {
     s7tv_applyChatCustomToggle();
 }
 
+void s7tv_handleNativeChatViewVisibility(UIView *view) {
+    if (s7tv_visiblePresentationAreaForNativeChatView(view) < 0.0) return;
+
+    NSString *boundChannel = s7tv_channelBoundToNativeChatView(view);
+    NSString *activeChannel = s7tv_activeNativeChatChannelName();
+    BOOL alreadyStable = view == s_activeNativeChatView &&
+        boundChannel.length && s7tv_nativeChatViewChannelIsConfirmed(view) &&
+        !s7tv_nativeChatViewIsTransitionSuspended(view) &&
+        activeChannel.length &&
+        [activeChannel caseInsensitiveCompare:boundChannel] == NSOrderedSame;
+    if (alreadyStable) return;
+
+    s7tv_routeActuallyVisibleNativeChatView(view);
+}
+
+void s7tv_handleNativeChatViewLifecycle(UIView *view) {
+    if (!s7tv_isNativeChatTranscriptView(view) || !view.window ||
+        ![view.superview isKindOfClass:UIStackView.class]) return;
+
+    // didMoveToWindow arrive souvent avant le premier layout/hit-test. Un
+    // essai immédiat couvre les vues déjà posées ; celui du runloop suivant
+    // couvre une vue neuve sans réintroduire un délai réseau arbitraire.
+    s7tv_handleNativeChatViewVisibility(view);
+    __weak UIView *weakView = view;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        s7tv_handleNativeChatViewVisibility(weakView);
+    });
+}
+
+void s7tv_reconcileVisibleNativeChatViewInRootView(UIView *rootView) {
+    dispatch_block_t reconcile = ^{
+        NSMutableArray<UIView *> *roots = [NSMutableArray array];
+        if (rootView.window) {
+            [roots addObject:rootView];
+        } else if (!rootView) {
+            for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+                if (![scene isKindOfClass:UIWindowScene.class] ||
+                    scene.activationState != UISceneActivationStateForegroundActive) continue;
+                for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+                    if (!window.hidden && window.alpha > 0.01) [roots addObject:window];
+                }
+            }
+        }
+
+        UIView *bestView = nil;
+        CGFloat bestArea = -1.0;
+        for (UIView *searchRoot in roots) {
+            NSMutableArray<UIView *> *views =
+                [NSMutableArray arrayWithObject:searchRoot];
+            while (views.count > 0) {
+                UIView *candidate = views.lastObject;
+                [views removeLastObject];
+                if (s7tv_isNativeChatTranscriptView(candidate)) {
+                    CGFloat area =
+                        s7tv_visiblePresentationAreaForNativeChatView(candidate);
+                    if (area > bestArea) {
+                        bestArea = area;
+                        bestView = candidate;
+                    }
+                }
+                [views addObjectsFromArray:candidate.subviews];
+            }
+        }
+        if (bestView) s7tv_handleNativeChatViewVisibility(bestView);
+    };
+    if (NSThread.isMainThread) reconcile();
+    else dispatch_async(dispatch_get_main_queue(), reconcile);
+}
+
 void s7tv_setupChatCustomIntegration(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -521,6 +705,11 @@ void s7tv_setupChatCustomIntegration(void) {
                            object:manager queue:NSOperationQueue.mainQueue
                        usingBlock:^(__unused NSNotification *note) {
             s7tv_applyChatCustomToggle();
+        }];
+        [center addObserverForName:UIApplicationDidBecomeActiveNotification
+                           object:nil queue:NSOperationQueue.mainQueue
+                       usingBlock:^(__unused NSNotification *note) {
+            s7tv_reconcileVisibleNativeChatViewInRootView(nil);
         }];
         [center addObserverForName:S7TVEmoteCatalogDidUpdateNotification
                            object:manager queue:NSOperationQueue.mainQueue
@@ -1200,6 +1389,9 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
 - (void)layoutSubviews {
     [super layoutSubviews];
+    if (self.s7tvHostNativeChatView) {
+        s7tv_handleNativeChatViewVisibility(self.s7tvHostNativeChatView);
+    }
     // s7tv_actualVisibleWidth plutôt que self.bounds.size.width seul : un
     // ancêtre peut recadrer visuellement cette vue (voir commentaire de
     // s7tv_actualVisibleWidth) sans que self.bounds ne change. Avec les

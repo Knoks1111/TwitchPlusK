@@ -202,8 +202,53 @@ static void s7tv_ingestChannelPointMetadata(NSData *data,
 // MARK: - Routeur UIKit vers les modules UI
 // ────────────────────────────────────────────────────────────
 
+typedef void (*S7TVViewLayoutIMP)(id, SEL);
+static IMP s_s7tvChatTranscriptOriginalLayoutIMP = NULL;
+static BOOL s_s7tvChatTranscriptLayoutHookInstalled = NO;
+
+static void s7tv_chatTranscriptLayoutSubviews(id view, SEL selector) {
+    S7TVViewLayoutIMP original =
+        (S7TVViewLayoutIMP)s_s7tvChatTranscriptOriginalLayoutIMP;
+    if (original) original(view, selector);
+    s7tv_handleNativeChatViewVisibility((UIView *)view);
+}
+
+// layoutSubviews est beaucoup trop fréquent pour être swizzlé sur UIView.
+// On remplace donc uniquement l'implémentation de la classe Swift exacte du
+// transcript, dès qu'elle est chargée (au constructeur ou à son premier
+// didMoveToWindow). class_replaceMethod garde UIView et les autres vues intactes.
+static BOOL s7tv_tryInstallChatTranscriptLayoutHook(void) {
+    @synchronized ([UIView class]) {
+        if (s_s7tvChatTranscriptLayoutHookInstalled) return YES;
+        Class transcriptClass = NSClassFromString(@"Twitch.ChatTranscriptView");
+        if (!transcriptClass) return NO;
+
+        SEL selector = @selector(layoutSubviews);
+        Method method = class_getInstanceMethod(transcriptClass, selector);
+        if (!method) return NO;
+        IMP currentIMP = class_getMethodImplementation(transcriptClass, selector);
+        if (currentIMP == (IMP)s7tv_chatTranscriptLayoutSubviews) {
+            s_s7tvChatTranscriptLayoutHookInstalled = YES;
+            return YES;
+        }
+
+        s_s7tvChatTranscriptOriginalLayoutIMP = currentIMP;
+        class_replaceMethod(transcriptClass, selector,
+                            (IMP)s7tv_chatTranscriptLayoutSubviews,
+                            method_getTypeEncoding(method));
+        s_s7tvChatTranscriptLayoutHookInstalled = YES;
+        [[SevenTVManager sharedManager]
+            log:@"✅ suivi de visibilité installé sur ChatTranscriptView.layoutSubviews"];
+        return YES;
+    }
+}
+
 @interface UIView (S7TVChatInputHook)
 - (void)s7tv_didMoveToWindow;
+@end
+
+@interface UIViewController (S7TVChatVisibilityHook)
+- (void)s7tv_viewDidAppear:(BOOL)animated;
 @end
 
 @implementation UIView (S7TVChatInputHook)
@@ -211,10 +256,34 @@ static void s7tv_ingestChannelPointMetadata(NSData *data,
 - (void)s7tv_didMoveToWindow {
     [self s7tv_didMoveToWindow]; // appel original
 
+    if ([NSStringFromClass(self.class)
+            isEqualToString:@"Twitch.ChatTranscriptView"]) {
+        s7tv_tryInstallChatTranscriptLayoutHook();
+    }
     s7tv_handleTheaterControlsViewLifecycle(self);
     s7tv_handleNativeChatViewLifecycle(self);
 
     s7tv_handleChatInputViewLifecycle(self);
+}
+
+@end
+
+
+@implementation UIViewController (S7TVChatVisibilityHook)
+
+- (void)s7tv_viewDidAppear:(BOOL)animated {
+    [self s7tv_viewDidAppear:animated]; // appel original
+
+    __weak UIView *rootView = self.viewIfLoaded;
+    if (!rootView.window) return;
+    // viewDidAppear est le signal de fin fiable après une navigation rapide.
+    // Le runloop suivant laisse finir les derniers changements de frame avant
+    // de départager plusieurs controllers Twitch conservés dans la UIWindow.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (rootView.window) {
+            s7tv_reconcileVisibleNativeChatViewInRootView(rootView);
+        }
+    });
 }
 
 @end
@@ -794,6 +863,11 @@ static void TwitchSevenTVInit(void) {
                  [UIView class],
                  @selector(didMoveToWindow),
                  @selector(s7tv_didMoveToWindow));
+    s7tv_swizzle([UIViewController class],
+                 [UIViewController class],
+                 @selector(viewDidAppear:),
+                 @selector(s7tv_viewDidAppear:));
+    s7tv_tryInstallChatTranscriptLayoutHook();
 
     // Interception réponses GQL Twitch
     s7tv_swizzle_token_capture();

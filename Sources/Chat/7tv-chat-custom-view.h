@@ -21,29 +21,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Intégration du composant dans la hiérarchie native Twitch. L'état de la
 // vue active et toute la logique de remplacement du transcript vivent avec
-// le renderer ; 7tv-core-runtime-hooks.m transmet les signaux de visibilité
-// UIKit sans prendre de décision sur la chaîne.
+// le renderer ; 7tv-core-runtime-hooks.m ne fait que transmettre didMoveToWindow.
 UIView * _Nullable s7tv_findChatInputView(void);
 SevenTVChatCustomView * _Nullable s7tv_activeChatCustomView(void);
 void s7tv_handleNativeChatViewLifecycle(UIView *view);
-// Une ChatTranscriptView peut rester dans la même UIWindow pendant A→B→A :
-// didMoveToWindow ne sera alors jamais rappelé. Ces deux points d'entrée
-// réconcilient l'état avec la vue réellement visible après layout/navigation.
-void s7tv_handleNativeChatViewVisibility(UIView *view);
-void s7tv_reconcileVisibleNativeChatViewInRootView(UIView * _Nullable rootView);
-// Le hook WebSocket transmet les JOIN observés ici au lieu de décider seul
-// quelle chaîne est à l'écran. Une vue Twitch déjà conservée peut redevenir
-// visible sans nouveau JOIN, tandis qu'un socket hors écran peut se reconnecter.
-void s7tv_noteOutgoingChatJoinForChannel(NSString *channel);
-// Confirme synchroniquement la chaîne réellement portée par une ligne IRC
-// serveur (ROOMSTATE/PRIVMSG). Un JOIN sortant reste un simple candidat : il
-// peut viser le salon technique du viewer connecté et ne doit jamais suffire
-// à construire Bienvenue/historique/chat live.
-BOOL s7tv_confirmVisibleChatChannelFromIRC(NSString *channel);
-BOOL s7tv_visibleNativeChatViewHasConfirmedChannel(void);
-// Identité UI actuellement autoritaire, lisible sans toucher UIKit depuis les
-// callbacks réseau afin de rejeter les réponses GQL d'une ancienne chaîne.
-NSString * _Nullable s7tv_activeNativeChatChannelName(void);
 void s7tv_applyChatCustomToggle(void);
 void s7tv_reloadActiveChatCustomView(void);
 void s7tv_reloadActiveChatCustomViewAnimated(void);

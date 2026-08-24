@@ -154,10 +154,6 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // deux messages IRC n'a encore été observé. Sert à détecter les mentions du
 // viewer lui-même dans le chat (voir S7TVChatMessage.mentionsCurrentViewer).
 @property (nonatomic, copy) NSString *currentViewerDisplayName;
-// Login IRC exact annoncé par `NICK`, disponible avant USERSTATE. Contrairement
-// au display-name, il peut être comparé directement à un `#channel` afin de
-// reconnaître le salon technique du compte connecté.
-@property (nonatomic, copy) NSString *currentViewerLogin;
 
 // File de dispatch protégeant globalEmotes/channelEmotes (concurrent).
 // Utiliser dispatch_sync(mgr.emoteQueue, ^{ ... }) pour lire,
@@ -165,11 +161,10 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, strong, readonly) dispatch_queue_t emoteQueue;
 
 // --- Chat custom (Phase 1a+) ---
-// Store des messages du chat en cours. Réinitialisé avant réaffichage lorsque
-// le routeur UIKit active la chaîne représentée par le ChatTranscriptView ;
-// ROOMSTATE confirme ensuite son ID Twitch. Chaque mutation réseau est aussi
-// conditionnée à la génération de session afin qu'un callback obsolète ne
-// puisse repeupler le store après son vidage.
+// Store des messages du chat en cours. Réinitialisé automatiquement à
+// chaque changement de chaîne détecté (voir -handleIRCRoomState:) pour
+// éviter qu'un message de l'ancienne chaîne fuite
+// dans la nouvelle (exigence Phase 0).
 @property (nonatomic, strong, readonly) S7TVChatMessageStore *chatMessageStore;
 
 // --- Initialisation ---
@@ -258,9 +253,8 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @end
 
 // Cycle de vie de l'historique récent du salon. Le hook WebSocket transmet
-// les JOIN au routeur UIKit, qui active la chaîne de la vue visible ; le
-// manager possède ensuite la génération, la requête réseau et la remise à
-// zéro atomique du store.
+// seulement les JOIN sortants ; le manager possède la génération, la requête
+// réseau et la remise à zéro atomique du store.
 @interface SevenTVManager (RecentChatHistory)
 - (void)initializeRecentHistoryForChannel:(NSString *)channel force:(BOOL)force;
 - (void)handleOutgoingChatWebSocketMessage:(NSURLSessionWebSocketMessage *)message;

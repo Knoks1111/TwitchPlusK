@@ -816,13 +816,12 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     S7TVStyleTableView(self.tableView);
 }
 
-// Section 0 : Chat custom (promu depuis Débogage — ce n'est plus un test,
-// c'est le mode de rendu du chat)
-// Section 1 : affichage des emotes (animations + résolution CDN 7TV)
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
+// Affichage des emotes (animations + résolution CDN 7TV). Le kill switch du
+// renderer est désormais rangé dans Avancé : ce n'est pas un réglage visuel.
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 1; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    return s == 0 ? 1 : 3;
+    return 3;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
@@ -830,7 +829,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
-    return S7TVSectionHeader(s == 0 ? L(@"section_general") : L(@"section_affichage"), NO);
+    return S7TVSectionHeader(L(@"section_affichage"), NO);
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
@@ -845,13 +844,6 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
-    if (ip.section == 0) {
-        return S7TVSwitchCell(L(@"switch_chat_custom"),
-                              @"message.badge.filled.fill",
-                              S7TVAccent(),
-                              mgr.chatCustomTestEnabled,
-                              self, @selector(toggleChatCustom:));
-    }
     switch (ip.row) {
         case 0: return S7TVSwitchCell(L(@"switch_animations_picker"),
                     @"photo.stack",
@@ -930,16 +922,11 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     [tv deselectRowAtIndexPath:ip animated:YES];
 }
 
-// Kill switch Phase 0 (plan chat custom) — voir 7tv-core-manager.h. Réutilise
-// la propriété chatCustomTestEnabled existante ; seul le libellé/l'écran
-// changent dans cette passe (câblage plus profond laissé pour plus tard).
-- (void)toggleChatCustom:(UISwitch *)sw { [SevenTVManager sharedManager].chatCustomTestEnabled = sw.isOn; }
-
 - (void)togglePickerAnimations:(UISwitch *)sw {
     [SevenTVManager sharedManager].showPickerAnimations = sw.isOn;
     // Reload pour griser/dégriser la sous-option "Favoris uniquement", qui
     // dépend de ce réglage.
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
                    withRowAnimation:UITableViewRowAnimationNone];
 }
 - (void)togglePickerAnimationsFavoritesOnly:(UISwitch *)sw {
@@ -1611,8 +1598,9 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 // MARK: - SevenTVAdvancedPageController  (ex-SevenTVDebugPageController)
 // Diagnostic — reste un vrai menu utilisateur (projet open source, les logs
 // servent aussi à d'autres personnes pour remonter des bugs), pas un mode
-// caché type "tap x5". "Test chat custom" est parti dans Apparence. "Vider
-// le cache" (ex-"Recharger les emotes" de l'accueil) atterrit ici en premier.
+// caché type "tap x5". Le kill switch du chat custom vit dans Options afin
+// de rester disponible sans occuper la page Apparence. "Vider le cache"
+// (ex-"Recharger les emotes" de l'accueil) atterrit ici en premier.
 // ─────────────────────────────────────────────────────────────────────────────
 
 @interface SevenTVAdvancedPageController ()
@@ -1661,7 +1649,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
 
 // Section 0 = Cache (vider le cache)
-// Section 1 = Options (bouton flottant)
+// Section 1 = Options (chat custom + bouton flottant)
 // Section 2 = Logs (activer logs, voir les logs, logs console, puis 14 catégories)
 // Section 3 = Danger (effacer les logs)
 #define S7TV_SECTION_CACHE        0
@@ -1679,7 +1667,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     switch (s) {
         case S7TV_SECTION_CACHE:   return 1;
-        case S7TV_SECTION_OPTIONS: return 1;
+        case S7TV_SECTION_OPTIONS: return 2;
         case S7TV_SECTION_LOGS:    return S7TV_LOGS_ROW_COUNT;
         case S7TV_SECTION_DANGER:  return 1;
         default: return 0;
@@ -1756,7 +1744,13 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     }
 
     if (ip.section == S7TV_SECTION_OPTIONS) {
-        // Bouton flottant uniquement — "Test chat custom" a déménagé dans Apparence.
+        if (ip.row == 0) {
+            return S7TVSwitchCell(L(@"switch_chat_custom"),
+                        @"message.badge.filled.fill",
+                        S7TVAccent(),
+                        mgr.chatCustomTestEnabled,
+                        self, @selector(toggleChatCustom:));
+        }
         return S7TVSwitchCell(L(@"switch_floating_button"),
                     @"circle.grid.2x1.fill",
                     [UIColor colorWithWhite:0.75 alpha:1.0],
@@ -1972,6 +1966,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                    withRowAnimation:UITableViewRowAnimationNone];
 }
 - (void)toggleDebug:(UISwitch *)sw                  { [SevenTVManager sharedManager].debugLogging        = sw.isOn; }
+- (void)toggleChatCustom:(UISwitch *)sw             { [SevenTVManager sharedManager].chatCustomTestEnabled = sw.isOn; }
 - (void)toggleFloatingButton:(UISwitch *)sw         { [SevenTVManager sharedManager].showFloatingButton  = sw.isOn; }
 
 - (void)toggleLogErrors:(UISwitch *)sw           { [SevenTVManager sharedManager].logErrors           = sw.isOn; }

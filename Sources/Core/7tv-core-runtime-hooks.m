@@ -670,6 +670,10 @@ static void s7tv_swizzle_apollo_gql(void) {
 // sur la requête individuelle. On capture donc à la source, aux deux
 // endroits possibles où ces headers peuvent être écrits.
 
+static BOOL s7tv_requestTargetsTwitchGQL(NSURLRequest *request) {
+    return [request.URL.host caseInsensitiveCompare:@"gql.twitch.tv"] == NSOrderedSame;
+}
+
 @interface NSMutableURLRequest (S7TVTokenCapture)
 - (void)s7tv_setValue:(NSString *)value forHTTPHeaderField:(NSString *)field;
 - (void)s7tv_setAllHTTPHeaderFields:(NSDictionary<NSString *, NSString *> *)headerFields;
@@ -677,7 +681,10 @@ static void s7tv_swizzle_apollo_gql(void) {
 
 @implementation NSMutableURLRequest (S7TVTokenCapture)
 - (void)s7tv_setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
-    if (value.length) {
+    // La capture globale voyait aussi l'Authorization Basic injectée par le
+    // proxy adblock. Restreindre aux requêtes GQL empêche tout service tiers
+    // (proxy compris) d'écraser le token Twitch destiné à Helix.
+    if (value.length && s7tv_requestTargetsTwitchGQL(self)) {
         if ([field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame) {
             [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:value];
         } else if ([field caseInsensitiveCompare:@"Client-ID"] == NSOrderedSame) {
@@ -691,13 +698,15 @@ static void s7tv_swizzle_apollo_gql(void) {
 // pose TOUS les headers d'un coup via cette méthode plutôt que field par
 // field — sans ce hook, ce cas échappe complètement à setValue:forHTTPHeaderField:.
 - (void)s7tv_setAllHTTPHeaderFields:(NSDictionary<NSString *, NSString *> *)headerFields {
-    for (NSString *field in headerFields) {
-        NSString *value = headerFields[field];
-        if (!value.length) continue;
-        if ([field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame) {
-            [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:value];
-        } else if ([field caseInsensitiveCompare:@"Client-ID"] == NSOrderedSame) {
-            [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:value];
+    if (s7tv_requestTargetsTwitchGQL(self)) {
+        for (NSString *field in headerFields) {
+            NSString *value = headerFields[field];
+            if (!value.length) continue;
+            if ([field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame) {
+                [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:value];
+            } else if ([field caseInsensitiveCompare:@"Client-ID"] == NSOrderedSame) {
+                [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:value];
+            }
         }
     }
     [self s7tv_setAllHTTPHeaderFields:headerFields];

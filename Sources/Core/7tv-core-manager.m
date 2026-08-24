@@ -54,6 +54,7 @@ NSString *const S7TVLogsDidUpdateNotification = @"S7TVLogsDidUpdateNotification"
 NSString *const S7TVEmoteCatalogDidUpdateNotification = @"S7TVEmoteCatalogDidUpdateNotification";
 NSString *const S7TVChatCustomToggleDidChangeNotification = @"S7TVChatCustomToggleDidChangeNotification";
 NSString *const S7TVFavoritesDidChangeNotification = @"S7TVFavoritesDidChangeNotification";
+NSString *const S7TVTwitchCredentialsDidUpdateNotification = @"S7TVTwitchCredentialsDidUpdateNotification";
 
 // ============================================================
 // TTL du cache en secondes
@@ -1256,14 +1257,36 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 // MARK: - Stockage token Twitch (intercepté depuis requêtes GQL)
 // ============================================================
 
+// N'accepte que les deux schémas réellement utilisés par Twitch. L'adblock
+// ajoute parfois un `Authorization: Basic ...` pour authentifier son proxy :
+// cette valeur ne doit surtout jamais remplacer le token OAuth Twitch utilisé
+// par Helix (badges, avatars, etc.).
+static NSString *S7TVNormalizedTwitchBearerToken(NSString *value) {
+    NSString *trimmed = [value stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!trimmed.length) return nil;
+
+    NSRange separator = [trimmed rangeOfString:@" "];
+    if (separator.location == NSNotFound) return nil;
+    NSString *scheme = [trimmed substringToIndex:separator.location];
+    if ([scheme caseInsensitiveCompare:@"OAuth"] != NSOrderedSame &&
+        [scheme caseInsensitiveCompare:@"Bearer"] != NSOrderedSame) return nil;
+
+    NSString *credential = [[trimmed substringFromIndex:separator.location + 1]
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    if (!credential.length) return nil;
+    return [@"Bearer " stringByAppendingString:credential];
+}
+
 - (void)s7tv_captureAuthorizationHeader:(NSString *)value {
-    if (!value.length || [value isEqualToString:self.twitchToken]) return;
+    NSString *normalized = S7TVNormalizedTwitchBearerToken(value);
+    if (!normalized.length) return;
     self.pendingAuthHeader = value;
     [self s7tv_tryFinalizeTokenCapture];
 }
 
 - (void)s7tv_captureClientIDHeader:(NSString *)value {
-    if (!value.length || [value isEqualToString:self.twitchClientID]) return;
+    if (!value.length) return;
     self.pendingClientIDHeader = value;
     [self s7tv_tryFinalizeTokenCapture];
 }
@@ -1277,22 +1300,22 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 - (void)saveTwitchToken:(NSString *)token clientID:(NSString *)clientID {
     if (!token.length || !clientID.length) return;
 
-    // Twitch pose son Authorization en GQL au format "OAuth <token>", mais
-    // l'API Helix (utilisée pour les badges) exige le format "Bearer <token>"
-    // — même token sous-jacent, juste un préfixe de schéma différent. Sans
-    // cette conversion, Helix rejette silencieusement la requête (pas
-    // d'erreur réseau, juste un JSON sans "data" → parsé comme 0 sets).
-    NSString *normalizedToken = token;
-    if ([token hasPrefix:@"OAuth "]) {
-        normalizedToken = [@"Bearer " stringByAppendingString:[token substringFromIndex:6]];
-    } else if (![token hasPrefix:@"Bearer "]) {
-        normalizedToken = [@"Bearer " stringByAppendingString:token];
+    // Twitch pose généralement "OAuth" sur GQL ; Helix exige "Bearer".
+    // Le normaliseur rejette également les credentials Basic du proxy vidéo.
+    NSString *normalizedToken = S7TVNormalizedTwitchBearerToken(token);
+    if (!normalizedToken.length) {
+        [self log:@"⚠️ Credentials Twitch ignorés: schéma Authorization non OAuth/Bearer"];
+        return;
     }
-
-    if ([normalizedToken isEqualToString:self.twitchToken]) return; // déjà à jour
+    if ([normalizedToken isEqualToString:self.twitchToken] &&
+        [clientID isEqualToString:self.twitchClientID]) return; // déjà à jour
     self.twitchToken   = normalizedToken;
     self.twitchClientID = clientID;
+    self.pendingAuthHeader = nil;
+    self.pendingClientIDHeader = nil;
     [self log:@"🏗 Badges: token normalisé OAuth→Bearer et sauvegardé"];
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:S7TVTwitchCredentialsDidUpdateNotification object:self];
     // Déclencher le chargement des badges maintenant qu'on a le token
     [[SevenTVBadgeProvider sharedProvider] loadGlobalBadges];
     if (self.currentChannelTwitchID.length) {

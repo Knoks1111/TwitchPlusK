@@ -207,6 +207,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // voir 7tv-picker-settings-panel.m, _buildSelfMentionSectionInScrollView:).
         @"sizes_self_mention_row_label":    @[@"Vous êtes mentionné", @"You're mentioned"],
         @"sizes_first_message_row_label":   @[@"Premier message", @"First message"],
+        @"sizes_shared_chat_avatars_label": @[@"Avatars du chat partagé", @"Shared Chat avatars"],
         @"sizes_moderation_section_title":  @[@"Messages supprimés", @"Deleted messages"],
         @"sizes_deleted_preview_label":     @[@"Preview", @"Preview"],
         @"sizes_deleted_preview_disabled":  @[@"Désactivé", @"Disabled"],
@@ -309,7 +310,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"banner_new_messages_format":      @[@"%lu nouveaux messages", @"%lu new messages"],
         // Frontière historique/live affichée au JOIN du chat custom.
         @"chat_history_welcome_format":      @[@"Bienvenue sur le chat de %@ !", @"Welcome to %@'s chat!"],
-        @"chat_history_new_messages":        @[@"Nouveautés", @"New messages"],
+        @"chat_history_new_messages":        @[@"Nouveau message", @"New messages"],
         // %@ 1 = utilisateur, %@ 2 = titre exact reçu de Twitch. Les
         // récompenses avec saisie affichent directement leur titre au-dessus
         // du message et n'utilisent donc pas ce connecteur.

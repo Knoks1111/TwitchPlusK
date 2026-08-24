@@ -307,6 +307,41 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     return s7tv_isDeletedMessage(msg) && !s7tv_shouldRenderDeletedCollapsed(msg, cfg);
 }
 
+// Les avatars Twitch sont des images carrées. Le Shared Chat les affiche
+// comme un badge rond ; le masque est calculé une seule fois par chaîne puis
+// conservé en RAM, afin de ne pas refaire du dessin pour chaque cellule.
+static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey) {
+    if (!image || !cacheKey.length) return image;
+    static NSCache<NSString *, UIImage *> *cache = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [NSCache new];
+        cache.countLimit = 64;
+    });
+    UIImage *cached = [cache objectForKey:cacheKey];
+    if (cached) return cached;
+
+    CGFloat side = MIN(image.size.width, image.size.height);
+    if (side <= 0) return image;
+    CGSize size = CGSizeMake(side, side);
+    UIGraphicsBeginImageContextWithOptions(size, NO, image.scale);
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    if (!context) {
+        UIGraphicsEndImageContext();
+        return image;
+    }
+    CGContextAddEllipseInRect(context, (CGRect){CGPointZero, size});
+    CGContextClip(context);
+    CGRect drawRect = CGRectMake((side - image.size.width) * 0.5,
+                                 (side - image.size.height) * 0.5,
+                                 image.size.width, image.size.height);
+    [image drawInRect:drawRect];
+    UIImage *rounded = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if (rounded) [cache setObject:rounded forKey:cacheKey];
+    return rounded ?: image;
+}
+
 
 // ============================================================
 // MARK: - Cellule (texte + emotes, hauteur dynamique)
@@ -2616,23 +2651,35 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
 
     // Badges (Phase 3) — gardent leur position verticale actuelle
     // (bounds y=-3). Le réglage emoteVerticalOffset ne s'applique qu'aux
-    // emotes (7TV + Twitch natives), pas aux badges.
+    // emotes (7TV + Twitch natives), pas aux badges. En Shared Chat,
+    // l'avatar de la chaîne d'origine est volontairement ajouté EN PREMIER.
     SevenTVBadgeProvider *badgeProvider = [SevenTVBadgeProvider sharedProvider];
-    for (NSString *badgeIdentifier in msg.badgeIdentifiers) {
-        id<S7TVResolvedEmote> badge = [badgeProvider resolvedBadgeForIdentifier:badgeIdentifier];
-        if (!badge) {
-            continue;
-        }
+    void (^appendBadge)(id<S7TVResolvedEmote>) = ^(id<S7TVResolvedEmote> badge) {
+        if (!badge) return;
         UIImage *cachedBadgeImage = [imageCache cachedImageForResolvedEmote:badge];
         if (!cachedBadgeImage) {
             [outUncachedEmotes addObject:badge];
-            continue;
+            return;
+        }
+        if ([badge isKindOfClass:[S7TVResolvedBadge class]] &&
+            ((S7TVResolvedBadge *)badge).rendersCircular) {
+            cachedBadgeImage = s7tv_circularSharedChatAvatar(cachedBadgeImage, badge.emoteID);
         }
         NSTextAttachment *badgeAttachment = [[NSTextAttachment alloc] init];
         badgeAttachment.image = cachedBadgeImage;
         badgeAttachment.bounds = CGRectMake(0, -3, cfg.badgeSize, cfg.badgeSize);
-        [result appendAttributedString:[NSAttributedString attributedStringWithAttachment:badgeAttachment]];
+        [result appendAttributedString:
+            [NSAttributedString attributedStringWithAttachment:badgeAttachment]];
         [result appendAttributedString:[[NSAttributedString alloc] initWithString:@" "]];
+    };
+
+    if (cfg.sharedChatSourceAvatarsEnabled && msg.sharedChatSourceChannelID.length) {
+        appendBadge([badgeProvider resolvedSharedChatAvatarForChannelID:
+            msg.sharedChatSourceChannelID]);
+    }
+    for (NSString *badgeIdentifier in msg.badgeIdentifiers) {
+        id<S7TVResolvedEmote> badge = [badgeProvider resolvedBadgeForIdentifier:badgeIdentifier];
+        appendBadge(badge);
     }
 
     [result appendAttributedString:[[NSAttributedString alloc]

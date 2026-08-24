@@ -106,6 +106,11 @@ typedef NS_ENUM(NSInteger, S7TVDeletedMessageRevealMode) {
 @property (nonatomic, assign) BOOL showFirstMessageBadge;
 @property (nonatomic, strong) UIColor *firstMessageHighlightColor;
 
+// --- Shared Chat ---
+// Affiche l'avatar de la chaîne d'origine comme premier badge uniquement
+// quand source-room-id diffère de room-id. Défaut YES.
+@property (nonatomic, assign) BOOL sharedChatSourceAvatarsEnabled;
+
 // --- Messages supprimés / modération ---
 // Affiche la sanction IRC dans le placeholder replié (timeout avec durée
 // humaine, ou ban permanent). Le corps révélé peut être atténué, barré

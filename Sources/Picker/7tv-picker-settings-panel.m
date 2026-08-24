@@ -115,6 +115,8 @@ static const char kS7TVRowKeyTag = 0;
 @property (nonatomic, weak) UISwitch *firstMessageSwitch;
 @property (nonatomic, weak) UIColorWell *firstMessageColorWell;
 @property (nonatomic, weak) UILabel *firstMessageRowLabel;
+@property (nonatomic, weak) UISwitch *sharedChatAvatarsSwitch;
+@property (nonatomic, weak) UILabel *sharedChatAvatarsRowLabel;
 @property (nonatomic, weak) UILabel *moderationSectionLabel;
 @property (nonatomic, weak) UILabel *deletedPreviewLabel;
 @property (nonatomic, weak) UISegmentedControl *deletedPreviewControl;
@@ -292,6 +294,10 @@ static const char kS7TVRowKeyTag = 0;
                                                        width:frame.size.width
                                                    textColor:textColor subColor:subColor
                                                     sepColor:sepColor accent:accent];
+    appearanceY = [self _buildSharedChatAvatarsSectionInScrollView:appearanceCategory atY:appearanceY
+                                                            width:frame.size.width
+                                                        textColor:textColor
+                                                         sepColor:sepColor accent:accent];
     appearanceCategory.contentSize = CGSizeMake(frame.size.width, appearanceY);
 
     CGFloat moderationY = 8.0;
@@ -424,6 +430,7 @@ static const char kS7TVRowKeyTag = 0;
     self.colorsSectionLabel.text = L(@"sizes_colors_section_title");
     self.colorsToggleLabel.text  = L(@"sizes_colors_toggle_label");
     self.firstMessageRowLabel.text = L(@"sizes_first_message_row_label");
+    self.sharedChatAvatarsRowLabel.text = L(@"sizes_shared_chat_avatars_label");
 
     NSDictionary<NSString *, NSString *> *colorLabelKeys = @{
         @"subResubAccentColor": @"sizes_color_sub_resub",
@@ -734,6 +741,43 @@ static const char kS7TVRowKeyTag = 0;
     return nextY;
 }
 
+- (CGFloat)_buildSharedChatAvatarsSectionInScrollView:(UIScrollView *)scrollView
+                                                   atY:(CGFloat)y
+                                                 width:(CGFloat)width
+                                             textColor:(UIColor *)textColor
+                                              sepColor:(UIColor *)sepColor
+                                                accent:(UIColor *)accent {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, width, 44)];
+    row.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(12, 12, width - 87, 20)];
+    label.font = [UIFont systemFontOfSize:13];
+    label.textColor = textColor;
+    label.text = L(@"sizes_shared_chat_avatars_label");
+    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [row addSubview:label];
+    self.sharedChatAvatarsRowLabel = label;
+
+    UISwitch *toggle = [[UISwitch alloc] init];
+    toggle.frame = CGRectMake(width - 63, 6, 51, 31);
+    toggle.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    toggle.onTintColor = accent;
+    toggle.on = cfg.sharedChatSourceAvatarsEnabled;
+    [toggle addTarget:self action:@selector(_sharedChatAvatarsToggleChanged:)
+       forControlEvents:UIControlEventValueChanged];
+    [row addSubview:toggle];
+    self.sharedChatAvatarsSwitch = toggle;
+
+    UIView *separator = [[UIView alloc] initWithFrame:CGRectMake(12, 43.5, width - 24, 0.5)];
+    separator.backgroundColor = sepColor;
+    separator.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [row addSubview:separator];
+    [scrollView addSubview:row];
+    return y + 52;
+}
+
 - (void)_selfMentionToggleChanged:(UISwitch *)sw {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
     cfg.selfMentionHighlightEnabled = sw.on;
@@ -769,6 +813,11 @@ static const char kS7TVRowKeyTag = 0;
     cfg.showFirstMessageBadge = sw.on;
     self.firstMessageColorWell.enabled = sw.on;
     self.firstMessageRowLabel.textColor = sw.on ? self.panelTextColor : self.panelSubColor;
+    [self.fakeChatView reloadMessages];
+}
+
+- (void)_sharedChatAvatarsToggleChanged:(UISwitch *)sw {
+    [SevenTVChatAppearanceConfig sharedConfig].sharedChatSourceAvatarsEnabled = sw.on;
     [self.fakeChatView reloadMessages];
 }
 

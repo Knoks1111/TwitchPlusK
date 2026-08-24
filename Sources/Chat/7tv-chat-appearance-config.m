@@ -85,6 +85,7 @@ static NSString *const kS7TVCfgSelfMentionEnabled       = @"s7tv_cfg_self_mentio
 static NSString *const kS7TVCfgSelfMentionColor         = @"s7tv_cfg_color_self_mention";
 static NSString *const kS7TVCfgFirstMessageEnabled      = @"s7tv_cfg_first_message_enabled";
 static NSString *const kS7TVCfgFirstMessageColor        = @"s7tv_cfg_color_first_message";
+static NSString *const kS7TVCfgSharedChatAvatarsEnabled = @"s7tv_cfg_shared_chat_avatars_enabled";
 static NSString *const kS7TVCfgShowModerationDetails    = @"s7tv_cfg_show_moderation_details";
 static NSString *const kS7TVCfgDeletedRevealMode        = @"s7tv_cfg_deleted_reveal_mode";
 static NSString *const kS7TVCfgDeletedMessageStyle      = @"s7tv_cfg_deleted_message_style";
@@ -152,6 +153,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     _selfMentionHighlightColor   = S7TVDefaultSelfMentionColor();
     _showFirstMessageBadge       = YES;
     _firstMessageHighlightColor  = S7TVDefaultFirstMessageColor();
+    _sharedChatSourceAvatarsEnabled = YES;
     _showModerationDetails       = YES;
     _deletedMessageRevealMode    = kDefaultDeletedRevealMode;
     _deletedMessageStyle         = kDefaultDeletedMessageStyle;
@@ -225,6 +227,8 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     NSString *firstMessageHex = [prefs stringForKey:kS7TVCfgFirstMessageColor];
     UIColor *firstMessageColor = firstMessageHex ? S7TVColorFromHexString(firstMessageHex) : nil;
     if (firstMessageColor) _firstMessageHighlightColor = firstMessageColor;
+    if ([prefs objectForKey:kS7TVCfgSharedChatAvatarsEnabled] != nil)
+        _sharedChatSourceAvatarsEnabled = [prefs boolForKey:kS7TVCfgSharedChatAvatarsEnabled];
     if ([prefs objectForKey:kS7TVCfgShowModerationDetails] != nil)
         _showModerationDetails = [prefs boolForKey:kS7TVCfgShowModerationDetails];
     if ([prefs objectForKey:kS7TVCfgDeletedRevealMode] != nil) {
@@ -281,6 +285,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     [prefs setObject:S7TVColorToHexString(self.selfMentionHighlightColor) forKey:kS7TVCfgSelfMentionColor];
     [prefs setBool:self.showFirstMessageBadge forKey:kS7TVCfgFirstMessageEnabled];
     [prefs setObject:S7TVColorToHexString(self.firstMessageHighlightColor) forKey:kS7TVCfgFirstMessageColor];
+    [prefs setBool:self.sharedChatSourceAvatarsEnabled forKey:kS7TVCfgSharedChatAvatarsEnabled];
     [prefs setBool:self.showModerationDetails forKey:kS7TVCfgShowModerationDetails];
     [prefs setInteger:self.deletedMessageRevealMode forKey:kS7TVCfgDeletedRevealMode];
     [prefs setInteger:self.deletedMessageStyle forKey:kS7TVCfgDeletedMessageStyle];
@@ -304,6 +309,12 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
 
 - (void)setShowFirstMessageBadge:(BOOL)showFirstMessageBadge {
     _showFirstMessageBadge = showFirstMessageBadge;
+    [self save];
+    [self s7tv_postDidChangeNotification];
+}
+
+- (void)setSharedChatSourceAvatarsEnabled:(BOOL)sharedChatSourceAvatarsEnabled {
+    _sharedChatSourceAvatarsEnabled = sharedChatSourceAvatarsEnabled;
     [self save];
     [self s7tv_postDidChangeNotification];
 }
@@ -435,6 +446,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     [prefs removeObjectForKey:kS7TVCfgSystemBGEnabled];
     [prefs removeObjectForKey:kS7TVCfgSelfMentionEnabled];
     [prefs removeObjectForKey:kS7TVCfgFirstMessageEnabled];
+    [prefs removeObjectForKey:kS7TVCfgSharedChatAvatarsEnabled];
     [prefs removeObjectForKey:kS7TVCfgShowModerationDetails];
     [prefs removeObjectForKey:kS7TVCfgDeletedRevealMode];
     [prefs removeObjectForKey:kS7TVCfgDeletedMessageStyle];

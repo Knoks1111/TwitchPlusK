@@ -1473,7 +1473,10 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         }
         floatingWin.windowLevel     = UIWindowLevelStatusBar + 1;
         floatingWin.backgroundColor = [UIColor clearColor];
-        floatingWin.hidden          = NO;
+        // Respecter la préférence dès la création de la fenêtre. Sans cela,
+        // le bouton apparaissait toujours au lancement, même si sa valeur par
+        // défaut (ou la préférence enregistrée) était désactivée.
+        floatingWin.hidden          = !self.showFloatingButton;
 
         // rootViewController requis sous iOS 13+
         // CRITICAL : doit retourner UIInterfaceOrientationMaskAll

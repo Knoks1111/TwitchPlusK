@@ -48,7 +48,7 @@ static UIColor *S7TVColorFromHexString(NSString *hex) {
 // config. Fonctions plutôt que des constantes CGFloat : UIColor n'est pas
 // une constante compile-time.
 static UIColor *S7TVDefaultSubResubColor(void) {
-    return [UIColor colorWithRed:0.19 green:0.82 blue:0.45 alpha:1.0];
+    return [UIColor colorWithRed:0.0 green:(122.0 / 255.0) blue:1.0 alpha:1.0]; // #007AFF
 }
 static UIColor *S7TVDefaultPrimeColor(void) {
     return [UIColor colorWithRed:0.62 green:0.35 blue:0.95 alpha:1.0];
@@ -197,6 +197,13 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
         _systemMessageBackgroundsEnabled = [prefs boolForKey:kS7TVCfgSystemBGEnabled];
 
     NSString *subHex = [prefs stringForKey:kS7TVCfgSubResubColor];
+    // Faire suivre la nouvelle couleur par défaut aux installations qui ont
+    // enregistré l'ancien vert. Toute autre couleur personnalisée est gardée.
+    if (subHex.length > 0 &&
+        [subHex caseInsensitiveCompare:@"30D173FF"] == NSOrderedSame) {
+        subHex = S7TVColorToHexString(S7TVDefaultSubResubColor());
+        [prefs setObject:subHex forKey:kS7TVCfgSubResubColor];
+    }
     UIColor *subColor = subHex ? S7TVColorFromHexString(subHex) : nil;
     if (subColor) _subResubAccentColor = subColor;
 

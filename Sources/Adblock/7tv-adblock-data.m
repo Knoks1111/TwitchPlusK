@@ -1,6 +1,8 @@
 #import "Adblock/7tv-adblock-data.h"
 #import "Adblock/7tv-adblock-settings.h"
+#import "System/7tv-system-home-features.h"
 #import <os/log.h>
+#import <limits.h>
 
 static NSSet<NSString *> *S7TVAdblockArrayTypenames(void) {
     static NSSet *types;
@@ -79,6 +81,35 @@ static void S7TVAdblockProcessTree(id object, BOOL *dirty) {
     }
 }
 
+// Le fil Twitch « Live » impose une durée maximale à chaque preview via
+// watchBehavior.maxStreamWatchSeconds, puis affiche l'overlay Regarder/Suivre.
+// TwitchAdBlock conserve la clé mais lui donne INT_MAX secondes : le code
+// natif garde la structure attendue sans atteindre la limite en pratique.
+static void S7TVNeutralizeLiveFeedWatchLimits(id object, BOOL *dirty) {
+    if ([object isKindOfClass:NSMutableDictionary.class]) {
+        NSMutableDictionary *dictionary = object;
+        for (NSString *key in dictionary.allKeys) {
+            id value = dictionary[key];
+            if ([key isEqualToString:@"maxStreamWatchSeconds"] &&
+                [value isKindOfClass:NSNumber.class]) {
+                NSNumber *unlimited = @(INT_MAX);
+                if (![value isEqual:unlimited]) {
+                    dictionary[key] = unlimited;
+                    *dirty = YES;
+                    os_log(OS_LOG_DEFAULT,
+                        "[S7TV-Home] Live-feed watch limit neutralized");
+                }
+                continue;
+            }
+            S7TVNeutralizeLiveFeedWatchLimits(value, dirty);
+        }
+    } else if ([object isKindOfClass:NSMutableArray.class]) {
+        for (id value in (NSMutableArray *)object) {
+            S7TVNeutralizeLiveFeedWatchLimits(value, dirty);
+        }
+    }
+}
+
 static void S7TVAdblockSpoofPlaybackPlatform(NSMutableDictionary *operation) {
     NSString *operationName = operation[@"operationName"];
     NSString *query = operation[@"query"];
@@ -130,8 +161,10 @@ NSData *S7TVAdblockTransformRequestData(NSData *data, NSURLRequest *request) {
 }
 
 NSData *S7TVAdblockTransformResponseData(NSData *data, NSURLRequest *request) {
-    if (!data.length || !S7TVAdblockIsEnabled() || !S7TVAdblockIsGQLRequest(request))
-        return data;
+    if (!data.length || !S7TVAdblockIsGQLRequest(request)) return data;
+    BOOL filterAds = S7TVAdblockIsEnabled();
+    BOOL keepLiveFeedPlaying = s7tv_keepLiveFeedPlayingEnabled();
+    if (!filterAds && !keepLiveFeedPlaying) return data;
     NSError *error = nil;
     id json = [NSJSONSerialization JSONObjectWithData:data
         options:NSJSONReadingMutableContainers error:&error];
@@ -139,13 +172,17 @@ NSData *S7TVAdblockTransformResponseData(NSData *data, NSURLRequest *request) {
     BOOL dirty = NO;
     NSArray *operations = [json isKindOfClass:NSMutableArray.class] ? json : @[json];
     for (id operation in operations) {
-        if ([operation isKindOfClass:NSMutableDictionary.class])
-            S7TVAdblockProcessTree(operation[@"data"], &dirty);
+        if (![operation isKindOfClass:NSMutableDictionary.class]) continue;
+        id responseData = operation[@"data"];
+        if (filterAds) S7TVAdblockProcessTree(responseData, &dirty);
+        if (keepLiveFeedPlaying) {
+            S7TVNeutralizeLiveFeedWatchLimits(responseData, &dirty);
+        }
     }
     if (!dirty) return data;
     NSData *result = [NSJSONSerialization dataWithJSONObject:json options:0 error:&error];
     if (result && !error) {
-        os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] GraphQL ad nodes removed");
+        os_log(OS_LOG_DEFAULT, "[S7TV] GraphQL response filters applied");
         return result;
     }
     return data;

@@ -103,6 +103,22 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"desc_auto_collect":               @[@"Réclame automatiquement le coffre de points de chaîne quand il apparaît dans le chat.",
                                                @"Automatically claims the live channel-points chest when it appears in chat."],
 
+        // ── Contenu : accueil et lecture (TwitchAdBlock) ────────────────
+        @"section_home_playback":           @[@"Accueil et lecture", @"Home & Playback"],
+        @"setting_launch_screen":           @[@"Écran au lancement", @"Launch Screen"],
+        @"launch_default":                  @[@"Par défaut", @"Default"],
+        @"launch_home_following":           @[@"Accueil → Abonnements", @"Home → Following"],
+        @"launch_home_live":                @[@"Accueil → Live", @"Home → Live"],
+        @"launch_home_clips":               @[@"Accueil → Clips", @"Home → Clips"],
+        @"launch_browse_categories":        @[@"Parcourir → Catégories", @"Browse → Categories"],
+        @"launch_browse_live_channels":     @[@"Parcourir → Chaînes en direct", @"Browse → Live Channels"],
+        @"launch_activity":                 @[@"Activité", @"Activity"],
+        @"launch_profile":                  @[@"Profil", @"Profile"],
+        @"switch_hide_twitch_stories":      @[@"Masquer les stories Twitch", @"Hide Twitch Stories"],
+        @"switch_keep_live_feed_playing":   @[@"Continuer la lecture du fil Live", @"Keep Live Feed Playing"],
+        @"desc_home_playback_settings":     @[@"Le fil Live ne sera plus interrompu par l’écran Regarder/Suivre. Les changements de l’écran de lancement et des stories s’appliquent au prochain démarrage.",
+                                               @"The Live feed will no longer be interrupted by the Watch/Follow screen. Launch Screen and Stories changes apply after restarting."],
+
         // ── Contenu : verrouillage de rotation ───────────────────────────
         @"section_rotation":                @[@"Rotation", @"Rotation"],
         @"switch_orientation_lock_button":  @[@"Bouton de verrouillage", @"Rotation lock button"],
@@ -131,7 +147,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Menu principal (Apparence / Contenu / Adblock / Avancé) ──────
         @"menu_apparence_subtitle":         @[@"Chat custom, animations", @"Custom chat, animations"],
-        @"menu_contenu_subtitle":           @[@"Favoris, stream", @"Favorites, stream"],
+        @"menu_contenu_subtitle":           @[@"Favoris, accueil, lecture", @"Favorites, home, playback"],
         @"menu_adblock_subtitle":           @[@"Pubs vidéo, proxy", @"Video ads, proxy"],
         @"menu_avance_subtitle":            @[@"Cache, logs, options", @"Cache, logs, options"],
 

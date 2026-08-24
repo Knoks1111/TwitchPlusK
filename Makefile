@@ -37,6 +37,7 @@ TwitchPlusK_FILES = \
     Sources/Picker/7tv-picker-resolved-emote.m \
     Sources/Picker/7tv-picker-settings-panel.m \
     Sources/Localization/7tv-localization-manager.m \
+    Sources/System/7tv-system-home-features.m \
     Sources/System/7tv-system-native-behavior-hooks.m
 
 # ── Options de compilation ──

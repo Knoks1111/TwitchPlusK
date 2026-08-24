@@ -20,6 +20,7 @@
 #import "Chat/7tv-chat-appearance-config.h"
 #import "Localization/7tv-localization-manager.h"
 #import "System/7tv-system-native-behavior-hooks.h"
+#import "System/7tv-system-home-features.h"
 #import "Adblock/7tv-adblock-settings.h"
 #import <objc/runtime.h>
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
@@ -1075,10 +1076,26 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 typedef NS_ENUM(NSInteger, S7TVContentSection) {
     S7TVContentSectionFavorites = 0,  // Mes favoris (nav) + Importer depuis PC
     S7TVContentSectionStream    = 1,  // Auto Collect Channel Points
-    S7TVContentSectionRotation  = 2,  // Bouton + auto-lock gauche/droite
+    S7TVContentSectionHome      = 2,  // Launch Screen + Stories + fil Live
+    S7TVContentSectionRotation  = 3,  // Bouton + auto-lock gauche/droite
 };
 
+static NSString *S7TVLaunchDestinationTitle(S7TVLaunchDestination destination) {
+    switch (destination) {
+        case S7TVLaunchDestinationHomeFollowing:      return L(@"launch_home_following");
+        case S7TVLaunchDestinationHomeLive:           return L(@"launch_home_live");
+        case S7TVLaunchDestinationHomeClips:          return L(@"launch_home_clips");
+        case S7TVLaunchDestinationBrowseCategories:   return L(@"launch_browse_categories");
+        case S7TVLaunchDestinationBrowseLiveChannels: return L(@"launch_browse_live_channels");
+        case S7TVLaunchDestinationActivity:            return L(@"launch_activity");
+        case S7TVLaunchDestinationProfile:             return L(@"launch_profile");
+        case S7TVLaunchDestinationDefault:             return L(@"launch_default");
+    }
+    return L(@"launch_default");
+}
+
 @interface SevenTVContentPageController () <UIDocumentPickerDelegate>
+- (void)presentLaunchDestinationPickerFromCell:(UIView *)anchor;
 @end
 
 @implementation SevenTVContentPageController
@@ -1100,12 +1117,13 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
     [self.tableView reloadData];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     switch (s) {
         case S7TVContentSectionFavorites: return 2;
         case S7TVContentSectionStream:    return 1;
+        case S7TVContentSectionHome:      return 3;
         case S7TVContentSectionRotation:  return 2;
         default: return 0;
     }
@@ -1125,26 +1143,34 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
     switch (s) {
         case S7TVContentSectionFavorites: return S7TVSectionHeader(L(@"section_favoris"), NO);
         case S7TVContentSectionStream:    return S7TVSectionHeader(L(@"section_stream"), NO);
+        case S7TVContentSectionHome:      return S7TVSectionHeader(L(@"section_home_playback"), NO);
         case S7TVContentSectionRotation:  return S7TVSectionHeader(L(@"section_rotation"), NO);
         default: return [[UIView alloc] init];
     }
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
-    return (s == S7TVContentSectionStream || s == S7TVContentSectionRotation)
+    return (s == S7TVContentSectionStream || s == S7TVContentSectionHome ||
+            s == S7TVContentSectionRotation)
         ? UITableViewAutomaticDimension : 8;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
-    if (s != S7TVContentSectionStream && s != S7TVContentSectionRotation) {
+    if (s != S7TVContentSectionStream && s != S7TVContentSectionHome &&
+        s != S7TVContentSectionRotation) {
         UIView *v = [[UIView alloc] init];
         v.backgroundColor = [UIColor clearColor];
         return v;
     }
     UIView *container = [[UIView alloc] init];
     UILabel *lbl = [[UILabel alloc] init];
-    lbl.text = s == S7TVContentSectionStream
-        ? L(@"desc_auto_collect") : L(@"desc_orientation_lock_settings");
+    if (s == S7TVContentSectionStream) {
+        lbl.text = L(@"desc_auto_collect");
+    } else if (s == S7TVContentSectionHome) {
+        lbl.text = L(@"desc_home_playback_settings");
+    } else {
+        lbl.text = L(@"desc_orientation_lock_settings");
+    }
     lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
     lbl.textColor = S7TVGray();
     lbl.numberOfLines = 0;
@@ -1166,6 +1192,23 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
         return S7TVSwitchCell(L(@"switch_auto_collect_title"),
                     @"giftcard.fill", [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
                     S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints), self, @selector(toggleAutoCollect:));
+    }
+
+    // ── Section Accueil et lecture : fonctionnalités TwitchAdBlock ──────
+    if (ip.section == S7TVContentSectionHome) {
+        if (ip.row == 0) {
+            return S7TVNavCell(L(@"setting_launch_screen"),
+                S7TVLaunchDestinationTitle(s7tv_launchDestination()),
+                @"rectangle.stack.fill", S7TVAccent());
+        }
+        if (ip.row == 1) {
+            return S7TVSwitchCell(L(@"switch_hide_twitch_stories"),
+                @"circle.slash", [UIColor colorWithRed:0.95 green:0.35 blue:0.50 alpha:1.0],
+                s7tv_hideTwitchStoriesEnabled(), self, @selector(toggleHideTwitchStories:));
+        }
+        return S7TVSwitchCell(L(@"switch_keep_live_feed_playing"),
+            @"play.circle.fill", [UIColor colorWithRed:0.30 green:0.75 blue:0.45 alpha:1.0],
+            s7tv_keepLiveFeedPlayingEnabled(), self, @selector(toggleKeepLiveFeedPlaying:));
     }
 
     // ── Section Rotation : bouton manuel + détection automatique ─────────
@@ -1327,10 +1370,20 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
     }
     if (ip.section == S7TVContentSectionFavorites && ip.row == 1) {
         [self importFavoritesFromFile];
+        return;
+    }
+    if (ip.section == S7TVContentSectionHome && ip.row == 0) {
+        [self presentLaunchDestinationPickerFromCell:[tv cellForRowAtIndexPath:ip]];
     }
 }
 
 - (void)toggleAutoCollect:(UISwitch *)sw { S7TVSetBool(kTCLiveAutoCollectChannelPoints, sw.isOn); }
+- (void)toggleHideTwitchStories:(UISwitch *)sw {
+    s7tv_setHideTwitchStoriesEnabled(sw.isOn);
+}
+- (void)toggleKeepLiveFeedPlaying:(UISwitch *)sw {
+    s7tv_setKeepLiveFeedPlayingEnabled(sw.isOn);
+}
 - (void)toggleOrientationLockButton:(UISwitch *)sw {
     s7tv_setOrientationLockButtonEnabled(sw.isOn);
     [self.tableView reloadSections:
@@ -1339,6 +1392,36 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
 }
 - (void)autoOrientationModeChanged:(UISegmentedControl *)seg {
     s7tv_setAutoOrientationLockMode((S7TVAutoOrientationLockMode)seg.selectedSegmentIndex);
+}
+
+- (void)presentLaunchDestinationPickerFromCell:(UIView *)anchor {
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:L(@"setting_launch_screen")
+                         message:nil
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    S7TVLaunchDestination current = s7tv_launchDestination();
+    for (NSInteger raw = S7TVLaunchDestinationDefault;
+         raw <= S7TVLaunchDestinationProfile; raw++) {
+        S7TVLaunchDestination destination = (S7TVLaunchDestination)raw;
+        NSString *title = S7TVLaunchDestinationTitle(destination);
+        if (destination == current) title = [@"✓  " stringByAppendingString:title];
+        __weak typeof(self) weakSelf = self;
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            s7tv_setLaunchDestination(destination);
+            [weakSelf.tableView reloadSections:
+                [NSIndexSet indexSetWithIndex:S7TVContentSectionHome]
+                         withRowAnimation:UITableViewRowAnimationNone];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    sheet.popoverPresentationController.sourceView = anchor;
+    sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 // ── Import favoris depuis fichier JSON 7TV PC (inchangé, déplacé depuis

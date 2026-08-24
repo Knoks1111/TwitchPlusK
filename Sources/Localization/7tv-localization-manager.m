@@ -103,6 +103,17 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"desc_auto_collect":               @[@"Réclame automatiquement le coffre de points de chaîne quand il apparaît dans le chat.",
                                                @"Automatically claims the live channel-points chest when it appears in chat."],
 
+        // ── Contenu : verrouillage de rotation ───────────────────────────
+        @"section_rotation":                @[@"Rotation", @"Rotation"],
+        @"switch_orientation_lock_button":  @[@"Bouton de verrouillage", @"Rotation lock button"],
+        @"setting_orientation_auto_lock":   @[@"Verrouillage automatique", @"Automatic locking"],
+        @"orientation_auto_off":            @[@"Désactivé", @"Off"],
+        @"orientation_left":                @[@"Gauche", @"Left"],
+        @"orientation_right":               @[@"Droite", @"Right"],
+        @"orientation_both":                @[@"Les deux", @"Both"],
+        @"desc_orientation_lock_settings":  @[@"Le bouton remplace Partager dans le lecteur. Le verrouillage automatique se déclenche quand l’écran passe en paysage du côté choisi. Il est suspendu lorsque le bouton est désactivé.",
+                                               @"The button replaces Share in the player. Automatic locking triggers when the screen rotates to the selected landscape side. It is suspended while the button is disabled."],
+
         // ── Adblock (catégorie réservée, vide pour l'instant) ────────────
         @"adblock_coming_soon":             @[@"Bientôt disponible.", @"Coming soon."],
 

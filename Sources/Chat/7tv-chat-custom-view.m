@@ -78,12 +78,19 @@ void s7tv_noteOutgoingChatJoinForChannel(NSString *channel) {
 
         UIView *activeView = s_activeNativeChatView;
         NSString *boundChannel = s7tv_channelBoundToNativeChatView(activeView);
+        // Le JOIN peut précéder la construction du ChatTranscriptView. Ne pas
+        // le consommer ici : currentChannelName peut encore contenir un nom
+        // extrait d'une réponse GQL sans rapport (souvent le compte connecté).
+        // La prochaine vue visible prendra directement ce JOIN autoritaire.
+        if (!activeView || !activeView.window) {
+            return;
+        }
         if (activeView.window && !boundChannel.length) {
             s7tv_bindNativeChatViewToChannel(activeView, normalized);
             boundChannel = normalized;
         }
 
-        if (!activeView || !boundChannel.length ||
+        if (!boundChannel.length ||
             [boundChannel caseInsensitiveCompare:normalized] == NSOrderedSame) {
             if (activeView && !boundChannel.length) {
                 s7tv_bindNativeChatViewToChannel(activeView, normalized);
@@ -316,20 +323,14 @@ void s7tv_handleNativeChatViewLifecycle(UIView *view) {
     if (![NSStringFromClass(view.class) isEqualToString:@"Twitch.ChatTranscriptView"] ||
         !view.window || ![view.superview isKindOfClass:UIStackView.class]) return;
 
-    UIView *previousActiveView = s_activeNativeChatView;
     NSString *boundChannel = s7tv_channelBoundToNativeChatView(view);
     BOOL pendingJoinIsFresh = s_pendingNativeChatChannelName.length &&
-        CACurrentMediaTime() - s_pendingNativeChatChannelTimestamp <= 3.0;
+        CACurrentMediaTime() - s_pendingNativeChatChannelTimestamp <= 10.0;
     if (!boundChannel.length && pendingJoinIsFresh) {
         boundChannel = s_pendingNativeChatChannelName;
         s7tv_bindNativeChatViewToChannel(view, boundChannel);
         s_pendingNativeChatChannelName = nil;
         s_pendingNativeChatChannelTimestamp = 0;
-    } else if (!boundChannel.length && !previousActiveView) {
-        // Premier transcript de la session : le JOIN ou GQL a généralement
-        // déjà posé currentChannelName avant la construction UIKit.
-        boundChannel = [SevenTVManager sharedManager].currentChannelName;
-        s7tv_bindNativeChatViewToChannel(view, boundChannel);
     }
 
     s_activeNativeChatView = view;

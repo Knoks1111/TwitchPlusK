@@ -1331,11 +1331,16 @@ static const CGFloat kS7TVMenuHeight = 520.0;
             if (!broadcasterID) continue;
 
             NSString *visibleChannel = s7tv_activeNativeChatChannelName();
-            if (visibleChannel.length &&
-                (!channelLogin.length ||
-                 [channelLogin caseInsensitiveCompare:visibleChannel] != NSOrderedSame)) {
+            // Ce hook voit toutes les réponses GQL de l'app. Une réponse
+            // générique contient très souvent data.user = le viewer connecté,
+            // ce qui ne prouve absolument pas la chaîne affichée. Le JOIN IRC
+            // lie d'abord le transcript ; GQL ne peut ensuite que confirmer le
+            // même login et fournir son broadcaster ID.
+            if (!visibleChannel.length || !channelLogin.length ||
+                [channelLogin caseInsensitiveCompare:visibleChannel] != NSOrderedSame) {
                 [self log:@"ℹ️ Réponse GQL ignorée pour transcript non visible (%@, actif=%@)",
-                    channelLogin.length ? channelLogin : @"chaîne indéterminée", visibleChannel];
+                    channelLogin.length ? channelLogin : @"chaîne indéterminée",
+                    visibleChannel.length ? visibleChannel : @"aucun"];
                 continue;
             }
 
@@ -1942,6 +1947,23 @@ static NSUInteger s7tv_currentChatSessionGeneration(void) {
     }
 }
 
+// Extrait le salon porté explicitement par une ligne IRC (`#login`). Cette
+// identité voyage avec ROOMSTATE, PRIVMSG et les événements de modération ;
+// elle permet de rejeter les paquets d'un ancien socket sans deviner leur
+// destination depuis l'état global du manager.
+static NSString *s7tv_channelNameFromIRCLine(NSString *ircLine) {
+    NSRange marker = [ircLine rangeOfString:@" #"];
+    if (marker.location == NSNotFound) return nil;
+    NSUInteger start = NSMaxRange(marker);
+    if (start >= ircLine.length) return nil;
+    NSRange tail = NSMakeRange(start, ircLine.length - start);
+    NSRange endRange = [ircLine rangeOfCharacterFromSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet options:0 range:tail];
+    NSUInteger end = endRange.location == NSNotFound ? ircLine.length : endRange.location;
+    if (end <= start) return nil;
+    return [[ircLine substringWithRange:NSMakeRange(start, end - start)] lowercaseString];
+}
+
 @implementation SevenTVManager (IRCSessionState)
 
 - (void)handleIRCUserState:(NSString *)ircLine {
@@ -1957,18 +1979,10 @@ static NSUInteger s7tv_currentChatSessionGeneration(void) {
 }
 
 - (void)handleIRCRoomState:(NSString *)ircLine {
-    NSRange roomStateCommand = [ircLine rangeOfString:@" ROOMSTATE #"];
-    if (roomStateCommand.location != NSNotFound) {
-        NSUInteger channelStart = NSMaxRange(roomStateCommand);
-        NSRange tail = NSMakeRange(channelStart, ircLine.length - channelStart);
-        NSRange channelEnd = [ircLine rangeOfCharacterFromSet:
-            NSCharacterSet.whitespaceAndNewlineCharacterSet options:0 range:tail];
-        NSUInteger end = channelEnd.location == NSNotFound ? ircLine.length : channelEnd.location;
-        NSString *roomChannel = [ircLine substringWithRange:
-                                 NSMakeRange(channelStart, end - channelStart)];
-        if (roomChannel.length && self.currentChannelName.length &&
-            [roomChannel caseInsensitiveCompare:self.currentChannelName] != NSOrderedSame) return;
-    }
+    NSString *roomChannel = s7tv_channelNameFromIRCLine(ircLine);
+    NSString *visibleChannel = s7tv_activeNativeChatChannelName();
+    if (!roomChannel.length || !visibleChannel.length ||
+        [roomChannel caseInsensitiveCompare:visibleChannel] != NSOrderedSame) return;
 
     NSRange roomIDRange = [ircLine rangeOfString:@"room-id="];
     if (roomIDRange.location == NSNotFound) return;
@@ -2126,6 +2140,15 @@ static NSUInteger s7tv_currentChatSessionGeneration(void) {
         NSString *ircLine = [rawLine stringByTrimmingCharactersInSet:
                              NSCharacterSet.newlineCharacterSet];
         if (!ircLine.length) continue;
+        NSString *lineChannel = s7tv_channelNameFromIRCLine(ircLine);
+        NSString *visibleChannel = s7tv_activeNativeChatChannelName();
+        if (lineChannel.length && visibleChannel.length &&
+            [lineChannel caseInsensitiveCompare:visibleChannel] != NSOrderedSame) {
+            // Un ancien Chat WebSocket peut rester connecté après A→B→A.
+            // Ses messages et sa modération ne doivent jamais entrer dans la
+            // génération courante, même s'ils arrivent après le reset.
+            continue;
+        }
         if ([ircLine containsString:@"ROOMSTATE"]) [self handleIRCRoomState:ircLine];
         // "USERSTATE" couvre aussi GLOBALUSERSTATE, qui se termine par ce mot.
         if ([ircLine containsString:@"USERSTATE"]) [self handleIRCUserState:ircLine];

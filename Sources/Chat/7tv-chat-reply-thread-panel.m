@@ -207,6 +207,19 @@ static const CGFloat kS7TVReplyThreadSeparatorHeight = 1.0;
 static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 static const CGFloat kS7TVReplyTargetBarHeight = 34.0; // barre "Répondre à @X · Annuler", masquée (0) tant qu'aucune cible n'est choisie
 
+// Les overlays de réponse vivent dans UIWindow pour rester au-dessus du
+// transcript, mais leur largeur doit suivre la colonne de chat Twitch. La
+// vraie ChatInputView est la meilleure ancre : elle suit déjà les rotations,
+// le mode paysage et les changements de disposition de Twitch. Le transcript
+// custom sert de repli, puis seulement la fenêtre si les deux sont absents.
+static UIView *s7tv_replyOverlayHorizontalAnchorView(UIWindow *window,
+                                                      UIView *inputView) {
+    if (inputView && inputView.window == window) return inputView;
+    SevenTVChatCustomView *chatView = s7tv_activeChatCustomView();
+    if (chatView && chatView.window == window) return chatView;
+    return window;
+}
+
 // Construit "Réponse à @pseudo   •   " avec le pseudo ET le séparateur en
 // gras, le reste normal — "annuler" reste un UIButton séparé juste après
 // (voir s7tv_ensureReplyTargetBar), pas inclus ici.
@@ -256,6 +269,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 @property (nonatomic, strong) NSLayoutConstraint *containerHeightConstraint;
 @property (nonatomic, copy) NSArray<NSLayoutConstraint *> *containerPositionConstraints;
 @property (nonatomic, weak) UIView *containerInputAnchorView;
+@property (nonatomic, weak) UIView *containerHorizontalAnchorView;
 // Référence gardée pour rafraîchir le texte à chaque ouverture (voir
 // s7tv_closeTapped... non, voir showForThreadRootID:) — sans ça, le titre
 // restait figé dans la langue active AU MOMENT de la création du panneau
@@ -333,6 +347,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 - (void)s7tv_finishOpeningThreadRootID:(NSString *)threadRootID
                                 window:(UIWindow *)window
                       allowsCatchUpPass:(BOOL)allowsCatchUpPass;
+- (void)s7tv_layoutPanelContentInWindow:(UIWindow *)window;
 @end
 
 @implementation S7TVReplyThreadPanel
@@ -342,6 +357,43 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{ instance = [S7TVReplyThreadPanel new]; });
     return instance;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self
+               selector:@selector(s7tv_handleDeviceOrientationChange:)
+                   name:UIDeviceOrientationDidChangeNotification
+                 object:nil];
+    }
+    return self;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+        name:UIDeviceOrientationDidChangeNotification object:nil];
+    [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
+}
+
+- (void)s7tv_handleDeviceOrientationChange:(__unused NSNotification *)note {
+    UIWindow *window = self.containerView.window;
+    if (!window || self.containerView.hidden || !self.currentThreadRootID.length) return;
+
+    // Twitch termine le redimensionnement de sa colonne après la notification
+    // physique. Recalculer une fois l'animation stabilisée garantit aussi que
+    // les cellules self-sizing utilisent la nouvelle largeur du thread.
+    NSUInteger requestToken = self.contentRequestGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || requestToken != strongSelf.contentRequestGeneration ||
+            strongSelf.containerView.hidden || strongSelf.containerView.window != window) return;
+        [strongSelf s7tv_layoutPanelContentInWindow:window];
+    });
 }
 
 - (void)chatCustomView:(SevenTVChatCustomView *)view
@@ -439,12 +491,17 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 
     [window addSubview:self.replyTargetBarView];
     UIView *inputView = s7tv_findChatInputView();
-    NSLayoutYAxisAnchor *bottomAnchor = (inputView && inputView.window == window)
+    if (inputView.window != window) inputView = nil;
+    UIView *horizontalAnchorView =
+        s7tv_replyOverlayHorizontalAnchorView(window, inputView);
+    NSLayoutYAxisAnchor *bottomAnchor = inputView
         ? inputView.topAnchor
         : window.safeAreaLayoutGuide.bottomAnchor;
     self.standaloneReplyBarConstraints = @[
-        [self.replyTargetBarView.leadingAnchor constraintEqualToAnchor:window.leadingAnchor],
-        [self.replyTargetBarView.trailingAnchor constraintEqualToAnchor:window.trailingAnchor],
+        [self.replyTargetBarView.leadingAnchor
+            constraintEqualToAnchor:horizontalAnchorView.leadingAnchor],
+        [self.replyTargetBarView.trailingAnchor
+            constraintEqualToAnchor:horizontalAnchorView.trailingAnchor],
         [self.replyTargetBarView.bottomAnchor constraintEqualToAnchor:bottomAnchor],
         [self.replyTargetBarView.heightAnchor constraintEqualToConstant:kS7TVReplyTargetBarHeight],
     ];
@@ -459,17 +516,21 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 
     UIView *inputView = s7tv_findChatInputView();
     if (inputView.window != window) inputView = nil;
+    UIView *horizontalAnchorView =
+        s7tv_replyOverlayHorizontalAnchorView(window, inputView);
     if (self.containerPositionConstraints.count > 0 &&
-        self.containerInputAnchorView == inputView) return;
+        self.containerInputAnchorView == inputView &&
+        self.containerHorizontalAnchorView == horizontalAnchorView) return;
 
     [NSLayoutConstraint deactivateConstraints:self.containerPositionConstraints ?: @[]];
     self.containerInputAnchorView = inputView;
+    self.containerHorizontalAnchorView = horizontalAnchorView;
     NSLayoutYAxisAnchor *bottomAnchor = inputView
         ? inputView.topAnchor
         : window.safeAreaLayoutGuide.bottomAnchor;
     self.containerPositionConstraints = @[
-        [container.leadingAnchor constraintEqualToAnchor:window.leadingAnchor],
-        [container.trailingAnchor constraintEqualToAnchor:window.trailingAnchor],
+        [container.leadingAnchor constraintEqualToAnchor:horizontalAnchorView.leadingAnchor],
+        [container.trailingAnchor constraintEqualToAnchor:horizontalAnchorView.trailingAnchor],
         [container.bottomAnchor constraintEqualToAnchor:bottomAnchor],
     ];
     [NSLayoutConstraint activateConstraints:self.containerPositionConstraints];
@@ -484,6 +545,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     self.containerPositionConstraints = nil;
     self.containerHeightConstraint = nil;
     self.containerInputAnchorView = nil;
+    self.containerHorizontalAnchorView = nil;
     [self.containerView removeFromSuperview];
 
     UIView *container = [[UIView alloc] init];
@@ -822,7 +884,11 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 // et non plus par une frame figée calculée ici.
 - (void)s7tv_layoutPanelContentInWindow:(UIWindow *)window {
     [self s7tv_updateContainerPositionConstraintsInWindow:window];
-    CGFloat width = window.bounds.size.width;
+    // Force la résolution des nouvelles ancres avant de mesurer les cellules :
+    // leur hauteur self-sizing dépend directement de la largeur du panneau.
+    [window layoutIfNeeded];
+    CGFloat width = CGRectGetWidth(self.containerView.bounds);
+    if (width <= 0) width = CGRectGetWidth(window.bounds);
 
     UIView *inputView = s7tv_findChatInputView();
     CGFloat inputTopY = window.bounds.size.height; // repli si la barre de saisie est introuvable (cas extrême)

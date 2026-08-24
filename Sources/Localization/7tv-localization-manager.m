@@ -114,13 +114,25 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"desc_orientation_lock_settings":  @[@"Une fois activé, le bouton apparaît sur le lecteur. L’auto-lock fonctionne à gauche, à droite ou des deux côtés.",
                                                @"Once enabled, the button appears on the player. Auto-lock works on the left, right, or both sides."],
 
-        // ── Adblock (catégorie réservée, vide pour l'instant) ────────────
-        @"adblock_coming_soon":             @[@"Bientôt disponible.", @"Coming soon."],
+        // ── Adblock vidéo / proxy ────────────────────────────────────────
+        @"adblock_enable":                  @[@"Activer l’adblock", @"Enable adblock"],
+        @"adblock_section_proxy":           @[@"Proxy vidéo", @"Video proxy"],
+        @"adblock_video_proxy":             @[@"Utiliser le proxy vidéo", @"Use video proxy"],
+        @"adblock_custom_proxy":            @[@"Proxy personnalisé", @"Custom proxy"],
+        @"adblock_proxy_address":           @[@"Adresse du proxy", @"Proxy address"],
+        @"adblock_proxy_configured":        @[@"Configurée", @"Configured"],
+        @"adblock_proxy_not_configured":    @[@"Non configurée", @"Not configured"],
+        @"adblock_proxy_format":            @[@"Formats acceptés : host:port ou user:pass@host:port. Plusieurs proxys peuvent être séparés par une virgule.",
+                                               @"Accepted formats: host:port or user:pass@host:port. Multiple proxies can be separated with commas."],
+        @"adblock_engine_footer":           @[@"Bloque les domaines publicitaires, modifie les jetons de lecture et retire les promotions du fil Twitch.",
+                                               @"Blocks ad domains, adjusts playback tokens, and removes promotions from the Twitch feed."],
+        @"adblock_proxy_privacy_footer":    @[@"Le proxy sert à récupérer les playlists vidéo sans publicité. Le proxy intégré provient de TwitchAdBlock ; tu peux le remplacer par le tien.",
+                                               @"The proxy fetches ad-free video playlists. The built-in proxy comes from TwitchAdBlock; you can replace it with your own."],
 
         // ── Menu principal (Apparence / Contenu / Adblock / Avancé) ──────
         @"menu_apparence_subtitle":         @[@"Chat custom, animations", @"Custom chat, animations"],
         @"menu_contenu_subtitle":           @[@"Favoris, stream", @"Favorites, stream"],
-        @"menu_adblock_subtitle":           @[@"Bientôt disponible", @"Coming soon"],
+        @"menu_adblock_subtitle":           @[@"Pubs vidéo, proxy", @"Video ads, proxy"],
         @"menu_avance_subtitle":            @[@"Cache, logs, options", @"Cache, logs, options"],
 
         // ── En-têtes de section ──────────────────────────────────────────

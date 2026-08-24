@@ -22,6 +22,6 @@
 // ─── Sous-pages 7TV (architecture v3 — 4 catégories larges et évolutives) ─────
 @interface SevenTVAppearancePageController : UITableViewController @end  // Apparence
 @interface SevenTVContentPageController    : UITableViewController @end  // Contenu
-@interface SevenTVAdblockPageController    : UIViewController      @end  // Adblock (vide pour l'instant)
+@interface SevenTVAdblockPageController    : UITableViewController @end  // Adblock vidéo + proxy
 @interface SevenTVAdvancedPageController   : UITableViewController @end  // Avancé
 @interface SevenTVFavoritesListController  : UITableViewController @end

@@ -82,7 +82,7 @@ typedef NS_ENUM(NSInteger, S7TVDeletedMessageRevealMode) {
 @property (nonatomic, assign) BOOL systemMessageBackgroundsEnabled;
 
 // Une couleur configurable par catégorie. Défauts = anciennes couleurs en
-// dur de 7tv-chat-custom-view.m (vert/violet/rose).
+// dur de 7tv-chat-custom-view.m (bleu/violet/rose).
 @property (nonatomic, strong) UIColor *subResubAccentColor;  // sub/resub non-Prime
 @property (nonatomic, strong) UIColor *primeAccentColor;     // sub/resub Prime
 @property (nonatomic, strong) UIColor *giftAccentColor;      // gift communautaire

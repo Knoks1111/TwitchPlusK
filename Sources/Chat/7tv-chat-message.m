@@ -1099,7 +1099,7 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromRedemption(
     if (!channelID.length) {
         channelID = s7tv_JSONStringForKeys(reward, @[@"channel_id", @"channelID"]);
     }
-    if (channelID.length && manager.currentChannelTwitchID.length &&
+    if (channelID.length &&
         ![channelID isEqualToString:manager.currentChannelTwitchID]) {
         return nil;
     }
@@ -1175,7 +1175,7 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromAutomaticRedempti
     if (!channelID.length) {
         channelID = s7tv_JSONStringForKeys(reward, @[@"channel_id", @"channelID"]);
     }
-    if (channelID.length && manager.currentChannelTwitchID.length &&
+    if (channelID.length &&
         ![channelID isEqualToString:manager.currentChannelTwitchID]) {
         return nil;
     }

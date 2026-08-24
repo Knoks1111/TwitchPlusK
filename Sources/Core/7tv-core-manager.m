@@ -47,6 +47,9 @@
 #import "Chat/7tv-chat-reply-thread-panel.h"
 #import <objc/runtime.h>
 
+static BOOL s7tv_chatSessionGenerationForChannel(NSString *channel,
+                                                  NSUInteger *outGeneration);
+
 // ============================================================
 // Constante de notification
 // ============================================================
@@ -1095,8 +1098,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
     if (cached.count) {
         dispatch_barrier_async(self.emoteQueue, ^{
-            if (self.currentChannelTwitchID.length &&
-                ![self.currentChannelTwitchID isEqualToString:twitchUserID]) return;
+            if (![self.currentChannelTwitchID isEqualToString:twitchUserID]) return;
             self.channelEmotes = cached;
             [self log:@"⚡️ %lu emotes channel depuis cache (âge: %.0fs)",
              (unsigned long)cached.count, cacheAge];
@@ -1163,8 +1165,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         if (!parsed.count) return;
 
         dispatch_barrier_async(self.emoteQueue, ^{
-            if (self.currentChannelTwitchID.length &&
-                ![self.currentChannelTwitchID isEqualToString:twitchUserID]) {
+            if (![self.currentChannelTwitchID isEqualToString:twitchUserID]) {
                 [self log:@"ℹ️ Réponse emotes ignorée pour ancienne chaîne %@", twitchUserID];
                 return;
             }
@@ -1343,27 +1344,34 @@ static const CGFloat kS7TVMenuHeight = 520.0;
                     visibleChannel.length ? visibleChannel : @"aucun"];
                 continue;
             }
+            NSUInteger gqlSessionGeneration = 0;
+            if (!s7tv_chatSessionGenerationForChannel(
+                    visibleChannel, &gqlSessionGeneration)) continue;
 
-            if (channelLogin.length > 0) {
+            @synchronized (self) {
+                NSUInteger currentGeneration = 0;
+                if (!s7tv_chatSessionGenerationForChannel(
+                        visibleChannel, &currentGeneration) ||
+                    currentGeneration != gqlSessionGeneration) {
+                    continue;
+                }
+
                 self.currentChannelName = channelLogin;
                 [self log:@"📡 Channel name extrait GQL: %@", channelLogin];
-            }
+                if (![broadcasterID isEqualToString:self.currentChannelTwitchID]) {
+                    [self log:@"📡 Nouveau broadcaster ID via GQL: %@ (ancien: %@)",
+                     broadcasterID, self.currentChannelTwitchID ?: @"aucun"];
 
-            if (![broadcasterID isEqualToString:self.currentChannelTwitchID]) {
-                [self log:@"📡 Nouveau broadcaster ID via GQL: %@ (ancien: %@)",
-                 broadcasterID, self.currentChannelTwitchID ?: @"aucun"];
-
-                NSString *oldID = self.currentChannelTwitchID;
-                [self s7tv_clearChannelEmotesAndNotify];
-                // Même raisonnement pour les badges channel — voir
-                // SevenTVBadgeProvider.resetChannelBadges.
-                [[SevenTVBadgeProvider sharedProvider] resetChannelBadges];
-                @synchronized(self.fetchingChannelIDs) {
-                    if (oldID) [self.fetchingChannelIDs removeObject:oldID];
+                    NSString *oldID = self.currentChannelTwitchID;
+                    [self s7tv_clearChannelEmotesAndNotify];
+                    [[SevenTVBadgeProvider sharedProvider] resetChannelBadges];
+                    @synchronized(self.fetchingChannelIDs) {
+                        if (oldID) [self.fetchingChannelIDs removeObject:oldID];
+                    }
+                    self.currentChannelTwitchID = broadcasterID;
+                    [self loadEmotesForChannelTwitchID:broadcasterID];
+                    break;
                 }
-                self.currentChannelTwitchID = broadcasterID;
-                [self loadEmotesForChannelTwitchID:broadcasterID];
-                break;
             }
         }
     });
@@ -1948,6 +1956,23 @@ static NSUInteger s7tv_currentChatSessionGeneration(void) {
     }
 }
 
+// Lit le couple (chaîne, génération) sous le même verrou. Lire d'abord la
+// chaîne visible puis la génération séparément autorisait cette course : A
+// validé, switch vers B, puis message A ajouté avec la génération B.
+static BOOL s7tv_chatSessionGenerationForChannel(NSString *channel,
+                                                  NSUInteger *outGeneration) {
+    if (!channel.length) return NO;
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    @synchronized (manager) {
+        if (!s7tv_recentHistoryInitializedChannel.length ||
+            [channel caseInsensitiveCompare:s7tv_recentHistoryInitializedChannel] != NSOrderedSame) {
+            return NO;
+        }
+        if (outGeneration) *outGeneration = s7tv_recentHistoryGeneration;
+        return YES;
+    }
+}
+
 // Extrait le salon porté explicitement par une ligne IRC (`#login`). Cette
 // identité voyage avec ROOMSTATE, PRIVMSG et les événements de modération ;
 // elle permet de rejeter les paquets d'un ancien socket sans deviner leur
@@ -1984,6 +2009,8 @@ static NSString *s7tv_channelNameFromIRCLine(NSString *ircLine) {
     NSString *visibleChannel = s7tv_activeNativeChatChannelName();
     if (!roomChannel.length || !visibleChannel.length ||
         [roomChannel caseInsensitiveCompare:visibleChannel] != NSOrderedSame) return;
+    NSUInteger roomSessionGeneration = 0;
+    if (!s7tv_chatSessionGenerationForChannel(roomChannel, &roomSessionGeneration)) return;
 
     NSRange roomIDRange = [ircLine rangeOfString:@"room-id="];
     if (roomIDRange.location == NSNotFound) return;
@@ -1997,33 +2024,40 @@ static NSString *s7tv_channelNameFromIRCLine(NSString *ircLine) {
     if (!roomID.length) return;
     [self log:@"📡 room-id extrait depuis ROOMSTATE: %@", roomID];
 
-    if (![roomID isEqualToString:self.currentChannelTwitchID]) {
-        [self log:@"📡 Nouveau broadcaster ID (ROOMSTATE): %@ (ancien: %@)",
-            roomID, self.currentChannelTwitchID ?: @"aucun"];
-        [self s7tv_clearChannelEmotesAndNotify];
-        self.currentChannelTwitchID = roomID;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[S7TVReplyThreadPanel sharedPanel] hide];
-        });
+    @synchronized (self) {
+        if (roomSessionGeneration != s7tv_recentHistoryGeneration ||
+            [roomChannel caseInsensitiveCompare:s7tv_recentHistoryInitializedChannel ?: @""] != NSOrderedSame) {
+            return;
+        }
+        if (![roomID isEqualToString:self.currentChannelTwitchID]) {
+            [self log:@"📡 Nouveau broadcaster ID (ROOMSTATE): %@ (ancien: %@)",
+                roomID, self.currentChannelTwitchID ?: @"aucun"];
+            [self s7tv_clearChannelEmotesAndNotify];
+            self.currentChannelTwitchID = roomID;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[S7TVReplyThreadPanel sharedPanel] hide];
+            });
 
-        if (self.currentChannelName.length) {
             NSUserDefaults *preferences = NSUserDefaults.standardUserDefaults;
             NSMutableDictionary *map = [([preferences dictionaryForKey:@"s7tv_channel_id_map"]
                                          ?: @{}) mutableCopy];
-            map[self.currentChannelName.lowercaseString] = roomID;
+            map[roomChannel.lowercaseString] = roomID;
             [preferences setObject:map.copy forKey:@"s7tv_channel_id_map"];
             [preferences synchronize];
-            [self log:@"💾 Mapping sauvé: %@ → %@", self.currentChannelName, roomID];
+            [self log:@"💾 Mapping sauvé: %@ → %@", roomChannel, roomID];
+            [self loadEmotesForChannelTwitchID:roomID];
+            [NSNotificationCenter.defaultCenter
+                postNotificationName:@"S7TVChannelJoined" object:nil
+                userInfo:@{@"channelID": roomID}];
         }
-        [self loadEmotesForChannelTwitchID:roomID];
-        [NSNotificationCenter.defaultCenter
-            postNotificationName:@"S7TVChannelJoined" object:nil
-            userInfo:@{@"channelID": roomID}];
     }
-    [self initializeRecentHistoryForChannel:self.currentChannelName force:NO];
+    if (s7tv_currentChatSessionGeneration() == roomSessionGeneration) {
+        [self initializeRecentHistoryForChannel:roomChannel force:NO];
+    }
 }
 
-- (BOOL)s7tv_handleIRCModerationEvent:(NSString *)ircLine {
+- (BOOL)s7tv_handleIRCModerationEvent:(NSString *)ircLine
+                    sessionGeneration:(NSUInteger)chatSessionGeneration {
     BOOL isClearMessage = [ircLine containsString:@" CLEARMSG "];
     BOOL isClearChat = [ircLine containsString:@" CLEARCHAT "];
     if (!isClearMessage && !isClearChat) return NO;
@@ -2051,22 +2085,12 @@ static NSString *s7tv_channelNameFromIRCLine(NSString *ircLine) {
 
     NSRange channelEnd = [afterCommand rangeOfCharacterFromSet:
                           NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSString *channelToken = channelEnd.location == NSNotFound
-        ? afterCommand : [afterCommand substringToIndex:channelEnd.location];
     NSString *trailing = channelEnd.location == NSNotFound
         ? @"" : [afterCommand substringFromIndex:channelEnd.location + 1];
     trailing = [trailing stringByTrimmingCharactersInSet:
                 NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if ([trailing hasPrefix:@":"]) trailing = [trailing substringFromIndex:1];
-    if ([channelToken hasPrefix:@"#"]) channelToken = [channelToken substringFromIndex:1];
-
-    if (channelToken.length && self.currentChannelName.length &&
-        [channelToken caseInsensitiveCompare:self.currentChannelName] != NSOrderedSame) {
-        return YES;
-    }
-
     S7TVChatMessageStore *store = self.chatMessageStore;
-    NSUInteger chatSessionGeneration = s7tv_currentChatSessionGeneration();
     if (isClearMessage) {
         NSString *targetMessageID = s7tv_tagValue(tags, @"target-msg-id", @"");
         if (!targetMessageID.length) {
@@ -2128,12 +2152,17 @@ static NSString *s7tv_channelNameFromIRCLine(NSString *ircLine) {
 
     // Les notifications PubSub sont des enveloppes JSON, pas des lignes IRC.
     // Le store déduplique les abonnements Twitch grâce à redemption.id.
-    NSUInteger pubSubSessionGeneration = s7tv_currentChatSessionGeneration();
-    for (S7TVChatMessage *rewardMessage in
-         s7tv_channelPointMessagesFromWebSocketText(text, providers)) {
-        [self.chatMessageStore addMessage:rewardMessage
-                 forChatSessionGeneration:pubSubSessionGeneration];
-        addedMessage = YES;
+    NSString *pubSubChannel = s7tv_activeNativeChatChannelName();
+    NSUInteger pubSubSessionGeneration = 0;
+    if (self.currentChannelTwitchID.length &&
+        s7tv_chatSessionGenerationForChannel(
+            pubSubChannel, &pubSubSessionGeneration)) {
+        for (S7TVChatMessage *rewardMessage in
+             s7tv_channelPointMessagesFromWebSocketText(text, providers)) {
+            [self.chatMessageStore addMessage:rewardMessage
+                     forChatSessionGeneration:pubSubSessionGeneration];
+            addedMessage = YES;
+        }
     }
 
     for (NSString *rawLine in [text componentsSeparatedByCharactersInSet:
@@ -2185,7 +2214,17 @@ static NSString *s7tv_channelNameFromIRCLine(NSString *ircLine) {
             @synchronized (self) {
                 ++s7tv_roomStateResolutionGeneration;
             }
-            if (!s7tv_confirmVisibleChatChannelFromIRC(lineChannel)) continue;
+            if (!s7tv_confirmVisibleChatChannelFromIRC(lineChannel)) {
+                NSString *deferredRoomState = [ircLine copy];
+                NSString *deferredChannel = [lineChannel copy];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                               (int64_t)(0.25 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    if (!s7tv_confirmVisibleChatChannelFromIRC(deferredChannel)) return;
+                    [self handleIRCRoomState:deferredRoomState];
+                });
+                continue;
+            }
             visibleChannel = s7tv_activeNativeChatChannelName();
         } else if (isPrivateMessage && lineChannel.length &&
                    (!visibleChannel.length ||
@@ -2207,11 +2246,22 @@ static NSString *s7tv_channelNameFromIRCLine(NSString *ircLine) {
         if (isRoomState) [self handleIRCRoomState:ircLine];
         // "USERSTATE" couvre aussi GLOBALUSERSTATE, qui se termine par ce mot.
         if ([ircLine containsString:@"USERSTATE"]) [self handleIRCUserState:ircLine];
-        if ([self s7tv_handleIRCModerationEvent:ircLine]) continue;
+        NSUInteger lineSessionGeneration = 0;
+        BOOL lineTargetsCurrentSession = lineChannel.length &&
+            s7tv_chatSessionGenerationForChannel(lineChannel, &lineSessionGeneration);
+        BOOL isModeration = [ircLine containsString:@" CLEARMSG "] ||
+            [ircLine containsString:@" CLEARCHAT "];
+        if (isModeration) {
+            if (!lineTargetsCurrentSession) continue;
+            [self s7tv_handleIRCModerationEvent:ircLine
+                             sessionGeneration:lineSessionGeneration];
+            continue;
+        }
 
+        if (!lineTargetsCurrentSession) continue;
         S7TVChatMessage *chatMessage = s7tv_parseChatMessage(ircLine, providers);
         if (!chatMessage) continue;
-        NSUInteger messageSessionGeneration = s7tv_currentChatSessionGeneration();
+        NSUInteger messageSessionGeneration = lineSessionGeneration;
         if (chatMessage.channelPointRewardID.length) {
             // PubSub et IRC arrivent presque simultanément, parfois dans
             // l'ordre inverse. Seul le PRIVMSG de récompense attend 350 ms.

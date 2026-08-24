@@ -393,7 +393,7 @@ static NSURL *S7TVUserURL(NSString *channelID) {
     [task resume];
 }
 
-- (nullable id<S7TVResolvedEmote>)resolvedSharedChatAvatarForChannelID:(NSString *)channelID {
+- (nullable id<S7TVResolvedEmote>)resolvedChannelAvatarForChannelID:(NSString *)channelID {
     if (!channelID.length) return nil;
 
     __block NSString *imageURLString = nil;
@@ -415,6 +415,10 @@ static NSURL *S7TVUserURL(NSString *channelID) {
     avatar.imageURL = url;
     avatar.rendersCircular = YES;
     return avatar;
+}
+
+- (nullable id<S7TVResolvedEmote>)resolvedSharedChatAvatarForChannelID:(NSString *)channelID {
+    return [self resolvedChannelAvatarForChannelID:channelID];
 }
 
 - (nullable id<S7TVResolvedEmote>)resolvedBadgeForIdentifier:(NSString *)identifier {

@@ -82,10 +82,13 @@ extern NSString *const S7TVBadgesCatalogUpdatedNotification;
 // badge Twitch pas encore dans le catalogue mis en cache).
 - (nullable id<S7TVResolvedEmote>)resolvedBadgeForIdentifier:(NSString *)identifier;
 
-// Retourne l'avatar Twitch de la chaîne d'origine d'un message Shared Chat.
-// Au premier appel, déclenche si nécessaire un fetch Helix dédupliqué puis
-// poste S7TVBadgesCatalogUpdatedNotification afin de recharger le message.
-// nil pendant le chargement ou si l'identifiant est invalide.
+// Retourne l'avatar Twitch d'une chaîne. Au premier appel, déclenche si
+// nécessaire un fetch Helix dédupliqué puis poste
+// S7TVBadgesCatalogUpdatedNotification. Ce point d'entrée commun est utilisé
+// par le chat partagé ET par le bouton Channel du picker.
+- (nullable id<S7TVResolvedEmote>)resolvedChannelAvatarForChannelID:(NSString *)channelID;
+
+// Alias historique conservé pour le renderer Shared Chat.
 - (nullable id<S7TVResolvedEmote>)resolvedSharedChatAvatarForChannelID:(NSString *)channelID;
 
 // Chargement explicite (aussi appelé automatiquement par +setup pour le

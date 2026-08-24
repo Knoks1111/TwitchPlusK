@@ -248,13 +248,12 @@ S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(
     // un switch (chevauchement JOIN/PART sur le même socket, reconnexion,
     // etc.) — sans ce filtre, s7tv_parsePRIVMSG les acceptait tous sans
     // distinction et le store se retrouvait avec un mélange des deux
-    // chaînes, même après le reset fait au JOIN (voir
-    // s7tv_sendMessage:completionHandler:) puisque de nouveaux messages de l'ancienne
-    // chaîne continuaient d'arriver ENSUITE. Le nom de chaîne ("#xxx") est
+    // chaînes, même après le reset de session puisque de nouveaux messages de
+    // l'ancienne chaîne continuaient d'arriver ENSUITE. Le nom de chaîne ("#xxx") est
     // toujours présent entre "PRIVMSG " et " :" — on l'extrait et on
     // compare à la chaîne actuellement affichée (mgr.currentChannelName,
-    // déjà à jour de façon synchrone dès l'envoi de "JOIN #channel", voir
-    // s7tv_sendMessage:completionHandler: plus bas). Si ça ne correspond
+    // lié au ChatTranscriptView réellement visible par le routeur UIKit).
+    // Si ça ne correspond
     // pas → message ignoré, jamais construit ni ajouté au store. Si
     // currentChannelName n'est pas encore connu (tout premier message avant
     // le tout premier JOIN observé), on laisse passer par sécurité plutôt
@@ -1421,6 +1420,7 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<NSString *> *> *replyIDsByThreadRootID;
 @property (nonatomic, strong, readwrite) dispatch_queue_t storeQueue;
 @property (nonatomic, assign) NSUInteger storeGeneration;
+@property (nonatomic, assign) NSUInteger chatSessionGeneration;
 @end
 
 @implementation S7TVChatMessageStore
@@ -1434,6 +1434,7 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
         _messageIDsByUserID  = [NSMutableDictionary dictionary];
         _replyIDsByThreadRootID = [NSMutableDictionary dictionary];
         _storeGeneration = 1;
+        _chatSessionGeneration = 0;
         // Même pattern que SevenTVManager.emoteQueue : concurrente, lectures
         // en dispatch_sync, écritures en dispatch_barrier_async.
         _storeQueue = dispatch_queue_create("tv.s7tv.chat-message-store",
@@ -1509,6 +1510,15 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
     });
 }
 
+- (void)addMessage:(S7TVChatMessage *)message
+    forChatSessionGeneration:(NSUInteger)sessionGeneration {
+    if (!message.messageID.length) return;
+    dispatch_barrier_async(self.storeQueue, ^{
+        if (self.chatSessionGeneration != sessionGeneration) return;
+        if ([self s7tv_appendMessageIfUnique:message]) [self s7tv_purgeIfNeeded];
+    });
+}
+
 // Doit être appelé depuis l'intérieur d'un bloc déjà sur storeQueue
 // (barrier) — pas de dispatch supplémentaire ici pour éviter un deadlock.
 - (void)s7tv_purgeIfNeeded {
@@ -1561,6 +1571,20 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
     });
 }
 
+- (void)markMessageDeletedByID:(NSString *)messageID
+      chatSessionGeneration:(NSUInteger)sessionGeneration
+                    completion:(void (^)(void))completion {
+    if (!messageID.length) return;
+    dispatch_barrier_async(self.storeQueue, ^{
+        if (self.chatSessionGeneration != sessionGeneration) return;
+        S7TVChatMessage *msg = self.messagesByID[messageID];
+        [msg applyModerationState:S7TVChatMessageStateDeletedCollapsed
+                  moderationKind:S7TVChatModerationKindMessageDeleted
+                 durationSeconds:0];
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+    });
+}
+
 - (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID {
     [self markAllMessagesDeletedForUserID:authorUserID completion:nil];
 }
@@ -1588,6 +1612,25 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
             [msg applyModerationState:S7TVChatMessageStateDeletedCollapsed
                        moderationKind:moderationKind
                       durationSeconds:durationSeconds];
+        }
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+    });
+}
+
+- (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID
+                         moderationKind:(S7TVChatModerationKind)moderationKind
+                        durationSeconds:(NSInteger)durationSeconds
+                  chatSessionGeneration:(NSUInteger)sessionGeneration
+                              completion:(void (^)(void))completion {
+    if (!authorUserID.length) return;
+    dispatch_barrier_async(self.storeQueue, ^{
+        if (self.chatSessionGeneration != sessionGeneration) return;
+        NSSet<NSString *> *ids = self.messageIDsByUserID[authorUserID];
+        for (NSString *msgID in ids) {
+            [self.messagesByID[msgID]
+                applyModerationState:S7TVChatMessageStateDeletedCollapsed
+                      moderationKind:moderationKind
+                     durationSeconds:durationSeconds];
         }
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
@@ -1673,6 +1716,21 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
     });
 }
 
+- (void)markAllMessagesDeletedForChatSessionGeneration:(NSUInteger)sessionGeneration
+                                             completion:(void (^)(void))completion {
+    dispatch_barrier_async(self.storeQueue, ^{
+        if (self.chatSessionGeneration != sessionGeneration) return;
+        for (S7TVChatMessage *msg in self.orderedMessages) {
+            if (msg.type == S7TVChatMessageTypeHistoryWelcome ||
+                msg.type == S7TVChatMessageTypeHistoryDivider) continue;
+            [msg applyModerationState:S7TVChatMessageStateDeletedCollapsed
+                       moderationKind:S7TVChatModerationKindChatCleared
+                      durationSeconds:0];
+        }
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+    });
+}
+
 - (void)removeAllMessages {
     dispatch_barrier_async(self.storeQueue, ^{
         self.storeGeneration += 1;
@@ -1690,6 +1748,23 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
     });
 }
 
+- (BOOL)beginChatSessionWithMessages:(NSArray<S7TVChatMessage *> *)messages
+                   sessionGeneration:(NSUInteger)sessionGeneration {
+    NSArray<S7TVChatMessage *> *snapshot = [messages copy] ?: @[];
+    __block BOOL applied = NO;
+    // Le lot contient seulement les marqueurs de début de transcript. Attendre
+    // cette courte barrière garantit qu'une vue A réactivée ne peut jamais
+    // repeindre une dernière frame du store B.
+    dispatch_barrier_sync(self.storeQueue, ^{
+        if (sessionGeneration <= self.chatSessionGeneration) return;
+        self.chatSessionGeneration = sessionGeneration;
+        self.storeGeneration += 1;
+        [self s7tv_rebuildWithMessages:snapshot];
+        applied = YES;
+    });
+    return applied;
+}
+
 - (void)prependHistoricalMessages:(NSArray<S7TVChatMessage *> *)messages
                         completion:(void (^)(void))completion {
     NSArray<S7TVChatMessage *> *historical = [messages copy] ?: @[];
@@ -1704,6 +1779,30 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
         for (S7TVChatMessage *message in historical) {
             // La copie live gagne toujours : elle peut déjà avoir reçu un
             // CLEARMSG/timeout pendant que la requête historique finissait.
+            if (message.messageID.length && ![existingIDs containsObject:message.messageID]) {
+                [merged addObject:message];
+            }
+        }
+        [merged addObjectsFromArray:existing];
+        [self s7tv_rebuildWithMessages:merged];
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+    });
+}
+
+- (void)prependHistoricalMessages:(NSArray<S7TVChatMessage *> *)messages
+          chatSessionGeneration:(NSUInteger)sessionGeneration
+                        completion:(void (^)(void))completion {
+    NSArray<S7TVChatMessage *> *historical = [messages copy] ?: @[];
+    dispatch_barrier_async(self.storeQueue, ^{
+        if (self.chatSessionGeneration != sessionGeneration) return;
+        NSArray<S7TVChatMessage *> *existing = [self.orderedMessages copy];
+        NSMutableSet<NSString *> *existingIDs = [NSMutableSet setWithCapacity:existing.count];
+        for (S7TVChatMessage *message in existing) {
+            if (message.messageID.length) [existingIDs addObject:message.messageID];
+        }
+        NSMutableArray<S7TVChatMessage *> *merged = [NSMutableArray arrayWithCapacity:
+            historical.count + existing.count];
+        for (S7TVChatMessage *message in historical) {
             if (message.messageID.length && ![existingIDs containsObject:message.messageID]) {
                 [merged addObject:message];
             }
@@ -1747,6 +1846,38 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
             break;
         }
 
+        if (matched) {
+            if (companion.rawText.length) matched.rawText = companion.rawText;
+            matched.tokens = companion.tokens;
+            matched.twitchEmotesTag = companion.twitchEmotesTag ?: @"";
+            matched.badgeIdentifiers = companion.badgeIdentifiers ?: @[];
+            if (companion.authorColor) matched.authorColor = companion.authorColor;
+            matched.isActionMessage = companion.isActionMessage;
+        }
+        NSString *mergedID = [matched.messageID copy];
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(mergedID); });
+        }
+    });
+}
+
+- (void)mergeChannelPointCompanionMessage:(S7TVChatMessage *)companion
+                     chatSessionGeneration:(NSUInteger)sessionGeneration
+                                completion:(void (^ _Nullable)(NSString * _Nullable))completion {
+    if (!companion.channelPointRewardID.length || !companion.authorUserID.length) return;
+    dispatch_barrier_async(self.storeQueue, ^{
+        if (self.chatSessionGeneration != sessionGeneration) return;
+        S7TVChatMessage *matched = nil;
+        for (S7TVChatMessage *candidate in self.orderedMessages.reverseObjectEnumerator) {
+            if (candidate.type != S7TVChatMessageTypeChannelPointRedemption) continue;
+            if (![candidate.channelPointRewardID isEqualToString:companion.channelPointRewardID] ||
+                ![candidate.authorUserID isEqualToString:companion.authorUserID]) continue;
+            if (ABS([candidate.timestamp timeIntervalSinceDate:companion.timestamp]) > 8.0) continue;
+            if (candidate.rawText.length && companion.rawText.length &&
+                ![candidate.rawText isEqualToString:companion.rawText]) continue;
+            matched = candidate;
+            break;
+        }
         if (matched) {
             if (companion.rawText.length) matched.rawText = companion.rawText;
             matched.tokens = companion.tokens;

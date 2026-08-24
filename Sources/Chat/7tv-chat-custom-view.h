@@ -25,6 +25,13 @@ NS_ASSUME_NONNULL_BEGIN
 UIView * _Nullable s7tv_findChatInputView(void);
 SevenTVChatCustomView * _Nullable s7tv_activeChatCustomView(void);
 void s7tv_handleNativeChatViewLifecycle(UIView *view);
+// Le hook WebSocket transmet les JOIN observés ici au lieu de décider seul
+// quelle chaîne est à l'écran. Une vue Twitch déjà conservée peut redevenir
+// visible sans nouveau JOIN, tandis qu'un socket hors écran peut se reconnecter.
+void s7tv_noteOutgoingChatJoinForChannel(NSString *channel);
+// Identité UI actuellement autoritaire, lisible sans toucher UIKit depuis les
+// callbacks réseau afin de rejeter les réponses GQL d'une ancienne chaîne.
+NSString * _Nullable s7tv_activeNativeChatChannelName(void);
 void s7tv_applyChatCustomToggle(void);
 void s7tv_reloadActiveChatCustomView(void);
 void s7tv_reloadActiveChatCustomViewAnimated(void);
@@ -87,13 +94,6 @@ void s7tv_setupChatCustomIntegration(void);
 // jamais utilisé sur le chat principal.
 @property (nonatomic, assign) BOOL usesThreadReplyIndent;
 
-// NO par défaut. YES uniquement sur les 2 sous-vues (racine + réponses) du
-// panneau Fil : affiche un bouton flèche à droite de CHAQUE message,
-// permettant de le désigner comme cible de réponse (voir
-// onReplyTargetSelected juste en dessous). N'a de sens que dans ce contexte
-// précis — jamais utilisé sur le chat principal.
-@property (nonatomic, assign) BOOL showsReplyTargetButton;
-
 // YES uniquement pour le transcript principal : quand l'utilisateur remonte,
 // sa structure visible reste figée malgré la purge FIFO à 300 messages.
 // Les vues temporaires et petites (thread, preview du picker) passent ce flag
@@ -109,10 +109,9 @@ void s7tv_setupChatCustomIntegration(void);
 // long et plafonné commence toujours par sa première ligne, pas par sa fin.
 @property (nonatomic, assign) BOOL automaticallyScrollsToBottom;
 
-// Appelé lorsqu'un message devient une cible de réponse : bouton flèche dans
-// le panneau Fil OU appui long dans le chat principal. Les deux interactions
-// transmettent le même messageID + authorDisplayName et réutilisent ainsi un
-// unique pipeline de réponse côté hôte.
+// Appelé après un appui long sur un message, dans le chat principal comme
+// dans un fil. Tous les contextes transmettent le même messageID et le même
+// authorDisplayName au pipeline de réponse unique côté hôte.
 @property (nonatomic, copy, nullable) void (^onReplyTargetSelected)(NSString *messageID, NSString *authorDisplayName);
 
 - (instancetype)initWithStore:(S7TVChatMessageStore *)store;
@@ -173,6 +172,11 @@ void s7tv_setupChatCustomIntegration(void);
 // un autre contexte (thread fermé/réouvert), sans interrompre brutalement un
 // applySnapshot déjà en vol.
 - (void)resetTransientTranscriptState;
+
+// Active ou désactive uniquement le défilement de la table, sans couper ses
+// gestes. Le message racine d'un thread l'utilise avec NO : sa cellule garde
+// donc l'appui long de réponse tout en restant physiquement non scrollable.
+- (void)setScrollingEnabled:(BOOL)enabled;
 
 // Hauteur réelle du contenu (tableView.contentSize.height, cellules
 // self-sizing incluses). Force un layout complet (largeur → recalcul des

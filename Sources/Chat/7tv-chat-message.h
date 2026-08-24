@@ -420,6 +420,11 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // maxMessageCount est dépassé après ajout.
 - (void)addMessage:(S7TVChatMessage *)message;
 
+// Variante du store principal : la barrière n'ajoute le message que si la
+// session de chaîne n'a pas changé depuis son parsing réseau.
+- (void)addMessage:(S7TVChatMessage *)message
+    forChatSessionGeneration:(NSUInteger)sessionGeneration;
+
 // Passe le message en .deletedCollapsed (ne touche pas rawText/tokens).
 // No-op silencieux si l'id est introuvable (déjà purgé, ou jamais reçu).
 - (void)markMessageDeletedByID:(NSString *)messageID;
@@ -428,6 +433,9 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // d'écriture a terminé. Utilisée par la Phase 5 pour ne jamais rafraîchir la
 // cellule avant que son nouvel état soit réellement visible par le renderer.
 - (void)markMessageDeletedByID:(NSString *)messageID
+                    completion:(void (^ _Nullable)(void))completion;
+- (void)markMessageDeletedByID:(NSString *)messageID
+      chatSessionGeneration:(NSUInteger)sessionGeneration
                     completion:(void (^ _Nullable)(void))completion;
 
 // Passe TOUS les messages actuellement en mémoire d'un utilisateur en
@@ -443,6 +451,11 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 - (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID
                          moderationKind:(S7TVChatModerationKind)moderationKind
                         durationSeconds:(NSInteger)durationSeconds
+                              completion:(void (^ _Nullable)(void))completion;
+- (void)markAllMessagesDeletedForUserID:(NSString *)authorUserID
+                         moderationKind:(S7TVChatModerationKind)moderationKind
+                        durationSeconds:(NSInteger)durationSeconds
+                  chatSessionGeneration:(NSUInteger)sessionGeneration
                               completion:(void (^ _Nullable)(void))completion;
 
 // Bascule .deletedCollapsed <-> .deletedExpanded (tap-to-reveal, Phase 5).
@@ -464,6 +477,8 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 - (void)markAllMessagesDeleted;
 
 - (void)markAllMessagesDeletedWithCompletion:(void (^ _Nullable)(void))completion;
+- (void)markAllMessagesDeletedForChatSessionGeneration:(NSUInteger)sessionGeneration
+                                             completion:(void (^ _Nullable)(void))completion;
 
 // Vide entièrement le store (changement de channel — voir Phase 0,
 // nettoyage à la fermeture/réouverture pour éviter les fuites entre chaînes).
@@ -475,10 +490,19 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 - (void)replaceAllMessages:(NSArray<S7TVChatMessage *> *)messages
                 completion:(void (^ _Nullable)(void))completion;
 
+// Transition forte de chaîne. Le remplacement est synchrone (deux marqueurs
+// seulement) afin que l'ancien chat soit réellement vidé avant que la vue
+// réutilisée soit réaffichée. Une génération plus ancienne est rejetée.
+- (BOOL)beginChatSessionWithMessages:(NSArray<S7TVChatMessage *> *)messages
+                   sessionGeneration:(NSUInteger)sessionGeneration;
+
 // Insère un lot historique AVANT le contenu déjà présent (marqueurs + live),
 // sans remplacer les doublons déjà reçus en direct. Tous les index du store
 // et les compteurs de réponses sont reconstruits dans la même barrière.
 - (void)prependHistoricalMessages:(NSArray<S7TVChatMessage *> *)messages
+                        completion:(void (^ _Nullable)(void))completion;
+- (void)prependHistoricalMessages:(NSArray<S7TVChatMessage *> *)messages
+          chatSessionGeneration:(NSUInteger)sessionGeneration
                         completion:(void (^ _Nullable)(void))completion;
 
 // Recalcule les tokens sous une barrière d'écriture, puis appelle completion
@@ -491,6 +515,9 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // sans ajouter une seconde ligne. Rare et borné à 300 messages, un scan
 // inverse est préférable à un index permanent supplémentaire.
 - (void)mergeChannelPointCompanionMessage:(S7TVChatMessage *)companion
+                                completion:(void (^ _Nullable)(NSString * _Nullable mergedMessageID))completion;
+- (void)mergeChannelPointCompanionMessage:(S7TVChatMessage *)companion
+                     chatSessionGeneration:(NSUInteger)sessionGeneration
                                 completion:(void (^ _Nullable)(NSString * _Nullable mergedMessageID))completion;
 
 // Applique tardivement l'icône de monnaie personnalisée aux cartes déjà dans

@@ -161,10 +161,11 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, strong, readonly) dispatch_queue_t emoteQueue;
 
 // --- Chat custom (Phase 1a+) ---
-// Store des messages du chat en cours. Réinitialisé automatiquement à
-// chaque changement de chaîne détecté (voir -handleIRCRoomState:) pour
-// éviter qu'un message de l'ancienne chaîne fuite
-// dans la nouvelle (exigence Phase 0).
+// Store des messages du chat en cours. Réinitialisé avant réaffichage lorsque
+// le routeur UIKit active la chaîne représentée par le ChatTranscriptView ;
+// ROOMSTATE confirme ensuite son ID Twitch. Chaque mutation réseau est aussi
+// conditionnée à la génération de session afin qu'un callback obsolète ne
+// puisse repeupler le store après son vidage.
 @property (nonatomic, strong, readonly) S7TVChatMessageStore *chatMessageStore;
 
 // --- Initialisation ---
@@ -253,8 +254,9 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @end
 
 // Cycle de vie de l'historique récent du salon. Le hook WebSocket transmet
-// seulement les JOIN sortants ; le manager possède la génération, la requête
-// réseau et la remise à zéro atomique du store.
+// les JOIN au routeur UIKit, qui active la chaîne de la vue visible ; le
+// manager possède ensuite la génération, la requête réseau et la remise à
+// zéro atomique du store.
 @interface SevenTVManager (RecentChatHistory)
 - (void)initializeRecentHistoryForChannel:(NSString *)channel force:(BOOL)force;
 - (void)handleOutgoingChatWebSocketMessage:(NSURLSessionWebSocketMessage *)message;

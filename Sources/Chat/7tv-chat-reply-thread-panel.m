@@ -19,6 +19,7 @@
 
 #import "Chat/7tv-chat-reply-thread-panel.h"
 #import "Chat/7tv-chat-custom-view.h"
+#import "Chat/7tv-chat-appearance-config.h"
 #import "Chat/7tv-chat-message.h"
 #import "Core/7tv-core-manager.h"
 #import "Localization/7tv-localization-manager.h"
@@ -39,7 +40,7 @@
 // Insère "@pseudo " au tout DÉBUT du texte SANS ouvrir le clavier — pas de
 // becomeFirstResponder (contrairement au picker d'emotes, où le textView
 // était déjà premier répondant puisque le clavier était déjà ouvert à ce
-// moment-là). Ici on tape la flèche depuis le panneau Fil : le clavier est
+// moment-là). Ici on fait un appui long dans le panneau Fil : le clavier est
 // fermé, et le faire apparaître via becomeFirstResponder posait 2 problèmes
 // distincts, tous deux corrigés en le retirant :
 //   1. Le panneau Fil ne se repositionne pas quand le clavier apparaît (pas
@@ -205,7 +206,7 @@ static void s7tv_removeExactPrefixFromChatInput(NSString *exactPrefix) {
 static const CGFloat kS7TVReplyThreadTitleHeight = 26.0;   // ligne titre "Fil" + bouton fermer — resserré pour mobile
 static const CGFloat kS7TVReplyThreadSeparatorHeight = 1.0;
 static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
-static const CGFloat kS7TVReplyTargetBarHeight = 34.0; // barre "Répondre à @X · Annuler", masquée (0) tant qu'aucune cible n'est choisie
+static const CGFloat kS7TVReplyTargetBarHeight = 54.0; // aperçu du message au-dessus de "Répondre à @X · Annuler"
 
 // Les overlays de réponse vivent dans UIWindow pour rester au-dessus du
 // transcript, mais leur largeur doit suivre la colonne de chat Twitch. La
@@ -242,6 +243,18 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     [result appendAttributedString:
         [[NSAttributedString alloc] initWithString:@"   •   " attributes:boldAttrs]];
     return result;
+}
+
+static NSString *s7tv_replyTargetPreviewText(S7TVChatMessage *message) {
+    if (!message) return @"";
+    if (message.state == S7TVChatMessageStateDeletedCollapsed) {
+        return L(@"chat_deleted_message_placeholder");
+    }
+    NSString *preview = [message.rawText ?: @""
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    preview = [preview stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+    preview = [preview stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
+    return preview;
 }
 
 static NSArray<NSString *> *s7tv_messageIDs(NSArray<S7TVChatMessage *> *messages) {
@@ -311,12 +324,12 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 // Le message sur lequel l'utilisateur a tapé pour OUVRIR ce fil — gardé en
 // mémoire mais N'EST PLUS auto-sélectionné comme cible (voir demande :
 // aucune sélection automatique à l'ouverture, l'utilisateur choisit
-// explicitement via le bouton flèche sur le message de son choix).
+// explicitement par appui long sur le message de son choix).
 @property (nonatomic, copy) NSString *pendingReplyTargetMessageID;
 
-// ── Sélection de cible de réponse (bouton flèche par message) ──────────
-// Non-nil uniquement quand l'utilisateur a explicitement tapé le bouton
-// flèche d'un message — voir selectReplyTargetForMessageID:username:. C'est LÀ
+// ── Sélection de cible de réponse (appui long sur un message) ───────
+// Non-nil uniquement quand l'utilisateur a explicitement maintenu un message
+// — voir selectReplyTargetForMessageID:username:. C'est LÀ
 // (pas à l'ouverture) que la mention @X s'insère dans la barre de saisie.
 @property (nonatomic, copy) NSString *selectedReplyTargetMessageID;
 @property (nonatomic, copy) NSString *selectedReplyTargetUsername;
@@ -336,6 +349,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 // principale selon l'origine de la réponse. On ne duplique donc ni son UI,
 // ni son état, ni ses actions.
 @property (nonatomic, strong) UIView *replyTargetBarView;
+@property (nonatomic, weak) UILabel *replyTargetPreviewLabel;
 @property (nonatomic, weak) UILabel *replyTargetBarLabel;
 @property (nonatomic, weak) UIView *threadReplyTargetBarHostView;
 @property (nonatomic, strong) NSLayoutConstraint *replyTargetBarHeightConstraint;
@@ -429,6 +443,15 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     separator.translatesAutoresizingMaskIntoConstraints = NO;
     [replyBar addSubview:separator];
 
+    UILabel *previewLabel = [[UILabel alloc] init];
+    previewLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
+    previewLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.72];
+    previewLabel.numberOfLines = 1;
+    previewLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    previewLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [replyBar addSubview:previewLabel];
+    self.replyTargetPreviewLabel = previewLabel;
+
     UILabel *label = [[UILabel alloc] init];
     label.font = [UIFont systemFontOfSize:12];
     label.textColor = [UIColor colorWithWhite:1.0 alpha:0.6];
@@ -453,8 +476,13 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
         [separator.topAnchor constraintEqualToAnchor:replyBar.topAnchor],
         [separator.heightAnchor constraintEqualToConstant:kS7TVReplyThreadSeparatorHeight],
 
+        [previewLabel.leadingAnchor constraintEqualToAnchor:replyBar.leadingAnchor constant:12],
+        [previewLabel.trailingAnchor constraintEqualToAnchor:replyBar.trailingAnchor constant:-12],
+        [previewLabel.topAnchor constraintEqualToAnchor:separator.bottomAnchor constant:5],
+
         [label.leadingAnchor constraintEqualToAnchor:replyBar.leadingAnchor constant:12],
-        [label.centerYAnchor constraintEqualToAnchor:replyBar.centerYAnchor constant:2],
+        [label.topAnchor constraintEqualToAnchor:previewLabel.bottomAnchor constant:1],
+        [label.bottomAnchor constraintLessThanOrEqualToAnchor:replyBar.bottomAnchor constant:-4],
 
         [cancelButton.leadingAnchor constraintEqualToAnchor:label.trailingAnchor constant:8],
         [cancelButton.centerYAnchor constraintEqualToAnchor:label.centerYAnchor],
@@ -609,14 +637,11 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     self.rootChatView.showsReplyBanners = NO; // voir commentaire showsReplyBanners dans 7tv-chat-custom-view.h
     self.rootChatView.freezesTranscriptWhenScrolled = NO;
     self.rootChatView.automaticallyScrollsToBottom = NO;
+    [self.rootChatView setScrollingEnabled:NO];
     self.rootChatView.renderingSuspended = YES;
     self.rootChatView.translatesAutoresizingMaskIntoConstraints = NO;
-    // userInteractionEnabled reste YES (pas de = NO ici) : le bouton de
-    // sélection de cible (showsReplyTargetButton ci-dessous) doit rester
-    // tapable même sur la racine — on peut répondre au tout premier message
-    // du fil aussi. Aucun risque de scroll accidentel : sa hauteur est
-    // toujours exactement calée sur son contenu (0 ou 1 message), rien à
-    // scroller physiquement même avec les interactions actives.
+    // Les gestes restent actifs malgré le scroll désactivé : l'appui long
+    // part donc dans le même pipeline de réponse que le chat principal.
     [container addSubview:self.rootChatView];
 
     // Léger fond distinct pour lire "racine" comme un bloc titre séparé des
@@ -641,9 +666,8 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     self.repliesChatView.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:self.repliesChatView];
 
-    // ── Bouton "répondre à ce message", sur CHAQUE message (racine incluse) ──
-    self.rootChatView.showsReplyTargetButton = YES;
-    self.repliesChatView.showsReplyTargetButton = YES;
+    // Une seule interaction de réponse partout : l'appui long déjà géré
+    // par SevenTVChatCustomView. Aucune flèche parallèle n'est ajoutée.
     __weak typeof(self) weakSelfForTarget = self;
     void (^targetSelectedHandler)(NSString *, NSString *) = ^(NSString *messageID, NSString *username) {
         [weakSelfForTarget selectReplyTargetForMessageID:messageID username:username];
@@ -672,18 +696,19 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
         [self.rootChatView.heightAnchor constraintEqualToConstant:0];
 
     [NSLayoutConstraint activateConstraints:@[
-        [titleIcon.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:12],
+        [closeButton.leadingAnchor constraintEqualToAnchor:container.safeAreaLayoutGuide.leadingAnchor constant:4],
+        [closeButton.centerYAnchor constraintEqualToAnchor:container.topAnchor constant:kS7TVReplyThreadTitleHeight / 2],
+        [closeButton.widthAnchor constraintEqualToConstant:26],
+        [closeButton.heightAnchor constraintEqualToConstant:26],
+
+        [titleIcon.leadingAnchor constraintEqualToAnchor:closeButton.trailingAnchor constant:2],
         [titleIcon.centerYAnchor constraintEqualToAnchor:container.topAnchor constant:kS7TVReplyThreadTitleHeight / 2],
         [titleIcon.widthAnchor constraintEqualToConstant:15],
         [titleIcon.heightAnchor constraintEqualToConstant:15],
 
         [title.leadingAnchor constraintEqualToAnchor:titleIcon.trailingAnchor constant:6],
         [title.centerYAnchor constraintEqualToAnchor:container.topAnchor constant:kS7TVReplyThreadTitleHeight / 2],
-
-        [closeButton.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-6],
-        [closeButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
-        [closeButton.widthAnchor constraintEqualToConstant:26],
-        [closeButton.heightAnchor constraintEqualToConstant:26],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:container.safeAreaLayoutGuide.trailingAnchor constant:-12],
 
         [topSeparator.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
         [topSeparator.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
@@ -905,46 +930,49 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 
     CGFloat chromeHeight = kS7TVReplyThreadTitleHeight + kS7TVReplyThreadSeparatorHeight * 2
                           + kS7TVReplyThreadBottomPadding + replyBarHeight;
-    // 25% reste la cible, mais jamais au prix d'un conteneur plus petit que
-    // ses propres contraintes fixes. En paysage/clavier ouvert, ce minimum
-    // cohérent évite que la racine/réponses soient comprimées puis masquées.
-    CGFloat preferredMaxHeight = inputTopY * 0.25;
-    CGFloat minimumUsableHeight = chromeHeight + 44.0;
-    CGFloat maxTotalHeight = MIN(inputTopY,
-        MAX(preferredMaxHeight, minimumUsableHeight));
-    CGFloat maxContentHeight = MAX(maxTotalHeight - chromeHeight, 0);
-    // Mesurer d'abord les deux tables avec toute la largeur/hauteur disponible.
-    // Si la racine est très longue, réserver AVANT de la borner une vraie zone
-    // aux réponses. L'ancien calcul inventait 44 pt après coup puis reclampait
-    // le total, ce qui laissait Auto Layout donner réellement 0 pt aux replies.
-    self.rootChatView.frame = CGRectMake(0, 0, width, maxContentHeight);
-    self.repliesChatView.frame = CGRectMake(0, 0, width, maxContentHeight);
+    CGFloat availableContentHeight = MAX(inputTopY - chromeHeight, 0);
+
+    // Budget déterministe : cinq lignes rendues en portrait, trois en
+    // paysage. Une "ligne" suit la police et l'espacement réels du chat,
+    // jamais un pourcentage arbitraire de l'écran.
+    BOOL isLandscape = window.bounds.size.width > window.bounds.size.height;
+    NSUInteger visibleLineCount = isLandscape ? 3 : 5;
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    CGFloat glyphLineHeight = [UIFont systemFontOfSize:cfg.messageFontSize].lineHeight;
+    CGFloat renderedLineHeight = ceil(glyphLineHeight + MAX(cfg.lineSpacing, 0) + 8.0);
+    CGFloat lineBudgetHeight = renderedLineHeight * visibleLineCount;
+
+    // Mesure avec toute la hauteur physiquement disponible. La racine n'est
+    // plus plafonnée à une part du panneau : sa cellule prend sa hauteur
+    // intrinsèque exacte et son UITableView ne peut pas défiler.
+    self.rootChatView.frame = CGRectMake(0, 0, width, availableContentHeight);
+    self.repliesChatView.frame = CGRectMake(0, 0, width, availableContentHeight);
     CGFloat rootContentHeight = MAX([self.rootChatView s7tvContentHeight], 0);
     CGFloat repliesContentHeight = [self.repliesChatView s7tvContentHeight];
     repliesContentHeight = MAX(repliesContentHeight, 0);
 
-    BOOL hasRoot = rootContentHeight > 0;
-    BOOL hasReplies = repliesContentHeight > 0;
-    CGFloat rootShareLimit = hasReplies ? maxContentHeight * 0.5 : maxContentHeight;
-    CGFloat repliesShareLimit = hasRoot ? maxContentHeight * 0.5 : maxContentHeight;
-    CGFloat minimumRootHeight = hasRoot
-        ? MIN(rootContentHeight, MIN(44.0, rootShareLimit)) : 0;
-    CGFloat minimumRepliesHeight = hasReplies
-        ? MIN(repliesContentHeight, MIN(44.0, repliesShareLimit)) : 0;
-    // La racine garde la priorité sur l'espace restant, mais jamais au prix
-    // de tomber à 0 pt ni d'effacer toutes les réponses lorsque les deux sont
-    // présentes (cas paysage + clavier où le panneau est très compact).
-    CGFloat rootHeight = MIN(rootContentHeight,
-        MAX(minimumRootHeight, maxContentHeight - minimumRepliesHeight));
-    CGFloat remainingForReplies = MAX(maxContentHeight - rootHeight, 0);
+    CGFloat allContentHeight = rootContentHeight + repliesContentHeight;
+    CGFloat desiredContentHeight = MIN(allContentHeight, lineBudgetHeight);
+    // Un message racine multiligne reste toujours entier. S'il consomme à
+    // lui seul le budget 5/3 lignes, on conserve aussi une ligne de réponses
+    // lorsqu'il en existe, puis on ne borne que par l'espace physique réel.
+    desiredContentHeight = MAX(desiredContentHeight, rootContentHeight);
+    if (rootContentHeight > 0 && repliesContentHeight > 0) {
+        desiredContentHeight = MAX(desiredContentHeight,
+            rootContentHeight + MIN(repliesContentHeight, renderedLineHeight));
+    }
+    desiredContentHeight = MIN(desiredContentHeight, availableContentHeight);
+
+    CGFloat rootHeight = MIN(rootContentHeight, desiredContentHeight);
+    CGFloat remainingForReplies = MAX(desiredContentHeight - rootHeight, 0);
     CGFloat repliesHeight = MIN(repliesContentHeight, remainingForReplies);
     self.rootChatViewHeightConstraint.constant = rootHeight;
 
     CGFloat totalHeight = chromeHeight + rootHeight + repliesHeight;
     if (rootHeight + repliesHeight <= 0) {
-        totalHeight = chromeHeight + MIN(44.0, maxContentHeight);
+        totalHeight = chromeHeight + MIN(renderedLineHeight, availableContentHeight);
     }
-    totalHeight = MIN(totalHeight, maxTotalHeight);
+    totalHeight = MIN(totalHeight, inputTopY);
 
     // La position verticale n'est plus écrite ici : bottomAnchor suit en
     // permanence inputView.topAnchor. Seule la hauteur calculée du contenu
@@ -1017,8 +1045,8 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     self.repliesChatView.renderingSuspended = NO;
 
     // Aucune sélection automatique : le panneau s'ouvre en pure
-    // consultation, l'utilisateur choisit explicitement une cible via le
-    // bouton flèche sur le message de son choix (voir
+    // consultation, l'utilisateur choisit explicitement une cible par appui
+    // long sur le message de son choix (même geste que le chat principal, voir
     // selectReplyTargetForMessageID:username: plus bas) — demande explicite,
     // l'auto-insertion précédente gênait quand on ouvrait juste pour lire.
     // Si une mention d'une sélection précédente traînait encore (fil rouvert
@@ -1040,11 +1068,20 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     }];
 }
 
-// Tap sur le bouton flèche d'UN message précis (racine ou réponse) — voir
-// SevenTVChatCustomView.onReplyTargetSelected. Insertion IMMÉDIATE de la
-// mention, pas de confirmation supplémentaire : si l'utilisateur tape la
-// flèche, c'est qu'il veut répondre à cette personne. La barre du bas ne
-// sert qu'à visualiser la sélection en cours et à l'annuler si besoin.
+// Retrouve la même instance que celle affichée, y compris lorsqu'un transcript
+// figé la retient après sa purge du FIFO principal.
+- (nullable S7TVChatMessage *)s7tv_messageForReplyTargetID:(NSString *)messageID {
+    S7TVChatMessage *message = [self.rootStore messageWithID:messageID];
+    if (!message) message = [self.repliesStore messageWithID:messageID];
+    if (!message) message = [s7tv_activeChatCustomView() displayedMessageWithID:messageID];
+    if (!message) {
+        message = [[SevenTVManager sharedManager].chatMessageStore messageWithID:messageID];
+    }
+    return message;
+}
+
+// L'appui long du chat principal et celui des vues du thread arrivent tous
+// ici. L'insertion de mention et la barre d'annulation restent donc uniques.
 - (void)selectReplyTargetForMessageID:(NSString *)messageID username:(NSString *)username {
     if (!messageID.length || !username.length) return;
 
@@ -1056,6 +1093,8 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     self.selectedReplyTargetUsername = username;
     [self s7tv_ensureReplyTargetBar];
     [self.cancelButton setTitle:L(@"chat_reply_cancel_button") forState:UIControlStateNormal];
+    self.replyTargetPreviewLabel.text =
+        s7tv_replyTargetPreviewText([self s7tv_messageForReplyTargetID:messageID]);
     self.replyTargetBarLabel.attributedText = s7tv_buildReplyTargetBarText(username);
 
     BOOL threadPanelIsVisible = self.currentThreadRootID.length > 0 &&
@@ -1081,6 +1120,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 - (void)s7tv_clearReplyTargetRemovingMention {
     self.selectedReplyTargetMessageID = nil;
     self.selectedReplyTargetUsername = nil;
+    self.replyTargetPreviewLabel.text = nil;
     self.replyTargetBarView.hidden = YES;
     self.replyTargetBarHeightConstraint.constant = 0;
 

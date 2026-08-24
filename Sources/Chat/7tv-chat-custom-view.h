@@ -107,6 +107,11 @@ void s7tv_setupChatCustomIntegration(void);
 // authorDisplayName au pipeline de réponse unique côté hôte.
 @property (nonatomic, copy, nullable) void (^onReplyTargetSelected)(NSString *messageID, NSString *authorDisplayName);
 
+// Surligne la cible de réponse actuellement choisie sans utiliser la
+// sélection UITableView (les cellules gardent leur comportement normal).
+// Passer nil retire immédiatement l'effet, y compris après « Annuler ».
+- (void)setReplyTargetHighlightedMessageID:(NSString * _Nullable)messageID;
+
 - (instancetype)initWithStore:(S7TVChatMessageStore *)store;
 
 // Recharge l'affichage depuis le store. Phase 1c fait un reload complet à

@@ -21,6 +21,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)showForThreadRootID:(NSString *)threadRootID tappedMessageID:(NSString *)tappedMessageID;
 // Point d'entrée unique pour l'appui long du chat principal et des threads.
 - (void)selectReplyTargetForMessageID:(NSString *)messageID username:(NSString *)username;
+- (void)selectReplyTargetForMessageID:(NSString *)messageID
+                             username:(NSString *)username
+                           sourceView:(SevenTVChatCustomView *)sourceView;
 - (void)hide;
 // Appelé après chaque reload du chat principal (voir
 // s7tv_reloadActiveChatCustomView dans 7tv-chat-custom-view.m) — no-op si le

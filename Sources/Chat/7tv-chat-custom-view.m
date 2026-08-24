@@ -201,9 +201,14 @@ static void s7tv_installChatCustomView(UIView *chatView) {
     SevenTVChatCustomView *customView = [[SevenTVChatCustomView alloc]
         initWithStore:[SevenTVManager sharedManager].chatMessageStore];
     customView.delegate = [S7TVReplyThreadPanel sharedPanel];
+    __weak SevenTVChatCustomView *weakCustomView = customView;
     customView.onReplyTargetSelected = ^(NSString *messageID, NSString *username) {
+        SevenTVChatCustomView *sourceView = weakCustomView;
+        if (!sourceView) return;
         [[S7TVReplyThreadPanel sharedPanel]
-            selectReplyTargetForMessageID:messageID username:username];
+            selectReplyTargetForMessageID:messageID
+                                 username:username
+                               sourceView:sourceView];
     };
     [stack insertArrangedSubview:customView atIndex:index];
     objc_setAssociatedObject(chatView, &kS7TVChatCustomInstalledView, customView,
@@ -364,6 +369,9 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 // vraie barre continue et son libellé rouge par-dessus.
 @property (nonatomic, strong) UIView *historyDividerLineView;
 @property (nonatomic, strong) UILabel *historyDividerLabel;
+// Voile clair posé derrière tout le rendu (badges, pseudo, emotes et texte)
+// quand ce message est la cible active d'une réponse.
+@property (nonatomic, strong) UIView *replyTargetHighlightView;
 - (void)s7tv_cancelAnimationFrameRequests;
 @end
 
@@ -385,6 +393,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     self.messageLabel.alpha = 1.0;
     self.historyDividerLineView.hidden = YES;
     self.historyDividerLabel.hidden = YES;
+    self.replyTargetHighlightView.hidden = YES;
 }
 
 - (instancetype)initWithStyle:(UITableViewCellStyle)style
@@ -393,6 +402,14 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     if (self) {
         self.backgroundColor = [UIColor clearColor];
         self.selectionStyle  = UITableViewCellSelectionStyleNone;
+
+        _replyTargetHighlightView = [[UIView alloc] init];
+        _replyTargetHighlightView.translatesAutoresizingMaskIntoConstraints = NO;
+        _replyTargetHighlightView.backgroundColor =
+            [UIColor colorWithWhite:1.0 alpha:0.20];
+        _replyTargetHighlightView.hidden = YES;
+        _replyTargetHighlightView.userInteractionEnabled = NO;
+        [self.contentView addSubview:_replyTargetHighlightView];
 
         _messageLabel = [[UILabel alloc] init];
         _messageLabel.numberOfLines = 0;
@@ -496,6 +513,11 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
             [_messageLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-8];
 
         [NSLayoutConstraint activateConstraints:@[
+            [_replyTargetHighlightView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+            [_replyTargetHighlightView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+            [_replyTargetHighlightView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+            [_replyTargetHighlightView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+
             [_systemAccentBar.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
             [_systemAccentBar.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
             [_systemAccentBar.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
@@ -665,6 +687,10 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     self.messageLabel.alpha = enabled ? 0.0 : 1.0;
 }
 
+- (void)s7tv_setReplyTargetHighlighted:(BOOL)highlighted {
+    self.replyTargetHighlightView.hidden = !highlighted;
+}
+
 - (NSUInteger)s7tv_characterIndexAtPointInMessageLabel:(CGPoint)point
                                         requireGlyphHit:(BOOL)requireGlyphHit {
     NSAttributedString *attributedText = self.messageLabel.attributedText;
@@ -770,6 +796,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 // demandes concurrentes sont fusionnées dans les files différées existantes.
 @property (nonatomic, assign) BOOL snapshotApplyInProgress;
 @property (nonatomic, assign) BOOL widthReloadPending;
+@property (nonatomic, copy, nullable) NSString *highlightedReplyTargetMessageID;
 - (void)s7tv_dismissEmotePreview;
 - (void)s7tv_observeAnimatedEmotePreview:(id<S7TVResolvedEmote>)emote;
 - (nullable NSString *)s7tv_captureVisibleAnchorAmongIDs:(nullable NSSet<NSString *> *)allowedIDs
@@ -1494,7 +1521,8 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         [cell s7tv_setThreadIndentEnabled:NO];
         [cell s7tv_setHistoryDividerEnabled:NO];
         [cell s7tv_configureSystemAccentWithColor:nil iconName:nil backgroundEnabled:NO
-                                highlightBadgeText:nil];
+                                 highlightBadgeText:nil];
+        [cell s7tv_setReplyTargetHighlighted:NO];
         cell.messageLabelBottomConstraint.constant = -4.0;
         return cell;
     }
@@ -1568,6 +1596,8 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     } : nil;
 
     [cell s7tv_setThreadIndentEnabled:self.usesThreadReplyIndent];
+    [cell s7tv_setReplyTargetHighlighted:
+        [msg.messageID isEqualToString:self.highlightedReplyTargetMessageID]];
 
     if (!self.renderingSuspended && animatedEmotes.count > 0) {
         NSMutableSet<NSString *> *animationKeys = [NSMutableSet setWithCapacity:animatedEmotes.count];
@@ -1940,6 +1970,25 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
     [self s7tv_refreshEmotePreviewFavoriteState];
     [window bringSubviewToFront:overlay];
+}
+
+- (void)setReplyTargetHighlightedMessageID:(nullable NSString *)messageID {
+    if ((_highlightedReplyTargetMessageID == messageID) ||
+        [_highlightedReplyTargetMessageID isEqualToString:messageID]) return;
+
+    _highlightedReplyTargetMessageID = [messageID copy];
+
+    // L'effet doit apparaître dès la fin des 0,45 s d'appui long. Un snapshot
+    // diffable pourrait être différé précisément parce que le geste est encore
+    // en cours ; on met donc à jour les cellules visibles directement. L'ID
+    // conservé ci-dessus réappliquera le même état lors de toute réutilisation.
+    for (NSIndexPath *indexPath in self.tableView.indexPathsForVisibleRows ?: @[]) {
+        NSString *visibleMessageID = [self.dataSource itemIdentifierForIndexPath:indexPath];
+        S7TVChatCustomCell *cell =
+            (S7TVChatCustomCell *)[self.tableView cellForRowAtIndexPath:indexPath];
+        [cell s7tv_setReplyTargetHighlighted:
+            [visibleMessageID isEqualToString:_highlightedReplyTargetMessageID]];
+    }
 }
 
 - (void)s7tv_handleMessageLongPress:(UILongPressGestureRecognizer *)gesture {

@@ -9,6 +9,8 @@
 #import <UIKit/UIKit.h>
 #import "Chat/7tv-chat-custom-view.h"
 
+NS_ASSUME_NONNULL_BEGIN
+
 @interface S7TVReplyThreadPanel : NSObject <SevenTVChatCustomViewDelegate>
 + (instancetype)sharedPanel;
 // Reçoit directement le tap depuis la vue de chat réelle — voir l'assignation
@@ -43,3 +45,5 @@
                                    durationSeconds:(NSInteger)durationSeconds;
 - (void)applyModerationToAllRetainedMessages;
 @end
+
+NS_ASSUME_NONNULL_END

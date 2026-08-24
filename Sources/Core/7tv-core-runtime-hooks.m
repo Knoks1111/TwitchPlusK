@@ -37,6 +37,7 @@
 #import "Badge/7tv-badge-provider.h"
 #import "Picker/7tv-picker-controller.h"
 #import "System/7tv-system-native-behavior-hooks.h"
+#import "System/7tv-system-home-features.h"
 #import "Adblock/7tv-adblock-data.h"
 #import "Adblock/7tv-adblock-proxy.h"
 #import "Adblock/7tv-adblock-runtime.h"
@@ -877,6 +878,7 @@ static void TwitchSevenTVInit(void) {
     // hooks Twitch tardifs. Les interceptions NSURLSession/Apollo restent
     // volontairement dans ce fichier afin de ne jamais les swizzler deux fois.
     S7TVAdblockInstallRuntimeHooks();
+    s7tv_installHomeFeatureRuntimeHooks();
 
     // Verrou d'orientation (bouton Share hijacké)
     s7tv_swizzle_orientation_lock();

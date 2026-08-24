@@ -3,9 +3,10 @@
 ## TwitchAdBlock
 
 Parts of the ad-blocking, GraphQL filtering, HLS proxy, proxy authentication,
-external-playback bypass, and AVFoundation resource-loading code are derived
-from [TwitchAdBlock](https://github.com/gunnerkidBT/TwitchAdBlock), including
-work by level3tjg and gunnerkidBT.
+external-playback bypass, AVFoundation resource-loading, launch destination,
+Twitch Stories hiding, and Live-feed watch-limit code are derived from
+[TwitchAdBlock](https://github.com/gunnerkidBT/TwitchAdBlock), including work
+by level3tjg and gunnerkidBT.
 
 Copyright (c) 2025 level3tjg
 

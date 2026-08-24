@@ -19,6 +19,7 @@
 #import "UI/7tv-ui-logo.h"
 #import "Chat/7tv-chat-appearance-config.h"
 #import "Localization/7tv-localization-manager.h"
+#import "System/7tv-system-native-behavior-hooks.h"
 #import <objc/runtime.h>
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names";
@@ -979,6 +980,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 typedef NS_ENUM(NSInteger, S7TVContentSection) {
     S7TVContentSectionFavorites = 0,  // Mes favoris (nav) + Importer depuis PC
     S7TVContentSectionStream    = 1,  // Auto Collect Channel Points
+    S7TVContentSectionRotation  = 2,  // Bouton + auto-lock gauche/droite
 };
 
 @interface SevenTVContentPageController () <UIDocumentPickerDelegate>
@@ -1003,18 +1005,21 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
     [self.tableView reloadData];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     switch (s) {
         case S7TVContentSectionFavorites: return 2;
         case S7TVContentSectionStream:    return 1;
+        case S7TVContentSectionRotation:  return 2;
         default: return 0;
     }
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
-    return ip.section == S7TVContentSectionFavorites ? 52 : UITableViewAutomaticDimension;
+    if (ip.section == S7TVContentSectionFavorites) return 52;
+    if (ip.section == S7TVContentSectionRotation && ip.row == 1) return 94;
+    return UITableViewAutomaticDimension;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
@@ -1025,23 +1030,26 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
     switch (s) {
         case S7TVContentSectionFavorites: return S7TVSectionHeader(L(@"section_favoris"), NO);
         case S7TVContentSectionStream:    return S7TVSectionHeader(L(@"section_stream"), NO);
+        case S7TVContentSectionRotation:  return S7TVSectionHeader(L(@"section_rotation"), NO);
         default: return [[UIView alloc] init];
     }
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
-    return s == S7TVContentSectionStream ? UITableViewAutomaticDimension : 8;
+    return (s == S7TVContentSectionStream || s == S7TVContentSectionRotation)
+        ? UITableViewAutomaticDimension : 8;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
-    if (s != S7TVContentSectionStream) {
+    if (s != S7TVContentSectionStream && s != S7TVContentSectionRotation) {
         UIView *v = [[UIView alloc] init];
         v.backgroundColor = [UIColor clearColor];
         return v;
     }
     UIView *container = [[UIView alloc] init];
     UILabel *lbl = [[UILabel alloc] init];
-    lbl.text = L(@"desc_auto_collect");
+    lbl.text = s == S7TVContentSectionStream
+        ? L(@"desc_auto_collect") : L(@"desc_orientation_lock_settings");
     lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
     lbl.textColor = S7TVGray();
     lbl.numberOfLines = 0;
@@ -1063,6 +1071,67 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
         return S7TVSwitchCell(L(@"switch_auto_collect_title"),
                     @"giftcard.fill", [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
                     S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints), self, @selector(toggleAutoCollect:));
+    }
+
+    // ── Section Rotation : bouton manuel + détection automatique ─────────
+    if (ip.section == S7TVContentSectionRotation) {
+        if (ip.row == 0) {
+            return S7TVSwitchCell(L(@"switch_orientation_lock_button"),
+                        @"lock.rotation", S7TVAccent(),
+                        s7tv_orientationLockButtonEnabled(), self,
+                        @selector(toggleOrientationLockButton:));
+        }
+
+        UITableViewCell *cell = [[UITableViewCell alloc]
+            initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.backgroundColor = S7TVCellBg();
+
+        UIImageView *icon = S7TVIcon(@"iphone.gen3.radiowaves.left.and.right", S7TVAccent());
+        [cell.contentView addSubview:icon];
+
+        UILabel *title = [[UILabel alloc] init];
+        title.text = L(@"setting_orientation_auto_lock");
+        title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
+        title.textColor = UIColor.whiteColor;
+        title.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:title];
+
+        UISegmentedControl *mode = [[UISegmentedControl alloc] initWithItems:@[
+            L(@"orientation_auto_off"), L(@"orientation_left"),
+            L(@"orientation_right"), L(@"orientation_both")
+        ]];
+        mode.selectedSegmentIndex = s7tv_autoOrientationLockMode();
+        mode.selectedSegmentTintColor = S7TVAccent();
+        [mode setTitleTextAttributes:@{
+            NSForegroundColorAttributeName: UIColor.whiteColor,
+            NSFontAttributeName: [UIFont systemFontOfSize:11 weight:UIFontWeightMedium]
+        } forState:UIControlStateSelected];
+        [mode setTitleTextAttributes:@{
+            NSFontAttributeName: [UIFont systemFontOfSize:11 weight:UIFontWeightRegular]
+        } forState:UIControlStateNormal];
+        [mode addTarget:self action:@selector(autoOrientationModeChanged:)
+               forControlEvents:UIControlEventValueChanged];
+        mode.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:mode];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+            [icon.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:12],
+            [title.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],
+            [title.centerYAnchor constraintEqualToAnchor:icon.centerYAnchor],
+            [title.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12],
+            [mode.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+            [mode.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12],
+            [mode.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:10],
+            [mode.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
+        ]];
+
+        BOOL enabled = s7tv_orientationLockButtonEnabled();
+        cell.userInteractionEnabled = enabled;
+        cell.contentView.alpha = enabled ? 1.0 : 0.4;
+        mode.enabled = enabled;
+        return cell;
     }
 
     // ── Section Favoris ─────────────────────────────────────────────────────
@@ -1167,6 +1236,15 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
 }
 
 - (void)toggleAutoCollect:(UISwitch *)sw { S7TVSetBool(kTCLiveAutoCollectChannelPoints, sw.isOn); }
+- (void)toggleOrientationLockButton:(UISwitch *)sw {
+    s7tv_setOrientationLockButtonEnabled(sw.isOn);
+    [self.tableView reloadSections:
+        [NSIndexSet indexSetWithIndex:S7TVContentSectionRotation]
+                     withRowAnimation:UITableViewRowAnimationNone];
+}
+- (void)autoOrientationModeChanged:(UISegmentedControl *)seg {
+    s7tv_setAutoOrientationLockMode((S7TVAutoOrientationLockMode)seg.selectedSegmentIndex);
+}
 
 // ── Import favoris depuis fichier JSON 7TV PC (inchangé, déplacé depuis
 // l'ancien SevenTVStatsPageController) ──────────────────────────────────────

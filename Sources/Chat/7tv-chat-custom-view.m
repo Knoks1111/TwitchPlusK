@@ -26,20 +26,44 @@ static __weak SevenTVChatCustomView *s_activeChatCustomView = nil;
 static __weak UIView *s_activeNativeChatView = nil;
 static BOOL s_chatReloadScheduled = NO;
 
+static UIView *s7tv_findVisibleChatInputViewInWindow(UIWindow *window) {
+    if (!window || window.hidden || window.alpha <= 0.01) return nil;
+    NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:window];
+    UIView *bestCandidate = nil;
+    CGFloat bestBottom = -CGFLOAT_MAX;
+    while (views.count > 0) {
+        UIView *view = views.firstObject;
+        [views removeObjectAtIndex:0];
+        if (view.hidden || view.alpha <= 0.01) continue;
+        if ([NSStringFromClass(view.class) isEqualToString:@"Twitch.ChatInputView"] &&
+            view.window == window && !CGRectIsEmpty(view.bounds)) {
+            CGRect frame = [view convertRect:view.bounds toView:window];
+            if (CGRectIntersectsRect(frame, window.bounds) && CGRectGetMaxY(frame) > bestBottom) {
+                bestCandidate = view;
+                bestBottom = CGRectGetMaxY(frame);
+            }
+        }
+        [views addObjectsFromArray:view.subviews];
+    }
+    return bestCandidate;
+}
+
 UIView *s7tv_findChatInputView(void) {
+    // Pendant une transition de chaîne, Twitch peut conserver brièvement une
+    // ancienne ChatInputView dans une autre fenêtre. La fenêtre du transcript
+    // réellement actif est la seule source fiable pour ancrer les bandeaux.
+    UIWindow *activeWindow = s_activeChatCustomView.window;
+    UIView *activeCandidate = s7tv_findVisibleChatInputViewInWindow(activeWindow);
+    if (activeCandidate) return activeCandidate;
+
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        if (![scene isKindOfClass:[UIWindowScene class]] ||
+            scene.activationState != UISceneActivationStateForegroundActive) continue;
         UIWindowScene *windowScene = (UIWindowScene *)scene;
         for (UIWindow *window in windowScene.windows) {
-            NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:window];
-            while (views.count > 0) {
-                UIView *view = views.firstObject;
-                [views removeObjectAtIndex:0];
-                if ([NSStringFromClass(view.class) isEqualToString:@"Twitch.ChatInputView"]) {
-                    return view;
-                }
-                [views addObjectsFromArray:view.subviews];
-            }
+            if (window == activeWindow) continue;
+            UIView *candidate = s7tv_findVisibleChatInputViewInWindow(window);
+            if (candidate) return candidate;
         }
     }
     return nil;
@@ -62,8 +86,9 @@ void s7tv_reloadActiveChatCustomViewAnimated(void) {
     SevenTVChatCustomView *view = s_activeChatCustomView;
     if (!view) return;
     dispatch_async(dispatch_get_main_queue(), ^{
+        [view refreshVisibleMessageContentIfFrozen];
         [view reloadMessagesAnimated:YES];
-        [[S7TVReplyThreadPanel sharedPanel] refreshIfNeeded];
+        [[S7TVReplyThreadPanel sharedPanel] forceRefreshIfNeeded];
     });
 }
 
@@ -73,7 +98,67 @@ void s7tv_reloadActiveChatMessage(NSString *messageID) {
     if (!view) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         [view refreshMessageWithID:messageID animated:YES];
-        [[S7TVReplyThreadPanel sharedPanel] refreshIfNeeded];
+        [[S7TVReplyThreadPanel sharedPanel]
+            refreshMessageIfNeededWithID:messageID excludingView:nil];
+    });
+}
+
+void s7tv_applyModerationStateToRetainedMessage(NSString *messageID,
+                                                S7TVChatMessageState state,
+                                                S7TVChatModerationKind moderationKind,
+                                                NSInteger durationSeconds) {
+    if (!messageID.length) return;
+    dispatch_block_t apply = ^{
+        [s_activeChatCustomView applyModerationState:state
+                         toDisplayedMessageWithID:messageID
+                                  moderationKind:moderationKind
+                                 durationSeconds:durationSeconds];
+        [[S7TVReplyThreadPanel sharedPanel]
+            applyModerationState:state
+             toRetainedMessageWithID:messageID
+                      moderationKind:moderationKind
+                     durationSeconds:durationSeconds];
+    };
+    if (NSThread.isMainThread) apply();
+    else dispatch_async(dispatch_get_main_queue(), apply);
+}
+
+void s7tv_applyModerationToRetainedMessagesForUser(NSString *authorUserID,
+                                                    NSString *authorLogin,
+                                                    S7TVChatModerationKind moderationKind,
+                                                    NSInteger durationSeconds) {
+    if (!authorUserID.length && !authorLogin.length) return;
+    dispatch_block_t apply = ^{
+        [s_activeChatCustomView applyModerationToDisplayedMessagesForUserID:authorUserID
+                                                                authorLogin:authorLogin
+                                                             moderationKind:moderationKind
+                                                            durationSeconds:durationSeconds];
+        [[S7TVReplyThreadPanel sharedPanel]
+            applyModerationToRetainedMessagesForUserID:authorUserID
+                                           authorLogin:authorLogin
+                                        moderationKind:moderationKind
+                                       durationSeconds:durationSeconds];
+    };
+    if (NSThread.isMainThread) apply();
+    else dispatch_async(dispatch_get_main_queue(), apply);
+}
+
+void s7tv_applyModerationToAllRetainedMessages(void) {
+    dispatch_block_t apply = ^{
+        [s_activeChatCustomView applyModerationToAllDisplayedMessages];
+        [[S7TVReplyThreadPanel sharedPanel] applyModerationToAllRetainedMessages];
+    };
+    if (NSThread.isMainThread) apply();
+    else dispatch_async(dispatch_get_main_queue(), apply);
+}
+
+void s7tv_reloadActiveChatCustomViewForConfiguration(void) {
+    SevenTVChatCustomView *view = s_activeChatCustomView;
+    if (!view) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [view refreshVisibleMessageContentIfFrozen];
+        [view reloadMessages];
+        [[S7TVReplyThreadPanel sharedPanel] forceRefreshIfNeeded];
     });
 }
 
@@ -171,7 +256,7 @@ void s7tv_setupChatCustomIntegration(void) {
                                               twitchEmotesTag:message.twitchEmotesTag ?: @""
                                                     providers:s7tv_chatEmoteProviders()];
                 } completion:^{
-                    s7tv_reloadActiveChatCustomView();
+                    s7tv_reloadActiveChatCustomViewForConfiguration();
                 }];
         }];
         for (NSString *notificationName in @[
@@ -181,7 +266,7 @@ void s7tv_setupChatCustomIntegration(void) {
         ]) {
             [center addObserverForName:notificationName object:nil queue:nil
                             usingBlock:^(__unused NSNotification *note) {
-                s7tv_reloadActiveChatCustomView();
+                s7tv_reloadActiveChatCustomViewForConfiguration();
             }];
         }
     });
@@ -713,6 +798,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 @property (nonatomic, strong) NSMutableArray *deferredReloadCompletions;
 @property (nonatomic, strong) NSMutableSet<NSString *> *deferredMessageReloadIDs;
 @property (nonatomic, assign) BOOL deferredMessageReloadAnimated;
+@property (nonatomic, strong) NSMutableArray *deferredMessageReloadCompletions;
 @property (nonatomic, assign) BOOL messageInteractionInProgress;
 // Quand l'utilisateur remonte, le snapshot visible reste strictement figé.
 // Le store continue de tourner à 300 messages ; seuls ces anciens modèles
@@ -734,6 +820,10 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 - (void)s7tv_queueFullReloadAnimated:(BOOL)animated completion:(nullable void (^)(void))completion;
 - (void)s7tv_recordFrozenStoreMessages;
 - (void)s7tv_finishSnapshotApply;
+- (void)s7tv_reloadMessageWithID:(NSString *)messageID;
+- (void)s7tv_reloadMessageWithID:(NSString *)messageID
+                        animated:(BOOL)animated
+                      completion:(nullable void (^)(void))completion;
 @end
 
 @implementation SevenTVChatCustomView
@@ -748,10 +838,14 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         _isPinnedToBottom = YES;
         _deferredReloadCompletions = [NSMutableArray array];
         _deferredMessageReloadIDs = [NSMutableSet set];
+        _deferredMessageReloadCompletions = [NSMutableArray array];
         _lastObservedStoreMessageIDs = [NSSet set];
         _lastObservedStoreGeneration = [store generation];
         _showsReplyBanners = YES;
         _usesThreadReplyIndent = NO;
+        _freezesTranscriptWhenScrolled = YES;
+        _renderingSuspended = NO;
+        _automaticallyScrollsToBottom = YES;
 
         _tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
         _tableView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -908,6 +1002,66 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     return self.tableView.contentSize.height;
 }
 
+- (void)setFreezesTranscriptWhenScrolled:(BOOL)freezesTranscriptWhenScrolled {
+    _freezesTranscriptWhenScrolled = freezesTranscriptWhenScrolled;
+    if (!freezesTranscriptWhenScrolled && self.transcriptFrozen) {
+        self.transcriptFrozen = NO;
+        self.pendingNewMessagesCount = 0;
+        [self s7tv_hideNewMessagesBanner];
+        [self s7tv_flushDeferredReloadIfNeeded];
+    }
+}
+
+- (void)setRenderingSuspended:(BOOL)renderingSuspended {
+    if (_renderingSuspended == renderingSuspended) return;
+    _renderingSuspended = renderingSuspended;
+    if (!renderingSuspended) return;
+
+    SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
+    for (S7TVChatCustomCell *cell in self.tableView.visibleCells) {
+        [cell s7tv_cancelAnimationFrameRequests];
+        [engine removeObserver:cell.messageLabel];
+    }
+    [self s7tv_dismissEmotePreview];
+}
+
+- (void)resetTransientTranscriptState {
+    NSAssert([NSThread isMainThread], @"resetTransientTranscriptState touche UIKit");
+    self.transcriptFrozen = NO;
+    self.isPinnedToBottom = YES;
+    self.pendingNewMessagesCount = 0;
+    self.messageInteractionInProgress = NO;
+    self.reloadDeferredUntilScrollEnds = NO;
+    self.deferredReloadAnimated = NO;
+    [self.deferredReloadCompletions removeAllObjects];
+    [self.deferredMessageReloadIDs removeAllObjects];
+    [self.deferredMessageReloadCompletions removeAllObjects];
+    self.deferredMessageReloadAnimated = NO;
+    [self s7tv_hideNewMessagesBanner];
+    [self s7tv_dismissEmotePreview];
+
+    // Un fil peut être fermé pendant sa décélération puis rouvert aussitôt.
+    // Annuler explicitement le geste empêche le nouveau reload de rester en
+    // file en attendant un didEndDecelerating qui n'arriverait plus puisque
+    // la vue a entre-temps été masquée.
+    CGPoint stableOffset = self.tableView.contentOffset;
+    if (!self.automaticallyScrollsToBottom) {
+        // La racine épinglée d'un fil doit toujours repartir de sa première
+        // ligne. Sans ce reset, la table réutilisée pouvait conserver le
+        // contentOffset d'une ancienne racine longue et sembler vide/coupée.
+        stableOffset.y = -self.tableView.adjustedContentInset.top;
+    }
+    [self.tableView setContentOffset:stableOffset animated:NO];
+    self.tableView.panGestureRecognizer.enabled = NO;
+    self.tableView.panGestureRecognizer.enabled = YES;
+
+    SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
+    for (S7TVChatCustomCell *cell in self.tableView.visibleCells) {
+        [cell s7tv_cancelAnimationFrameRequests];
+        [engine removeObserver:cell.messageLabel];
+    }
+}
+
 - (void)reloadMessages {
     [self reloadMessagesAnimated:NO];
 }
@@ -918,6 +1072,19 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
 - (void)reloadMessagesWithCompletion:(void (^)(void))completion {
     [self s7tv_reloadMessagesAnimated:NO completion:completion];
+}
+
+- (void)refreshVisibleMessageContentIfFrozen {
+    NSAssert([NSThread isMainThread], @"Le refresh du transcript touche UIKit");
+    if (!self.transcriptFrozen) return;
+
+    for (NSIndexPath *indexPath in self.tableView.indexPathsForVisibleRows) {
+        NSString *messageID = [self.dataSource itemIdentifierForIndexPath:indexPath];
+        if (messageID.length && self.messagesByID[messageID]) {
+            [self.deferredMessageReloadIDs addObject:messageID];
+        }
+    }
+    [self s7tv_flushDeferredMessageReloads];
 }
 
 - (nullable NSString *)s7tv_captureVisibleAnchorAmongIDs:(nullable NSSet<NSString *> *)allowedIDs
@@ -989,9 +1156,16 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 - (void)s7tv_flushDeferredReloadIfNeeded {
     BOOL tableInteractionActive = self.tableView.isTracking || self.tableView.isDragging ||
         self.tableView.isDecelerating;
-    if (self.snapshotApplyInProgress || self.transcriptFrozen ||
-        self.messageInteractionInProgress ||
+    if (self.snapshotApplyInProgress || self.messageInteractionInProgress ||
         tableInteractionActive) return;
+
+    // Le gel protège uniquement l'ordre et les IDs du transcript. Une cellule
+    // déjà visible doit continuer à se reconfigurer (modération, image chargée,
+    // favori), sinon son modèle change sans aucun retour visuel.
+    if (self.transcriptFrozen) {
+        [self s7tv_flushDeferredMessageReloads];
+        return;
+    }
 
     if (!self.reloadDeferredUntilScrollEnds) {
         [self s7tv_flushDeferredMessageReloads];
@@ -1014,8 +1188,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 
 - (void)s7tv_flushDeferredMessageReloads {
     if (self.deferredMessageReloadIDs.count == 0) return;
-    if (self.snapshotApplyInProgress || self.transcriptFrozen ||
-        self.messageInteractionInProgress ||
+    if (self.snapshotApplyInProgress || self.messageInteractionInProgress ||
         self.tableView.isTracking || self.tableView.isDragging || self.tableView.isDecelerating) return;
     NSDiffableDataSourceSnapshot<NSString *, NSString *> *snapshot = [self.dataSource snapshot];
     NSSet<NSString *> *snapshotIDs = [NSSet setWithArray:snapshot.itemIdentifiers];
@@ -1025,9 +1198,17 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
             [reloadIDs addObject:messageID];
         }
     }
+    NSArray *completions = [self.deferredMessageReloadCompletions copy];
+    [self.deferredMessageReloadCompletions removeAllObjects];
     [self.deferredMessageReloadIDs removeAllObjects];
     self.deferredMessageReloadAnimated = NO;
-    if (reloadIDs.count == 0) return;
+    if (reloadIDs.count == 0) {
+        for (id completionObject in completions) {
+            void (^deferredCompletion)(void) = (void (^)(void))completionObject;
+            if (deferredCompletion) deferredCompletion();
+        }
+        return;
+    }
 
     CGFloat anchorY = 0;
     NSString *anchorID = self.isPinnedToBottom ? nil
@@ -1039,6 +1220,10 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         __strong typeof(weakSelf) strongSelf = weakSelf;
         [strongSelf s7tv_finishSnapshotApply];
         [strongSelf s7tv_restoreVisibleAnchorID:anchorID viewportY:anchorY];
+        for (id completionObject in completions) {
+            void (^deferredCompletion)(void) = (void (^)(void))completionObject;
+            if (deferredCompletion) deferredCompletion();
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             [strongSelf s7tv_flushDeferredReloadIfNeeded];
         });
@@ -1137,7 +1322,14 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         if (!wasNearBottom && ![oldIDs containsObject:m.messageID]) newlyAddedCount++;
     }
     self.displayedMessages = newMessages;
-    self.messagesByID       = byID;
+    // Pendant applySnapshot, UIKit peut encore demander une cellule d'un ID
+    // en cours de suppression. Conserver temporairement l'union des anciens
+    // et nouveaux modèles évite une cellule blanche/fuyante durant ce court
+    // passage ; la map exacte est rétablie dans la completion ci-dessous.
+    NSMutableDictionary<NSString *, S7TVChatMessage *> *renderModels =
+        [self.messagesByID mutableCopy] ?: [NSMutableDictionary dictionary];
+    [renderModels addEntriesFromDictionary:byID];
+    self.messagesByID = renderModels;
     self.lastObservedStoreMessageIDs = [NSSet setWithArray:identifiers];
     self.lastObservedStoreGeneration = currentStoreGeneration;
 
@@ -1183,6 +1375,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
             return;
         }
         [self s7tv_finishSnapshotApply];
+        self.messagesByID = byID;
 
         if (!wasNearBottom && visibleAnchorID.length > 0) {
             [self s7tv_restoreVisibleAnchorID:visibleAnchorID
@@ -1198,6 +1391,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 }
 
 - (void)s7tv_scrollToBottomIfNeeded:(BOOL)wasNearBottom {
+    if (!self.automaticallyScrollsToBottom) return;
     NSInteger count = self.displayedMessages.count;
     if (!wasNearBottom || count == 0) {
         return;
@@ -1300,7 +1494,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 - (void)s7tv_observeAnimationsForCell:(S7TVChatCustomCell *)cell {
     SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
     [engine removeObserver:cell.messageLabel];
-    if (cell.animationKeys.count == 0 || !cell.window) return;
+    if (self.renderingSuspended || cell.animationKeys.count == 0 || !cell.window) return;
     __weak UILabel *weakLabel = cell.messageLabel;
     [engine addObserver:cell.messageLabel keys:cell.animationKeys redraw:^{
         [weakLabel setNeedsDisplay];
@@ -1319,7 +1513,24 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     [cell s7tv_cancelAnimationFrameRequests];
     [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:cell.messageLabel];
     S7TVChatMessage *msg = self.messagesByID[messageID];
-    if (!msg) return cell;
+    if (!msg) {
+        // Une ancienne cellule ne doit jamais "fuir" dans la courte fenêtre
+        // où un snapshot diffable et sa map de modèles se croisent.
+        cell.onReplyBannerTap = nil;
+        cell.onDeletedMessageTap = nil;
+        cell.onReplySelectTap = nil;
+        cell.animationKeys = nil;
+        cell.messageLabel.attributedText = [[NSAttributedString alloc] initWithString:@""];
+        cell.messageLabel.alpha = 1.0;
+        [cell s7tv_configureReplyBannerWithUsername:nil bodyPreview:nil];
+        [cell s7tv_setReplyTargetButtonEnabled:NO];
+        [cell s7tv_setThreadIndentEnabled:NO];
+        [cell s7tv_setHistoryDividerEnabled:NO];
+        [cell s7tv_configureSystemAccentWithColor:nil iconName:nil backgroundEnabled:NO
+                                highlightBadgeText:nil];
+        cell.messageLabelBottomConstraint.constant = -4.0;
+        return cell;
+    }
 
     NSMutableArray<id<S7TVResolvedEmote>> *uncachedEmotes = [NSMutableArray array];
     NSMutableArray<id<S7TVResolvedEmote>> *animatedEmotes = [NSMutableArray array];
@@ -1351,20 +1562,41 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     BOOL allowsTapToReveal = isDeleted &&
         cfg.deletedMessageRevealMode == S7TVDeletedMessageRevealModeOnTap;
     NSString *deletedMessageID = msg.messageID;
+    S7TVChatMessage *deletedMessage = msg;
     __weak typeof(self) weakSelfForDeletion = self;
     cell.onDeletedMessageTap = allowsTapToReveal ? ^{
         __strong typeof(weakSelfForDeletion) strongSelf = weakSelfForDeletion;
         if (!strongSelf) return;
-        [strongSelf.store toggleExpandedForMessageID:deletedMessageID completion:^{
+
+        // Dans un thread, les modèles proviennent du store principal. Dans un
+        // transcript principal figé, le modèle peut au contraire avoir déjà
+        // quitté son FIFO. La variante objet choisit atomiquement le modèle
+        // indexé quand il existe, puis retombe sur l'objet encore affiché.
+        S7TVChatMessageStore *mainStore = [SevenTVManager sharedManager].chatMessageStore;
+        S7TVChatMessageStore *mutationStore = [mainStore messageWithID:deletedMessageID]
+            ? mainStore : strongSelf.store;
+        [mutationStore toggleExpandedForMessage:deletedMessage completion:^(S7TVChatMessage *updated) {
             __strong typeof(weakSelfForDeletion) innerSelf = weakSelfForDeletion;
             if (!innerSelf) return;
-            S7TVChatMessage *updated = [innerSelf.store messageWithID:deletedMessageID];
             NSString *mode = (updated.state == S7TVChatMessageStateDeletedExpanded)
                 ? @"révélé" : @"masqué";
             [[SevenTVManager sharedManager]
                 log:@"🛡 Message supprimé %@ localement (id=%@)",
                     mode, deletedMessageID];
-            [innerSelf s7tv_reloadMessageWithID:deletedMessageID animated:YES];
+            s7tv_applyModerationStateToRetainedMessage(
+                deletedMessageID, updated.state, updated.moderationKind,
+                updated.moderationDurationSeconds);
+            [innerSelf refreshMessageWithID:deletedMessageID animated:YES completion:^{
+                SevenTVChatCustomView *activeView = s7tv_activeChatCustomView();
+                if (activeView && activeView != innerSelf) {
+                    [activeView refreshMessageWithID:deletedMessageID animated:YES];
+                }
+                // Cette completion correspond au vrai applySnapshot : le
+                // panneau peut maintenant mesurer la nouvelle hauteur sans
+                // timer arbitraire ni clignotement.
+                [[S7TVReplyThreadPanel sharedPanel]
+                    refreshMessageIfNeededWithID:deletedMessageID excludingView:innerSelf];
+            }];
         }];
     } : nil;
 
@@ -1380,7 +1612,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         strongSelf.onReplyTargetSelected(targetMessageID, targetAuthor);
     } : nil;
 
-    if (animatedEmotes.count > 0) {
+    if (!self.renderingSuspended && animatedEmotes.count > 0) {
         NSMutableSet<NSString *> *animationKeys = [NSMutableSet setWithCapacity:animatedEmotes.count];
         NSMutableArray<S7TVEmoteFrameRequest *> *frameRequests = [NSMutableArray array];
         SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
@@ -1417,14 +1649,16 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         cell.animationFrameRequests = nil;
     }
 
-    if (cell.window) [self s7tv_observeAnimationsForCell:cell];
+    if (!self.renderingSuspended && cell.window) [self s7tv_observeAnimationsForCell:cell];
 
     SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
     __weak typeof(self) weakSelf = self;
+    if (self.renderingSuspended) return cell;
     for (id<S7TVResolvedEmote> emote in uncachedEmotes) {
         [imageCache imageForResolvedEmote:emote completion:^(UIImage * _Nullable image) {
             if (!image) return;
             __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf.renderingSuspended) return;
             NSIndexPath *path = [strongSelf.dataSource indexPathForItemIdentifier:messageID];
             // Hors écran, aucun snapshot n'est nécessaire : l'image est déjà
             // en cache et sera utilisée naturellement au prochain cellFor.
@@ -1439,22 +1673,90 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
 }
 
 - (void)s7tv_reloadMessageWithID:(NSString *)messageID {
-    [self s7tv_reloadMessageWithID:messageID animated:NO];
+    [self s7tv_reloadMessageWithID:messageID animated:NO completion:nil];
 }
 
 - (void)refreshMessageWithID:(NSString *)messageID animated:(BOOL)animated {
-    [self s7tv_reloadMessageWithID:messageID animated:animated];
+    [self refreshMessageWithID:messageID animated:animated completion:nil];
 }
 
-- (void)s7tv_reloadMessageWithID:(NSString *)messageID animated:(BOOL)animated {
-    if (!self.messagesByID[messageID]) return;
+- (void)refreshMessageWithID:(NSString *)messageID
+                    animated:(BOOL)animated
+                  completion:(void (^)(void))completion {
+    [self s7tv_reloadMessageWithID:messageID animated:animated completion:completion];
+}
+
+- (S7TVChatMessage *)displayedMessageWithID:(NSString *)messageID {
+    return messageID.length ? self.messagesByID[messageID] : nil;
+}
+
+- (NSArray<S7TVChatMessage *> *)displayedMessagesForThreadRootID:(NSString *)threadRootID {
+    if (!threadRootID.length) return @[];
+    NSMutableArray<S7TVChatMessage *> *messages = [NSMutableArray array];
+    for (S7TVChatMessage *message in self.displayedMessages) {
+        if ([message.messageID isEqualToString:threadRootID] ||
+            [message.replyThreadRootID isEqualToString:threadRootID]) {
+            [messages addObject:message];
+        }
+    }
+    return messages;
+}
+
+- (void)applyModerationState:(S7TVChatMessageState)state
+  toDisplayedMessageWithID:(NSString *)messageID
+             moderationKind:(S7TVChatModerationKind)moderationKind
+            durationSeconds:(NSInteger)durationSeconds {
+    NSAssert(NSThread.isMainThread, @"La modération d'une vue touche son snapshot UIKit");
+    S7TVChatMessage *message = messageID.length ? self.messagesByID[messageID] : nil;
+    if (!message) return;
+    [message applyModerationState:state
+                  moderationKind:moderationKind
+                 durationSeconds:durationSeconds];
+}
+
+- (void)applyModerationToDisplayedMessagesForUserID:(NSString *)authorUserID
+                                        authorLogin:(NSString *)authorLogin
+                                      moderationKind:(S7TVChatModerationKind)moderationKind
+                                     durationSeconds:(NSInteger)durationSeconds {
+    NSAssert(NSThread.isMainThread, @"La modération d'une vue touche son snapshot UIKit");
+    if (!authorUserID.length && !authorLogin.length) return;
+    for (S7TVChatMessage *message in self.messagesByID.allValues) {
+        BOOL matchesUserID = authorUserID.length &&
+            [message.authorUserID isEqualToString:authorUserID];
+        BOOL matchesFallbackLogin = !message.authorUserID.length && authorLogin.length &&
+            [message.authorDisplayName caseInsensitiveCompare:authorLogin] == NSOrderedSame;
+        if (!matchesUserID && !matchesFallbackLogin) continue;
+        [message applyModerationState:S7TVChatMessageStateDeletedCollapsed
+                       moderationKind:moderationKind
+                      durationSeconds:durationSeconds];
+    }
+}
+
+- (void)applyModerationToAllDisplayedMessages {
+    NSAssert(NSThread.isMainThread, @"La modération d'une vue touche son snapshot UIKit");
+    for (S7TVChatMessage *message in self.messagesByID.allValues) {
+        if (message.type == S7TVChatMessageTypeHistoryWelcome ||
+            message.type == S7TVChatMessageTypeHistoryDivider) continue;
+        [message applyModerationState:S7TVChatMessageStateDeletedCollapsed
+                       moderationKind:S7TVChatModerationKindChatCleared
+                      durationSeconds:0];
+    }
+}
+
+- (void)s7tv_reloadMessageWithID:(NSString *)messageID
+                        animated:(BOOL)animated
+                      completion:(void (^)(void))completion {
+    if (!self.messagesByID[messageID]) {
+        if (completion) completion();
+        return;
+    }
     BOOL tableInteractionActive = self.tableView.isTracking || self.tableView.isDragging ||
         self.tableView.isDecelerating;
-    if (self.snapshotApplyInProgress || self.transcriptFrozen ||
-        self.messageInteractionInProgress ||
+    if (self.snapshotApplyInProgress || self.messageInteractionInProgress ||
         tableInteractionActive) {
         [self.deferredMessageReloadIDs addObject:messageID];
         self.deferredMessageReloadAnimated = self.deferredMessageReloadAnimated || animated;
+        if (completion) [self.deferredMessageReloadCompletions addObject:[completion copy]];
         return;
     }
 
@@ -1462,7 +1764,10 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
     NSString *anchorID = self.isPinnedToBottom ? nil
         : [self s7tv_captureVisibleAnchorAmongIDs:nil viewportY:&anchorY];
     NSDiffableDataSourceSnapshot<NSString *, NSString *> *snapshot = [self.dataSource snapshot];
-    if (![snapshot.itemIdentifiers containsObject:messageID]) return;
+    if (![snapshot.itemIdentifiers containsObject:messageID]) {
+        if (completion) completion();
+        return;
+    }
     [snapshot reloadItemsWithIdentifiers:@[messageID]];
     __weak typeof(self) weakSelf = self;
     self.snapshotApplyInProgress = YES;
@@ -1472,6 +1777,7 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         __strong typeof(weakSelf) strongSelf = weakSelf;
         [strongSelf s7tv_finishSnapshotApply];
         [strongSelf s7tv_restoreVisibleAnchorID:anchorID viewportY:anchorY];
+        if (completion) completion();
         dispatch_async(dispatch_get_main_queue(), ^{
             [strongSelf s7tv_flushDeferredReloadIfNeeded];
         });
@@ -1685,17 +1991,21 @@ static BOOL s7tv_shouldRenderDeletedExpanded(S7TVChatMessage *msg,
         self.pendingNewMessagesCount = 0;
         [self s7tv_hideNewMessagesBanner];
     } else if (!nowPinned && self.isPinnedToBottom) {
-        self.transcriptFrozen = YES;
+        self.transcriptFrozen = self.freezesTranscriptWhenScrolled;
         self.pendingNewMessagesCount = 0;
-        self.lastObservedStoreGeneration = [self.store generation];
-        NSMutableSet<NSString *> *visibleSnapshotIDs =
-            [NSMutableSet setWithCapacity:self.displayedMessages.count];
-        for (S7TVChatMessage *message in self.displayedMessages) {
-            if (message.messageID.length) [visibleSnapshotIDs addObject:message.messageID];
+        if (self.freezesTranscriptWhenScrolled) {
+            self.lastObservedStoreGeneration = [self.store generation];
+            NSMutableSet<NSString *> *visibleSnapshotIDs =
+                [NSMutableSet setWithCapacity:self.displayedMessages.count];
+            for (S7TVChatMessage *message in self.displayedMessages) {
+                if (message.messageID.length) [visibleSnapshotIDs addObject:message.messageID];
+            }
+            self.lastObservedStoreMessageIDs = [visibleSnapshotIDs copy];
+            [self s7tv_updateNewMessagesBannerText];
+            [self s7tv_showNewMessagesBanner];
+        } else {
+            [self s7tv_hideNewMessagesBanner];
         }
-        self.lastObservedStoreMessageIDs = [visibleSnapshotIDs copy];
-        [self s7tv_updateNewMessagesBannerText];
-        [self s7tv_showNewMessagesBanner];
     }
     self.isPinnedToBottom = nowPinned;
 }
@@ -2169,9 +2479,25 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
     // Un PRIVMSG peut exceptionnellement arriver avant toute métadonnée de
     // récompense. Ne jamais afficher un faux coût « 0 » : PubSub/GQL apporte
     // normalement le vrai coût et l'icône dans la même fenêtre de fusion.
-    if (info.cost > 0 && info.imageURL.absoluteString.length) {
+    NSURL *effectiveImageURL = info.imageURL;
+    BOOL usesBits = info.pricingType.length > 0 &&
+        [info.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame;
+    if (!usesBits) {
+        effectiveImageURL = s7tv_activeChannelPointCurrencyImageURL()
+            ?: effectiveImageURL;
+    }
+    id<S7TVResolvedEmote> imageSource = info;
+    if (effectiveImageURL.absoluteString.length &&
+        ![effectiveImageURL.absoluteString isEqualToString:info.imageURL.absoluteString]) {
+        S7TVChannelPointRewardInfo *adapter = [S7TVChannelPointRewardInfo new];
+        adapter.rewardID = effectiveImageURL.absoluteString;
+        adapter.imageURL = effectiveImageURL;
+        imageSource = adapter;
+    }
+
+    if (info.cost > 0 && effectiveImageURL.absoluteString.length) {
         UIImage *image = [[SevenTVEmoteImageCache sharedCache]
-            cachedImageForResolvedEmote:info];
+            cachedImageForResolvedEmote:imageSource];
         if (image) {
             CGFloat side = MAX(12.0, cfg.messageFontSize * 1.05);
             NSTextAttachment *attachment = [NSTextAttachment new];
@@ -2181,7 +2507,7 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
             [result appendAttributedString:
                 [NSAttributedString attributedStringWithAttachment:attachment]];
         } else {
-            [outUncachedEmotes addObject:info];
+            [outUncachedEmotes addObject:imageSource];
         }
     }
 

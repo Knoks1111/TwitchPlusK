@@ -134,6 +134,7 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 @property (nonatomic, assign) BOOL suppressBulkPrefetchAfterManualClear;
 
 - (void)s7tv_notifyFavoritesChanged;
+- (void)s7tv_clearChannelEmotesAndNotify;
 
 @end
 
@@ -691,6 +692,11 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     BOOL changed = !((_currentChannelTwitchID == channelID) ||
                      [_currentChannelTwitchID isEqualToString:channelID]);
     _currentChannelTwitchID = [channelID copy];
+    if (changed && channelID.length) {
+        s7tv_activateChannelPointMetadataForChannelID(channelID, ^{
+            s7tv_reloadActiveChatCustomViewForConfiguration();
+        });
+    }
     if (changed) {
         @synchronized (self) {
             self.suppressBulkPrefetchAfterManualClear = NO;
@@ -807,10 +813,24 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 // MARK: - Chargement des emotes d'un channel par nom
 // ============================================================
 
+- (void)s7tv_clearChannelEmotesAndNotify {
+    dispatch_barrier_async(self.emoteQueue, ^{
+        if (self.channelEmotes.count == 0) return;
+        self.channelEmotes = @{};
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:S7TVEmoteCatalogDidUpdateNotification object:self];
+        });
+    });
+}
+
 - (void)loadEmotesForChannelName:(NSString *)channelName {
     if (!channelName.length) return;
+    BOOL shouldResetChannelCatalog = !self.currentChannelName.length ||
+        [self.currentChannelName caseInsensitiveCompare:channelName] != NSOrderedSame;
     [self log:@"Channel rejoint: %@, recherche ID Twitch...", channelName];
     self.currentChannelName = channelName;
+    if (shouldResetChannelCatalog) [self s7tv_clearChannelEmotesAndNotify];
 
     // Préchauffer la connexion CDN maintenant — les messages arrivent
     // ~1-2s après le JOIN, donc la connexion sera chaude à temps.
@@ -835,9 +855,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         // Sans ce reset, un message ultra-rapide pourrait injecter une emote
         // de l'ancien channel pendant les ~100ms avant que loadEmotesForChannelTwitchID:
         // ne soit terminé.
-        dispatch_barrier_async(self.emoteQueue, ^{
-            self.channelEmotes = @{};
-        });
         // Même raisonnement pour les badges channel — voir
         // SevenTVBadgeProvider.resetChannelBadges.
         [[SevenTVBadgeProvider sharedProvider] resetChannelBadges];
@@ -961,9 +978,19 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
         __block NSUInteger done    = 0;
         __block NSUInteger skipped = 0;
+        __block BOOL abortedForChannelSwitch = NO;
         NSLock *lock = [[NSLock alloc] init];
+        BOOL channelScopedPrefetch = ![setKey isEqualToString:@"global"];
 
         for (SevenTVEmote *emote in allEmotes) {
+            if (channelScopedPrefetch) {
+                NSString *currentChannelID = self.currentChannelTwitchID;
+                if (currentChannelID.length &&
+                    ![currentChannelID isEqualToString:setKey]) {
+                    abortedForChannelSwitch = YES;
+                    break;
+                }
+            }
             // Skip si déjà en cache — zéro réseau
             if ([SevenTVURLProtocol isEmoteIDCached:emote.emoteID]) {
                 [lock lock]; done++; skipped++; [lock unlock];
@@ -971,6 +998,18 @@ static const CGFloat kS7TVMenuHeight = 520.0;
             }
 
             dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            // La chaîne peut changer pendant l'attente d'un slot. Rendre le
+            // permis au sémaphore et ne plus planifier de requête pour l'ancien
+            // catalogue; les quelques téléchargements déjà en vol se terminent.
+            if (channelScopedPrefetch) {
+                NSString *currentChannelID = self.currentChannelTwitchID;
+                if (currentChannelID.length &&
+                    ![currentChannelID isEqualToString:setKey]) {
+                    dispatch_semaphore_signal(sem);
+                    abortedForChannelSwitch = YES;
+                    break;
+                }
+            }
             dispatch_group_enter(group);
 
             NSString *eid = emote.emoteID;
@@ -993,10 +1032,14 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         // Attendre la fin (timeout 60s)
         dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 60LL * NSEC_PER_SEC));
 
-        [self log:@"✅ Prefetch %@ terminé — %lu téléchargés, %lu déjà en cache",
-         label,
-         (unsigned long)(total - skipped),
-         (unsigned long)skipped];
+        NSUInteger downloaded = done >= skipped ? done - skipped : 0;
+        if (abortedForChannelSwitch) {
+            [self log:@"⏹️ Prefetch %@ arrêté au changement de chaîne — %lu téléchargés, %lu déjà en cache",
+             label, (unsigned long)downloaded, (unsigned long)skipped];
+        } else {
+            [self log:@"✅ Prefetch %@ terminé — %lu téléchargés, %lu déjà en cache",
+             label, (unsigned long)downloaded, (unsigned long)skipped];
+        }
 
         // Bilan des emotes mises en cache — compteur tenu par SevenTVURLProtocol.
         NSInteger cachedCount = [SevenTVURLProtocol cachedEmoteCount];
@@ -1043,11 +1086,20 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
     if (cached.count) {
         dispatch_barrier_async(self.emoteQueue, ^{
+            if (self.currentChannelTwitchID.length &&
+                ![self.currentChannelTwitchID isEqualToString:twitchUserID]) return;
             self.channelEmotes = cached;
+            [self log:@"⚡️ %lu emotes channel depuis cache (âge: %.0fs)",
+             (unsigned long)cached.count, cacheAge];
+            [self _prefetchAllEmotes:cached
+                              setKey:twitchUserID
+                               label:@"channel (cache)"];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (self->_pickerController) [self->_pickerController invalidateSortCache];
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:S7TVEmoteCatalogDidUpdateNotification object:self];
+            });
         });
-        [self log:@"⚡️ %lu emotes channel depuis cache (âge: %.0fs)",
-         (unsigned long)cached.count, cacheAge];
-        [self _prefetchAllEmotes:cached setKey:twitchUserID label:@"channel (cache)"];
     }
 
     // ── Étape 2: décider si un refresh réseau est nécessaire ──
@@ -1102,20 +1154,24 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         if (!parsed.count) return;
 
         dispatch_barrier_async(self.emoteQueue, ^{
+            if (self.currentChannelTwitchID.length &&
+                ![self.currentChannelTwitchID isEqualToString:twitchUserID]) {
+                [self log:@"ℹ️ Réponse emotes ignorée pour ancienne chaîne %@", twitchUserID];
+                return;
+            }
             self.channelEmotes = parsed;
             [self log:@"✅ %lu emotes du channel chargées depuis API", (unsigned long)parsed.count];
+            [self _prefetchAllEmotes:parsed
+                              setKey:twitchUserID
+                               label:@"channel (API)"];
             dispatch_async(dispatch_get_main_queue(), ^{
+                if (self->_pickerController) [self->_pickerController invalidateSortCache];
                 [[NSNotificationCenter defaultCenter]
                     postNotificationName:S7TVEmoteCatalogDidUpdateNotification object:self];
             });
         });
-        // Invalider le cache de tri du picker — les nouvelles emotes doivent apparaître
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self->_pickerController) [self->_pickerController invalidateSortCache];
-        });
 
         [self saveCacheForName:cacheName withEmotes:parsed];
-        [self _prefetchAllEmotes:parsed setKey:twitchUserID label:@"channel (API)"];
 
     }] resume];
 }
@@ -1275,9 +1331,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
                  broadcasterID, self.currentChannelTwitchID ?: @"aucun"];
 
                 NSString *oldID = self.currentChannelTwitchID;
-                dispatch_barrier_async(self.emoteQueue, ^{
-                    self.channelEmotes = @{};
-                });
+                [self s7tv_clearChannelEmotesAndNotify];
                 // Même raisonnement pour les badges channel — voir
                 // SevenTVBadgeProvider.resetChannelBadges.
                 [[SevenTVBadgeProvider sharedProvider] resetChannelBadges];
@@ -1383,6 +1437,10 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
 - (void)cleanupPickerForStreamClose {
     [self.pickerController cleanupPickerForStreamClose];
+}
+
+- (void)cleanupPickerForStreamCloseIfOwnedByChatInputView:(UIView *)chatInputView {
+    [self.pickerController cleanupPickerForStreamCloseIfOwnedByChatInputView:chatInputView];
 }
 
 
@@ -1895,6 +1953,7 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
     if (![roomID isEqualToString:self.currentChannelTwitchID]) {
         [self log:@"📡 Nouveau broadcaster ID (ROOMSTATE): %@ (ancien: %@)",
             roomID, self.currentChannelTwitchID ?: @"aucun"];
+        [self s7tv_clearChannelEmotesAndNotify];
         self.currentChannelTwitchID = roomID;
         dispatch_async(dispatch_get_main_queue(), ^{
             [[S7TVReplyThreadPanel sharedPanel] hide];
@@ -1968,6 +2027,9 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
         }
         [store markMessageDeletedByID:targetMessageID completion:^{
             [self log:@"🛡 CLEARMSG appliqué (message id=%@)", targetMessageID];
+            s7tv_applyModerationStateToRetainedMessage(
+                targetMessageID, S7TVChatMessageStateDeletedCollapsed,
+                S7TVChatModerationKindMessageDeleted, 0);
             s7tv_reloadActiveChatMessage(targetMessageID);
         }];
         return YES;
@@ -1984,6 +2046,8 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
                                 moderationKind:kind
                                durationSeconds:durationSeconds
                                      completion:^{
+            s7tv_applyModerationToRetainedMessagesForUser(
+                targetUserID, trailing, kind, durationSeconds);
             [self log:@"🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@, %@)",
                 targetUserID, trailing.length ? trailing : @"inconnu",
                 isTimeout ? [NSString stringWithFormat:@"timeout=%lds", (long)durationSeconds]
@@ -1995,6 +2059,7 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
             trailing];
     } else {
         [store markAllMessagesDeletedWithCompletion:^{
+            s7tv_applyModerationToAllRetainedMessages();
             [self log:@"🛡 CLEARCHAT global appliqué"];
             s7tv_reloadActiveChatCustomViewAnimated();
         }];

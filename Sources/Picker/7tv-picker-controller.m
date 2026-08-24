@@ -57,7 +57,8 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
     if (![NSStringFromClass(view.class) isEqualToString:@"Twitch.ChatInputView"]) return;
     if (!view.window) {
         if (objc_getAssociatedObject(view, &kS7TVTextFieldTagged)) {
-            [[SevenTVManager sharedManager] cleanupPickerForStreamClose];
+            [[SevenTVManager sharedManager]
+                cleanupPickerForStreamCloseIfOwnedByChatInputView:view];
             objc_setAssociatedObject(view, &kS7TVTextFieldTagged, nil,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
@@ -261,6 +262,8 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 // cellule visible demande immédiatement une preview animée annulable. Dès
 // qu'elle sort de l'écran, didEndDisplayingCell coupe observation et décodage.
 @property (nonatomic, assign) BOOL pickerScrollInProgress;
+@property (nonatomic, assign) BOOL pickerCatalogReloadPending;
+@property (nonatomic, assign) NSUInteger pickerOrientationGeneration;
 
 // ── Avatar de chaîne (bouton "Chaîne" de la capsule sous-choix) ────────────
 // Cache mémoire simple par channelID — le controller vit toute la durée de
@@ -272,6 +275,12 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 // reçue à nouveau) pendant qu'une requête est déjà en vol pour cette chaîne.
 @property (nonatomic, copy) NSString *pickerChannelAvatarFetchingID;
 
+- (void)_s7tv_reloadCatalogSnapshotReloadCollection:(BOOL)reloadCollection;
+- (void)_s7tv_emoteCatalogDidUpdate:(NSNotification *)notification;
+- (void)_s7tv_deviceOrientationDidChange:(NSNotification *)notification;
+- (void)_s7tv_applyCatalogUpdateNow;
+- (void)_s7tv_relayoutPickerForSize:(CGSize)size;
+- (void)_showFakeChatPreviewAboveInputView;
 - (void)_s7tv_deactivateVisiblePickerAnimations;
 - (void)_s7tv_activateVisiblePickerAnimations;
 - (void)_s7tv_scheduleAnimationForPickerCell:(S7TVEmotePickerCell *)cell
@@ -313,6 +322,14 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
                                                   selector:@selector(_s7tv_channelJoinedNotification:)
                                                       name:@"S7TVChannelJoined"
                                                     object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(_s7tv_emoteCatalogDidUpdate:)
+                                                      name:S7TVEmoteCatalogDidUpdateNotification
+                                                    object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(_s7tv_deviceOrientationDidChange:)
+                                                      name:UIDeviceOrientationDidChangeNotification
+                                                    object:nil];
 
         // Le TextEntryView de Twitch peut résigner le first responder sans
         // passer par notre bouton (ex: tap ailleurs dans l'app) — UIKit
@@ -341,6 +358,7 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
     [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
+    self.pickerCatalogReloadPending = NO;
     self.emotePickerTextEntryView = nil;
     self.emotePickerTextField = nil;
     self.emotePickerView.hidden = YES;
@@ -560,8 +578,45 @@ static const CGFloat kS7TVPickerGridDefaultH =
     if (cached) {
         [self _s7tv_applyChannelAvatarImage:cached];
     } else {
+        [self _s7tv_resetChannelButtonToPlaceholder];
         [self _s7tv_loadChannelAvatarForChannelID:channelID];
     }
+}
+
+- (void)_s7tv_deviceOrientationDidChange:(__unused NSNotification *)notification {
+    NSUInteger generation = ++self.pickerOrientationGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || generation != strongSelf.pickerOrientationGeneration ||
+            !strongSelf.emotePickerView || strongSelf.emotePickerView.hidden) return;
+        UIWindow *hostWindow = strongSelf.emotePickerTextField.window
+            ?: strongSelf.emotePickerTextEntryView.window;
+        CGFloat width = hostWindow.bounds.size.width;
+        if (width <= 0) width = UIScreen.mainScreen.bounds.size.width;
+        CGFloat targetHeight = strongSelf.pickerSizesPanelVisible
+            ? MIN(MAX(strongSelf.sizesPanel.contentHeight, 160.0), kS7TVPickerGridDefaultH)
+            : kS7TVPickerGridDefaultH;
+        BOOL attachedAsInputView = strongSelf.emotePickerTextEntryView.window &&
+            strongSelf.emotePickerTextEntryView.inputView == strongSelf.emotePickerView;
+        CGFloat originY = 0;
+        if (!attachedAsInputView && strongSelf.emotePickerView.superview == hostWindow) {
+            // Le fallback est une vraie sous-vue de la fenêtre, pas un
+            // inputView. Conserver son ancrage bas après rotation.
+            originY = MAX(hostWindow.safeAreaInsets.top,
+                hostWindow.bounds.size.height - targetHeight - 56.0);
+        }
+        strongSelf.emotePickerView.frame = CGRectMake(0, originY, width, targetHeight);
+        [strongSelf _s7tv_relayoutPickerForSize:strongSelf.emotePickerView.bounds.size];
+        if (strongSelf.emotePickerTextEntryView.window &&
+            strongSelf.emotePickerTextEntryView.inputView == strongSelf.emotePickerView) {
+            [strongSelf.emotePickerTextEntryView reloadInputViews];
+        }
+        if (strongSelf.pickerSizesPanelVisible) {
+            [strongSelf _showFakeChatPreviewAboveInputView];
+        }
+    });
 }
 
 // Fetch Helix Get Users (avatar) puis téléchargement/décodage de l'image via
@@ -776,9 +831,13 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
     // Sans ce guard, si emotePickerView == nil, la comparaison
     // tv.inputAccessoryView == nil == self.emotePickerView → TRUE au premier tap →
     // _hideEmotePicker est appelé avant même que le picker ait été créé → bug d'ouverture.
-    if (self.emotePickerView &&
+    BOOL pickerAttachedAsInputView = self.emotePickerView &&
         self.emotePickerTextEntryView &&
-        self.emotePickerTextEntryView.inputView == self.emotePickerView) {
+        self.emotePickerTextEntryView.inputView == self.emotePickerView;
+    BOOL pickerVisibleAsWindowFallback = self.emotePickerView &&
+        self.emotePickerView.window && !self.emotePickerView.hidden &&
+        !pickerAttachedAsInputView;
+    if (pickerAttachedAsInputView || pickerVisibleAsWindowFallback) {
         [self _hideEmotePicker];
         return;
     }
@@ -794,6 +853,7 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
     [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
+    self.pickerCatalogReloadPending = NO;
     UITextView *tv = self.emotePickerTextEntryView;
     if (tv) {
         @try {
@@ -821,6 +881,7 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
     [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
+    self.pickerCatalogReloadPending = NO;
     UITextView *tv = self.emotePickerTextEntryView;
     if (tv) {
         @try {
@@ -833,6 +894,14 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
     self.emotePickerTextField = nil;
     self.emotePickerView.hidden = YES;
     [self _hideFakeChatPreview];
+}
+
+- (void)cleanupPickerForStreamCloseIfOwnedByChatInputView:(UIView *)chatInputView {
+    // Twitch garde parfois l'ancienne ChatInputView quelques instants après
+    // avoir installé celle de la nouvelle chaîne. Son didMoveToWindow:nil ne
+    // doit pas fermer un picker déjà rattaché à la nouvelle vue.
+    if (self.emotePickerTextField && self.emotePickerTextField != chatInputView) return;
+    [self cleanupPickerForStreamClose];
 }
 
 // IVar de cache pour le tri — invalidé quand globalEmotes/channelEmotes changent
@@ -858,36 +927,50 @@ static NSString                *s_cachedSortKey          = nil; // hash des deux
 
 - (void)favoritesDidChange {
     NSAssert([NSThread isMainThread], @"SevenTVEmotePickerController: main thread uniquement");
-    NSString *query = self.emoteSearchField.text ?: @"";
-    [self _updatePickerArraysForSearch:query];
-    if (self.emoteCollectionView) {
-        [self _s7tv_deactivateVisiblePickerAnimations];
-        [self.emoteCollectionView reloadData];
+    [self _s7tv_reloadCatalogSnapshotReloadCollection:
+        (self.emotePickerView && !self.emotePickerView.hidden)];
+}
+
+static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
+                                  NSString *channelID) {
+    // L'ancien count|count confondait deux chaînes contenant le même nombre
+    // d'emotes. L'identité de chaîne et des snapshots rend le cache exact sans
+    // recalculer un hash coûteux de centaines d'identifiants.
+    return [NSString stringWithFormat:@"%@|%p:%lu|%p:%lu", channelID ?: @"",
+            (__bridge void *)channel, (unsigned long)channel.count,
+            (__bridge void *)global, (unsigned long)global.count];
+}
+
+- (void)_s7tv_reloadCatalogSnapshotReloadCollection:(BOOL)reloadCollection {
+    NSAssert([NSThread isMainThread], @"Le snapshot du picker touche UIKit");
+    UICollectionView *collectionView = self.emoteCollectionView;
+    NSString *anchorEmoteID = nil;
+    CGFloat anchorViewportY = 0;
+    CGPoint previousOffset = collectionView.contentOffset;
+    if (reloadCollection && collectionView && !collectionView.hidden) {
+        NSArray<NSIndexPath *> *visible = [collectionView.indexPathsForVisibleItems
+            sortedArrayUsingSelector:@selector(compare:)];
+        NSIndexPath *anchorPath = visible.firstObject;
+        SevenTVEmote *anchorEmote = anchorPath
+            ? [self _emoteForIndexPath:anchorPath] : nil;
+        UICollectionViewLayoutAttributes *attributes = anchorPath
+            ? [collectionView layoutAttributesForItemAtIndexPath:anchorPath] : nil;
+        if (anchorEmote.emoteID.length && attributes) {
+            anchorEmoteID = [anchorEmote.emoteID copy];
+            anchorViewportY = CGRectGetMinY(attributes.frame) - collectionView.contentOffset.y;
+        }
     }
-}
 
-static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
-    // Clé simple = count@channel|count@global — si les deux counts n'ont pas changé,
-    // la liste est identique dans la grande majorité des cas.
-    return [NSString stringWithFormat:@"%lu|%lu",
-            (unsigned long)channel.count, (unsigned long)global.count];
-}
-
-- (void)_buildAndShowEmotePickerForView:(UIView *)chatInputView {
-    // ── Rassembler toutes les emotes (channel d'abord, puis globales) ──────
+    SevenTVManager *manager = [SevenTVManager sharedManager];
     __block NSDictionary *global, *channel;
-    dispatch_sync([SevenTVManager sharedManager].emoteQueue, ^{
-        global  = [SevenTVManager sharedManager].globalEmotes  ?: @{};
-        channel = [SevenTVManager sharedManager].channelEmotes ?: @{};
+    dispatch_sync(manager.emoteQueue, ^{
+        global  = manager.globalEmotes  ?: @{};
+        channel = manager.channelEmotes ?: @{};
     });
 
-    // ── Tri mis en cache ─────────────────────────────────────────────────────
-    // Le tri de 500 emotes sur main thread prend ~20-40ms → lag visible à chaque ouverture.
-    // On le met en cache et on ne retrie que si les sets ont changé.
-    NSString *setKey = s7tv_emoteSetKey(global, channel);
+    NSString *setKey = s7tv_emoteSetKey(global, channel, manager.currentChannelTwitchID);
     if (!s_cachedSortedEmotes || ![setKey isEqualToString:s_cachedSortKey]) {
         NSMutableArray<SevenTVEmote *> *all = [NSMutableArray array];
-        // Channel en premier (plus pertinent)
         for (NSString *key in [channel.allKeys sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)])
             [all addObject:channel[key]];
         for (NSString *key in [global.allKeys sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]) {
@@ -926,7 +1009,74 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     }
     self.emotePickerAllEmotes = s_cachedSortedEmotes;
     self.emotePickerEmotes    = self.emotePickerAllEmotes;
-    [self _updatePickerArraysForSearch:@""];
+    [self _updatePickerArraysForSearch:self.emoteSearchField.text ?: @""];
+    if (reloadCollection && self.emoteCollectionView) {
+        [self _s7tv_deactivateVisiblePickerAnimations];
+        [self.emoteCollectionView reloadData];
+        [self.emoteCollectionView.collectionViewLayout invalidateLayout];
+        [self.emoteCollectionView layoutIfNeeded];
+
+        CGFloat targetY = previousOffset.y;
+        if (anchorEmoteID.length) {
+            NSUInteger newIndex = [self.emotePickerEmotes
+                indexOfObjectPassingTest:^BOOL(SevenTVEmote *emote,
+                                                __unused NSUInteger index,
+                                                __unused BOOL *stop) {
+                    return [emote.emoteID isEqualToString:anchorEmoteID];
+                }];
+            if (newIndex != NSNotFound) {
+                NSIndexPath *newPath = [NSIndexPath indexPathForItem:(NSInteger)newIndex inSection:0];
+                UICollectionViewLayoutAttributes *attributes =
+                    [self.emoteCollectionView layoutAttributesForItemAtIndexPath:newPath];
+                if (attributes) targetY = CGRectGetMinY(attributes.frame) - anchorViewportY;
+            }
+        }
+        UIEdgeInsets inset = self.emoteCollectionView.adjustedContentInset;
+        CGFloat minimumY = -inset.top;
+        CGFloat maximumY = MAX(minimumY,
+            self.emoteCollectionView.contentSize.height - self.emoteCollectionView.bounds.size.height +
+            inset.bottom);
+        CGPoint restoredOffset = self.emoteCollectionView.contentOffset;
+        restoredOffset.y = MIN(maximumY, MAX(minimumY, targetY));
+        [self.emoteCollectionView setContentOffset:restoredOffset animated:NO];
+    }
+}
+
+- (void)_s7tv_applyCatalogUpdateNow {
+    self.pickerCatalogReloadPending = NO;
+    [self _s7tv_reloadCatalogSnapshotReloadCollection:YES];
+    if (self.pickerSizesPanelVisible && self->_sizesPanel) {
+        [self->_sizesPanel loadRealPreviewAssetsIfNeeded];
+    }
+    [self.emoteCollectionView layoutIfNeeded];
+}
+
+- (void)_s7tv_emoteCatalogDidUpdate:(__unused NSNotification *)notification {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self invalidateSortCache];
+        if (!self.emotePickerView || self.emotePickerView.hidden) return;
+        if (self.pickerScrollInProgress || self.emoteCollectionView.isTracking ||
+            self.emoteCollectionView.isDragging || self.emoteCollectionView.isDecelerating) {
+            self.pickerCatalogReloadPending = YES;
+            return;
+        }
+        [self _s7tv_applyCatalogUpdateNow];
+        [self _s7tv_activateVisiblePickerAnimations];
+    });
+}
+
+- (void)_buildAndShowEmotePickerForView:(UIView *)chatInputView {
+    // Une notification de catalogue différée pendant un ancien scroll ne doit
+    // jamais survivre à la fermeture du picker. L'ouverture reconstruit de
+    // toute façon un snapshot exact juste en dessous.
+    self.pickerCatalogReloadPending = NO;
+    // Réinitialiser l'état logique AVANT le premier snapshot. Sinon une
+    // recherche de l'ouverture précédente pouvait restaurer pickerPreSearchTab
+    // pendant le passage à une requête vide et écraser le choix ci-dessous.
+    self.emoteSearchField.text = @"";
+    self.pickerIsSearching = NO;
+    // ── Rassembler/trier le snapshot courant une seule fois ───────────────
+    [self _s7tv_reloadCatalogSnapshotReloadCollection:NO];
 
     // ── Choix de l'onglet de départ : Favoris s'il y a au moins un favori
     // (sur la chaîne courante), sinon 7TV/Channel. Revérifié à CHAQUE
@@ -1045,6 +1195,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
                 keyWindow.bounds.size.width, ph);
             [keyWindow addSubview:self.emotePickerView];
             self.emotePickerView.hidden = NO;
+            [self _s7tv_relayoutPickerForSize:self.emotePickerView.bounds.size];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self _s7tv_activateVisiblePickerAnimations];
+            });
         }
     }
 }
@@ -1644,8 +1798,8 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         // l'animation de réapparition du picker — un seul mouvement au lieu
         // de deux qui se suivent.
         [alert dismissViewControllerAnimated:NO completion:^{
-            [self _restorePickerFocus];
             self.pickerSearchAlertActive = NO;
+            [self _restorePickerFocus];
         }];
     }];
 
@@ -1656,8 +1810,8 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         // Même chose à l'annulation (voir searchAction ci-dessus) : dismiss
         // sans animation pour ne garder qu'une seule transition visible.
         [alert dismissViewControllerAnimated:NO completion:^{
-            [self _restorePickerFocus];
             self.pickerSearchAlertActive = NO;
+            [self _restorePickerFocus];
         }];
     }];
 
@@ -1670,6 +1824,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // immédiatement faire résigner le TextEntryView de Twitch.
     UIViewController *presenter = [self topViewController];
     if (!presenter) return NO;
+    [self _s7tv_deactivateVisiblePickerAnimations];
     self.pickerSearchAlertActive = YES;
     [presenter presentViewController:alert animated:YES completion:nil];
 
@@ -1703,16 +1858,21 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 - (void)_restorePickerFocus {
     UITextView *tv = self.emotePickerTextEntryView;
     UIView *pickerView = self.emotePickerView;
-    // Guard : si le stream a été fermé entre temps, tv.window == nil
-    if (!tv || !tv.window || !pickerView) return;
-    // Réassigner l'inputView au cas où il aurait été effacé
-    tv.inputView = pickerView;
-    tv.inputAccessoryView = nil;
-    pickerView.hidden = NO;
-    if (!tv.isFirstResponder) {
-        [tv becomeFirstResponder];
+    if (!pickerView) return;
+    if (tv && tv.window) {
+        // Réassigner l'inputView au cas où il aurait été effacé.
+        tv.inputView = pickerView;
+        tv.inputAccessoryView = nil;
+        pickerView.hidden = NO;
+        if (!tv.isFirstResponder) [tv becomeFirstResponder];
+        [tv reloadInputViews];
+    } else if (pickerView.window) {
+        // Mode fenêtre flottante : aucun TextEntryView n'existe à restaurer,
+        // mais la recherche a tout de même coupé les observers d'animation.
+        pickerView.hidden = NO;
+    } else {
+        return;
     }
-    [tv reloadInputViews];
     // reloadData pendant la recherche coupe volontairement les anciens
     // observateurs d'animation. Une fois l'inputView réellement remonté,
     // réactiver immédiatement les seules cellules désormais visibles.
@@ -1754,11 +1914,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     UINotificationFeedbackGenerator *haptic = [[UINotificationFeedbackGenerator alloc] init];
     [haptic notificationOccurred:UINotificationFeedbackTypeSuccess];
 
-    // Rebuild les arrays et recharger
-    NSString *q = self.emoteSearchField.text ?: @"";
-    [self _updatePickerArraysForSearch:q];
-    [self _s7tv_deactivateVisiblePickerAnimations];
-    [self.emoteCollectionView reloadData];
+    // setEmote:favorited: publie déjà l'unique mise à jour via
+    // s7tv_notifyFavoritesChanged -> favoritesDidChange. Un second reload ici
+    // annulait/recréait immédiatement les animations visibles.
 }
 
 // ── Helper : emote à partir d'un indexPath ─────────────────────────────────
@@ -1822,15 +1980,29 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         return;
     }
 
+    CGFloat width     = keyWindow.bounds.size.width;
+    static const CGFloat kFakeChatInset = 8.0; // même valeur que CGRectInset(container.bounds, 8, 8) plus bas
+
+    CGFloat inputTopY = keyWindow.bounds.size.height;
+    if (inputRoot) {
+        CGRect inputFrameInWindow = [inputRoot convertRect:inputRoot.bounds toView:keyWindow];
+        inputTopY = inputFrameInWindow.origin.y;
+    }
+    CGFloat safeTop = keyWindow.safeAreaInsets.top;
+    CGFloat availableHeight = MAX(0.0, inputTopY - safeTop);
+    CGFloat maxHeight = MIN(keyWindow.bounds.size.height * 0.5, availableHeight);
+    if (maxHeight < 80.0) {
+        [self _hideFakeChatPreview];
+        return;
+    }
+
     UIView *container = [self _ensureFakeChatPreviewContainer];
+    SevenTVChatCustomView *chatView = self.sizesPanel.fakeChatView;
+    chatView.renderingSuspended = NO;
     if (container.superview != keyWindow) {
         [container removeFromSuperview];
         [keyWindow addSubview:container];
     }
-
-    CGFloat width     = keyWindow.bounds.size.width;
-    CGFloat maxHeight = keyWindow.bounds.size.height * 0.5; // plafond, jamais dépassé
-    static const CGFloat kFakeChatInset = 8.0; // même valeur que CGRectInset(container.bounds, 8, 8) plus bas
 
     // ── Hauteur réelle du contenu ────────────────────────────────────────
     // Avant, la hauteur était fixée à 50% de l'écran quel que soit le
@@ -1840,7 +2012,6 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     // force le layout, puis on lit contentSize.height. SevenTVChatCustomView
     // est une UICollectionView (diffable data source) → UIScrollView.contentSize
     // reflète exactement la hauteur des 7 messages empilés.
-    SevenTVChatCustomView *chatView = self.sizesPanel.fakeChatView;
     chatView.frame = CGRectMake(0, 0, width - kFakeChatInset * 2, maxHeight);
     CGFloat contentHeight = [chatView s7tvContentHeight];
 
@@ -1848,15 +2019,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
         ? MIN(contentHeight + kFakeChatInset * 2, maxHeight)
         : maxHeight; // fallback si contentSize indisponible (pas encore layoutée)
 
-    // inputRoot peut être nil (picker jamais ouvert sur ce chat) — dans ce
-    // cas on colle simplement en bas de l'écran plutôt que de planter/ne
-    // rien afficher.
-    CGFloat inputTopY = keyWindow.bounds.size.height;
-    if (inputRoot) {
-        CGRect inputFrameInWindow = [inputRoot convertRect:inputRoot.bounds toView:keyWindow];
-        inputTopY = inputFrameInWindow.origin.y;
-    }
-    CGFloat y = MAX(0, inputTopY - height);
+    CGFloat y = MAX(safeTop, inputTopY - height);
 
     container.frame = CGRectMake(0, y, width, height);
     self.sizesPanel.fakeChatView.frame = CGRectInset(container.bounds, kFakeChatInset, kFakeChatInset);
@@ -1865,6 +2028,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 }
 
 - (void)_hideFakeChatPreview {
+    SevenTVChatCustomView *chatView = self->_sizesPanel.fakeChatView;
+    [chatView resetTransientTranscriptState];
+    chatView.renderingSuspended = YES;
     self.pickerFakeChatPreviewView.hidden = YES;
 }
 
@@ -1877,11 +2043,21 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 - (void)emotePickerSizesToggleTapped {
     BOOL show = !self.pickerSizesPanelVisible;
     if (show) {
+        // Couper aussi une décélération en cours. Sinon le callback de fin de
+        // scroll peut réactiver une ancienne cellule derrière le panneau.
+        CGPoint offset = self.emoteCollectionView.contentOffset;
+        [self.emoteCollectionView setContentOffset:offset animated:NO];
+        self.emoteCollectionView.panGestureRecognizer.enabled = NO;
+        self.emoteCollectionView.panGestureRecognizer.enabled = YES;
         [self _s7tv_deactivateVisiblePickerAnimations];
         [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
         [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
         [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
         self.pickerScrollInProgress = NO;
+        // Le toggle du panGestureRecognizer peut supprimer le callback
+        // didEndDecelerating. Appliquer ici le catalogue mis en attente évite
+        // de laisser la grille/preview obsolète jusqu'à la prochaine ouverture.
+        if (self.pickerCatalogReloadPending) [self _s7tv_applyCatalogUpdateNow];
     }
     self.pickerSizesPanelVisible = show;
     self.sizesPanel.panelView.hidden = !show;
@@ -1926,6 +2102,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
     [self.emotePickerTextEntryView reloadInputViews];
 
     if (show) {
+        self.sizesPanel.fakeChatView.renderingSuspended = NO;
         [self.sizesPanel loadRealPreviewAssetsIfNeeded];
         [self _showFakeChatPreviewAboveInputView];
     } else {
@@ -1969,17 +2146,15 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel) {
 // Nombre de colonnes de référence — plus élevé en paysage pour des cellules plus petites.
 // Portrait  : 6 cols → cellules ~65pt (iPhone 390pt wide)
 // Paysage   : 10 cols → cellules ~84pt (iPhone 844pt wide) — taille réduite voulue
-static CGFloat S7TVRefCols(void) {
-    CGSize screen = UIScreen.mainScreen.bounds.size;
-    return screen.width > screen.height ? 10.0 : 6.0;
-}
-
 - (CGSize)collectionView:(UICollectionView *)cv
                   layout:(UICollectionViewLayout *)layout
   sizeForItemAtIndexPath:(NSIndexPath *)indexPath {
 
-    CGFloat cvW   = cv.bounds.size.width > 0 ? cv.bounds.size.width : 390.0;
-    CGFloat cellH = MAX(32.0, floor(cvW / S7TVRefCols()));
+    CGFloat cvW = cv.bounds.size.width > 0 ? cv.bounds.size.width : 390.0;
+    UIWindow *hostWindow = cv.window ?: self.emotePickerTextField.window;
+    CGSize hostSize = hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
+    CGFloat referenceColumns = hostSize.width > hostSize.height ? 10.0 : 6.0;
+    CGFloat cellH = MAX(32.0, floor(cvW / referenceColumns));
 
     SevenTVEmote *emote = [self _emoteForIndexPath:indexPath];
     if (!emote || emote.width <= 0 || emote.height <= 0) {
@@ -2067,6 +2242,8 @@ static CGFloat S7TVRefCols(void) {
         S7TVEmotePickerCell *strongCell = weakCellForActivity;
         return strongSelf && strongCell &&
                strongCell.window != nil &&
+               strongSelf.emotePickerView.window != nil &&
+               !strongSelf.pickerSearchAlertActive &&
                !strongSelf.emotePickerView.hidden &&
                !strongSelf.emoteCollectionView.hidden &&
                strongCell.wantsAnimation &&
@@ -2151,7 +2328,8 @@ static CGFloat S7TVRefCols(void) {
 
 - (void)_s7tv_scheduleStaticImageForPickerCell:(S7TVEmotePickerCell *)cell
                                     atIndexPath:(NSIndexPath *)indexPath {
-    if (self.emoteCollectionView.hidden) return;
+    if (self.pickerSearchAlertActive || !self.emotePickerView.window ||
+        self.emoteCollectionView.hidden) return;
     NSString *key = [cell.currentEmoteKey copy];
     if (!key.length) return;
     NSUInteger generation = ++cell.imageLoadGeneration;
@@ -2165,7 +2343,8 @@ static CGFloat S7TVRefCols(void) {
                    dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         S7TVEmotePickerCell *strongCell = weakCell;
-        if (!strongSelf || !strongCell ||
+        if (!strongSelf || !strongCell || strongSelf.pickerSearchAlertActive ||
+            !strongSelf.emotePickerView.window ||
             strongSelf.emotePickerView.hidden || strongSelf.emoteCollectionView.hidden) return;
         if (strongCell.imageLoadGeneration != generation ||
             ![strongCell.currentEmoteKey isEqualToString:key] ||
@@ -2184,7 +2363,9 @@ static CGFloat S7TVRefCols(void) {
         }
         [cache imageForResolvedEmote:resolved completion:^(UIImage * _Nullable image) {
             S7TVEmotePickerCell *completionCell = weakCell;
-            if (!image || !completionCell || !completionCell.window ||
+            SevenTVEmotePickerController *completionSelf = weakSelf;
+            if (!image || !completionSelf || completionSelf.pickerSearchAlertActive ||
+                !completionSelf.emotePickerView.window || !completionCell || !completionCell.window ||
                 completionCell.imageLoadGeneration != generation ||
                 ![completionCell.currentEmoteKey isEqualToString:key]) return;
             completionCell.emoteImageView.image = image;
@@ -2194,7 +2375,8 @@ static CGFloat S7TVRefCols(void) {
 
 - (void)_s7tv_scheduleAnimationForPickerCell:(S7TVEmotePickerCell *)cell
                                   atIndexPath:(NSIndexPath *)indexPath {
-    if (!cell.wantsAnimation || self.emoteCollectionView.hidden) return;
+    if (self.pickerSearchAlertActive || !self.emotePickerView.window ||
+        !cell.wantsAnimation || self.emoteCollectionView.hidden) return;
     if (cell.animationFrameRequest) return; // décodage courant déjà lié à cette cellule
 
     NSString *key = [cell.currentEmoteKey copy];
@@ -2224,7 +2406,8 @@ static CGFloat S7TVRefCols(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         S7TVEmotePickerCell *strongCell = weakCell;
-        if (!strongSelf || !strongCell) return;
+        if (!strongSelf || !strongCell || strongSelf.pickerSearchAlertActive ||
+            !strongSelf.emotePickerView.window) return;
         if (strongCell.animationGeneration != generation ||
             ![strongCell.currentEmoteKey isEqualToString:key] ||
             [strongSelf.emoteCollectionView cellForItemAtIndexPath:indexPath] != strongCell) return;
@@ -2252,7 +2435,10 @@ static CGFloat S7TVRefCols(void) {
 }
 
 - (void)_s7tv_activateVisiblePickerAnimations {
-    if (self.pickerScrollInProgress || self.emoteCollectionView.hidden || self.emotePickerView.hidden) return;
+    if (self.pickerSearchAlertActive || self.pickerScrollInProgress ||
+        self.emoteCollectionView.isTracking || self.emoteCollectionView.isDragging ||
+        self.emoteCollectionView.isDecelerating || !self.emotePickerView.window ||
+        self.emoteCollectionView.hidden || self.emotePickerView.hidden) return;
     for (NSIndexPath *indexPath in self.emoteCollectionView.indexPathsForVisibleItems) {
         S7TVEmotePickerCell *cell = (S7TVEmotePickerCell *)
             [self.emoteCollectionView cellForItemAtIndexPath:indexPath];
@@ -2298,6 +2484,7 @@ static CGFloat S7TVRefCols(void) {
     self.pickerScrollInProgress = NO;
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
+    if (self.pickerCatalogReloadPending) [self _s7tv_applyCatalogUpdateNow];
     [self _s7tv_activateVisiblePickerAnimations];
 }
 
@@ -2306,6 +2493,7 @@ static CGFloat S7TVRefCols(void) {
     self.pickerScrollInProgress = NO;
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
+    if (self.pickerCatalogReloadPending) [self _s7tv_applyCatalogUpdateNow];
     [self _s7tv_activateVisiblePickerAnimations];
 }
 

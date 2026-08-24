@@ -31,6 +31,7 @@ void s7tv_handleChatInputViewLifecycle(UIView *view);
 // --- Affichage / fermeture (façade appelée par SevenTVManager) ------------
 - (void)toggleEmotePickerForChatInputView:(UIView *)chatInputView;
 - (void)cleanupPickerForStreamClose;
+- (void)cleanupPickerForStreamCloseIfOwnedByChatInputView:(UIView *)chatInputView;
 
 // --- Listes filtrées exposées pour SevenTVPickerSizesPanel -----------------
 // (choix des emotes de preview : EZ en priorité, sinon 1ère globale)

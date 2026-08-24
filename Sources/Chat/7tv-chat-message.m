@@ -643,55 +643,45 @@ static NSURL * _Nullable s7tv_channelPointImageURL(NSDictionary *reward) {
     return urlString.length ? [NSURL URLWithString:urlString] : nil;
 }
 
-static NSDictionary * _Nullable s7tv_findCommunityPointSettingsDictionary(
-    id object, NSString * _Nullable * _Nullable outChannelID) {
+static void s7tv_collectCommunityPointSettingsDictionaries(
+    id object, NSMutableArray<NSDictionary *> *settingsCandidates,
+    NSMutableArray<NSString *> *channelIDs) {
     if ([object isKindOfClass:[NSDictionary class]]) {
         NSDictionary *dictionary = object;
         NSDictionary *settings = s7tv_JSONDictionaryForKeys(dictionary,
             @[@"communityPointsSettings", @"community_points_settings"]);
         if (settings.count) {
-            if (outChannelID) {
-                NSString *channelID = s7tv_JSONStringForKeys(dictionary, @[
-                    @"id", @"channelID", @"channel_id",
-                    @"broadcasterUserID", @"broadcaster_user_id"
-                ]);
-                *outChannelID = channelID.length ? channelID : nil;
-            }
-            return settings;
+            NSString *channelID = s7tv_JSONStringForKeys(dictionary, @[
+                @"id", @"channelID", @"channel_id",
+                @"broadcasterUserID", @"broadcaster_user_id"
+            ]);
+            [settingsCandidates addObject:settings];
+            [channelIDs addObject:channelID ?: @""];
+            return;
         }
         if ([dictionary[@"automaticRewards"] isKindOfClass:[NSArray class]] ||
             [dictionary[@"customRewards"] isKindOfClass:[NSArray class]]) {
-            return dictionary;
+            NSString *channelID = s7tv_JSONStringForKeys(dictionary, @[
+                @"id", @"channelID", @"channel_id",
+                @"broadcasterUserID", @"broadcaster_user_id"
+            ]);
+            [settingsCandidates addObject:dictionary];
+            [channelIDs addObject:channelID ?: @""];
+            return;
         }
         for (id value in dictionary.allValues) {
             if ([value isKindOfClass:[NSDictionary class]] ||
                 [value isKindOfClass:[NSArray class]]) {
-                NSDictionary *found =
-                    s7tv_findCommunityPointSettingsDictionary(value, outChannelID);
-                if (found) return found;
+                s7tv_collectCommunityPointSettingsDictionaries(
+                    value, settingsCandidates, channelIDs);
             }
         }
     } else if ([object isKindOfClass:[NSArray class]]) {
         for (id value in (NSArray *)object) {
-            NSDictionary *found =
-                s7tv_findCommunityPointSettingsDictionary(value, outChannelID);
-            if (found) return found;
+            s7tv_collectCommunityPointSettingsDictionaries(
+                value, settingsCandidates, channelIDs);
         }
     }
-    return nil;
-}
-
-// Champ confirmé sur le payload Twitch réel : communityPointsSettings.image.
-// Il contient l'icône de monnaie personnalisée de la chaîne. Ne jamais
-// parcourir automaticRewards/customRewards : leurs images appartiennent au
-// picker (stylo, highlight, etc.), pas au coût affiché dans le chat.
-static NSURL * _Nullable s7tv_findChannelPointCurrencyImageURL(
-    id object, NSString * _Nullable * _Nullable outChannelID) {
-    NSDictionary *settings =
-        s7tv_findCommunityPointSettingsDictionary(object, outChannelID);
-    NSDictionary *image = s7tv_JSONDictionaryForKeys(settings, @[@"image"]);
-    NSString *urlString = s7tv_channelPointImageURLString(image);
-    return urlString.length ? [NSURL URLWithString:urlString] : nil;
 }
 
 // Amorcer le cache dès la réponse GQL évite que le premier redemption doive
@@ -715,25 +705,38 @@ static void s7tv_preloadChannelPointCurrencyImage(NSURL *imageURL,
 // ChannelPointsQuery fournit coût/image/couleur des récompenses automatiques;
 // le type de protocole relie ce catalogue aux événements PubSub et msg-id IRC.
 
-static NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *
-s7tv_automaticRewardCatalog(void) {
-    static NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *catalog = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ catalog = [NSMutableDictionary dictionary]; });
-    return catalog;
+static NSString *const kS7TVUnknownRewardChannelKey = @"__unknown_channel__";
+
+static NSString *s7tv_rewardChannelKey(NSString *channelID) {
+    return channelID.length ? channelID : kS7TVUnknownRewardChannelKey;
 }
 
-static NSString *s7tv_automaticRewardCatalogChannelID = nil;
-static NSURL *s7tv_automaticRewardCurrencyImageURL = nil;
+static NSMutableDictionary<NSString *, NSMutableDictionary<NSString *,
+    S7TVChannelPointRewardInfo *> *> *s7tv_automaticRewardCatalogsByChannel(void) {
+    static NSMutableDictionary *catalogs = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ catalogs = [NSMutableDictionary dictionary]; });
+    return catalogs;
+}
 
-static NSURL * _Nullable s7tv_currentChannelPointCurrencyImageURL(void) {
-    NSMutableDictionary *catalog = s7tv_automaticRewardCatalog();
-    @synchronized (catalog) {
+static NSMutableDictionary<NSString *, NSURL *> *
+s7tv_automaticRewardCurrencyImagesByChannel(void) {
+    static NSMutableDictionary *images = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ images = [NSMutableDictionary dictionary]; });
+    return images;
+}
+
+NSURL * _Nullable s7tv_activeChannelPointCurrencyImageURL(void) {
+    NSMutableDictionary *catalogs = s7tv_automaticRewardCatalogsByChannel();
+    @synchronized (catalogs) {
         NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
-        BOOL sameChannel = !currentChannelID.length ||
-            !s7tv_automaticRewardCatalogChannelID.length ||
-            [currentChannelID isEqualToString:s7tv_automaticRewardCatalogChannelID];
-        return sameChannel ? [s7tv_automaticRewardCurrencyImageURL copy] : nil;
+        NSDictionary<NSString *, NSURL *> *images =
+            s7tv_automaticRewardCurrencyImagesByChannel();
+        NSURL *imageURL = currentChannelID.length
+            ? images[s7tv_rewardChannelKey(currentChannelID)]
+            : images[kS7TVUnknownRewardChannelKey];
+        return [imageURL copy];
     }
 }
 
@@ -789,18 +792,19 @@ s7tv_automaticRewardInfoForType(NSString *rawType) {
     NSString *titleKey = s7tv_automaticRewardTitleLocalizationKey(type);
     if (!titleKey.length) return nil;
 
-    NSMutableDictionary *catalog = s7tv_automaticRewardCatalog();
+    NSMutableDictionary *catalogs = s7tv_automaticRewardCatalogsByChannel();
     S7TVChannelPointRewardInfo *info = nil;
     NSURL *currencyImageURL = nil;
-    @synchronized (catalog) {
+    @synchronized (catalogs) {
         NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
-        BOOL catalogMatchesChannel = !currentChannelID.length ||
-            !s7tv_automaticRewardCatalogChannelID.length ||
-            [currentChannelID isEqualToString:s7tv_automaticRewardCatalogChannelID];
-        if (catalogMatchesChannel) {
-            info = s7tv_copyChannelPointRewardInfo(catalog[type]);
-            currencyImageURL = [s7tv_automaticRewardCurrencyImageURL copy];
-        }
+        NSString *channelKey = s7tv_rewardChannelKey(currentChannelID);
+        NSDictionary *catalog = currentChannelID.length
+            ? catalogs[channelKey] : catalogs[kS7TVUnknownRewardChannelKey];
+        NSDictionary *images = s7tv_automaticRewardCurrencyImagesByChannel();
+        info = s7tv_copyChannelPointRewardInfo(catalog[type]);
+        currencyImageURL = currentChannelID.length
+            ? [images[channelKey] copy]
+            : [images[kS7TVUnknownRewardChannelKey] copy];
     }
 
     // Le PRIVMSG peut précéder ChannelPointsQuery, ou cette requête peut ne
@@ -859,8 +863,10 @@ static void s7tv_collectAutomaticRewardDictionaries(id object,
     }
 }
 
-void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data,
-                                             dispatch_block_t _Nullable refresh) {
+void s7tv_ingestAutomaticRewardsFromGQLData(
+    NSData *data, NSString * _Nullable requestChannelID,
+    BOOL requestChannelIDAmbiguous,
+    dispatch_block_t _Nullable refresh) {
     if (!data.length) return;
     NSString *raw = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     BOOL containsAutomaticRewards = [raw containsString:@"automaticRewards"];
@@ -869,110 +875,149 @@ void s7tv_ingestAutomaticRewardsFromGQLData(NSData *data,
     if (!containsAutomaticRewards && !containsPointSettings) return;
     id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (!root) return;
-    NSString *payloadChannelID = nil;
-    NSURL *currencyImageURL =
-        s7tv_findChannelPointCurrencyImageURL(root, &payloadChannelID);
 
-    NSMutableArray<NSDictionary *> *rawRewards = [NSMutableArray array];
-    if (containsAutomaticRewards) {
-        s7tv_collectAutomaticRewardDictionaries(root, rawRewards);
-    }
+    // Un batch Apollo peut contenir plusieurs chaînes et peut arriver juste
+    // AVANT la publication du nouveau broadcaster ID. Chaque settings est
+    // donc indexé par son propre channelID à la capture ; le rendu choisit
+    // ensuite la chaîne active. Aucun payload valide n'est rejeté à cause du
+    // timing d'un changement de chaîne.
+    NSMutableArray<NSDictionary *> *settingsCandidates = [NSMutableArray array];
+    NSMutableArray<NSString *> *channelIDs = [NSMutableArray array];
+    s7tv_collectCommunityPointSettingsDictionaries(root, settingsCandidates, channelIDs);
+    if (!settingsCandidates.count) return;
 
-    NSMutableDictionary *catalog = s7tv_automaticRewardCatalog();
     NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
-    NSString *resolvedChannelID = payloadChannelID.length
-        ? payloadChannelID : currentChannelID;
-    NSURL *resolvedCurrencyImageURL = currencyImageURL;
-    @synchronized (catalog) {
-        BOOL sameChannel = !resolvedChannelID.length ||
-            !s7tv_automaticRewardCatalogChannelID.length ||
-            [resolvedChannelID isEqualToString:s7tv_automaticRewardCatalogChannelID];
-        if (!resolvedCurrencyImageURL && sameChannel) {
-            resolvedCurrencyImageURL = [s7tv_automaticRewardCurrencyImageURL copy];
+    NSMutableDictionary *catalogs = s7tv_automaticRewardCatalogsByChannel();
+    NSMutableDictionary *currencyImages = s7tv_automaticRewardCurrencyImagesByChannel();
+
+    for (NSUInteger candidateIndex = 0;
+         candidateIndex < settingsCandidates.count; candidateIndex++) {
+        NSDictionary *settings = settingsCandidates[candidateIndex];
+        NSString *payloadChannelID = channelIDs[candidateIndex];
+        NSString *resolvedChannelID = payloadChannelID.length
+            ? payloadChannelID : requestChannelID;
+        // Un batch qui porte plusieurs broadcaster IDs n'offre aucun repli
+        // fiable pour un settings dépourvu de son propre ID. Même au tout
+        // premier chargement (currentChannelID encore nil), ne jamais ranger
+        // ce candidat dans le bucket temporaire puis le migrer au hasard.
+        if (!payloadChannelID.length && requestChannelIDAmbiguous) continue;
+        // Si une réponse sans ID arrive après un changement de chaîne et que
+        // la requête ne permet pas non plus de l'identifier, l'attribuer au
+        // currentChannelID du callback serait arbitraire. On l'ignore plutôt
+        // que de polluer durablement le catalogue/icône de la nouvelle chaîne.
+        if (!resolvedChannelID.length && currentChannelID.length) continue;
+        NSString *channelKey = s7tv_rewardChannelKey(resolvedChannelID);
+
+        NSDictionary *currencyImage = s7tv_JSONDictionaryForKeys(settings, @[@"image"]);
+        NSString *currencyURLString = s7tv_channelPointImageURLString(currencyImage);
+        NSURL *currencyImageURL = currencyURLString.length
+            ? [NSURL URLWithString:currencyURLString] : nil;
+        NSURL *resolvedCurrencyImageURL = currencyImageURL;
+        @synchronized (catalogs) {
+            if (!resolvedCurrencyImageURL) {
+                resolvedCurrencyImageURL = [currencyImages[channelKey] copy];
+            }
         }
-        if (!rawRewards.count && currencyImageURL) {
-            if (!sameChannel) [catalog removeAllObjects];
-            s7tv_automaticRewardCatalogChannelID = [resolvedChannelID copy] ?: @"";
-            s7tv_automaticRewardCurrencyImageURL = [currencyImageURL copy];
-            for (S7TVChannelPointRewardInfo *existingInfo in catalog.allValues) {
-                if ([existingInfo.pricingType caseInsensitiveCompare:@"BITS"] != NSOrderedSame) {
-                    existingInfo.imageURL = currencyImageURL;
+
+        NSMutableArray<NSDictionary *> *rawRewards = [NSMutableArray array];
+        if (containsAutomaticRewards) {
+            // Partir du settings sélectionné, jamais de la racine du batch :
+            // les automaticRewards d'une autre chaîne ne peuvent ainsi être
+            // mélangés au logo/coût de celle-ci.
+            s7tv_collectAutomaticRewardDictionaries(settings, rawRewards);
+        }
+        NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *nextCatalog =
+            [NSMutableDictionary dictionary];
+        for (NSDictionary *reward in rawRewards) {
+            NSString *type = s7tv_normalizedAutomaticRewardType(
+                s7tv_JSONStringForKeys(reward, @[@"type"]));
+            if (!type.length) continue;
+            S7TVChannelPointRewardInfo *info = [S7TVChannelPointRewardInfo new];
+            info.rewardID = type;
+            info.title = @"";
+            info.titleLocalizationKey = s7tv_automaticRewardTitleLocalizationKey(type);
+            info.pricingType = s7tv_JSONStringForKeys(
+                reward, @[@"pricingType", @"pricing_type"]);
+            BOOL usesBits = info.pricingType.length > 0 &&
+                [info.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame;
+            info.cost = usesBits
+                ? s7tv_JSONIntegerForKeys(reward, @[@"bitsCost", @"bits_cost"])
+                : s7tv_JSONIntegerForKeys(reward, @[@"cost"]);
+            if (info.cost <= 0) {
+                info.cost = usesBits
+                    ? s7tv_JSONIntegerForKeys(
+                        reward, @[@"defaultBitsCost", @"default_bits_cost"])
+                    : s7tv_JSONIntegerForKeys(
+                        reward, @[@"defaultCost", @"default_cost"]);
+            }
+            NSString *backgroundHex = s7tv_JSONStringForKeys(
+                reward, @[@"backgroundColor", @"background_color"]);
+            if (!backgroundHex.length) {
+                backgroundHex = s7tv_JSONStringForKeys(
+                    reward, @[@"defaultBackgroundColor", @"default_background_color"]);
+            }
+            info.accentColor = s7tv_colorFromHexString(backgroundHex);
+            NSURL *imageURL = usesBits
+                ? s7tv_channelPointImageURL(reward) : resolvedCurrencyImageURL;
+            if (imageURL) info.imageURL = imageURL;
+            info.isUserInputRequired = info.titleLocalizationKey.length > 0;
+            nextCatalog[type] = info;
+        }
+
+        @synchronized (catalogs) {
+            if (currencyImageURL) currencyImages[channelKey] = currencyImageURL;
+            if (nextCatalog.count) {
+                catalogs[channelKey] = nextCatalog;
+            } else if (currencyImageURL) {
+                NSMutableDictionary *existingCatalog = catalogs[channelKey];
+                for (S7TVChannelPointRewardInfo *existingInfo in existingCatalog.allValues) {
+                    BOOL usesBits = existingInfo.pricingType.length > 0 &&
+                        [existingInfo.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame;
+                    if (!usesBits) {
+                        existingInfo.imageURL = currencyImageURL;
+                    }
                 }
             }
         }
-    }
-    if (!rawRewards.count) {
-        if (currencyImageURL) {
-            s7tv_preloadChannelPointCurrencyImage(currencyImageURL, refresh);
-            BOOL payloadMatchesCurrentChannel = !payloadChannelID.length ||
-                !currentChannelID.length ||
-                [payloadChannelID isEqualToString:currentChannelID];
-            if (payloadMatchesCurrentChannel) {
-                [[SevenTVManager sharedManager].chatMessageStore
-                    updateChannelPointCurrencyImageURL:currencyImageURL
-                    completion:refresh];
-            }
-        }
-        return;
-    }
 
-    NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *nextCatalog =
-        [NSMutableDictionary dictionary];
-    for (NSDictionary *reward in rawRewards) {
-        NSString *type = s7tv_normalizedAutomaticRewardType(
-            s7tv_JSONStringForKeys(reward, @[@"type"]));
-        if (!type.length) continue;
-        S7TVChannelPointRewardInfo *info = [S7TVChannelPointRewardInfo new];
-        info.rewardID = type;
-        info.title = @"";
-        info.titleLocalizationKey = s7tv_automaticRewardTitleLocalizationKey(type);
-        info.pricingType = s7tv_JSONStringForKeys(reward, @[@"pricingType", @"pricing_type"]);
-        BOOL usesBits = [info.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame;
-        info.cost = usesBits
-            ? s7tv_JSONIntegerForKeys(reward, @[@"bitsCost", @"bits_cost"])
-            : s7tv_JSONIntegerForKeys(reward, @[@"cost"]);
-        if (info.cost <= 0) {
-            info.cost = usesBits
-                ? s7tv_JSONIntegerForKeys(reward, @[@"defaultBitsCost", @"default_bits_cost"])
-                : s7tv_JSONIntegerForKeys(reward, @[@"defaultCost", @"default_cost"]);
-        }
-        NSString *backgroundHex = s7tv_JSONStringForKeys(reward,
-            @[@"backgroundColor", @"background_color"]);
-        if (!backgroundHex.length) {
-            backgroundHex = s7tv_JSONStringForKeys(reward,
-                @[@"defaultBackgroundColor", @"default_background_color"]);
-        }
-        info.accentColor = s7tv_colorFromHexString(backgroundHex);
-        // Pour les récompenses payées en points, Twitch PC affiche l'icône
-        // de la monnaie de la chaîne devant le coût. L'image automatique
-        // (highlight/subsonly) appartient au picker et ne doit pas apparaître
-        // dans la ligne de chat. Les Power-ups Bits conservent leur image.
-        NSURL *imageURL = usesBits
-            ? s7tv_channelPointImageURL(reward)
-            : resolvedCurrencyImageURL;
-        if (imageURL) info.imageURL = imageURL;
-        // Ces msg-id accompagnent toujours le texte saisi par l'utilisateur.
-        info.isUserInputRequired = info.titleLocalizationKey.length > 0;
-        nextCatalog[type] = info;
-    }
-
-    if (!nextCatalog.count) return;
-    @synchronized (catalog) {
-        [catalog setDictionary:nextCatalog];
-        s7tv_automaticRewardCatalogChannelID = [resolvedChannelID copy] ?: @"";
-        s7tv_automaticRewardCurrencyImageURL = [resolvedCurrencyImageURL copy];
-    }
-    if (resolvedCurrencyImageURL) {
-        s7tv_preloadChannelPointCurrencyImage(resolvedCurrencyImageURL, refresh);
-        BOOL payloadMatchesCurrentChannel = !payloadChannelID.length ||
-            !currentChannelID.length ||
-            [payloadChannelID isEqualToString:currentChannelID];
-        if (payloadMatchesCurrentChannel) {
+        BOOL candidateMatchesCurrentChannel = !currentChannelID.length ||
+            (resolvedChannelID.length &&
+             [resolvedChannelID isEqualToString:currentChannelID]);
+        if (resolvedCurrencyImageURL && candidateMatchesCurrentChannel) {
+            s7tv_preloadChannelPointCurrencyImage(resolvedCurrencyImageURL, refresh);
             [[SevenTVManager sharedManager].chatMessageStore
                 updateChannelPointCurrencyImageURL:resolvedCurrencyImageURL
                 completion:refresh];
         }
     }
+}
+
+void s7tv_activateChannelPointMetadataForChannelID(
+    NSString *channelID, dispatch_block_t _Nullable refresh) {
+    if (!channelID.length) return;
+    NSMutableDictionary *catalogs = s7tv_automaticRewardCatalogsByChannel();
+    NSURL *currencyImageURL = nil;
+    @synchronized (catalogs) {
+        NSString *channelKey = s7tv_rewardChannelKey(channelID);
+        NSMutableDictionary *images = s7tv_automaticRewardCurrencyImagesByChannel();
+        // Une réponse GQL peut précéder le premier broadcaster ID de quelques
+        // millisecondes. Elle est alors rangée temporairement sous "unknown";
+        // lier cette entrée une fois au premier ID connu évite de la perdre,
+        // puis la supprimer empêche toute fuite d'icône vers la chaîne suivante.
+        if (!catalogs[channelKey] && catalogs[kS7TVUnknownRewardChannelKey]) {
+            catalogs[channelKey] = catalogs[kS7TVUnknownRewardChannelKey];
+        }
+        if (!images[channelKey] && images[kS7TVUnknownRewardChannelKey]) {
+            images[channelKey] = images[kS7TVUnknownRewardChannelKey];
+        }
+        [catalogs removeObjectForKey:kS7TVUnknownRewardChannelKey];
+        [images removeObjectForKey:kS7TVUnknownRewardChannelKey];
+        currencyImageURL = [images[channelKey] copy];
+    }
+    if (!currencyImageURL) return;
+    s7tv_preloadChannelPointCurrencyImage(currencyImageURL, refresh);
+    [[SevenTVManager sharedManager].chatMessageStore
+        updateChannelPointCurrencyImageURL:currencyImageURL completion:refresh];
 }
 
 static NSDate *s7tv_channelPointTimestamp(NSString *rawTimestamp) {
@@ -1071,7 +1116,9 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromRedemption(
     info.prompt = s7tv_JSONStringForKeys(reward, @[@"prompt"]);
     info.pricingType = s7tv_JSONStringForKeys(reward, @[@"pricing_type", @"pricingType"]);
     info.cost = s7tv_JSONIntegerForKeys(reward, @[@"cost"]);
-    if (info.cost <= 0 && [info.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame) {
+    BOOL usesBits = info.pricingType.length > 0 &&
+        [info.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame;
+    if (info.cost <= 0 && usesBits) {
         info.cost = s7tv_JSONIntegerForKeys(reward, @[@"bits_cost", @"bitsCost"]);
     }
     info.isUserInputRequired = s7tv_JSONBoolForKeys(reward,
@@ -1084,7 +1131,7 @@ static S7TVChatMessage * _Nullable s7tv_channelPointMessageFromRedemption(
     // Même visuel que les récompenses automatiques dans le chat Twitch PC :
     // l'icône de la monnaie de la chaîne, jamais l'illustration du bouton de
     // récompense personnalisée affichée dans le picker.
-    NSURL *currencyImageURL = s7tv_currentChannelPointCurrencyImageURL();
+    NSURL *currencyImageURL = s7tv_activeChannelPointCurrencyImageURL();
     if (currencyImageURL) info.imageURL = currencyImageURL;
 
     NSString *rawTimestamp = s7tv_JSONStringForKeys(redemption,
@@ -1339,6 +1386,14 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
     return self;
 }
 
+- (void)applyModerationState:(S7TVChatMessageState)state
+              moderationKind:(S7TVChatModerationKind)moderationKind
+             durationSeconds:(NSInteger)durationSeconds {
+    self.state = state;
+    self.moderationKind = moderationKind;
+    self.moderationDurationSeconds = MAX(0, durationSeconds);
+}
+
 @end
 
 
@@ -1498,9 +1553,9 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
         if (msg) {
             // Le contenu original reste intact : seul le mode d'affichage
             // change, conformément au comportement Phase 5.
-            msg.state = S7TVChatMessageStateDeletedCollapsed;
-            msg.moderationKind = S7TVChatModerationKindMessageDeleted;
-            msg.moderationDurationSeconds = 0;
+            [msg applyModerationState:S7TVChatMessageStateDeletedCollapsed
+                       moderationKind:S7TVChatModerationKindMessageDeleted
+                      durationSeconds:0];
         }
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
@@ -1530,9 +1585,9 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
         NSSet<NSString *> *ids = self.messageIDsByUserID[authorUserID];
         for (NSString *msgID in ids) {
             S7TVChatMessage *msg = self.messagesByID[msgID];
-            msg.state = S7TVChatMessageStateDeletedCollapsed;
-            msg.moderationKind = moderationKind;
-            msg.moderationDurationSeconds = MAX(0, durationSeconds);
+            [msg applyModerationState:S7TVChatMessageStateDeletedCollapsed
+                       moderationKind:moderationKind
+                      durationSeconds:durationSeconds];
         }
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
@@ -1548,17 +1603,56 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
         return;
     }
-    dispatch_barrier_async(self.storeQueue, ^{
-        S7TVChatMessage *msg = self.messagesByID[messageID];
-        if (msg) {
-            if (msg.state == S7TVChatMessageStateDeletedCollapsed) {
-                msg.state = S7TVChatMessageStateDeletedExpanded;
-            } else if (msg.state == S7TVChatMessageStateDeletedExpanded) {
-                msg.state = S7TVChatMessageStateDeletedCollapsed;
-            }
-            // .normal : pas de toggle, rien à révéler.
-        }
+    S7TVChatMessage *message = [self messageWithID:messageID];
+    if (!message) {
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        return;
+    }
+    [self toggleExpandedForMessage:message completion:^(__unused S7TVChatMessage *updatedMessage) {
+        if (completion) completion();
+    }];
+}
+
+- (void)toggleExpandedForMessage:(S7TVChatMessage *)message
+                      completion:(void (^)(S7TVChatMessage *updatedMessage))completion {
+    if (!message.messageID.length) {
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(message); });
+        }
+        return;
+    }
+    dispatch_barrier_async(self.storeQueue, ^{
+        // Le fallback est volontaire : pendant le gel du transcript, la vue
+        // retient le modèle visible après sa purge FIFO. Son ID n'est alors
+        // plus indexé dans le store, mais le contenu doit rester interactif.
+        S7TVChatMessage *canonical = self.messagesByID[message.messageID];
+        BOOL displayedIsDeleted = message.state == S7TVChatMessageStateDeletedCollapsed ||
+                                  message.state == S7TVChatMessageStateDeletedExpanded;
+        S7TVChatMessage *stateSource = displayedIsDeleted ? message : canonical;
+        S7TVChatMessageState nextState = stateSource.state;
+        if (stateSource.state == S7TVChatMessageStateDeletedCollapsed) {
+            nextState = S7TVChatMessageStateDeletedExpanded;
+        } else if (stateSource.state == S7TVChatMessageStateDeletedExpanded) {
+            nextState = S7TVChatMessageStateDeletedCollapsed;
+        }
+        // Calculer une seule transition, puis la recopier sur l'instance
+        // canonique ET celle réellement affichée. Les basculer séparément
+        // ferait un double-toggle lorsqu'elles désignent le même objet.
+        if (stateSource && nextState != S7TVChatMessageStateNormal) {
+            [canonical applyModerationState:nextState
+                             moderationKind:stateSource.moderationKind
+                            durationSeconds:stateSource.moderationDurationSeconds];
+            if (message != canonical) {
+                [message applyModerationState:nextState
+                               moderationKind:stateSource.moderationKind
+                              durationSeconds:stateSource.moderationDurationSeconds];
+            }
+        }
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(message);
+            });
+        }
     });
 }
 
@@ -1571,9 +1665,9 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
         for (S7TVChatMessage *msg in self.orderedMessages) {
             if (msg.type == S7TVChatMessageTypeHistoryWelcome ||
                 msg.type == S7TVChatMessageTypeHistoryDivider) continue;
-            msg.state = S7TVChatMessageStateDeletedCollapsed;
-            msg.moderationKind = S7TVChatModerationKindChatCleared;
-            msg.moderationDurationSeconds = 0;
+            [msg applyModerationState:S7TVChatMessageStateDeletedCollapsed
+                       moderationKind:S7TVChatModerationKindChatCleared
+                      durationSeconds:0];
         }
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
@@ -1678,7 +1772,9 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
         for (S7TVChatMessage *message in self.orderedMessages) {
             S7TVChannelPointRewardInfo *info = message.channelPointRewardInfo;
             if (message.type != S7TVChatMessageTypeChannelPointRedemption || !info) continue;
-            if ([info.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame) continue;
+            BOOL usesBits = info.pricingType.length > 0 &&
+                [info.pricingType caseInsensitiveCompare:@"BITS"] == NSOrderedSame;
+            if (usesBits) continue;
             info.imageURL = imageURL;
         }
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);

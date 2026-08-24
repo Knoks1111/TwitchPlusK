@@ -41,7 +41,13 @@ static NSString *s_pendingNativeChatChannelName = nil;
 static CFTimeInterval s_pendingNativeChatChannelTimestamp = 0;
 static __weak UIView *s_pendingNativeChatJoinSourceView = nil;
 static NSMutableDictionary<NSString *, NSNumber *> *s_recentIRCChannelEvidence = nil;
+static NSHashTable<UIView *> *s_knownNativeChatViews = nil;
+static NSHashTable<UIView *> *s_suspendedNativeChatViews = nil;
+static BOOL s_nativeChatRecoveryMonitorScheduled = NO;
+static CFTimeInterval s_nativeChatRecoveryFastUntil = 0;
 static BOOL s_chatReloadScheduled = NO;
+
+static void s7tv_beginNativeChatRecoveryMonitoring(void);
 
 static BOOL s7tv_isNativeChatTranscriptView(UIView *view) {
     return [NSStringFromClass(view.class)
@@ -54,6 +60,16 @@ static NSString *s7tv_normalizedChatChannelName(NSString *channel) {
         lowercaseString];
     if ([normalized hasPrefix:@"#"]) normalized = [normalized substringFromIndex:1];
     return normalized;
+}
+
+static void s7tv_registerKnownNativeChatView(UIView *view) {
+    if (!view) return;
+    if (!s_knownNativeChatViews) {
+        s_knownNativeChatViews = [NSHashTable weakObjectsHashTable];
+    }
+    BOOL isNewView = ![s_knownNativeChatViews containsObject:view];
+    [s_knownNativeChatViews addObject:view];
+    if (isNewView) s7tv_beginNativeChatRecoveryMonitoring();
 }
 
 static void s7tv_bindNativeChatViewToChannel(UIView *view, NSString *channel) {
@@ -81,8 +97,19 @@ static void s7tv_confirmChannelBoundToNativeChatView(UIView *view) {
 
 static void s7tv_suspendCustomChatForNativeView(UIView *view) {
     if (!view) return;
+    s7tv_registerKnownNativeChatView(view);
+    BOOL wasAlreadySuspended =
+        [objc_getAssociatedObject(view, &kS7TVNativeChatTransitionSuspended)
+            boolValue];
     objc_setAssociatedObject(view, &kS7TVNativeChatTransitionSuspended,
                              @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!wasAlreadySuspended) {
+        if (!s_suspendedNativeChatViews) {
+            s_suspendedNativeChatViews = [NSHashTable weakObjectsHashTable];
+        }
+        [s_suspendedNativeChatViews addObject:view];
+        s7tv_beginNativeChatRecoveryMonitoring();
+    }
     SevenTVChatCustomView *customView =
         objc_getAssociatedObject(view, &kS7TVChatCustomInstalledView);
     [customView resetTransientTranscriptState];
@@ -103,6 +130,7 @@ static void s7tv_resumeCustomChatForNativeView(UIView *view) {
     if (!view) return;
     objc_setAssociatedObject(view, &kS7TVNativeChatTransitionSuspended,
                              @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [s_suspendedNativeChatViews removeObject:view];
 }
 
 static void s7tv_activateChatChannelForVisibleNativeView(NSString *channel, BOOL forceReset) {
@@ -505,10 +533,45 @@ static UIView *s7tv_presentationViewForNativeChatView(UIView *view) {
     return view;
 }
 
+static UIViewController *s7tv_nearestViewControllerForView(UIView *view) {
+    for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:UIViewController.class]) {
+            return (UIViewController *)responder;
+        }
+    }
+    return nil;
+}
+
+static UIView *s7tv_nearestCommonAncestor(UIView *firstView, UIView *secondView) {
+    if (!firstView || !secondView) return nil;
+    NSHashTable<UIView *> *firstAncestors = [NSHashTable weakObjectsHashTable];
+    for (UIView *ancestor = firstView; ancestor; ancestor = ancestor.superview) {
+        [firstAncestors addObject:ancestor];
+    }
+    for (UIView *ancestor = secondView; ancestor; ancestor = ancestor.superview) {
+        if ([firstAncestors containsObject:ancestor]) return ancestor;
+    }
+    return nil;
+}
+
 static BOOL s7tv_hitViewBelongsToPresentationView(UIView *hitView,
                                                    UIView *presentationView) {
-    return hitView == presentationView ||
-        [hitView isDescendantOfView:presentationView];
+    if (!hitView || !presentationView) return NO;
+    if (hitView == presentationView ||
+        [hitView isDescendantOfView:presentationView]) return YES;
+
+    // Le transcript peut avoir un overlay Twitch frère (gestes, modération,
+    // accessibilité) qui gagne le hit-test. Il reste néanmoins autoritaire si
+    // cet overlay appartient au même UIViewController. Une ancienne page A
+    // retenue sous B possède, elle, un controller différent et reste rejetée.
+    UIViewController *presentationController =
+        s7tv_nearestViewControllerForView(presentationView);
+    UIViewController *hitController = s7tv_nearestViewControllerForView(hitView);
+    if (!presentationController || presentationController != hitController) return NO;
+    UIView *commonAncestor =
+        s7tv_nearestCommonAncestor(hitView, presentationView);
+    return commonAncestor && commonAncestor != presentationController.viewIfLoaded &&
+        ![commonAncestor isKindOfClass:UIWindow.class];
 }
 
 // Retourne l'aire réellement présentée dans la fenêtre, ou -1 si la vue est
@@ -558,20 +621,28 @@ static CGFloat s7tv_visiblePresentationAreaForNativeChatView(UIView *view) {
         CGRectGetMidX(visibleRect),
         CGRectGetMinX(visibleRect) + CGRectGetWidth(visibleRect) * 0.75
     };
-    CGFloat sampleY = CGRectGetMidY(visibleRect);
+    CGFloat sampleYs[] = {
+        CGRectGetMinY(visibleRect) + CGRectGetHeight(visibleRect) * 0.25,
+        CGRectGetMidY(visibleRect),
+        CGRectGetMinY(visibleRect) + CGRectGetHeight(visibleRect) * 0.75
+    };
     BOOL ownsVisiblePoint = NO;
-    for (NSUInteger index = 0; index < 3; index++) {
-        UIView *hitView = [window hitTest:CGPointMake(sampleXs[index], sampleY)
-                                withEvent:nil];
-        if (s7tv_hitViewBelongsToPresentationView(hitView, presentationView)) {
-            ownsVisiblePoint = YES;
-            break;
+    for (NSUInteger yIndex = 0; yIndex < 3 && !ownsVisiblePoint; yIndex++) {
+        for (NSUInteger xIndex = 0; xIndex < 3; xIndex++) {
+            UIView *hitView =
+                [window hitTest:CGPointMake(sampleXs[xIndex], sampleYs[yIndex])
+                      withEvent:nil];
+            if (s7tv_hitViewBelongsToPresentationView(hitView, presentationView)) {
+                ownsVisiblePoint = YES;
+                break;
+            }
         }
     }
     return ownsVisiblePoint ? visibleArea : -1.0;
 }
 
 static void s7tv_routeActuallyVisibleNativeChatView(UIView *view) {
+    BOOL wasSuspended = s7tv_nativeChatViewIsTransitionSuspended(view);
     NSString *boundChannel = s7tv_channelBoundToNativeChatView(view);
     BOOL pendingJoinIsFresh = s_pendingNativeChatChannelName.length &&
         CACurrentMediaTime() - s_pendingNativeChatChannelTimestamp <= 10.0;
@@ -625,9 +696,17 @@ static void s7tv_routeActuallyVisibleNativeChatView(UIView *view) {
         [retainedCustomView resetTransientTranscriptState];
     }
     s7tv_applyChatCustomToggle();
+    if (wasSuspended) {
+        [[SevenTVManager sharedManager]
+            log:@"✅ transcript retenu réactivé pour %@ depuis sa visibilité réelle",
+                boundChannel];
+    }
 }
 
 void s7tv_handleNativeChatViewVisibility(UIView *view) {
+    if (s7tv_isNativeChatTranscriptView(view)) {
+        s7tv_registerKnownNativeChatView(view);
+    }
     if (s7tv_visiblePresentationAreaForNativeChatView(view) < 0.0) return;
 
     NSString *boundChannel = s7tv_channelBoundToNativeChatView(view);
@@ -645,6 +724,7 @@ void s7tv_handleNativeChatViewVisibility(UIView *view) {
 void s7tv_handleNativeChatViewLifecycle(UIView *view) {
     if (!s7tv_isNativeChatTranscriptView(view) || !view.window ||
         ![view.superview isKindOfClass:UIStackView.class]) return;
+    s7tv_registerKnownNativeChatView(view);
 
     // didMoveToWindow arrive souvent avant le premier layout/hit-test. Un
     // essai immédiat couvre les vues déjà posées ; celui du runloop suivant
@@ -694,6 +774,76 @@ void s7tv_reconcileVisibleNativeChatViewInRootView(UIView *rootView) {
     };
     if (NSThread.isMainThread) reconcile();
     else dispatch_async(dispatch_get_main_queue(), reconcile);
+}
+
+static void s7tv_runNativeChatRecoveryMonitor(void) {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            s7tv_runNativeChatRecoveryMonitor();
+        });
+        return;
+    }
+    s_nativeChatRecoveryMonitorScheduled = NO;
+
+    UIView *activeView = s_activeNativeChatView;
+    BOOL transitionNeedsGlobalScan = s_pendingNativeChatChannelName.length ||
+        (activeView && s7tv_nativeChatViewIsTransitionSuspended(activeView)) ||
+        (activeView && !s7tv_nativeChatViewChannelIsConfirmed(activeView));
+    if (transitionNeedsGlobalScan) {
+        s7tv_reconcileVisibleNativeChatViewInRootView(nil);
+    }
+
+    // Une vue retenue, suspendue ou non, peut revenir sans aucun callback et
+    // conserver le store de l'autre chaîne. La table est faible : elle ne
+    // prolonge pas les controllers Twitch et évite un parcours global stable.
+    UIView *bestKnownView = nil;
+    CGFloat bestKnownArea = -1.0;
+    for (UIView *knownView in [s_knownNativeChatViews.allObjects copy]) {
+        CGFloat area = s7tv_visiblePresentationAreaForNativeChatView(knownView);
+        if (area > bestKnownArea) {
+            bestKnownArea = area;
+            bestKnownView = knownView;
+        }
+    }
+    if (bestKnownView) s7tv_handleNativeChatViewVisibility(bestKnownView);
+
+    activeView = s_activeNativeChatView;
+    transitionNeedsGlobalScan = s_pendingNativeChatChannelName.length ||
+        (activeView && s7tv_nativeChatViewIsTransitionSuspended(activeView)) ||
+        (activeView && !s7tv_nativeChatViewChannelIsConfirmed(activeView));
+    BOOL hasKnownRetainedViews = s_knownNativeChatViews.allObjects.count > 0;
+    if (!transitionNeedsGlobalScan && !hasKnownRetainedViews) return;
+
+    CFTimeInterval now = CACurrentMediaTime();
+    NSTimeInterval delay = now < s_nativeChatRecoveryFastUntil
+        ? 0.12 : (transitionNeedsGlobalScan ? 0.5 : 1.0);
+    if (UIApplication.sharedApplication.applicationState !=
+        UIApplicationStateActive) {
+        delay = 2.0;
+    }
+    s_nativeChatRecoveryMonitorScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                   (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        s7tv_runNativeChatRecoveryMonitor();
+    });
+}
+
+static void s7tv_beginNativeChatRecoveryMonitoring(void) {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            s7tv_beginNativeChatRecoveryMonitoring();
+        });
+        return;
+    }
+    s_nativeChatRecoveryFastUntil = CACurrentMediaTime() + 3.0;
+    if (s_nativeChatRecoveryMonitorScheduled) return;
+    s_nativeChatRecoveryMonitorScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                   (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        s7tv_runNativeChatRecoveryMonitor();
+    });
 }
 
 void s7tv_setupChatCustomIntegration(void) {

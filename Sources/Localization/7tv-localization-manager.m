@@ -111,8 +111,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"orientation_left":                @[@"Gauche", @"Left"],
         @"orientation_right":               @[@"Droite", @"Right"],
         @"orientation_both":                @[@"Les deux", @"Both"],
-        @"desc_orientation_lock_settings":  @[@"Le bouton remplace Partager dans le lecteur. Le verrouillage automatique se déclenche quand l’écran passe en paysage du côté choisi. Il est suspendu lorsque le bouton est désactivé.",
-                                               @"The button replaces Share in the player. Automatic locking triggers when the screen rotates to the selected landscape side. It is suspended while the button is disabled."],
+        @"desc_orientation_lock_settings":  @[@"Une fois activé, le bouton apparaît sur le lecteur. L’auto-lock fonctionne à gauche, à droite ou des deux côtés.",
+                                               @"Once enabled, the button appears on the player. Auto-lock works on the left, right, or both sides."],
 
         // ── Adblock (catégorie réservée, vide pour l'instant) ────────────
         @"adblock_coming_soon":             @[@"Bientôt disponible.", @"Coming soon."],

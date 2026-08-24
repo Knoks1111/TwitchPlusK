@@ -621,7 +621,7 @@ static void s7tv_setOrientationLockState(BOOL locked,
 BOOL s7tv_orientationLockButtonEnabled(void) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     return [defaults objectForKey:kS7TVOrientationLockButtonEnabled] != nil
-        ? [defaults boolForKey:kS7TVOrientationLockButtonEnabled] : YES;
+        ? [defaults boolForKey:kS7TVOrientationLockButtonEnabled] : NO;
 }
 
 S7TVAutoOrientationLockMode s7tv_autoOrientationLockMode(void) {
@@ -677,11 +677,14 @@ static UIInterfaceOrientation s7tv_interfaceOrientationForDeviceOrientation(
 static BOOL s7tv_autoModeAcceptsInterfaceOrientation(
     S7TVAutoOrientationLockMode mode, UIInterfaceOrientation orientation) {
     if (mode == S7TVAutoOrientationLockModeBothLandscapes) return YES;
+    // Les orientations UIDevice et UIInterface sont opposées. Les libellés
+    // Gauche/Droite décrivent le geste physique de l'utilisateur : le mode
+    // Gauche doit donc accepter LandscapeRight côté interface, et inversement.
     if (orientation == UIInterfaceOrientationLandscapeLeft) {
-        return mode == S7TVAutoOrientationLockModeLandscapeLeft;
+        return mode == S7TVAutoOrientationLockModeLandscapeRight;
     }
     if (orientation == UIInterfaceOrientationLandscapeRight) {
-        return mode == S7TVAutoOrientationLockModeLandscapeRight;
+        return mode == S7TVAutoOrientationLockModeLandscapeLeft;
     }
     return NO;
 }

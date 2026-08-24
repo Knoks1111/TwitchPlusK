@@ -52,10 +52,9 @@ typedef NS_ENUM(NSInteger, S7TVAutoOrientationLockMode) {
     S7TVAutoOrientationLockModeBothLandscapes,
 };
 
-// Préférences persistées du verrou. Le bouton est activé par défaut pour
-// conserver le comportement historique ; l'auto-lock est désactivé par
-// défaut. Désactiver le bouton restaure le bouton Partager natif, libère un
-// verrou éventuel et suspend totalement la détection automatique.
+// Préférences persistées du verrou. Le bouton et l'auto-lock sont désactivés
+// par défaut. Désactiver le bouton restaure le bouton Partager natif, libère
+// un verrou éventuel et suspend totalement la détection automatique.
 BOOL s7tv_orientationLockButtonEnabled(void);
 void s7tv_setOrientationLockButtonEnabled(BOOL enabled);
 S7TVAutoOrientationLockMode s7tv_autoOrientationLockMode(void);

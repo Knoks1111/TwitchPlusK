@@ -8,6 +8,9 @@
 #import <UIKit/UIKit.h>
 
 FOUNDATION_EXPORT NSString *const S7TVFavoritesDidChangeNotification;
+// Publiée quand un couple OAuth Twitch + Client-ID valide est disponible.
+// Les consommateurs Helix qui ont tenté trop tôt peuvent alors se relancer.
+FOUNDATION_EXPORT NSString *const S7TVTwitchCredentialsDidUpdateNotification;
 
 @class S7TVChatMessageStore;
 

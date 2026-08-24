@@ -277,6 +277,7 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 
 - (void)_s7tv_reloadCatalogSnapshotReloadCollection:(BOOL)reloadCollection;
 - (void)_s7tv_emoteCatalogDidUpdate:(NSNotification *)notification;
+- (void)_s7tv_twitchCredentialsDidUpdate:(NSNotification *)notification;
 - (void)_s7tv_deviceOrientationDidChange:(NSNotification *)notification;
 - (void)_s7tv_applyCatalogUpdateNow;
 - (void)_s7tv_relayoutPickerForSize:(CGSize)size;
@@ -325,6 +326,10 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(_s7tv_emoteCatalogDidUpdate:)
                                                       name:S7TVEmoteCatalogDidUpdateNotification
+                                                    object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(_s7tv_twitchCredentialsDidUpdate:)
+                                                      name:S7TVTwitchCredentialsDidUpdateNotification
                                                     object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(_s7tv_deviceOrientationDidChange:)
@@ -581,6 +586,16 @@ static const CGFloat kS7TVPickerGridDefaultH =
         [self _s7tv_resetChannelButtonToPlaceholder];
         [self _s7tv_loadChannelAvatarForChannelID:channelID];
     }
+}
+
+// Si le picker s'est ouvert avant que Twitch ait émis sa première requête GQL,
+// le premier appel Helix n'avait pas encore de credentials. Relancer dès leur
+// capture évite d'exiger une fermeture/réouverture manuelle du picker.
+- (void)_s7tv_twitchCredentialsDidUpdate:(__unused NSNotification *)notification {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!self.pickerSubChoiceChannelBtn) return;
+        [self _s7tv_refreshChannelAvatarIfNeeded];
+    });
 }
 
 - (void)_s7tv_deviceOrientationDidChange:(__unused NSNotification *)notification {

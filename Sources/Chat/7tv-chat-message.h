@@ -43,7 +43,17 @@ FOUNDATION_EXPORT S7TVChatMessage * _Nullable s7tv_parseChatMessage(
     NSString *ircLine, NSArray<id<S7TVEmoteProvider>> *providers);
 
 FOUNDATION_EXPORT void s7tv_ingestAutomaticRewardsFromGQLData(
-    NSData *data, dispatch_block_t _Nullable refresh);
+    NSData *data, NSString * _Nullable requestChannelID,
+    BOOL requestChannelIDAmbiguous,
+    dispatch_block_t _Nullable refresh);
+// Réapplique l'icône de monnaie déjà capturée pour la chaîne qui vient de
+// devenir active. La réponse GQL peut précéder de peu le broadcaster ID.
+FOUNDATION_EXPORT void s7tv_activateChannelPointMetadataForChannelID(
+    NSString *channelID, dispatch_block_t _Nullable refresh);
+// Icône de monnaie Channel Points de la chaîne actuellement active. Le
+// renderer la relit à chaque construction afin que les messages déjà retenus
+// profitent aussi d'une métadonnée GQL arrivée après leur création.
+FOUNDATION_EXPORT NSURL * _Nullable s7tv_activeChannelPointCurrencyImageURL(void);
 // Primitives de conversion PubSub/IRC utilisées par le gestionnaire de
 // session pour fusionner une récompense et son éventuel PRIVMSG compagnon.
 FOUNDATION_EXPORT NSArray<S7TVChatMessage *> *
@@ -311,6 +321,12 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 @property (nonatomic, assign) S7TVChatModerationKind moderationKind;
 @property (nonatomic, assign) NSInteger moderationDurationSeconds;
 
+// Source de vérité unique pour synchroniser l'état d'une même ligne lorsque
+// le FIFO principal et un transcript figé en retiennent deux instances.
+- (void)applyModerationState:(S7TVChatMessageState)state
+              moderationKind:(S7TVChatModerationKind)moderationKind
+             durationSeconds:(NSInteger)durationSeconds;
+
 // YES si le message vient d'un /me (CTCP ACTION en IRC, voir
 // s7tv_parsePRIVMSG dans 7tv-chat-message.m qui déballe déjà le wrapper
 // \x01ACTION ... \x01 avant de remplir rawText/tokens). Comportement
@@ -435,6 +451,13 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 
 - (void)toggleExpandedForMessageID:(NSString *)messageID
                          completion:(void (^ _Nullable)(void))completion;
+
+// Variante robuste pour une cellule dont le modèle est encore affiché mais
+// a déjà quitté le FIFO du store (transcript principal figé à 300 messages).
+// La mutation reste sérialisée sur storeQueue et renvoie le modèle réellement
+// basculé sur le main thread.
+- (void)toggleExpandedForMessage:(S7TVChatMessage *)message
+                      completion:(void (^ _Nullable)(S7TVChatMessage *updatedMessage))completion;
 
 // CLEARCHAT global (Phase 5) : marque tous les messages actuellement en
 // mémoire comme .deletedCollapsed d'un coup.

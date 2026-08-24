@@ -1150,6 +1150,11 @@ static const char kS7TVRowKeyTag = 0;
     [self _populateFakeChatStore:self.fakeChatStore];
 
     SevenTVChatCustomView *chatView = [[SevenTVChatCustomView alloc] initWithStore:self.fakeChatStore];
+    chatView.freezesTranscriptWhenScrolled = NO;
+    // Le panneau est créé avec le picker mais son aperçu flotte hors de sa
+    // hiérarchie. Tant qu'il est caché, il ne doit conserver ni observers ni
+    // décodages animés. Le controller le réactive juste avant de l'afficher.
+    chatView.renderingSuspended = YES;
     // Preview interactive : le même tap-to-reveal que dans le vrai chat est
     // testable directement, et la table peut défiler si son contenu dépasse
     // la hauteur disponible. Le conteneur de fenêtre bloque les touches vers
@@ -1338,6 +1343,9 @@ static const char kS7TVRowKeyTag = 0;
 // sert désormais à rafraîchir le faux chat plutôt qu'à charger des images
 // de preview séparées, qui n'existent plus.
 - (void)loadRealPreviewAssetsIfNeeded {
+    [self.fakeChatView resetTransientTranscriptState];
+    [self.fakeChatStore removeAllMessages];
+    [self _populateFakeChatStore:self.fakeChatStore];
     [self.fakeChatView reloadMessages];
 }
 

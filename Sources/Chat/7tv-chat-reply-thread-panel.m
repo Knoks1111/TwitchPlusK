@@ -231,6 +231,23 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     return result;
 }
 
+static NSArray<NSString *> *s7tv_messageIDs(NSArray<S7TVChatMessage *> *messages) {
+    NSMutableArray<NSString *> *identifiers = [NSMutableArray arrayWithCapacity:messages.count];
+    for (S7TVChatMessage *message in messages) {
+        if (message.messageID.length) [identifiers addObject:message.messageID];
+    }
+    return identifiers;
+}
+
+static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
+                                      NSArray<S7TVChatMessage *> *right) {
+    if (left.count != right.count) return NO;
+    for (NSUInteger index = 0; index < left.count; index++) {
+        if (left[index] != right[index]) return NO;
+    }
+    return YES;
+}
+
 @interface S7TVReplyThreadPanel ()
 @property (nonatomic, weak) UIView *containerView;
 // Contraintes externes du panneau complet. Comme pour la barre autonome,
@@ -261,6 +278,22 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 @property (nonatomic, strong) SevenTVChatCustomView *repliesChatView;
 @property (nonatomic, strong) S7TVChatMessageStore *repliesStore;
 @property (nonatomic, copy) NSString *currentThreadRootID;
+// Identifie le dernier contexte réellement demandé. Chaque show/hide/refresh
+// invalide les completions plus anciennes afin qu'un fil A ne puisse jamais
+// redimensionner ou réafficher le panneau après le passage au fil B.
+@property (nonatomic, assign) NSUInteger contentRequestGeneration;
+@property (nonatomic, copy) NSString *loadedThreadRootID;
+@property (nonatomic, copy) NSString *lastRequestedRootMessageID;
+@property (nonatomic, copy) NSArray<NSString *> *lastRequestedReplyMessageIDs;
+@property (nonatomic, strong) S7TVChatMessage *lastRequestedRootMessage;
+@property (nonatomic, copy) NSArray<S7TVChatMessage *> *lastRequestedReplyMessages;
+// Le conteneur reste volontairement caché pendant son premier snapshot. Si
+// une modération, une image ou une réponse arrive dans cette fenêtre, on fait
+// un unique passage de rattrapage avant l'affichage au lieu de perdre le refresh.
+@property (nonatomic, assign) BOOL contentRefreshPendingWhileOpening;
+// Tous les modèles du fil encore visibles au moment du tap restent
+// disponibles, même s'ils ont déjà quitté le FIFO principal.
+@property (nonatomic, copy) NSArray<S7TVChatMessage *> *openingTranscriptMessages;
 // Le message sur lequel l'utilisateur a tapé pour OUVRIR ce fil — gardé en
 // mémoire mais N'EST PLUS auto-sélectionné comme cible (voir demande :
 // aucune sélection automatique à l'ouverture, l'utilisateur choisit
@@ -294,6 +327,12 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 @property (nonatomic, strong) NSLayoutConstraint *replyTargetBarHeightConstraint;
 @property (nonatomic, copy) NSArray<NSLayoutConstraint *> *standaloneReplyBarConstraints;
 - (void)s7tv_clearReplyTargetRemovingMention;
+- (void)showForThreadRootID:(NSString *)threadRootID
+            tappedMessageID:(NSString *)tappedMessageID
+     retainedThreadMessages:(NSArray<S7TVChatMessage *> *)retainedThreadMessages;
+- (void)s7tv_finishOpeningThreadRootID:(NSString *)threadRootID
+                                window:(UIWindow *)window
+                      allowsCatchUpPass:(BOOL)allowsCatchUpPass;
 @end
 
 @implementation S7TVReplyThreadPanel
@@ -308,7 +347,18 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 - (void)chatCustomView:(SevenTVChatCustomView *)view
     didTapReplyBannerForThreadRootID:(NSString *)threadRootID
                        tappedMessageID:(NSString *)tappedMessageID {
-    [self showForThreadRootID:threadRootID tappedMessageID:tappedMessageID];
+    [self showForThreadRootID:threadRootID
+              tappedMessageID:tappedMessageID
+       retainedThreadMessages:[view displayedMessagesForThreadRootID:threadRootID]];
+}
+
+- (void)showForThreadRootID:(NSString *)threadRootID
+            tappedMessageID:(NSString *)tappedMessageID {
+    NSArray<S7TVChatMessage *> *messages = [[SevenTVManager sharedManager].chatMessageStore
+        messagesForThreadRootID:threadRootID];
+    [self showForThreadRootID:threadRootID
+              tappedMessageID:tappedMessageID
+       retainedThreadMessages:messages ?: @[]];
 }
 
 // Construit la barre de réponse une seule fois. Cette même instance est
@@ -495,6 +545,9 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     self.rootStore = [S7TVChatMessageStore new];
     self.rootChatView = [[SevenTVChatCustomView alloc] initWithStore:self.rootStore];
     self.rootChatView.showsReplyBanners = NO; // voir commentaire showsReplyBanners dans 7tv-chat-custom-view.h
+    self.rootChatView.freezesTranscriptWhenScrolled = NO;
+    self.rootChatView.automaticallyScrollsToBottom = NO;
+    self.rootChatView.renderingSuspended = YES;
     self.rootChatView.translatesAutoresizingMaskIntoConstraints = NO;
     // userInteractionEnabled reste YES (pas de = NO ici) : le bouton de
     // sélection de cible (showsReplyTargetButton ci-dessous) doit rester
@@ -517,6 +570,8 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     self.repliesStore = [S7TVChatMessageStore new];
     self.repliesChatView = [[SevenTVChatCustomView alloc] initWithStore:self.repliesStore];
     self.repliesChatView.showsReplyBanners = NO;
+    self.repliesChatView.freezesTranscriptWhenScrolled = NO;
+    self.repliesChatView.renderingSuspended = YES;
     // Décalage + barre grise continue à gauche pour bien distinguer chaque
     // réponse de la racine épinglée au-dessus (fond distinct, voir
     // rootChatView.backgroundColor) — demande explicite.
@@ -622,65 +677,143 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     return fallback;
 }
 
-// completion : appelé une fois que rootChatView ET repliesChatView ont
-// RÉELLEMENT appliqué leur contenu (pas juste "reloadMessages a été
-// appelé") — les deux passent par reloadMessagesWithCompletion:, dont le
-// completion ne se déclenche qu'après que le diffable data source ait fini
-// d'appliquer sa snapshot (asynchrone même sans animation, voir
-// 7tv-chat-custom-view.m). Mesurer le contenu (s7tvContentHeight) avant
-// que ce completion soit passé lit une hauteur pas encore à jour — c'était
-// la cause du clignotement à l'ouverture (panneau dimensionné sur un
-// contenu vide, corrigé seulement au refresh suivant).
-- (void)s7tv_reloadThreadMessagesWithCompletion:(void (^)(void))completion {
-    if (!self.currentThreadRootID.length) {
-        if (completion) completion();
-        return;
-    }
+// Retourne YES uniquement lorsqu'un vrai reload a été lancé. Les refreshs
+// ordinaires du chat passent force=NO : un message sans rapport avec ce fil
+// ne redémarre donc plus ses cellules, images et animations toutes les 150 ms.
+- (BOOL)s7tv_reloadThreadMessagesForce:(BOOL)force
+                            completion:(void (^)(void))completion {
+    NSString *threadRootID = [self.currentThreadRootID copy];
+    if (!threadRootID.length) return NO;
+
     S7TVChatMessageStore *mainStore = [SevenTVManager sharedManager].chatMessageStore;
-    NSArray<S7TVChatMessage *> *threadMessages =
-        [mainStore messagesForThreadRootID:self.currentThreadRootID];
-
-    // threadMessages inclut déjà la racine EN PREMIER si elle est encore en
-    // mémoire (voir -messagesForThreadRootID:) — on la retire d'ici pour la
-    // traiter séparément (épinglée), et on s'en sert aussi comme source pour
-    // reconstruire la racine si elle manque (n'importe quel message du fil
-    // porte les mêmes reply-parent-*).
-    NSMutableArray<S7TVChatMessage *> *replies = [threadMessages mutableCopy];
-    S7TVChatMessage *rootFromMainStore = [mainStore messageWithID:self.currentThreadRootID];
-    if (rootFromMainStore && replies.count && replies.firstObject == rootFromMainStore) {
-        [replies removeObjectAtIndex:0];
+    NSArray<S7TVChatMessage *> *threadMessages = [mainStore messagesForThreadRootID:threadRootID];
+    S7TVChatMessage *rootFromMainStore = [mainStore messageWithID:threadRootID];
+    NSMutableArray<S7TVChatMessage *> *newReplies = [NSMutableArray array];
+    for (S7TVChatMessage *message in threadMessages) {
+        if ([message.messageID isEqualToString:threadRootID]) {
+            if (!rootFromMainStore) rootFromMainStore = message;
+        } else if (message.messageID.length) {
+            [newReplies addObject:message];
+        }
     }
 
-    S7TVChatMessage *root =
-        [self s7tv_resolveRootMessageForThreadRootID:self.currentThreadRootID
-                                    anyMessageInThread:replies.firstObject ?: rootFromMainStore];
+    for (S7TVChatMessage *openingMessage in self.openingTranscriptMessages) {
+        if ([openingMessage.messageID isEqualToString:threadRootID]) {
+            if (!rootFromMainStore) rootFromMainStore = openingMessage;
+        } else if ([openingMessage.replyThreadRootID isEqualToString:threadRootID] &&
+                   openingMessage.messageID.length) {
+            BOOL alreadyPresent = NO;
+            for (S7TVChatMessage *message in newReplies) {
+                if ([message.messageID isEqualToString:openingMessage.messageID]) {
+                    alreadyPresent = YES;
+                    break;
+                }
+            }
+            if (!alreadyPresent) [newReplies addObject:openingMessage];
+        }
+    }
+    [newReplies sortUsingComparator:^NSComparisonResult(S7TVChatMessage *left,
+                                                         S7TVChatMessage *right) {
+        NSComparisonResult dateOrder = [left.timestamp compare:right.timestamp];
+        if (dateOrder != NSOrderedSame) return dateOrder;
+        return [left.messageID compare:right.messageID];
+    }];
 
-    [self.rootStore seedReadOnlyWithMessages:root ? @[root] : @[]];
-    [self.repliesStore seedReadOnlyWithMessages:replies];
+    BOOL preservesOpenContext = [self.loadedThreadRootID isEqualToString:threadRootID];
+    S7TVChatMessage *existingRoot = preservesOpenContext ? self.rootStore.allMessages.firstObject : nil;
+    NSArray<S7TVChatMessage *> *existingReplies = preservesOpenContext
+        ? self.repliesStore.allMessages : @[];
 
-    // Les deux reload sont indépendants (2 tables séparées) — on attend que
-    // les DEUX aient fini avant d'appeler completion, sinon on mesurerait la
-    // racine correctement mais les réponses pas encore, ou l'inverse.
-    __block BOOL rootDone = NO;
-    __block BOOL repliesDone = NO;
+    // Tant que le panneau reste ouvert, ses objets déjà visibles survivent à
+    // la purge FIFO du chat principal. On ajoute les nouvelles réponses sans
+    // retirer celles que l'utilisateur est précisément en train de lire.
+    NSMutableDictionary<NSString *, S7TVChatMessage *> *currentRepliesByID =
+        [NSMutableDictionary dictionaryWithCapacity:newReplies.count];
+    for (S7TVChatMessage *message in newReplies) {
+        if (message.messageID.length) currentRepliesByID[message.messageID] = message;
+    }
+    NSMutableArray<S7TVChatMessage *> *replies =
+        [NSMutableArray arrayWithCapacity:existingReplies.count + newReplies.count];
+    NSMutableSet<NSString *> *knownReplyIDs = [NSMutableSet set];
+    for (S7TVChatMessage *existingMessage in existingReplies) {
+        NSString *messageID = existingMessage.messageID;
+        if (!messageID.length || [knownReplyIDs containsObject:messageID]) continue;
+        // Le store principal peut reconstruire son contenu avec de nouvelles
+        // instances portant les mêmes IDs. Préférer alors l'objet courant ;
+        // conserver l'ancien uniquement s'il a réellement été purgé du FIFO.
+        [replies addObject:currentRepliesByID[messageID] ?: existingMessage];
+        [knownReplyIDs addObject:messageID];
+    }
+    for (S7TVChatMessage *message in newReplies) {
+        if (![knownReplyIDs containsObject:message.messageID]) {
+            [replies addObject:message];
+            [knownReplyIDs addObject:message.messageID];
+        }
+    }
+    [replies sortUsingComparator:^NSComparisonResult(S7TVChatMessage *left,
+                                                      S7TVChatMessage *right) {
+        NSComparisonResult dateOrder = [left.timestamp compare:right.timestamp];
+        if (dateOrder != NSOrderedSame) return dateOrder;
+        return [left.messageID compare:right.messageID];
+    }];
+
+    S7TVChatMessage *root = rootFromMainStore ?: existingRoot;
+    if (!root) {
+        S7TVChatMessage *rootMetadataCarrier = nil;
+        for (S7TVChatMessage *message in replies) {
+            if ([message.replyParentMessageID isEqualToString:threadRootID]) {
+                rootMetadataCarrier = message;
+                break;
+            }
+        }
+        root = [self s7tv_resolveRootMessageForThreadRootID:threadRootID
+                                        anyMessageInThread:rootMetadataCarrier ?: replies.firstObject];
+    }
+    NSString *rootMessageID = root.messageID ?: @"";
+    NSArray<NSString *> *replyMessageIDs = s7tv_messageIDs(replies);
+    BOOL contextChanged = ![self.loadedThreadRootID isEqualToString:threadRootID];
+    BOOL rootChanged = force || contextChanged ||
+        ![self.lastRequestedRootMessageID isEqualToString:rootMessageID] ||
+        self.lastRequestedRootMessage != root;
+    BOOL repliesChanged = force || contextChanged ||
+        ![self.lastRequestedReplyMessageIDs isEqualToArray:replyMessageIDs] ||
+        !s7tv_sameMessageInstances(self.lastRequestedReplyMessages ?: @[], replies);
+    if (!rootChanged && !repliesChanged) return NO;
+
+    NSUInteger requestToken = ++self.contentRequestGeneration;
+    self.loadedThreadRootID = threadRootID;
+    self.lastRequestedRootMessageID = rootMessageID;
+    self.lastRequestedReplyMessageIDs = replyMessageIDs;
+    self.lastRequestedRootMessage = root;
+    self.lastRequestedReplyMessages = [replies copy];
+
+    if (rootChanged) [self.rootStore seedReadOnlyWithMessages:root ? @[root] : @[]];
+    if (repliesChanged) [self.repliesStore seedReadOnlyWithMessages:replies];
+
+    __block BOOL rootDone = !rootChanged;
+    __block BOOL repliesDone = !repliesChanged;
+    __weak typeof(self) weakSelf = self;
     void (^maybeFinish)(void) = ^{
-        if (rootDone && repliesDone && completion) completion();
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || !rootDone || !repliesDone) return;
+        if (requestToken != strongSelf.contentRequestGeneration ||
+            ![strongSelf.currentThreadRootID isEqualToString:threadRootID]) return;
+        if (completion) completion();
     };
 
-    [self.rootChatView reloadMessagesWithCompletion:^{
-        rootDone = YES;
-        maybeFinish();
-    }];
-    [self.repliesChatView reloadMessagesWithCompletion:^{
-        repliesDone = YES;
-        maybeFinish();
-    }];
-}
-
-// Conservé pour refreshIfNeeded (pas besoin d'attendre la complétion là où
-// on ne redimensionne pas juste après — voir plus bas).
-- (void)s7tv_reloadThreadMessages {
-    [self s7tv_reloadThreadMessagesWithCompletion:nil];
+    if (rootChanged) {
+        [self.rootChatView reloadMessagesWithCompletion:^{
+            rootDone = YES;
+            maybeFinish();
+        }];
+    }
+    if (repliesChanged) {
+        [self.repliesChatView reloadMessagesWithCompletion:^{
+            repliesDone = YES;
+            maybeFinish();
+        }];
+    }
+    return YES;
 }
 
 // Calcule les hauteurs réelles (racine épinglée + réponses). La position du
@@ -698,8 +831,6 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
         inputTopY = inputFrameInWindow.origin.y;
     }
 
-    CGFloat maxTotalHeight = inputTopY * 0.25;
-
     // replyTargetBarHeightConstraint.constant vaut déjà 0 (masquée) ou
     // kS7TVReplyTargetBarHeight (visible) au moment où cette fonction est
     // appelée — selectReplyTargetForMessageID:/s7tv_cancelReplyTargetTapped la
@@ -708,28 +839,46 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 
     CGFloat chromeHeight = kS7TVReplyThreadTitleHeight + kS7TVReplyThreadSeparatorHeight * 2
                           + kS7TVReplyThreadBottomPadding + replyBarHeight;
-    CGFloat maxContentHeight = MAX(maxTotalHeight - chromeHeight, 60);
-
-    // Racine : jamais coupée. On lui laisse d'abord toute la place possible
-    // pour mesurer sa vraie hauteur ; si jamais elle dépassait à elle seule
-    // maxContentHeight (message très long), on la borne quand même à
-    // maxContentHeight plutôt que de faire disparaître les réponses, mais on
-    // ne tronque JAMAIS le texte lui-même (self-sizing cell, pas de
-    // troncature) — seule la fenêtre de scroll de la table racine
-    // apparaîtrait dans ce cas extrême, ce qui reste conforme à "jamais de
-    // texte coupé".
+    // 25% reste la cible, mais jamais au prix d'un conteneur plus petit que
+    // ses propres contraintes fixes. En paysage/clavier ouvert, ce minimum
+    // cohérent évite que la racine/réponses soient comprimées puis masquées.
+    CGFloat preferredMaxHeight = inputTopY * 0.25;
+    CGFloat minimumUsableHeight = chromeHeight + 44.0;
+    CGFloat maxTotalHeight = MIN(inputTopY,
+        MAX(preferredMaxHeight, minimumUsableHeight));
+    CGFloat maxContentHeight = MAX(maxTotalHeight - chromeHeight, 0);
+    // Mesurer d'abord les deux tables avec toute la largeur/hauteur disponible.
+    // Si la racine est très longue, réserver AVANT de la borner une vraie zone
+    // aux réponses. L'ancien calcul inventait 44 pt après coup puis reclampait
+    // le total, ce qui laissait Auto Layout donner réellement 0 pt aux replies.
     self.rootChatView.frame = CGRectMake(0, 0, width, maxContentHeight);
-    CGFloat rootHeight = MIN([self.rootChatView s7tvContentHeight], maxContentHeight);
-    if (rootHeight <= 0) rootHeight = 0; // pas de racine du tout (cas extrême, cf. s7tv_resolveRootMessageForThreadRootID:)
+    self.repliesChatView.frame = CGRectMake(0, 0, width, maxContentHeight);
+    CGFloat rootContentHeight = MAX([self.rootChatView s7tvContentHeight], 0);
+    CGFloat repliesContentHeight = [self.repliesChatView s7tvContentHeight];
+    repliesContentHeight = MAX(repliesContentHeight, 0);
+
+    BOOL hasRoot = rootContentHeight > 0;
+    BOOL hasReplies = repliesContentHeight > 0;
+    CGFloat rootShareLimit = hasReplies ? maxContentHeight * 0.5 : maxContentHeight;
+    CGFloat repliesShareLimit = hasRoot ? maxContentHeight * 0.5 : maxContentHeight;
+    CGFloat minimumRootHeight = hasRoot
+        ? MIN(rootContentHeight, MIN(44.0, rootShareLimit)) : 0;
+    CGFloat minimumRepliesHeight = hasReplies
+        ? MIN(repliesContentHeight, MIN(44.0, repliesShareLimit)) : 0;
+    // La racine garde la priorité sur l'espace restant, mais jamais au prix
+    // de tomber à 0 pt ni d'effacer toutes les réponses lorsque les deux sont
+    // présentes (cas paysage + clavier où le panneau est très compact).
+    CGFloat rootHeight = MIN(rootContentHeight,
+        MAX(minimumRootHeight, maxContentHeight - minimumRepliesHeight));
+    CGFloat remainingForReplies = MAX(maxContentHeight - rootHeight, 0);
+    CGFloat repliesHeight = MIN(repliesContentHeight, remainingForReplies);
     self.rootChatViewHeightConstraint.constant = rootHeight;
 
-    CGFloat remainingForReplies = MAX(maxContentHeight - rootHeight, 44);
-    self.repliesChatView.frame = CGRectMake(0, 0, width, remainingForReplies);
-    CGFloat repliesContentHeight = [self.repliesChatView s7tvContentHeight];
-    CGFloat repliesHeight = MIN(MAX(repliesContentHeight, 0), remainingForReplies);
-
     CGFloat totalHeight = chromeHeight + rootHeight + repliesHeight;
-    totalHeight = MIN(MAX(totalHeight, chromeHeight + 44), maxTotalHeight);
+    if (rootHeight + repliesHeight <= 0) {
+        totalHeight = chromeHeight + MIN(44.0, maxContentHeight);
+    }
+    totalHeight = MIN(totalHeight, maxTotalHeight);
 
     // La position verticale n'est plus écrite ici : bottomAnchor suit en
     // permanence inputView.topAnchor. Seule la hauteur calculée du contenu
@@ -740,7 +889,40 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     [self.containerView layoutIfNeeded];
 }
 
-- (void)showForThreadRootID:(NSString *)threadRootID tappedMessageID:(NSString *)tappedMessageID {
+- (void)s7tv_finishOpeningThreadRootID:(NSString *)threadRootID
+                                window:(UIWindow *)window
+                      allowsCatchUpPass:(BOOL)allowsCatchUpPass {
+    if (!window || self.containerView.window != window ||
+        ![self.currentThreadRootID isEqualToString:threadRootID]) return;
+
+    if (allowsCatchUpPass && self.contentRefreshPendingWhileOpening) {
+        self.contentRefreshPendingWhileOpening = NO;
+        __weak typeof(self) weakSelf = self;
+        BOOL started = [self s7tv_reloadThreadMessagesForce:YES completion:^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            [strongSelf s7tv_finishOpeningThreadRootID:threadRootID
+                                                window:window
+                                      allowsCatchUpPass:NO];
+        }];
+        if (started) return;
+    }
+
+    [self.containerView layoutIfNeeded];
+    [self s7tv_layoutPanelContentInWindow:window];
+    self.containerView.hidden = NO;
+    [window bringSubviewToFront:self.containerView];
+
+    // Un événement arrivé pendant l'unique passage de rattrapage sera traité
+    // immédiatement maintenant que les guards de panneau visible s'appliquent.
+    if (self.contentRefreshPendingWhileOpening) {
+        self.contentRefreshPendingWhileOpening = NO;
+        [self forceRefreshIfNeeded];
+    }
+}
+
+- (void)showForThreadRootID:(NSString *)threadRootID
+            tappedMessageID:(NSString *)tappedMessageID
+     retainedThreadMessages:(NSArray<S7TVChatMessage *> *)retainedThreadMessages {
     if (!threadRootID.length) return;
     UIView *hostChatView = s7tv_activeChatCustomView();
     UIWindow *window = hostChatView.window;
@@ -748,10 +930,25 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 
     [self s7tv_ensureContainerInWindow:window];
     [self s7tv_attachReplyTargetBarToThreadHost];
+    self.contentRequestGeneration += 1; // invalide immédiatement show/refresh précédent
+    self.containerView.hidden = YES;
+    self.rootChatView.renderingSuspended = YES;
+    self.repliesChatView.renderingSuspended = YES;
+    [self.rootChatView resetTransientTranscriptState];
+    [self.repliesChatView resetTransientTranscriptState];
+    self.loadedThreadRootID = nil;
+    self.lastRequestedRootMessageID = nil;
+    self.lastRequestedReplyMessageIDs = nil;
+    self.lastRequestedRootMessage = nil;
+    self.lastRequestedReplyMessages = nil;
+    self.contentRefreshPendingWhileOpening = NO;
+    self.openingTranscriptMessages = [retainedThreadMessages copy] ?: @[];
     self.titleLabel.text = L(@"chat_reply_thread_panel_title"); // relu à chaque ouverture, voir commentaire sur titleLabel
     [self.cancelButton setTitle:L(@"chat_reply_cancel_button") forState:UIControlStateNormal];
     self.currentThreadRootID = threadRootID;
     self.pendingReplyTargetMessageID = tappedMessageID;
+    self.rootChatView.renderingSuspended = NO;
+    self.repliesChatView.renderingSuspended = NO;
 
     // Aucune sélection automatique : le panneau s'ouvre en pure
     // consultation, l'utilisateur choisit explicitement une cible via le
@@ -767,15 +964,13 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
     // vide et se corrige seulement au refresh suivant (clignotement
     // visible à l'ouverture, corrigé ici).
     __weak typeof(self) weakSelf = self;
-    [self s7tv_reloadThreadMessagesWithCompletion:^{
+    [self s7tv_reloadThreadMessagesForce:YES completion:^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf || strongSelf.containerView.window != window) return; // fermé/changé entre-temps
-
-        [strongSelf.containerView layoutIfNeeded]; // applique les contraintes AVANT de mesurer le contenu
-        [strongSelf s7tv_layoutPanelContentInWindow:window];
-
-        strongSelf.containerView.hidden = NO;
-        [window bringSubviewToFront:strongSelf.containerView];
+        if (!strongSelf || strongSelf.containerView.window != window ||
+            ![strongSelf.currentThreadRootID isEqualToString:threadRootID]) return;
+        [strongSelf s7tv_finishOpeningThreadRootID:threadRootID
+                                            window:window
+                                  allowsCatchUpPass:YES];
     }];
 }
 
@@ -846,9 +1041,21 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 }
 
 - (void)hide {
+    self.contentRequestGeneration += 1;
     self.containerView.hidden = YES;
+    self.rootChatView.renderingSuspended = YES;
+    self.repliesChatView.renderingSuspended = YES;
     self.currentThreadRootID = nil;
     self.pendingReplyTargetMessageID = nil;
+    self.loadedThreadRootID = nil;
+    self.lastRequestedRootMessageID = nil;
+    self.lastRequestedReplyMessageIDs = nil;
+    self.lastRequestedRootMessage = nil;
+    self.lastRequestedReplyMessages = nil;
+    self.contentRefreshPendingWhileOpening = NO;
+    self.openingTranscriptMessages = nil;
+    [self.rootChatView resetTransientTranscriptState];
+    [self.repliesChatView resetTransientTranscriptState];
     // Fermer le panneau retire aussi la mention en cours — demande
     // explicite : contrairement à la version précédente, fermer sans
     // "Annuler" doit quand même nettoyer le texte, pas le laisser en place.
@@ -856,14 +1063,156 @@ static NSAttributedString *s7tv_buildReplyTargetBarText(NSString *username) {
 }
 
 - (void)refreshIfNeeded {
-    if (!self.currentThreadRootID.length || self.containerView.hidden) return;
+    if (!self.currentThreadRootID.length) return;
+    if (self.containerView.hidden) {
+        self.contentRefreshPendingWhileOpening = YES;
+        return;
+    }
     UIWindow *window = self.containerView.window;
     __weak typeof(self) weakSelf = self;
-    [self s7tv_reloadThreadMessagesWithCompletion:^{
+    [self s7tv_reloadThreadMessagesForce:NO completion:^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf || !window || strongSelf.containerView.hidden) return;
         [strongSelf s7tv_layoutPanelContentInWindow:window];
     }];
+}
+
+- (void)forceRefreshIfNeeded {
+    if (!self.currentThreadRootID.length) return;
+    if (self.containerView.hidden) {
+        self.contentRefreshPendingWhileOpening = YES;
+        return;
+    }
+    UIWindow *window = self.containerView.window;
+    __weak typeof(self) weakSelf = self;
+    [self s7tv_reloadThreadMessagesForce:YES completion:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || !window || strongSelf.containerView.hidden) return;
+        [strongSelf s7tv_layoutPanelContentInWindow:window];
+    }];
+}
+
+- (void)refreshMessageIfNeededWithID:(NSString *)messageID
+                       excludingView:(SevenTVChatCustomView *)excludedView {
+    if (!messageID.length || !self.currentThreadRootID.length) return;
+    if (self.containerView.hidden) {
+        self.contentRefreshPendingWhileOpening = YES;
+        return;
+    }
+    BOOL rootContainsMessage = [self.rootStore messageWithID:messageID] != nil;
+    BOOL repliesContainMessage = [self.repliesStore messageWithID:messageID] != nil;
+    BOOL reloadRoot = rootContainsMessage && self.rootChatView != excludedView;
+    BOOL reloadReplies = repliesContainMessage && self.repliesChatView != excludedView;
+    BOOL excludedViewAlreadyReloaded =
+        (rootContainsMessage && self.rootChatView == excludedView) ||
+        (repliesContainMessage && self.repliesChatView == excludedView);
+    if (!reloadRoot && !reloadReplies && !excludedViewAlreadyReloaded) return;
+
+    __block NSUInteger pendingReloads = (reloadRoot ? 1 : 0) + (reloadReplies ? 1 : 0);
+    NSUInteger requestToken = self.contentRequestGeneration;
+    NSString *threadRootID = [self.currentThreadRootID copy];
+    UIWindow *window = self.containerView.window;
+    __weak typeof(self) weakSelf = self;
+    void (^relayoutIfCurrent)(void) = ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || requestToken != strongSelf.contentRequestGeneration ||
+            strongSelf.containerView.hidden || strongSelf.containerView.window != window ||
+            ![strongSelf.currentThreadRootID isEqualToString:threadRootID]) return;
+        [strongSelf s7tv_layoutPanelContentInWindow:window];
+    };
+    void (^oneReloadFinished)(void) = ^{
+        if (pendingReloads > 0) pendingReloads -= 1;
+        if (pendingReloads == 0) relayoutIfCurrent();
+    };
+
+    if (reloadRoot) {
+        [self.rootChatView refreshMessageWithID:messageID animated:YES
+                                      completion:oneReloadFinished];
+    }
+    if (reloadReplies) {
+        [self.repliesChatView refreshMessageWithID:messageID animated:YES
+                                         completion:oneReloadFinished];
+    }
+    if (!reloadRoot && !reloadReplies) relayoutIfCurrent();
+}
+
+- (void)applyModerationState:(S7TVChatMessageState)state
+   toRetainedMessageWithID:(NSString *)messageID
+             moderationKind:(S7TVChatModerationKind)moderationKind
+            durationSeconds:(NSInteger)durationSeconds {
+    if (!messageID.length) return;
+    [self.rootChatView applyModerationState:state
+                toDisplayedMessageWithID:messageID
+                         moderationKind:moderationKind
+                        durationSeconds:durationSeconds];
+    [self.repliesChatView applyModerationState:state
+                   toDisplayedMessageWithID:messageID
+                            moderationKind:moderationKind
+                           durationSeconds:durationSeconds];
+
+    NSMutableArray<S7TVChatMessage *> *retained = [NSMutableArray array];
+    [retained addObjectsFromArray:self.rootStore.allMessages ?: @[]];
+    [retained addObjectsFromArray:self.repliesStore.allMessages ?: @[]];
+    [retained addObjectsFromArray:self.openingTranscriptMessages ?: @[]];
+    if (self.lastRequestedRootMessage) [retained addObject:self.lastRequestedRootMessage];
+    [retained addObjectsFromArray:self.lastRequestedReplyMessages ?: @[]];
+    for (S7TVChatMessage *message in retained) {
+        if (![message.messageID isEqualToString:messageID]) continue;
+        [message applyModerationState:state
+                       moderationKind:moderationKind
+                      durationSeconds:durationSeconds];
+    }
+}
+
+- (void)applyModerationToRetainedMessagesForUserID:(NSString *)authorUserID
+                                      authorLogin:(NSString *)authorLogin
+                                    moderationKind:(S7TVChatModerationKind)moderationKind
+                                   durationSeconds:(NSInteger)durationSeconds {
+    if (!authorUserID.length && !authorLogin.length) return;
+    [self.rootChatView applyModerationToDisplayedMessagesForUserID:authorUserID
+                                                       authorLogin:authorLogin
+                                                    moderationKind:moderationKind
+                                                   durationSeconds:durationSeconds];
+    [self.repliesChatView applyModerationToDisplayedMessagesForUserID:authorUserID
+                                                          authorLogin:authorLogin
+                                                       moderationKind:moderationKind
+                                                      durationSeconds:durationSeconds];
+
+    NSMutableArray<S7TVChatMessage *> *retained = [NSMutableArray array];
+    [retained addObjectsFromArray:self.rootStore.allMessages ?: @[]];
+    [retained addObjectsFromArray:self.repliesStore.allMessages ?: @[]];
+    [retained addObjectsFromArray:self.openingTranscriptMessages ?: @[]];
+    if (self.lastRequestedRootMessage) [retained addObject:self.lastRequestedRootMessage];
+    [retained addObjectsFromArray:self.lastRequestedReplyMessages ?: @[]];
+    for (S7TVChatMessage *message in retained) {
+        BOOL matchesUserID = authorUserID.length &&
+            [message.authorUserID isEqualToString:authorUserID];
+        BOOL matchesFallbackLogin = !message.authorUserID.length && authorLogin.length &&
+            [message.authorDisplayName caseInsensitiveCompare:authorLogin] == NSOrderedSame;
+        if (!matchesUserID && !matchesFallbackLogin) continue;
+        [message applyModerationState:S7TVChatMessageStateDeletedCollapsed
+                       moderationKind:moderationKind
+                      durationSeconds:durationSeconds];
+    }
+}
+
+- (void)applyModerationToAllRetainedMessages {
+    [self.rootChatView applyModerationToAllDisplayedMessages];
+    [self.repliesChatView applyModerationToAllDisplayedMessages];
+
+    NSMutableArray<S7TVChatMessage *> *retained = [NSMutableArray array];
+    [retained addObjectsFromArray:self.rootStore.allMessages ?: @[]];
+    [retained addObjectsFromArray:self.repliesStore.allMessages ?: @[]];
+    [retained addObjectsFromArray:self.openingTranscriptMessages ?: @[]];
+    if (self.lastRequestedRootMessage) [retained addObject:self.lastRequestedRootMessage];
+    [retained addObjectsFromArray:self.lastRequestedReplyMessages ?: @[]];
+    for (S7TVChatMessage *message in retained) {
+        if (message.type == S7TVChatMessageTypeHistoryWelcome ||
+            message.type == S7TVChatMessageTypeHistoryDivider) continue;
+        [message applyModerationState:S7TVChatMessageStateDeletedCollapsed
+                       moderationKind:S7TVChatModerationKindChatCleared
+                      durationSeconds:0];
+    }
 }
 
 @end

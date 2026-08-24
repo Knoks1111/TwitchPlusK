@@ -224,6 +224,7 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // (ChatInputView.window → nil).
 // Nettoie le picker sans toucher au responder chain (UIKit crashe sans fenêtre).
 - (void)cleanupPickerForStreamClose;
+- (void)cleanupPickerForStreamCloseIfOwnedByChatInputView:(UIView *)chatInputView;
 
 // --- Logs ---
 // log: classe automatiquement le message dans une S7TVLogCategory (par analyse

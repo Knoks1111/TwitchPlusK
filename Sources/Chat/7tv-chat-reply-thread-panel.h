@@ -25,4 +25,21 @@
 // s7tv_reloadActiveChatCustomView dans 7tv-chat-custom-view.m) — no-op si le
 // panneau est fermé.
 - (void)refreshIfNeeded;
+// Reconfigure volontairement le fil même si sa liste d'IDs est inchangée
+// (langue/apparence, badges ou modération groupée).
+- (void)forceRefreshIfNeeded;
+// Met à jour uniquement le message concerné dans les sous-vues qui
+// l'affichent. excludedView évite un double snapshot après une interaction
+// provenant directement de cette sous-vue.
+- (void)refreshMessageIfNeededWithID:(NSString *)messageID
+                       excludingView:(SevenTVChatCustomView * _Nullable)excludedView;
+- (void)applyModerationState:(S7TVChatMessageState)state
+   toRetainedMessageWithID:(NSString *)messageID
+             moderationKind:(S7TVChatModerationKind)moderationKind
+            durationSeconds:(NSInteger)durationSeconds;
+- (void)applyModerationToRetainedMessagesForUserID:(NSString *)authorUserID
+                                      authorLogin:(NSString * _Nullable)authorLogin
+                                    moderationKind:(S7TVChatModerationKind)moderationKind
+                                   durationSeconds:(NSInteger)durationSeconds;
+- (void)applyModerationToAllRetainedMessages;
 @end

@@ -28,7 +28,22 @@ void s7tv_handleNativeChatViewLifecycle(UIView *view);
 void s7tv_applyChatCustomToggle(void);
 void s7tv_reloadActiveChatCustomView(void);
 void s7tv_reloadActiveChatCustomViewAnimated(void);
+// Invalidation rare de contenu déjà existant (catalogues, apparence, image
+// Channel Points) : force aussi le panneau Fil sans réintroduire ce coût dans
+// le batching normal des nouveaux messages.
+void s7tv_reloadActiveChatCustomViewForConfiguration(void);
 void s7tv_reloadActiveChatMessage(NSString *messageID);
+// Propage aussi une modération aux modèles encore retenus par un transcript
+// figé ou un panneau Fil, même s'ils ont déjà quitté le FIFO principal.
+void s7tv_applyModerationStateToRetainedMessage(NSString *messageID,
+                                                S7TVChatMessageState state,
+                                                S7TVChatModerationKind moderationKind,
+                                                NSInteger durationSeconds);
+void s7tv_applyModerationToRetainedMessagesForUser(NSString *authorUserID,
+                                                    NSString * _Nullable authorLogin,
+                                                    S7TVChatModerationKind moderationKind,
+                                                    NSInteger durationSeconds);
+void s7tv_applyModerationToAllRetainedMessages(void);
 void s7tv_scheduleChatCustomReload(void);
 void s7tv_setupChatCustomIntegration(void);
 
@@ -79,6 +94,21 @@ void s7tv_setupChatCustomIntegration(void);
 // précis — jamais utilisé sur le chat principal.
 @property (nonatomic, assign) BOOL showsReplyTargetButton;
 
+// YES uniquement pour le transcript principal : quand l'utilisateur remonte,
+// sa structure visible reste figée malgré la purge FIFO à 300 messages.
+// Les vues temporaires et petites (thread, preview du picker) passent ce flag
+// à NO : elles conservent leur ancre mais ne doivent jamais bloquer un reload.
+@property (nonatomic, assign) BOOL freezesTranscriptWhenScrolled;
+
+// YES suspend tout travail visuel coûteux (observers et décodages animés,
+// rechargements déclenchés par une image) tout en laissant les snapshots se
+// terminer proprement. Utilisé lorsque le panneau Fil est masqué.
+@property (nonatomic, assign, getter=isRenderingSuspended) BOOL renderingSuspended;
+
+// YES par défaut. La racine épinglée d'un fil passe à NO afin qu'un message
+// long et plafonné commence toujours par sa première ligne, pas par sa fin.
+@property (nonatomic, assign) BOOL automaticallyScrollsToBottom;
+
 // Appelé lorsqu'un message devient une cible de réponse : bouton flèche dans
 // le panneau Fil OU appui long dans le chat principal. Les deux interactions
 // transmettent le même messageID + authorDisplayName et réutilisent ainsi un
@@ -109,6 +139,40 @@ void s7tv_setupChatCustomIntegration(void);
 // Recharge une seule cellule sans reconstruire/recharger tout le transcript.
 // Utilisée par CLEARMSG et par le tap collapsed <-> expanded.
 - (void)refreshMessageWithID:(NSString *)messageID animated:(BOOL)animated;
+- (void)refreshMessageWithID:(NSString *)messageID
+                    animated:(BOOL)animated
+                  completion:(void (^ _Nullable)(void))completion;
+
+// Recherche dans le snapshot réellement affiché, y compris pendant le gel
+// du transcript lorsque le FIFO principal a déjà purgé ce modèle.
+- (S7TVChatMessage * _Nullable)displayedMessageWithID:(NSString *)messageID;
+// Snapshot du fil tel qu'il est réellement visible. Couvre les réponses que
+// le gel retient après leur purge du store principal.
+- (NSArray<S7TVChatMessage *> *)displayedMessagesForThreadRootID:(NSString *)threadRootID;
+
+// Mutations de contenu sans toucher à la structure du snapshot. Elles sont
+// utilisées après la mutation du store principal pour couvrir les objets que
+// le gel du transcript conserve au-delà de la limite de 300 messages.
+- (void)applyModerationState:(S7TVChatMessageState)state
+  toDisplayedMessageWithID:(NSString *)messageID
+             moderationKind:(S7TVChatModerationKind)moderationKind
+            durationSeconds:(NSInteger)durationSeconds;
+- (void)applyModerationToDisplayedMessagesForUserID:(NSString *)authorUserID
+                                        authorLogin:(NSString * _Nullable)authorLogin
+                                      moderationKind:(S7TVChatModerationKind)moderationKind
+                                     durationSeconds:(NSInteger)durationSeconds;
+- (void)applyModerationToAllDisplayedMessages;
+
+// Lorsqu'un transcript principal est figé, un reload structurel reste en
+// attente jusqu'au retour en bas. Cette méthode reconfigure tout de même les
+// cellules actuellement visibles (apparence, ban/timeout/CLEARCHAT) sans
+// modifier l'ordre ni les IDs du snapshot gelé.
+- (void)refreshVisibleMessageContentIfFrozen;
+
+// Nettoie l'état qui ne doit pas survivre à la réutilisation d'une vue dans
+// un autre contexte (thread fermé/réouvert), sans interrompre brutalement un
+// applySnapshot déjà en vol.
+- (void)resetTransientTranscriptState;
 
 // Hauteur réelle du contenu (tableView.contentSize.height, cellules
 // self-sizing incluses). Force un layout complet (largeur → recalcul des

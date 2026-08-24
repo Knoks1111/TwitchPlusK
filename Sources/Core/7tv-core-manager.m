@@ -1266,8 +1266,14 @@ static NSString *S7TVNormalizedTwitchBearerToken(NSString *value) {
         NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (!trimmed.length) return nil;
 
-    NSRange separator = [trimmed rangeOfString:@" "];
-    if (separator.location == NSNotFound) return nil;
+    NSRange separator = [trimmed rangeOfCharacterFromSet:
+        NSCharacterSet.whitespaceCharacterSet];
+    // Certaines versions de Twitch transmettent uniquement la valeur brute
+    // dans Authorization. Elle est sûre ici car la capture finale est limitée
+    // aux requêtes gql.twitch.tv. Les schémas tiers restent rejetés ci-dessous.
+    if (separator.location == NSNotFound) {
+        return [@"Bearer " stringByAppendingString:trimmed];
+    }
     NSString *scheme = [trimmed substringToIndex:separator.location];
     if ([scheme caseInsensitiveCompare:@"OAuth"] != NSOrderedSame &&
         [scheme caseInsensitiveCompare:@"Bearer"] != NSOrderedSame) return nil;

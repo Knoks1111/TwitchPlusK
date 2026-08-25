@@ -96,12 +96,6 @@ void S7TVHookDiagnosticsRegisterKnownTargets(void) {
         S7TVHookDiagnosticRegister(
             @"[TwitchPlusK] DarkMobileUITheme (OLED)",
             @[@"_TtC12TwitchCoreUI17DarkMobileUITheme"]);
-        S7TVHookDiagnosticRegister(
-            @"[TwitchPlusK] TWTheme (OLED fallback)",
-            @[@"TWTheme"]);
-        S7TVHookDiagnosticRegister(
-            @"[TwitchPlusK] TWMobileUITheme (OLED fallback)",
-            @[@"TWMobileUITheme"]);
     });
 }
 

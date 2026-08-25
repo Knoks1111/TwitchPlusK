@@ -174,6 +174,11 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Switchs de réglages ───────────────────────────────────────────
         @"switch_chat_custom":              @[@"Chat custom", @"Custom chat"],
+        @"switch_oled_mode":                @[@"Mode OLED", @"OLED Mode"],
+        @"desc_oled_mode":                  @[
+            @"Remplace les fonds du thème sombre de Twitch par du noir pur. Le thème clair n'est pas modifié.",
+            @"Replaces Twitch's dark-theme backgrounds with pure black. Light theme is unchanged."
+        ],
         @"switch_animations_picker":        @[@"Animations dans le picker", @"Animations in picker"],
         @"switch_animations_favorites_only":@[@"Animations uniquement pour les favoris", @"Animations for favorites only"],
         @"setting_emote_resolution":        @[@"Résolution des emotes 7TV", @"7TV emote resolution"],

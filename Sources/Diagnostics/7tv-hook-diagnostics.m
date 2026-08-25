@@ -82,6 +82,20 @@ void S7TVHookDiagnosticsRegisterKnownTargets(void) {
         S7TVHookDiagnosticRegister(
             @"[TwitchPlusK] NSURLSessionWebSocketTask",
             @[@"NSURLSessionWebSocketTask"]);
+        // These views are observed through UIView.didMoveToWindow, then used
+        // as the concrete insertion points for the custom chat and picker.
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] Twitch.ChatTranscriptView (chat custom)",
+            @[@"Twitch.ChatTranscriptView"]);
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] Twitch.ChatInputView (bouton picker)",
+            @[@"Twitch.ChatInputView"]);
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] CoreUIDarkTheme (OLED)",
+            @[@"_TtC12TwitchCoreUI15CoreUIDarkTheme"]);
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] DarkMobileUITheme (OLED)",
+            @[@"_TtC12TwitchCoreUI17DarkMobileUITheme"]);
     });
 }
 

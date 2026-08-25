@@ -602,6 +602,24 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     }
 }
 
+- (void)reloadPreferencesFromDefaults {
+    // Ne pas passer par les setters : chacun appelle -savePreferences et
+    // écraserait une partie des valeurs venant juste d'être importées.
+    [self loadPreferences];
+
+    extern BOOL s_tapLogEnabled;
+    s_tapLogEnabled = _logsEnabled && _logTap;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Ces deux réglages ont aussi un effet visuel immédiat dans une
+        // session Twitch déjà ouverte.
+        self.floatingWindow.hidden = !self.showFloatingButton;
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:S7TVChatCustomToggleDidChangeNotification object:self];
+    });
+    [self s7tv_notifyFavoritesChanged];
+}
+
 - (void)savePreferences {
     NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
     [prefs setBool:self.isEnabled            forKey:@"s7tv_enabled"];

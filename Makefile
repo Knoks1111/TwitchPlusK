@@ -18,11 +18,13 @@ TwitchPlusK_FILES = \
     Sources/Adblock/7tv-adblock-proxy.m \
     Sources/Adblock/7tv-adblock-resource-loader.m \
     Sources/Adblock/7tv-adblock-runtime.m \
+    Sources/Diagnostics/7tv-hook-diagnostics.m \
     Sources/Adblock/Fishhook/fishhook.c \
     Sources/Core/7tv-core-runtime-hooks.m \
     Sources/Core/7tv-core-manager.m \
     Sources/Network/7tv-network-emote-cache.m \
     Sources/Settings/7tv-settings-controller.m \
+    Sources/Settings/7tv-settings-transfer.m \
     Sources/Logs/7tv-logs-controller.m \
     Sources/Chat/7tv-chat-appearance-config.m \
     Sources/Chat/7tv-chat-custom-view.m \

@@ -42,6 +42,7 @@
 #import "Adblock/7tv-adblock-proxy.h"
 #import "Adblock/7tv-adblock-runtime.h"
 #import "Adblock/7tv-adblock-settings.h"
+#import "Diagnostics/7tv-hook-diagnostics.h"
 
 
 // Variable de compat : le Tap Logger (diagnostic de reverse-engineering du
@@ -912,6 +913,10 @@ static void TwitchSevenTVInit(void) {
 
     // Section 7TV dans les paramètres Twitch
     [SevenTVSettingsController installTwitchSettingsIntegration];
+
+    // Même registre de classes résolues que TwitchAdBlock : il rend visibles
+    // les cibles qui auraient été renommées par une version de Twitch.
+    S7TVHookDiagnosticsRegisterKnownTargets();
 
     // Auto Collect Channel Points — module 100% autonome (voir
     // 7tv-system-native-behavior-hooks.m), aucune dépendance avec les

@@ -22,6 +22,7 @@
 #import "Emote/7tv-emote-animation-engine.h"
 #import "Network/7tv-network-emote-cache.h"
 #import "UI/7tv-ui-logo.h"
+#import "UI/7tv-oled-mode.h"
 #import <objc/runtime.h>
 
 static const char kS7TVTextFieldTagged = 5;
@@ -272,6 +273,8 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 - (void)_s7tv_badgesCatalogDidUpdate:(NSNotification *)notification;
 - (void)_s7tv_deviceOrientationDidChange:(NSNotification *)notification;
 - (void)_s7tv_applyCatalogUpdateNow;
+- (void)_s7tv_oledModeDidChange:(NSNotification *)notification;
+- (void)_s7tv_applyOLEDColors;
 - (void)_s7tv_relayoutPickerForSize:(CGSize)size;
 - (void)_showFakeChatPreviewAboveInputView;
 - (void)_s7tv_deactivateVisiblePickerAnimations;
@@ -329,6 +332,10 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
                                                   selector:@selector(_s7tv_deviceOrientationDidChange:)
                                                       name:UIDeviceOrientationDidChangeNotification
                                                     object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(_s7tv_oledModeDidChange:)
+                                                      name:S7TVOLEDModeDidChangeNotification
+                                                    object:nil];
 
         // Le TextEntryView de Twitch peut résigner le first responder sans
         // passer par notre bouton (ex: tap ailleurs dans l'app) — UIKit
@@ -342,6 +349,26 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
                                                     object:nil];
     }
     return self;
+}
+
+- (void)_s7tv_oledModeDidChange:(NSNotification *)notification {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self _s7tv_applyOLEDColors];
+    });
+}
+
+- (void)_s7tv_applyOLEDColors {
+    if (!self.emotePickerView) return;
+
+    UIColor *backgroundColor = S7TVOLEDModeEnabled()
+        ? UIColor.blackColor
+        : [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0];
+    self.emotePickerView.backgroundColor = backgroundColor;
+    self.emoteCollectionView.backgroundColor = backgroundColor;
+    _sizesPanel.panelView.backgroundColor = backgroundColor;
+    self.pickerFakeChatPreviewView.backgroundColor = S7TVOLEDModeEnabled()
+        ? UIColor.blackColor
+        : [UIColor colorWithWhite:0.09 alpha:0.97];
 }
 
 - (void)_s7tv_textEntryDidEndEditing:(NSNotification *)note {
@@ -1142,7 +1169,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     // Twitch utilise #0E0E10 pour le fond de la chatbox (confirmé par
     // color picker directement sur l'app Twitch) — ce n'est PAS un gris pur,
     // il y a un léger biais bleu, contrairement à ce qu'on avait supposé.
-    UIColor *bgColor = [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10
+    UIColor *bgColor = S7TVOLEDModeEnabled()
+        ? UIColor.blackColor
+        : [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10
     UIColor *cardColor  = [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:1.0]; // #19191C
     UIColor *sepColor   = [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
     UIColor *textColor  = [UIColor whiteColor];
@@ -1873,7 +1902,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     if (self.pickerFakeChatPreviewView) return self.pickerFakeChatPreviewView;
 
     UIView *container = [[UIView alloc] init];
-    container.backgroundColor = [UIColor colorWithWhite:0.09 alpha:0.97];
+    container.backgroundColor = S7TVOLEDModeEnabled()
+        ? UIColor.blackColor
+        : [UIColor colorWithWhite:0.09 alpha:0.97];
     container.layer.cornerRadius = 12;
     container.clipsToBounds = YES;
     container.hidden = YES;

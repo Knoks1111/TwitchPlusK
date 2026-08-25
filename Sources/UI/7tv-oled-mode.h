@@ -11,6 +11,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSString *const S7TVOLEDModePreferenceKey;
+FOUNDATION_EXPORT NSString *const S7TVOLEDModeDidChangeNotification;
 
 BOOL S7TVOLEDModeEnabled(void);
 void S7TVOLEDModeSetEnabled(BOOL enabled);

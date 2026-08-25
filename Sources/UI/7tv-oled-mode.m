@@ -17,6 +17,7 @@
 #import <stdlib.h>
 
 NSString *const S7TVOLEDModePreferenceKey = @"s7tv_oled_mode";
+NSString *const S7TVOLEDModeDidChangeNotification = @"S7TVOLEDModeDidChange";
 
 // Nom publié par TwitchCoreUI/ThemeManager.swift. Les composants Twitch
 // réappliquent leur ThemeProtocol lorsqu'ils reçoivent cette notification.
@@ -216,6 +217,8 @@ void S7TVOLEDModeSetEnabled(BOOL enabled) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     [defaults setBool:enabled forKey:S7TVOLEDModePreferenceKey];
     [defaults synchronize];
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:S7TVOLEDModeDidChangeNotification object:nil];
     s7tv_requestNativeThemeRefresh();
 }
 
@@ -224,7 +227,11 @@ void S7TVOLEDModeReloadFromDefaults(void) {
     BOOL enabled = [NSUserDefaults.standardUserDefaults boolForKey:S7TVOLEDModePreferenceKey];
     BOOL changed = S7TVOLEDModeEnabled() != enabled;
     atomic_store_explicit(&s7tv_oledEnabled, enabled, memory_order_relaxed);
-    if (changed) s7tv_requestNativeThemeRefresh();
+    if (changed) {
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:S7TVOLEDModeDidChangeNotification object:nil];
+        s7tv_requestNativeThemeRefresh();
+    }
 }
 
 void S7TVOLEDModeSetup(void) {
@@ -243,9 +250,16 @@ void S7TVOLEDModeSetup(void) {
             if (note.object) s7tv_lastThemeManager = note.object;
         }];
 
+        // Exécuté dans le constructeur du tweak, avant la création du premier
+        // écran Twitch : les fonds du lancement et des catégories ne peuvent
+        // donc pas conserver une couleur mise en cache avant le hook.
+        s7tv_installOLEDPaletteHooks();
+
         dispatch_async(dispatch_get_main_queue(), ^{
-            s7tv_activeThemeManager();
+            // Le second passage est idempotent et couvre une éventuelle
+            // classe Swift enregistrée juste après le constructeur.
             s7tv_installOLEDPaletteHooks();
+            s7tv_activeThemeManager();
             if (S7TVOLEDModeEnabled()) s7tv_requestNativeThemeRefresh();
         });
     });

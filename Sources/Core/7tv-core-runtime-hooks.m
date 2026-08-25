@@ -874,6 +874,10 @@ static void TwitchSevenTVInit(void) {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     [mgr log:@"🔌 Chargement TwitchSevenTV v2.0 (substrate-free)..."];
 
+    // Doit être installé avant toute création de vue Twitch, notamment le
+    // premier écran et les en-têtes de catégories au lancement.
+    S7TVOLEDModeSetup();
+
     s7tv_setupChatCustomIntegration();
 
     // Adblock TwitchAdBlock-derived : AVFoundation, contrôleurs pub Swift et
@@ -881,7 +885,6 @@ static void TwitchSevenTVInit(void) {
     // volontairement dans ce fichier afin de ne jamais les swizzler deux fois.
     S7TVAdblockInstallRuntimeHooks();
     s7tv_installHomeFeatureRuntimeHooks();
-    S7TVOLEDModeSetup();
 
     // Verrou d'orientation (bouton Share hijacké)
     s7tv_swizzle_orientation_lock();

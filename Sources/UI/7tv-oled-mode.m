@@ -31,8 +31,10 @@ typedef struct {
     S7TVOLEDColorGetterIMP original;
 } S7TVOLEDHook;
 
-static const NSUInteger kS7TVOLEDMaxHooks = 8;
-static S7TVOLEDHook s7tv_oledHooks[8];
+// Deux implémentations de thème sombre sont présentes dans Twitch 30.6.
+// Les fonds structurels ci-dessous peuvent donc installer jusqu'à 26 hooks.
+static const NSUInteger kS7TVOLEDMaxHooks = 32;
+static S7TVOLEDHook s7tv_oledHooks[32];
 static NSUInteger s7tv_oledHookCount = 0;
 static _Atomic(bool) s7tv_oledEnabled = false;
 static id s7tv_lastThemeManager = nil;
@@ -46,10 +48,22 @@ static const char * const kS7TVOLEDDarkThemeClassNames[] = {
 // clang/Theos toolchain. Keep the names static, then resolve the selectors
 // once while installing the hooks.
 static const char * const kS7TVOLEDBackgroundSelectorNames[] = {
+    // Fonds de page et de sections.
     "backgroundBaseColor",
     "backgroundBodyColor",
     "backgroundAltColor",
     "backgroundAlt2Color",
+    // Fonds des écrans et composants qui ne passent pas par les quatre
+    // tokens principaux : modales, menus, barres et surfaces du chat natif.
+    "backgroundFloatColor",
+    "backgroundModalColor",
+    "backgroundOverlayBaseColor",
+    "backgroundOverlayAltColor",
+    "backgroundChatColor",
+    "backgroundChatAltColor",
+    "backgroundChatHeaderColor",
+    "backgroundTopNavColor",
+    "backgroundSocialColumnColor",
 };
 
 BOOL S7TVOLEDModeEnabled(void) {

@@ -54,6 +54,13 @@ static UIColor *S7TVGray(void) {
     return [UIColor colorWithWhite:0.55 alpha:1.0];
 }
 
+// Couleur d'icône d'un réglage à interrupteur : gris système quand l'option
+// est désactivée, couleur propre à la fonction quand elle est activée.
+// Règle ON/OFF centralisée pour ne pas la recoder dans chaque cellule.
+static UIColor *S7TVSwitchIconColor(UIColor *onColor, BOOL isOn) {
+    return isOn ? onColor : [UIColor systemGrayColor];
+}
+
 @interface S7TVSettingsResolvedEmote : NSObject <S7TVResolvedEmote>
 @property (nonatomic, copy) NSString *emoteID;
 @property (nonatomic, assign) CGSize nativeSize;
@@ -257,7 +264,7 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
     cell.selectionStyle  = UITableViewCellSelectionStyleNone;
     cell.backgroundColor = S7TVCellBg();
 
-    UIImageView *icon = S7TVIcon(sfName, iconTint);
+    UIImageView *icon = S7TVIcon(sfName, S7TVSwitchIconColor(iconTint, isOn));
     [cell.contentView addSubview:icon];
 
     UILabel *lbl = [[UILabel alloc] init];
@@ -775,12 +782,12 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     // Section Main : Apparence / Contenu / Adblock / Avancé
     if (ip.section == S7TVHomeSectionMain) {
         NSString *sfName, *title, *subtitle;
-        UIColor *iconTint = [UIColor colorWithWhite:0.75 alpha:1.0];
+        UIColor *iconTint;
         switch (ip.row) {
             case 0: sfName=@"paintbrush.fill";            title=L(@"title_apparence"); subtitle=L(@"menu_apparence_subtitle"); iconTint=S7TVAccent(); break;
-            case 1: sfName=@"folder.fill";                 title=L(@"title_contenu");   subtitle=L(@"menu_contenu_subtitle"); break;
-            case 2: sfName=@"shield.slash.fill";           title=L(@"title_adblock");   subtitle=L(@"menu_adblock_subtitle"); break;
-            case 3: sfName=@"wrench.and.screwdriver.fill"; title=L(@"title_avance");    subtitle=L(@"menu_avance_subtitle"); break;
+            case 1: sfName=@"folder.fill";                 title=L(@"title_contenu");   subtitle=L(@"menu_contenu_subtitle"); iconTint=UIColor.systemBlueColor; break;
+            case 2: sfName=@"shield.slash.fill";           title=L(@"title_adblock");   subtitle=L(@"menu_adblock_subtitle"); iconTint=UIColor.systemRedColor; break;
+            case 3: sfName=@"wrench.and.screwdriver.fill"; title=L(@"title_avance");    subtitle=L(@"menu_avance_subtitle"); iconTint=UIColor.systemIndigoColor; break;
             default: return [[UITableViewCell alloc] init];
         }
         // Sous-titres courts de navigation (résumés de catégories) : gardés
@@ -797,7 +804,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
         cell.selectionStyle  = UITableViewCellSelectionStyleNone;
         cell.backgroundColor = S7TVCellBg();
 
-        UIImageView *icon = S7TVIcon(@"globe", [UIColor colorWithWhite:0.75 alpha:1.0]);
+        UIImageView *icon = S7TVIcon(@"globe", UIColor.systemTealColor);
         [cell.contentView addSubview:icon];
 
         UISegmentedControl *seg = [[UISegmentedControl alloc]
@@ -942,12 +949,12 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
     BOOL proxyEnabled = S7TVAdblockProxyIsEnabled();
     if (indexPath.row == 0) {
         return S7TVSwitchCell(L(@"adblock_video_proxy"),
-            @"network", [UIColor colorWithWhite:0.75 alpha:1.0], proxyEnabled,
+            @"network", UIColor.systemBlueColor, proxyEnabled,
             self, @selector(toggleAdblockProxy:), nil);
     }
     if (indexPath.row == 1) {
         return S7TVSwitchCell(L(@"adblock_custom_proxy"),
-            @"server.rack", [UIColor colorWithWhite:0.75 alpha:1.0],
+            @"server.rack", UIColor.systemTealColor,
             S7TVAdblockCustomProxyIsEnabled(), self,
             @selector(toggleAdblockCustomProxy:), nil);
     }
@@ -1248,25 +1255,46 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 
 // Affichage des emotes (animations + résolution CDN 7TV). Le kill switch du
 // renderer est désormais rangé dans Avancé : ce n'est pas un réglage visuel.
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 1; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    return 3;
+    // Section 0 = description d'introduction (aucune ligne), section 1 = réglages.
+    return (s == 0) ? 0 : 3;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
-    return 44;
+    return (s == 0) ? 8 : 44;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
+    if (s == 0) return [[UIView alloc] init];
     return S7TVSectionHeader(L(@"section_affichage"), NO, nil);
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
-    return 8;
+    return (s == 0) ? UITableViewAutomaticDimension : 8;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
+    if (s == 0) {
+        // Description d'introduction : les réglages du chat custom vivent
+        // dans le panneau du picker (bouton « Aa »), pas dans cette page.
+        UIView *container = [[UIView alloc] init];
+        UILabel *lbl = [[UILabel alloc] init];
+        lbl.text = L(@"desc_chat_custom_location");
+        lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        lbl.textColor = S7TVGray();
+        lbl.numberOfLines = 0;
+        lbl.translatesAutoresizingMaskIntoConstraints = NO;
+        [container addSubview:lbl];
+        [NSLayoutConstraint activateConstraints:@[
+            [lbl.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor constant:16],
+            [lbl.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+            [lbl.topAnchor      constraintEqualToAnchor:container.topAnchor constant:6],
+            [lbl.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor constant:-6],
+        ]];
+        return container;
+    }
     // L'explication "résolution élevée = plus net mais plus lourd" vit
     // désormais derrière le bouton "i" de la ligne de résolution.
     UIView *v = [[UIView alloc] init];
@@ -1275,17 +1303,18 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section != 1) return [[UITableViewCell alloc] init];
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     switch (ip.row) {
         case 0: return S7TVSwitchCell(L(@"switch_animations_picker"),
                     @"photo.stack",
-                    [UIColor colorWithWhite:0.75 alpha:1.0],
+                    UIColor.systemIndigoColor,
                     mgr.showPickerAnimations,
                     self, @selector(togglePickerAnimations:), nil);
         case 1: {
             UITableViewCell *cell = S7TVSwitchCell(L(@"switch_animations_favorites_only"),
                         @"star.circle",
-                        [UIColor colorWithWhite:0.75 alpha:1.0],
+                        UIColor.systemYellowColor,
                         mgr.showPickerAnimationsFavoritesOnly,
                         self, @selector(togglePickerAnimationsFavoritesOnly:), nil);
             [self s7tv_applyPickerAnimSubOptionEnabledState:cell];
@@ -1312,7 +1341,7 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    if (ip.row == 2) {
+    if (ip.section == 1 && ip.row == 2) {
         [self presentResolutionPickerFromCell:[tv cellForRowAtIndexPath:ip]];
     }
 }
@@ -1321,7 +1350,7 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
     [SevenTVManager sharedManager].showPickerAnimations = sw.isOn;
     // Reload pour griser/dégriser la sous-option "Favoris uniquement", qui
     // dépend de ce réglage.
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
                    withRowAnimation:UITableViewRowAnimationNone];
 }
 - (void)togglePickerAnimationsFavoritesOnly:(UISwitch *)sw {
@@ -2408,7 +2437,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         cell.selectedBackgroundView.backgroundColor =
             [UIColor colorWithWhite:1.0 alpha:0.06];
         UIImageView *icon = S7TVIcon(@"trash.circle",
-                                      [UIColor colorWithWhite:0.75 alpha:1.0]);
+                                      UIColor.systemOrangeColor);
         [cell.contentView addSubview:icon];
         UILabel *lbl = [[UILabel alloc] init];
         lbl.text = L(@"action_clear_cache");
@@ -2450,7 +2479,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         }
         return S7TVSwitchCell(L(@"switch_floating_button"),
                     @"circle.grid.2x1.fill",
-                    [UIColor colorWithWhite:0.75 alpha:1.0],
+                    UIColor.systemOrangeColor,
                     mgr.showFloatingButton,
                     self, @selector(toggleFloatingButton:), nil);
     }
@@ -2461,12 +2490,12 @@ forRowAtIndexPath:(NSIndexPath *)ip {
             @"square.and.arrow.up", S7TVAccent(), nil);
         }
         return S7TVNavCell(L(@"settings_import"), L(@"settings_import_subtitle"),
-            @"square.and.arrow.down", [UIColor colorWithWhite:0.75 alpha:1.0], nil);
+            @"square.and.arrow.down", UIColor.systemGreenColor, nil);
     }
 
     if (ip.section == S7TV_SECTION_DIAGNOSTICS) {
         return S7TVNavCell(L(@"diagnostics_title"), L(@"diagnostics_subtitle"),
-            @"stethoscope", [UIColor colorWithWhite:0.75 alpha:1.0], nil);
+            @"stethoscope", UIColor.systemPinkColor, nil);
     }
 
     if (ip.section == S7TV_SECTION_LOGS) {
@@ -2476,7 +2505,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         if (row == S7TV_LOGS_ROW_ENABLE) {
             return S7TVSwitchCell(L(@"switch_enable_logs"),
                         @"bolt.fill",
-                        [UIColor colorWithWhite:0.75 alpha:1.0],
+                        UIColor.systemYellowColor,
                         mgr.logsEnabled,
                         self, @selector(toggleLogsEnabled:), nil);
         }
@@ -2492,7 +2521,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                 [UIColor colorWithWhite:1.0 alpha:0.06];
 
             UIImageView *icon = S7TVIcon(@"doc.text.magnifyingglass",
-                                          [UIColor colorWithWhite:0.75 alpha:1.0]);
+                                          UIColor.systemBlueColor);
             [cell.contentView addSubview:icon];
 
             UILabel *nameLbl = [[UILabel alloc] init];
@@ -2528,7 +2557,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         if (row == S7TV_LOGS_ROW_CONSOLE) {
             UITableViewCell *cell = S7TVSwitchCell(L(@"switch_logs_console"),
                         @"terminal.fill",
-                        [UIColor colorWithWhite:0.75 alpha:1.0],
+                        UIColor.systemGreenColor,
                         mgr.debugLogging,
                         self, @selector(toggleDebug:), nil);
             [self s7tv_applyEnabledState:cell];
@@ -2553,6 +2582,15 @@ forRowAtIndexPath:(NSIndexPath *)ip {
             @"lock.rotation", @"photo.fill",
             @"trash.fill",
         ];
+        // Couleur ON de chaque catégorie (même ordre que "icons" / "values").
+        NSArray<UIColor *> *colors = @[
+            UIColor.systemRedColor,     UIColor.systemOrangeColor, UIColor.systemYellowColor,
+            UIColor.systemGreenColor,   UIColor.systemTealColor,
+            UIColor.systemBlueColor,    UIColor.systemIndigoColor, UIColor.systemPurpleColor, UIColor.systemPinkColor,
+            UIColor.systemBrownColor,   UIColor.systemYellowColor,
+            UIColor.systemBlueColor,    UIColor.systemTealColor,
+            UIColor.systemRedColor,
+        ];
         NSArray<NSNumber *> *values = @[
             @(mgr.logErrors), @(mgr.logChatCustom), @(mgr.logChannelPoints),
             @(mgr.logTap), @(mgr.logSwizzle), @(mgr.logCache),
@@ -2572,7 +2610,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
         UITableViewCell *cell = S7TVSwitchCell(titles[catIdx],
                     icons[catIdx],
-                    [UIColor colorWithWhite:0.75 alpha:1.0],
+                    colors[catIdx],
                     values[catIdx].boolValue,
                     self, NSSelectorFromString(selectors[catIdx]), nil);
         [self s7tv_applyEnabledState:cell];

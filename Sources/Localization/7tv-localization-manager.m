@@ -159,6 +159,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"section_affichage":               @[@"Affichage", @"Display"],
         @"section_favoris":                 @[@"Favoris", @"Favorites"],
         @"section_options":                 @[@"Options", @"Options"],
+        @"section_settings_backup":         @[@"Sauvegarde", @"Backup"],
+        @"section_diagnostics":             @[@"Diagnostics", @"Diagnostics"],
         @"section_logs":                    @[@"Logs", @"Logs"],
         @"section_danger":                  @[@"Danger", @"Danger"],
         @"section_langue":                  @[@"Langue", @"Language"],
@@ -175,6 +177,27 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"switch_floating_button":          @[@"Bouton flottant 7TV", @"7TV floating button"],
         @"switch_enable_logs":              @[@"Activer les logs", @"Enable logs"],
         @"switch_logs_console":             @[@"Logs console (Console.app)", @"Console logs (Console.app)"],
+
+        // ── Sauvegarde / restauration des réglages ────────────────────────
+        @"settings_export":                 @[@"Exporter les réglages", @"Export settings"],
+        @"settings_export_subtitle":        @[@"Tous les réglages, favoris et proxy", @"All settings, favorites, and proxy"],
+        @"settings_import":                 @[@"Importer les réglages", @"Import settings"],
+        @"settings_import_subtitle":        @[@"Restaurer un fichier TwitchPlusK", @"Restore a TwitchPlusK file"],
+        @"settings_export_failed_title":    @[@"Export impossible", @"Couldn't export"],
+        @"settings_export_failed_message":  @[@"Impossible de créer le fichier de réglages.", @"Couldn't create the settings file."],
+        @"settings_import_failed_title":    @[@"Import impossible", @"Couldn't import"],
+        @"settings_import_invalid_file":    @[@"Ce fichier n'est pas une sauvegarde TwitchPlusK valide.", @"This file isn't a valid TwitchPlusK backup."],
+        @"settings_import_success_title":   @[@"Import terminé", @"Import complete"],
+        @"settings_import_success_message_format": @[@"%lu réglages importés.", @"%lu settings imported."],
+
+        // ── Diagnostics des hooks ─────────────────────────────────────────
+        @"diagnostics_title":               @[@"Diagnostics", @"Diagnostics"],
+        @"diagnostics_subtitle":            @[@"Vérifier les hooks Twitch détectés", @"Check detected Twitch hooks"],
+        @"diagnostics_header":              @[@"Classes Twitch hookées (cette version)", @"Hooked Twitch classes (this build)"],
+        @"diagnostics_ok":                  @[@"✓ OK", @"✓ OK"],
+        @"diagnostics_missing":             @[@"✗ absente", @"✗ missing"],
+        @"diagnostics_footer":              @[@"✓ = la classe ciblée a été résolue et le hook peut fonctionner. ✗ = Twitch l’a renommée, supprimée ou ne l’a pas encore chargée.",
+                                               @"✓ = the target class resolved and its hook can run. ✗ = Twitch renamed, removed, or has not loaded it yet."],
 
         // ── Catégories de logs ────────────────────────────────────────────
         @"log_cat_errors":                  @[@"Erreurs / Avertissements", @"Errors / Warnings"],

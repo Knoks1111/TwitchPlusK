@@ -23,6 +23,8 @@
 #import "System/7tv-system-home-features.h"
 #import "Adblock/7tv-adblock-settings.h"
 #import "Adblock/7tv-adblock-proxy-status.h"
+#import "Diagnostics/7tv-hook-diagnostics.h"
+#import "Settings/7tv-settings-transfer.h"
 #import <objc/runtime.h>
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names";
@@ -2099,6 +2101,107 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MARK: - S7TVHookDiagnosticsController
+// Reprise de TWABDiagnosticsVC (TwitchAdBlock) : les lignes indiquent si les
+// classes ciblées par les hooks se résolvent dans cette version de Twitch.
+// ─────────────────────────────────────────────────────────────────────────────
+
+@interface S7TVHookDiagnosticsController : UITableViewController
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *items;
+@end
+
+@implementation S7TVHookDiagnosticsController
+
+- (instancetype)init {
+    return [super initWithStyle:UITableViewStyleInsetGrouped];
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = L(@"diagnostics_title");
+    S7TVStyleTableView(self.tableView);
+    [self reloadDiagnostics];
+
+    // Même comportement que TwitchAdBlock si l'écran est présenté sans pile
+    // de navigation : le bouton Done ferme uniquement cet écran.
+    BOOL presentedRoot = self.navigationController.viewControllers.firstObject == self &&
+        self.navigationController.presentingViewController != nil;
+    if (presentedRoot) {
+        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+            initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                 target:self action:@selector(closeDiagnostics)];
+    }
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // TwitchPlusK installe certains hooks après le chargement d'un framework ;
+    // relire le même registre ici reflète leur état réel au moment consulté.
+    [self reloadDiagnostics];
+}
+
+- (void)closeDiagnostics {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)reloadDiagnostics {
+    self.items = S7TVHookDiagnosticItems();
+    if (self.isViewLoaded) [self.tableView reloadData];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.items.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"S7TVHookDiagnosticCell"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:@"S7TVHookDiagnosticCell"];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    }
+    cell.backgroundColor = S7TVCellBg();
+    NSDictionary<NSString *, id> *item = self.items[indexPath.row];
+    BOOL present = [item[@"present"] boolValue];
+    NSString *status = present ? L(@"diagnostics_ok") : L(@"diagnostics_missing");
+    UIColor *color = present ? UIColor.systemGreenColor : UIColor.systemRedColor;
+    if ([cell respondsToSelector:@selector(defaultContentConfiguration)]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
+        UIListContentConfiguration *configuration = [cell defaultContentConfiguration];
+        configuration.text = item[@"name"];
+        configuration.textProperties.font = [UIFont monospacedSystemFontOfSize:11
+                                                                          weight:UIFontWeightRegular];
+        configuration.textProperties.color = UIColor.whiteColor;
+        configuration.secondaryText = status;
+        configuration.secondaryTextProperties.color = color;
+        [cell setContentConfiguration:configuration];
+#pragma clang diagnostic pop
+    } else {
+        cell.textLabel.text = item[@"name"];
+        cell.textLabel.font = [UIFont systemFontOfSize:11];
+        cell.textLabel.textColor = UIColor.whiteColor;
+        cell.detailTextLabel.text = status;
+        cell.detailTextLabel.textColor = color;
+    }
+    return cell;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return L(@"diagnostics_header");
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    return L(@"diagnostics_footer");
+}
+
+@end
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - SevenTVAdvancedPageController  (ex-SevenTVDebugPageController)
 // Diagnostic — reste un vrai menu utilisateur (projet open source, les logs
 // servent aussi à d'autres personnes pour remonter des bugs), pas un mode
@@ -2107,7 +2210,12 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 // (ex-"Recharger les emotes" de l'accueil) atterrit ici en premier.
 // ─────────────────────────────────────────────────────────────────────────────
 
-@interface SevenTVAdvancedPageController ()
+@interface SevenTVAdvancedPageController () <UIDocumentPickerDelegate>
+- (void)s7tv_exportSettingsFromAnchor:(UIView *)anchor;
+- (void)s7tv_importSettingsFromFile;
+- (void)s7tv_importSettingsAtURL:(NSURL *)url;
+- (void)s7tv_applyImportedSettings;
+- (void)s7tv_showSettingsTransferAlertWithTitle:(NSString *)title message:(NSString *)message;
 @end
 
 @implementation SevenTVAdvancedPageController
@@ -2150,16 +2258,20 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     }];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 6; }
 
 // Section 0 = Cache (vider le cache)
 // Section 1 = Options (chat custom + bouton flottant)
-// Section 2 = Logs (activer logs, voir les logs, logs console, puis 14 catégories)
-// Section 3 = Danger (effacer les logs)
+// Section 2 = Sauvegarde (export / import de tous les réglages)
+// Section 3 = Diagnostics (état des hooks Twitch)
+// Section 4 = Logs (activer logs, voir les logs, logs console, puis 14 catégories)
+// Section 5 = Danger (effacer les logs)
 #define S7TV_SECTION_CACHE        0
 #define S7TV_SECTION_OPTIONS      1
-#define S7TV_SECTION_LOGS         2
-#define S7TV_SECTION_DANGER       3
+#define S7TV_SECTION_TRANSFER     2
+#define S7TV_SECTION_DIAGNOSTICS  3
+#define S7TV_SECTION_LOGS         4
+#define S7TV_SECTION_DANGER       5
 
 #define S7TV_LOGS_ROW_ENABLE      0
 #define S7TV_LOGS_ROW_VIEW        1
@@ -2172,6 +2284,8 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     switch (s) {
         case S7TV_SECTION_CACHE:   return 1;
         case S7TV_SECTION_OPTIONS: return 2;
+        case S7TV_SECTION_TRANSFER: return 2;
+        case S7TV_SECTION_DIAGNOSTICS: return 1;
         case S7TV_SECTION_LOGS:    return S7TV_LOGS_ROW_COUNT;
         case S7TV_SECTION_DANGER:  return 1;
         default: return 0;
@@ -2186,6 +2300,8 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     switch (s) {
         case S7TV_SECTION_CACHE:   return [[UIView alloc] init]; // pas de header : action isolée, comme l'ancien "Recharger" de l'accueil
         case S7TV_SECTION_OPTIONS: return S7TVSectionHeader(L(@"section_options"), NO);
+        case S7TV_SECTION_TRANSFER: return S7TVSectionHeader(L(@"section_settings_backup"), NO);
+        case S7TV_SECTION_DIAGNOSTICS: return S7TVSectionHeader(L(@"section_diagnostics"), NO);
         case S7TV_SECTION_LOGS:    return S7TVSectionHeader(L(@"section_logs"), NO);
         case S7TV_SECTION_DANGER:  return S7TVSectionHeader(L(@"section_danger"), NO);
         default: return [[UIView alloc] init];
@@ -2260,6 +2376,20 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                     [UIColor colorWithWhite:0.75 alpha:1.0],
                     mgr.showFloatingButton,
                     self, @selector(toggleFloatingButton:));
+    }
+
+    if (ip.section == S7TV_SECTION_TRANSFER) {
+        if (ip.row == 0) {
+            return S7TVNavCell(L(@"settings_export"), L(@"settings_export_subtitle"),
+                @"square.and.arrow.up", S7TVAccent());
+        }
+        return S7TVNavCell(L(@"settings_import"), L(@"settings_import_subtitle"),
+            @"square.and.arrow.down", [UIColor colorWithWhite:0.75 alpha:1.0]);
+    }
+
+    if (ip.section == S7TV_SECTION_DIAGNOSTICS) {
+        return S7TVNavCell(L(@"diagnostics_title"), L(@"diagnostics_subtitle"),
+            @"stethoscope", [UIColor colorWithWhite:0.75 alpha:1.0]);
     }
 
     if (ip.section == S7TV_SECTION_LOGS) {
@@ -2407,6 +2537,18 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
     if (ip.section == S7TV_SECTION_CACHE) { [self clearCache]; return; }
 
+    if (ip.section == S7TV_SECTION_TRANSFER) {
+        if (ip.row == 0) [self s7tv_exportSettingsFromAnchor:[tv cellForRowAtIndexPath:ip]];
+        else [self s7tv_importSettingsFromFile];
+        return;
+    }
+
+    if (ip.section == S7TV_SECTION_DIAGNOSTICS) {
+        [self.navigationController pushViewController:[S7TVHookDiagnosticsController new]
+                                             animated:YES];
+        return;
+    }
+
     if (ip.section == S7TV_SECTION_LOGS && ip.row == S7TV_LOGS_ROW_VIEW) {
         [self.navigationController
             pushViewController:[[SevenTVLogsController alloc] init] animated:YES];
@@ -2447,6 +2589,109 @@ forRowAtIndexPath:(NSIndexPath *)ip {
             style:UIAlertActionStyleDefault handler:nil]];
         [strongSelf presentViewController:alert animated:YES completion:nil];
     }];
+}
+
+// ── Sauvegarde des réglages TwitchPlusK ─────────────────────────────────────
+
+- (void)s7tv_exportSettingsFromAnchor:(UIView *)anchor {
+    NSError *error = nil;
+    NSData *data = S7TVSettingsExportData(&error);
+    if (!data) {
+        [self s7tv_showSettingsTransferAlertWithTitle:L(@"settings_export_failed_title")
+                                              message:L(@"settings_export_failed_message")];
+        return;
+    }
+
+    NSURL *directoryURL = [NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES];
+    NSURL *fileURL = [directoryURL URLByAppendingPathComponent:S7TVSettingsExportFileName()];
+    if (![data writeToURL:fileURL options:NSDataWritingAtomic error:&error]) {
+        [self s7tv_showSettingsTransferAlertWithTitle:L(@"settings_export_failed_title")
+                                              message:L(@"settings_export_failed_message")];
+        return;
+    }
+
+    UIActivityViewController *sheet = [[UIActivityViewController alloc]
+        initWithActivityItems:@[fileURL] applicationActivities:nil];
+    UIView *source = anchor ?: self.view;
+    sheet.popoverPresentationController.sourceView = source;
+    sheet.popoverPresentationController.sourceRect = source.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)s7tv_importSettingsFromFile {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+        initWithDocumentTypes:@[@"com.apple.property-list", @"public.data"]
+                       inMode:UIDocumentPickerModeImport];
+#pragma clang diagnostic pop
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    picker.modalPresentationStyle = UIModalPresentationFormSheet;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller
+didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    (void)controller;
+    NSURL *url = urls.firstObject;
+    if (url) [self s7tv_importSettingsAtURL:url];
+}
+
+- (void)s7tv_importSettingsAtURL:(NSURL *)url {
+    NSError *error = nil;
+    NSData *data = [NSData dataWithContentsOfURL:url options:0 error:&error];
+    if (!data) {
+        [self s7tv_showSettingsTransferAlertWithTitle:L(@"settings_import_failed_title")
+                                              message:L(@"error_cant_read_file")];
+        return;
+    }
+
+    NSUInteger importedCount = S7TVSettingsImportData(data, &error);
+    if (importedCount == NSNotFound) {
+        [self s7tv_showSettingsTransferAlertWithTitle:L(@"settings_import_failed_title")
+                                              message:L(@"settings_import_invalid_file")];
+        return;
+    }
+
+    [self s7tv_applyImportedSettings];
+    [self.tableView reloadData];
+    [self s7tv_showSettingsTransferAlertWithTitle:L(@"settings_import_success_title")
+                                          message:[NSString stringWithFormat:
+                                              L(@"settings_import_success_message_format"),
+                                              (unsigned long)importedCount]];
+}
+
+- (void)s7tv_applyImportedSettings {
+    // Les préférences générales vivent aussi en mémoire dans le singleton.
+    // Cette méthode les relit sans repasser par les setters (qui réécrivent
+    // immédiatement NSUserDefaults et risqueraient de modifier le backup).
+    [[SevenTVManager sharedManager] reloadPreferencesFromDefaults];
+
+    SevenTVChatAppearanceConfig *chatConfig = [SevenTVChatAppearanceConfig sharedConfig];
+    [chatConfig reloadFromDefaults];
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:S7TVChatAppearanceConfigDidChangeNotification object:chatConfig];
+
+    NSInteger language = [NSUserDefaults.standardUserDefaults integerForKey:@"s7tv_language"];
+    if (language != S7TVLanguageEnglish) language = S7TVLanguageFrench;
+    [S7TVLocalization shared].currentLanguage = (S7TVLanguage)language;
+    self.title = L(@"title_avance");
+
+    // Les setters réinstallent/retirent l'observateur de rotation et mettent
+    // à jour le bouton du lecteur déjà présent, ce qu'une simple écriture
+    // dans NSUserDefaults ne ferait pas.
+    s7tv_setOrientationLockButtonEnabled(s7tv_orientationLockButtonEnabled());
+    s7tv_setAutoOrientationLockMode(s7tv_autoOrientationLockMode());
+}
+
+- (void)s7tv_showSettingsTransferAlertWithTitle:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                     message:message
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
+                                               style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 // Grise visuellement une cellule de catégorie/console quand logsEnabled == NO,

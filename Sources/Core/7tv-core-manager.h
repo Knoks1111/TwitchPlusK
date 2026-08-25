@@ -173,6 +173,11 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // --- Initialisation ---
 - (void)setup;
 
+// Relit les préférences déjà présentes dans NSUserDefaults sans les réécrire.
+// Utilisé après l'import d'une sauvegarde pour appliquer immédiatement les
+// réglages généraux, le bouton flottant, le chat custom et les favoris.
+- (void)reloadPreferencesFromDefaults;
+
 // --- Chargement des emotes ---
 - (void)loadGlobalEmotes;
 - (void)loadEmotesForChannelName:(NSString *)channelName;

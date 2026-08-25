@@ -42,11 +42,14 @@ static const char * const kS7TVOLEDDarkThemeClassNames[] = {
     "_TtC12TwitchCoreUI17DarkMobileUITheme",
 };
 
-static SEL const kS7TVOLEDBackgroundSelectors[] = {
-    @selector(backgroundBaseColor),
-    @selector(backgroundBodyColor),
-    @selector(backgroundAltColor),
-    @selector(backgroundAlt2Color),
+// @selector(...) cannot be used in a C static initializer with the older
+// clang/Theos toolchain. Keep the names static, then resolve the selectors
+// once while installing the hooks.
+static const char * const kS7TVOLEDBackgroundSelectorNames[] = {
+    "backgroundBaseColor",
+    "backgroundBodyColor",
+    "backgroundAltColor",
+    "backgroundAlt2Color",
 };
 
 BOOL S7TVOLEDModeEnabled(void) {
@@ -143,14 +146,15 @@ static void s7tv_installOLEDHook(Class targetClass, SEL selector) {
 static void s7tv_installOLEDPaletteHooks(void) {
     const NSUInteger themeCount = sizeof(kS7TVOLEDDarkThemeClassNames) /
         sizeof(kS7TVOLEDDarkThemeClassNames[0]);
-    const NSUInteger selectorCount = sizeof(kS7TVOLEDBackgroundSelectors) /
-        sizeof(kS7TVOLEDBackgroundSelectors[0]);
+    const NSUInteger selectorCount = sizeof(kS7TVOLEDBackgroundSelectorNames) /
+        sizeof(kS7TVOLEDBackgroundSelectorNames[0]);
 
     for (NSUInteger themeIndex = 0; themeIndex < themeCount; themeIndex++) {
         Class themeClass = objc_getClass(kS7TVOLEDDarkThemeClassNames[themeIndex]);
         if (!themeClass) continue;
         for (NSUInteger selectorIndex = 0; selectorIndex < selectorCount; selectorIndex++) {
-            s7tv_installOLEDHook(themeClass, kS7TVOLEDBackgroundSelectors[selectorIndex]);
+            SEL selector = sel_registerName(kS7TVOLEDBackgroundSelectorNames[selectorIndex]);
+            s7tv_installOLEDHook(themeClass, selector);
         }
     }
 }

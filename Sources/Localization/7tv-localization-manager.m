@@ -71,6 +71,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"common_cancel":                   @[@"Annuler", @"Cancel"],
         @"common_clear":                    @[@"Effacer", @"Clear"],
         @"common_empty_action":             @[@"Vider", @"Clear"],
+        @"common_default_suffix":           @[@" - Par défaut", @" - Default"],
 
         // ── Titres de page ──────────────────────────────────────────────
         @"title_7tv_settings":              @[@"TwitchPlusK Settings", @"TwitchPlusK Settings"],

@@ -25,6 +25,7 @@
 #import "Adblock/7tv-adblock-proxy-status.h"
 #import "Diagnostics/7tv-hook-diagnostics.h"
 #import "Settings/7tv-settings-transfer.h"
+#import "UI/7tv-info-tooltip.h"
 #import <objc/runtime.h>
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names";
@@ -142,10 +143,13 @@ static UIImageView *S7TVIcon(NSString *sfName, UIColor *tint) {
 
 // Cellule standard avec icône + titre + (optionnel) sous-titre + chevron
 // Style taille police identique Twitch natif : titre 17pt Regular, sous-titre 12pt Regular gris
+// infoKey (optionnel) : clé de description affichée derrière un bouton "i"
+// placé avant le chevron — remplace les longues descriptions permanentes.
 static UITableViewCell *S7TVNavCell(NSString *title,
                                      NSString *subtitle,
                                      NSString *sfName,
-                                     UIColor  *iconTint) {
+                                     UIColor  *iconTint,
+                                     NSString *infoKey) {
     UITableViewCell *cell = [[UITableViewCell alloc]
         initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
     cell.accessoryType   = UITableViewCellAccessoryDisclosureIndicator;
@@ -164,6 +168,20 @@ static UITableViewCell *S7TVNavCell(NSString *title,
     titleLbl.textColor = [UIColor whiteColor];
     titleLbl.numberOfLines = 1;
     titleLbl.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIButton *infoButton = infoKey.length > 0
+        ? [S7TVInfoTooltip infoButtonWithKey:infoKey] : nil;
+
+    // Le contentView se termine avant le chevron natif : un bouton ancré au
+    // trailing du contentView ne chevauche donc jamais l'accessoire.
+    if (infoButton) {
+        infoButton.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:infoButton];
+        [NSLayoutConstraint activateConstraints:@[
+            [infoButton.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-4],
+            [infoButton.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        ]];
+    }
 
     if (subtitle.length > 0) {
         UILabel *subLbl = [[UILabel alloc] init];
@@ -188,34 +206,52 @@ static UITableViewCell *S7TVNavCell(NSString *title,
             [icon.centerYAnchor   constraintEqualToAnchor:cell.contentView.centerYAnchor],
             [stack.leadingAnchor  constraintEqualToAnchor:icon.trailingAnchor constant:14],
             [stack.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
-            [stack.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
             // Assure que le stack ne déborde pas verticalement
             [stack.topAnchor      constraintGreaterThanOrEqualToAnchor:cell.contentView.topAnchor constant:8],
             [stack.bottomAnchor   constraintLessThanOrEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
         ]];
+        if (infoButton) {
+            [NSLayoutConstraint activateConstraints:@[
+                [stack.trailingAnchor constraintLessThanOrEqualToAnchor:infoButton.leadingAnchor constant:-4],
+            ]];
+        } else {
+            [NSLayoutConstraint activateConstraints:@[
+                [stack.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+            ]];
+        }
     } else {
         [cell.contentView addSubview:titleLbl];
         [NSLayoutConstraint activateConstraints:@[
             [icon.leadingAnchor     constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
             [icon.centerYAnchor     constraintEqualToAnchor:cell.contentView.centerYAnchor],
-            [titleLbl.leadingAnchor  constraintEqualToAnchor:icon.trailingAnchor constant:14],
-            [titleLbl.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
             // CRITIQUE : top+bottom pour que le label ait une hauteur résolue
             [titleLbl.topAnchor      constraintEqualToAnchor:cell.contentView.topAnchor constant:10],
             [titleLbl.bottomAnchor   constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
         ]];
+        if (infoButton) {
+            [NSLayoutConstraint activateConstraints:@[
+                [titleLbl.trailingAnchor constraintLessThanOrEqualToAnchor:infoButton.leadingAnchor constant:-4],
+            ]];
+        } else {
+            [NSLayoutConstraint activateConstraints:@[
+                [titleLbl.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+            ]];
+        }
     }
     return cell;
 }
 
 // Cellule avec UISwitch
 // Titre 17pt Regular (identique Twitch natif), switch violet 7TV
+// infoKey (optionnel) : clé de description derrière un bouton "i" placé
+// entre le label et le switch (remplace les footers descriptifs).
 static UITableViewCell *S7TVSwitchCell(NSString *title,
                                         NSString *sfName,
                                         UIColor  *iconTint,
                                         BOOL      isOn,
                                         id        target,
-                                        SEL       action) {
+                                        SEL       action,
+                                        NSString *infoKey) {
     UITableViewCell *cell = [[UITableViewCell alloc]
         initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.selectionStyle  = UITableViewCellSelectionStyleNone;
@@ -245,6 +281,13 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
     sw.translatesAutoresizingMaskIntoConstraints = NO;
     [cell.contentView addSubview:sw];
 
+    UIButton *infoButton = infoKey.length > 0
+        ? [S7TVInfoTooltip infoButtonWithKey:infoKey] : nil;
+    if (infoButton) {
+        infoButton.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:infoButton];
+    }
+
     [NSLayoutConstraint activateConstraints:@[
         [icon.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
         [icon.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
@@ -263,16 +306,29 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
         // est trop long pour la largeur disponible, sans jamais pousser le
         // switch ni entrer en conflit avec sa position fixe ci-dessus.
         [lbl.leadingAnchor   constraintEqualToAnchor:icon.trailingAnchor constant:14],
-        [lbl.trailingAnchor  constraintLessThanOrEqualToAnchor:sw.leadingAnchor constant:-12],
         [lbl.topAnchor       constraintEqualToAnchor:cell.contentView.topAnchor constant:13],
         [lbl.bottomAnchor    constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-13],
     ]];
+
+    if (infoButton) {
+        [NSLayoutConstraint activateConstraints:@[
+            [infoButton.trailingAnchor constraintEqualToAnchor:sw.leadingAnchor constant:-6],
+            [infoButton.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [lbl.trailingAnchor       constraintLessThanOrEqualToAnchor:infoButton.leadingAnchor constant:-4],
+        ]];
+    } else {
+        [NSLayoutConstraint activateConstraints:@[
+            [lbl.trailingAnchor constraintLessThanOrEqualToAnchor:sw.leadingAnchor constant:-12],
+        ]];
+    }
     return cell;
 }
 
 // Header de section style Twitch : logo (optionnel) + texte gris uppercase
 // Identique visuellement au header "7TV SETTINGS" de la capture
-static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo) {
+// infoKey (optionnel) : clé de description derrière un bouton "i" aligné à
+// droite du header (pour les descriptions qui concernent toute la section).
+static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo, NSString *infoKey) {
     UIView *container = [[UIView alloc] init];
     container.backgroundColor = [UIColor clearColor];
 
@@ -282,6 +338,13 @@ static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo) {
     lbl.textColor = [UIColor colorWithWhite:0.60 alpha:1.0];
     lbl.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:lbl];
+
+    UIButton *infoButton = infoKey.length > 0
+        ? [S7TVInfoTooltip infoButtonWithKey:infoKey] : nil;
+    if (infoButton) {
+        infoButton.translatesAutoresizingMaskIntoConstraints = NO;
+        [container addSubview:infoButton];
+    }
 
     if (withLogo) {
         // Petit logo 7TV à gauche du texte, comme sur la capture
@@ -304,8 +367,15 @@ static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo) {
 
                 [lbl.leadingAnchor constraintEqualToAnchor:iv.trailingAnchor constant:6],
                 [lbl.bottomAnchor  constraintEqualToAnchor:container.bottomAnchor constant:-8],
-                [lbl.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+                [lbl.trailingAnchor constraintLessThanOrEqualToAnchor:container.trailingAnchor constant:-16],
             ]];
+            if (infoButton) {
+                [NSLayoutConstraint activateConstraints:@[
+                    [infoButton.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8],
+                    [infoButton.centerYAnchor  constraintEqualToAnchor:lbl.centerYAnchor],
+                    [lbl.trailingAnchor       constraintLessThanOrEqualToAnchor:infoButton.leadingAnchor constant:-4],
+                ]];
+            }
             return container;
         }
     }
@@ -314,8 +384,18 @@ static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo) {
     [NSLayoutConstraint activateConstraints:@[
         [lbl.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor constant:16],
         [lbl.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor constant:-8],
-        [lbl.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
     ]];
+    if (infoButton) {
+        [NSLayoutConstraint activateConstraints:@[
+            [infoButton.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8],
+            [infoButton.centerYAnchor  constraintEqualToAnchor:lbl.centerYAnchor],
+            [lbl.trailingAnchor       constraintLessThanOrEqualToAnchor:infoButton.leadingAnchor constant:-4],
+        ]];
+    } else {
+        [NSLayoutConstraint activateConstraints:@[
+            [lbl.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+        ]];
+    }
     return container;
 }
 
@@ -349,6 +429,20 @@ static BOOL S7TVBoolDefaultYes(NSString *key) {
 static void S7TVSetBool(NSString *key, BOOL val) {
     [[NSUserDefaults standardUserDefaults] setBool:val forKey:key];
     [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// Résolution d'emote d'origine (miroir de kDefaultEmote7TVResolution dans
+// 7tv-chat-appearance-config.m — valeur non exportée).
+static const NSInteger kS7TVDefaultEmoteResolution = 2;
+
+// Suffixe "- Par défaut" / "- Default" pour les sous-titres des réglages à
+// menu de choix : aide à reconnaître la valeur d'origine. Ignoré quand le
+// titre est déjà exactement le mot "Par défaut" (écran au lancement), où le
+// marqueur serait purement redondant.
+static NSString *S7TVValueWithDefaultMark(NSString *value, BOOL isDefault) {
+    if (!isDefault) return value;
+    if ([value isEqualToString:L(@"launch_default")]) return value;
+    return [value stringByAppendingString:L(@"common_default_suffix")];
 }
 
 
@@ -394,26 +488,16 @@ static UIView *s7tv_settingsHeaderView(id self, SEL cmd, UITableView *tableView,
         return implementation(self, original, tableView, s7tv_settingsOriginalSection(section));
     }
 
-    // Header texte seul — pas de logo ici : l'entrée dans les paramètres
-    // Twitch natifs reste sobre, le logo 7TV reste réservé au hub.
-    UIView *container = [UIView new];
-    UILabel *label = [UILabel new];
-    label.text = L(@"header_7tv_settings_caps");
-    label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
-    label.textColor = UIColor.secondaryLabelColor;
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:label];
-    [NSLayoutConstraint activateConstraints:@[
-        [label.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
-        [label.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
-        [label.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
-    ]];
-    return container;
+    // Pas de header de section : le titre "TwitchPlusK Settings" de la
+    // cellule suffit (un header au-dessus doublait le nom). Le logo 7TV est
+    // directement dans la cellule pour identifier d'un coup d'œil les
+    // paramètres du tweak.
+    return [UIView new];
 }
 
 static CGFloat s7tv_settingsHeaderHeight(id self, SEL cmd, UITableView *tableView,
                                           NSInteger section) {
-    if (section == 0) return 38.0;
+    if (section == 0) return 8.0;
     SEL original = NSSelectorFromString(@"s7tv_tableView:heightForHeaderInSection:");
     CGFloat (*implementation)(id, SEL, UITableView *, NSInteger) =
         (CGFloat (*)(id, SEL, UITableView *, NSInteger))[self methodForSelector:original];
@@ -449,6 +533,12 @@ static UITableViewCell *s7tv_settingsCell(id self, SEL cmd, UITableView *tableVi
     }
     cell.textLabel.text = L(@"title_7tv_settings");
     cell.textLabel.numberOfLines = 0;
+    // Logo 7TV à gauche du titre : identifie immédiatement les paramètres
+    // du tweak dans la liste native.
+    NSData *logoData = [[NSData alloc]
+        initWithBase64EncodedString:kS7TVLogoBase64
+                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    if (logoData) cell.imageView.image = [UIImage imageWithData:logoData scale:2.0];
     return cell;
 }
 
@@ -631,8 +721,8 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     switch (s) {
-        case S7TVHomeSectionMain:     return S7TVSectionHeader(L(@"title_7tv_settings"), YES);
-        case S7TVHomeSectionLanguage: return S7TVSectionHeader(L(@"section_langue"), NO);
+        case S7TVHomeSectionMain:     return S7TVSectionHeader(L(@"title_7tv_settings"), YES, nil);
+        case S7TVHomeSectionLanguage: return S7TVSectionHeader(L(@"section_langue"), NO, nil);
         default: return [[UIView alloc] init];
     }
 }
@@ -693,7 +783,9 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
             case 3: sfName=@"wrench.and.screwdriver.fill"; title=L(@"title_avance");    subtitle=L(@"menu_avance_subtitle"); break;
             default: return [[UITableViewCell alloc] init];
         }
-        return S7TVNavCell(title, subtitle, sfName, iconTint);
+        // Sous-titres courts de navigation (résumés de catégories) : gardés
+        // volontairement visibles, ils aident à comprendre le menu.
+        return S7TVNavCell(title, subtitle, sfName, iconTint, nil);
     }
 
     // Section Langue — segmented control FR/EN, pas un simple switch : il y a
@@ -796,6 +888,11 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
     }
 }
 
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [S7TVInfoTooltip dismiss];
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -806,13 +903,10 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    // Le footer descriptif du proxy vit désormais derrière le "i" du header.
     return S7TVSectionHeader(section == 0 ? L(@"section_general")
-                                         : L(@"adblock_section_proxy"), NO);
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return L(@"adblock_engine_footer");
-    return L(@"adblock_proxy_privacy_footer");
+                                          : L(@"adblock_section_proxy"), NO,
+                             section == 0 ? nil : @"adblock_proxy_privacy_footer");
 }
 
 - (NSInteger)proxyIndexForRow:(NSInteger)row {
@@ -833,26 +927,29 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 0) {
         if (indexPath.row == 0) {
+            // La description du moteur (ex-footer de section) est derrière
+            // le "i" de la ligne d'activation.
             return S7TVSwitchCell(L(@"adblock_enable"), @"shield.lefthalf.filled",
-                S7TVAccent(), S7TVAdblockIsEnabled(), self, @selector(toggleAdblock:));
+                S7TVAccent(), S7TVAdblockIsEnabled(), self, @selector(toggleAdblock:),
+                @"adblock_engine_footer");
         }
         return S7TVSwitchCell(L(@"adblock_hide_go_ad_free"), @"rectangle.slash",
             [UIColor colorWithRed:0.95 green:0.45 blue:0.25 alpha:1.0],
             S7TVAdblockHideAdFreeButtonIsEnabled(), self,
-            @selector(toggleHideGoAdFree:));
+            @selector(toggleHideGoAdFree:), nil);
     }
 
     BOOL proxyEnabled = S7TVAdblockProxyIsEnabled();
     if (indexPath.row == 0) {
         return S7TVSwitchCell(L(@"adblock_video_proxy"),
             @"network", [UIColor colorWithWhite:0.75 alpha:1.0], proxyEnabled,
-            self, @selector(toggleAdblockProxy:));
+            self, @selector(toggleAdblockProxy:), nil);
     }
     if (indexPath.row == 1) {
         return S7TVSwitchCell(L(@"adblock_custom_proxy"),
             @"server.rack", [UIColor colorWithWhite:0.75 alpha:1.0],
             S7TVAdblockCustomProxyIsEnabled(), self,
-            @selector(toggleAdblockCustomProxy:));
+            @selector(toggleAdblockCustomProxy:), nil);
     }
 
     if (!S7TVAdblockCustomProxyIsEnabled()) return [self proxyStatusCell];
@@ -1162,32 +1259,19 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
-    return S7TVSectionHeader(L(@"section_affichage"), NO);
+    return S7TVSectionHeader(L(@"section_affichage"), NO, nil);
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
-    return UITableViewAutomaticDimension;
+    return 8;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
-    // L'explication "résolution élevée = plus net mais plus lourd" vivait
-    // dans la cellule du segmented ; elle devient le footer de section
-    // depuis que la cellule est une simple ligne de navigation.
-    UIView *container = [[UIView alloc] init];
-    UILabel *lbl = [[UILabel alloc] init];
-    lbl.text = L(@"setting_resolution_clears_cache");
-    lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-    lbl.textColor = S7TVGray();
-    lbl.numberOfLines = 0;
-    lbl.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:lbl];
-    [NSLayoutConstraint activateConstraints:@[
-        [lbl.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor constant:16],
-        [lbl.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
-        [lbl.topAnchor      constraintEqualToAnchor:container.topAnchor constant:6],
-        [lbl.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor constant:-6],
-    ]];
-    return container;
+    // L'explication "résolution élevée = plus net mais plus lourd" vit
+    // désormais derrière le bouton "i" de la ligne de résolution.
+    UIView *v = [[UIView alloc] init];
+    v.backgroundColor = [UIColor clearColor];
+    return v;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -1197,25 +1281,30 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
                     @"photo.stack",
                     [UIColor colorWithWhite:0.75 alpha:1.0],
                     mgr.showPickerAnimations,
-                    self, @selector(togglePickerAnimations:));
+                    self, @selector(togglePickerAnimations:), nil);
         case 1: {
             UITableViewCell *cell = S7TVSwitchCell(L(@"switch_animations_favorites_only"),
                         @"star.circle",
                         [UIColor colorWithWhite:0.75 alpha:1.0],
                         mgr.showPickerAnimationsFavoritesOnly,
-                        self, @selector(togglePickerAnimationsFavoritesOnly:));
+                        self, @selector(togglePickerAnimationsFavoritesOnly:), nil);
             [self s7tv_applyPickerAnimSubOptionEnabledState:cell];
             return cell;
         }
         case 2: {
             // Menu de choix (action sheet) plutôt qu'un segmented : même
             // logique que "Écran au lancement" — la valeur courante sert de
-            // sous-titre, le tap ouvre la liste des résolutions.
+            // sous-titre (marquée "- Par défaut" quand c'est celle d'origine),
+            // le tap ouvre la liste des résolutions. La longue explication
+            // (cache vidé, impact mémoire) est derrière le bouton "i".
             NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
             current = MIN(4, MAX(1, current));
             return S7TVNavCell(L(@"setting_emote_resolution"),
-                [NSString stringWithFormat:@"%ldx", (long)current],
-                @"photo.stack.fill", S7TVAccent());
+                S7TVValueWithDefaultMark(
+                    [NSString stringWithFormat:@"%ldx", (long)current],
+                    current == kS7TVDefaultEmoteResolution),
+                @"photo.stack.fill", S7TVAccent(),
+                @"setting_resolution_clears_cache");
         }
         default: return [[UITableViewCell alloc] init];
     }
@@ -1247,6 +1336,7 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
         alertControllerWithTitle:L(@"setting_emote_resolution")
                           message:nil
                    preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
     NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
     current = MIN(4, MAX(1, current));
     for (NSInteger resolution = 1; resolution <= 4; resolution++) {
@@ -1365,6 +1455,11 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
     [self.tableView reloadData];
 }
 
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [S7TVInfoTooltip dismiss];
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
@@ -1388,74 +1483,58 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     switch (s) {
-        case S7TVContentSectionFavorites: return S7TVSectionHeader(L(@"section_favoris"), NO);
-        case S7TVContentSectionStream:    return S7TVSectionHeader(L(@"section_stream"), NO);
-        case S7TVContentSectionHome:      return S7TVSectionHeader(L(@"section_home_playback"), NO);
-        case S7TVContentSectionRotation:  return S7TVSectionHeader(L(@"section_rotation"), NO);
+        case S7TVContentSectionFavorites: return S7TVSectionHeader(L(@"section_favoris"), NO, nil);
+        case S7TVContentSectionStream:    return S7TVSectionHeader(L(@"section_stream"), NO, nil);
+        // Descriptions de section déplacées derrière le "i" du header
+        // (ex-footers descriptifs affichés en permanence).
+        case S7TVContentSectionHome:      return S7TVSectionHeader(L(@"section_home_playback"), NO,
+                                              @"desc_home_playback_settings");
+        case S7TVContentSectionRotation:  return S7TVSectionHeader(L(@"section_rotation"), NO,
+                                              @"desc_orientation_lock_settings");
         default: return [[UIView alloc] init];
     }
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
-    return (s == S7TVContentSectionStream || s == S7TVContentSectionHome ||
-            s == S7TVContentSectionRotation)
-        ? UITableViewAutomaticDimension : 8;
+    return 8;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
-    if (s != S7TVContentSectionStream && s != S7TVContentSectionHome &&
-        s != S7TVContentSectionRotation) {
-        UIView *v = [[UIView alloc] init];
-        v.backgroundColor = [UIColor clearColor];
-        return v;
-    }
-    UIView *container = [[UIView alloc] init];
-    UILabel *lbl = [[UILabel alloc] init];
-    if (s == S7TVContentSectionStream) {
-        lbl.text = L(@"desc_auto_collect");
-    } else if (s == S7TVContentSectionHome) {
-        lbl.text = L(@"desc_home_playback_settings");
-    } else {
-        lbl.text = L(@"desc_orientation_lock_settings");
-    }
-    lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-    lbl.textColor = S7TVGray();
-    lbl.numberOfLines = 0;
-    lbl.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:lbl];
-    [NSLayoutConstraint activateConstraints:@[
-        [lbl.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor constant:16],
-        [lbl.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
-        [lbl.topAnchor      constraintEqualToAnchor:container.topAnchor constant:6],
-        [lbl.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor constant:-6],
-    ]];
-    return container;
+    // Les descriptions de section (auto-collect, accueil/lecture, rotation)
+    // vivent désormais derrière les boutons "i" des headers/lignes.
+    UIView *v = [[UIView alloc] init];
+    v.backgroundColor = [UIColor clearColor];
+    return v;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 
     // ── Section Stream : Auto Collect Channel Points ──────────────────────
     if (ip.section == S7TVContentSectionStream) {
+        // La description (ex-footer de section) est derrière le "i" de la ligne.
         return S7TVSwitchCell(L(@"switch_auto_collect_title"),
                     @"giftcard.fill", [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
-                    S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints), self, @selector(toggleAutoCollect:));
+                    S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints), self,
+                    @selector(toggleAutoCollect:), @"desc_auto_collect");
     }
 
     // ── Section Accueil et lecture : fonctionnalités TwitchAdBlock ──────
     if (ip.section == S7TVContentSectionHome) {
         if (ip.row == 0) {
+            S7TVLaunchDestination destination = s7tv_launchDestination();
             return S7TVNavCell(L(@"setting_launch_screen"),
-                S7TVLaunchDestinationTitle(s7tv_launchDestination()),
-                @"rectangle.stack.fill", S7TVAccent());
+                S7TVValueWithDefaultMark(S7TVLaunchDestinationTitle(destination),
+                    destination == S7TVLaunchDestinationDefault),
+                @"rectangle.stack.fill", S7TVAccent(), nil);
         }
         if (ip.row == 1) {
             return S7TVSwitchCell(L(@"switch_hide_twitch_stories"),
                 @"circle.slash", [UIColor colorWithRed:0.95 green:0.35 blue:0.50 alpha:1.0],
-                s7tv_hideTwitchStoriesEnabled(), self, @selector(toggleHideTwitchStories:));
+                s7tv_hideTwitchStoriesEnabled(), self, @selector(toggleHideTwitchStories:), nil);
         }
         return S7TVSwitchCell(L(@"switch_keep_live_feed_playing"),
             @"play.circle.fill", [UIColor colorWithRed:0.30 green:0.75 blue:0.45 alpha:1.0],
-            s7tv_keepLiveFeedPlayingEnabled(), self, @selector(toggleKeepLiveFeedPlaying:));
+            s7tv_keepLiveFeedPlayingEnabled(), self, @selector(toggleKeepLiveFeedPlaying:), nil);
     }
 
     // ── Section Rotation : bouton manuel + détection automatique ─────────
@@ -1464,15 +1543,18 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
             return S7TVSwitchCell(L(@"switch_orientation_lock_button"),
                         @"lock.rotation", S7TVAccent(),
                         s7tv_orientationLockButtonEnabled(), self,
-                        @selector(toggleOrientationLockButton:));
+                        @selector(toggleOrientationLockButton:), nil);
         }
 
         // Menu de choix (action sheet) plutôt qu'un segmented : même logique
-        // que "Écran au lancement" — la valeur courante sert de sous-titre,
-        // le tap ouvre la liste des modes. Grisé si le bouton est désactivé.
+        // que "Écran au lancement" — la valeur courante sert de sous-titre
+        // (marquée "- Par défaut" quand c'est le mode d'origine), le tap
+        // ouvre la liste des modes. Grisé si le bouton est désactivé.
+        S7TVAutoOrientationLockMode mode = s7tv_autoOrientationLockMode();
         UITableViewCell *cell = S7TVNavCell(L(@"setting_orientation_auto_lock"),
-            S7TVAutoOrientationLockModeTitle(s7tv_autoOrientationLockMode()),
-            @"iphone.gen3.radiowaves.left.and.right", S7TVAccent());
+            S7TVValueWithDefaultMark(S7TVAutoOrientationLockModeTitle(mode),
+                mode == S7TVAutoOrientationLockModeDisabled),
+            @"iphone.gen3.radiowaves.left.and.right", S7TVAccent(), nil);
         BOOL enabled = s7tv_orientationLockButtonEnabled();
         cell.userInteractionEnabled = enabled;
         cell.contentView.alpha = enabled ? 1.0 : 0.4;
@@ -1610,6 +1692,7 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
         alertControllerWithTitle:L(@"setting_orientation_auto_lock")
                           message:nil
                    preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
     S7TVAutoOrientationLockMode current = s7tv_autoOrientationLockMode();
     for (NSInteger raw = S7TVAutoOrientationLockModeDisabled;
          raw <= S7TVAutoOrientationLockModeBothLandscapes; raw++) {
@@ -1638,8 +1721,11 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
 - (void)presentLaunchDestinationPickerFromCell:(UIView *)anchor {
     UIAlertController *sheet = [UIAlertController
         alertControllerWithTitle:L(@"setting_launch_screen")
-                         message:nil
-                  preferredStyle:UIAlertControllerStyleActionSheet];
+                          message:nil
+                   preferredStyle:UIAlertControllerStyleActionSheet];
+    // Textes des actions en violet (accent des settings) au lieu du bleu
+    // système — s'applique à toutes les actions non-destructives du menu.
+    sheet.view.tintColor = S7TVAccent();
     S7TVLaunchDestination current = s7tv_launchDestination();
     for (NSInteger raw = S7TVLaunchDestinationDefault;
          raw <= S7TVLaunchDestinationProfile; raw++) {
@@ -1957,7 +2043,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSString *title = _favIDs.count > 0
         ? [NSString stringWithFormat:L(@"favorites_count_format"), (unsigned long)_favIDs.count]
         : L(@"section_favoris");
-    return S7TVSectionHeader(title, NO);
+    return S7TVSectionHeader(title, NO, nil);
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
@@ -2290,11 +2376,11 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     switch (s) {
         case S7TV_SECTION_CACHE:   return [[UIView alloc] init]; // pas de header : action isolée, comme l'ancien "Recharger" de l'accueil
-        case S7TV_SECTION_OPTIONS: return S7TVSectionHeader(L(@"section_options"), NO);
-        case S7TV_SECTION_TRANSFER: return S7TVSectionHeader(L(@"section_settings_backup"), NO);
-        case S7TV_SECTION_DIAGNOSTICS: return S7TVSectionHeader(L(@"section_diagnostics"), NO);
-        case S7TV_SECTION_LOGS:    return S7TVSectionHeader(L(@"section_logs"), NO);
-        case S7TV_SECTION_DANGER:  return S7TVSectionHeader(L(@"section_danger"), NO);
+        case S7TV_SECTION_OPTIONS: return S7TVSectionHeader(L(@"section_options"), NO, nil);
+        case S7TV_SECTION_TRANSFER: return S7TVSectionHeader(L(@"section_settings_backup"), NO, nil);
+        case S7TV_SECTION_DIAGNOSTICS: return S7TVSectionHeader(L(@"section_diagnostics"), NO, nil);
+        case S7TV_SECTION_LOGS:    return S7TVSectionHeader(L(@"section_logs"), NO, nil);
+        case S7TV_SECTION_DANGER:  return S7TVSectionHeader(L(@"section_danger"), NO, nil);
         default: return [[UIView alloc] init];
     }
 }
@@ -2356,31 +2442,31 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
     if (ip.section == S7TV_SECTION_OPTIONS) {
         if (ip.row == 0) {
-            return S7TVSwitchCell(L(@"switch_chat_custom"),
-                        @"message.badge.filled.fill",
-                        S7TVAccent(),
-                        mgr.chatCustomTestEnabled,
-                        self, @selector(toggleChatCustom:));
+        return S7TVSwitchCell(L(@"switch_chat_custom"),
+                    @"message.badge.filled.fill",
+                    S7TVAccent(),
+                    mgr.chatCustomTestEnabled,
+                    self, @selector(toggleChatCustom:), nil);
         }
         return S7TVSwitchCell(L(@"switch_floating_button"),
                     @"circle.grid.2x1.fill",
                     [UIColor colorWithWhite:0.75 alpha:1.0],
                     mgr.showFloatingButton,
-                    self, @selector(toggleFloatingButton:));
+                    self, @selector(toggleFloatingButton:), nil);
     }
 
     if (ip.section == S7TV_SECTION_TRANSFER) {
         if (ip.row == 0) {
-            return S7TVNavCell(L(@"settings_export"), L(@"settings_export_subtitle"),
-                @"square.and.arrow.up", S7TVAccent());
+        return S7TVNavCell(L(@"settings_export"), L(@"settings_export_subtitle"),
+            @"square.and.arrow.up", S7TVAccent(), nil);
         }
         return S7TVNavCell(L(@"settings_import"), L(@"settings_import_subtitle"),
-            @"square.and.arrow.down", [UIColor colorWithWhite:0.75 alpha:1.0]);
+            @"square.and.arrow.down", [UIColor colorWithWhite:0.75 alpha:1.0], nil);
     }
 
     if (ip.section == S7TV_SECTION_DIAGNOSTICS) {
         return S7TVNavCell(L(@"diagnostics_title"), L(@"diagnostics_subtitle"),
-            @"stethoscope", [UIColor colorWithWhite:0.75 alpha:1.0]);
+            @"stethoscope", [UIColor colorWithWhite:0.75 alpha:1.0], nil);
     }
 
     if (ip.section == S7TV_SECTION_LOGS) {
@@ -2392,7 +2478,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                         @"bolt.fill",
                         [UIColor colorWithWhite:0.75 alpha:1.0],
                         mgr.logsEnabled,
-                        self, @selector(toggleLogsEnabled:));
+                        self, @selector(toggleLogsEnabled:), nil);
         }
 
         // --- Voir les logs (toujours accessible, même si logsEnabled == NO) ---
@@ -2444,7 +2530,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                         @"terminal.fill",
                         [UIColor colorWithWhite:0.75 alpha:1.0],
                         mgr.debugLogging,
-                        self, @selector(toggleDebug:));
+                        self, @selector(toggleDebug:), nil);
             [self s7tv_applyEnabledState:cell];
             return cell;
         }
@@ -2488,7 +2574,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                     icons[catIdx],
                     [UIColor colorWithWhite:0.75 alpha:1.0],
                     values[catIdx].boolValue,
-                    self, NSSelectorFromString(selectors[catIdx]));
+                    self, NSSelectorFromString(selectors[catIdx]), nil);
         [self s7tv_applyEnabledState:cell];
         return cell;
     }

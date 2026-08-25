@@ -155,10 +155,18 @@ static UIScrollView *_s7tv_hostScrollView = nil;
     CGFloat maxBubbleWidth = MIN(280.0, window.bounds.size.width - 24.0);
     [bubble setNeedsLayout];
     [bubble layoutIfNeeded];
+    // 1re mesure : largeur naturelle du texte (UILayoutFittingCompressedSize
+    // EST un CGSize, on ne le repasse pas comme hauteur).
     CGSize bubbleSize = [bubble systemLayoutSizeFittingSize:
-        CGSizeMake(maxBubbleWidth, UILayoutFittingCompressedSize)
-        withHorizontalFittingPriority:UILayoutPriorityRequired
-              verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+        UILayoutFittingCompressedSize];
+    if (bubbleSize.width > maxBubbleWidth) {
+        // 2e mesure : texte long → largeur forcée au plafond, le label
+        // wrappe et la hauteur s'adapte au nombre de lignes.
+        bubbleSize = [bubble systemLayoutSizeFittingSize:
+            CGSizeMake(maxBubbleWidth, 0)
+            withHorizontalFittingPriority:UILayoutPriorityRequired
+                  verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    }
     bubbleSize.height = MIN(bubbleSize.height, window.bounds.size.height * 0.6);
     bubble.frame = CGRectMake(0, 0, bubbleSize.width, bubbleSize.height);
 

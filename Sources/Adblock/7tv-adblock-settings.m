@@ -4,6 +4,7 @@ NSString *const S7TVAdblockEnabledKey            = @"s7tv_adblock_enabled";
 NSString *const S7TVAdblockProxyEnabledKey       = @"s7tv_adblock_proxy_enabled";
 NSString *const S7TVAdblockCustomProxyEnabledKey = @"s7tv_adblock_custom_proxy_enabled";
 NSString *const S7TVAdblockCustomProxyKey        = @"s7tv_adblock_custom_proxy";
+NSString *const S7TVAdblockHideAdFreeButtonKey  = @"s7tv_adblock_hide_go_ad_free";
 
 static NSUserDefaults *S7TVAdblockDefaults(void) {
     return NSUserDefaults.standardUserDefaults;
@@ -14,6 +15,8 @@ void S7TVAdblockRegisterDefaults(void) {
         S7TVAdblockEnabledKey: @YES,
         S7TVAdblockProxyEnabledKey: @YES,
         S7TVAdblockCustomProxyEnabledKey: @NO,
+        // Même valeur par défaut que TwitchAdBlock v0.1.13.
+        S7TVAdblockHideAdFreeButtonKey: @YES,
     }];
 }
 
@@ -32,6 +35,11 @@ BOOL S7TVAdblockCustomProxyIsEnabled(void) {
     return [S7TVAdblockDefaults() boolForKey:S7TVAdblockCustomProxyEnabledKey];
 }
 
+BOOL S7TVAdblockHideAdFreeButtonIsEnabled(void) {
+    S7TVAdblockRegisterDefaults();
+    return [S7TVAdblockDefaults() boolForKey:S7TVAdblockHideAdFreeButtonKey];
+}
+
 NSString *S7TVAdblockCustomProxyAddress(void) {
     return [S7TVAdblockDefaults() stringForKey:S7TVAdblockCustomProxyKey];
 }
@@ -46,6 +54,10 @@ void S7TVAdblockSetProxyEnabled(BOOL enabled) {
 
 void S7TVAdblockSetCustomProxyEnabled(BOOL enabled) {
     [S7TVAdblockDefaults() setBool:enabled forKey:S7TVAdblockCustomProxyEnabledKey];
+}
+
+void S7TVAdblockSetHideAdFreeButtonEnabled(BOOL enabled) {
+    [S7TVAdblockDefaults() setBool:enabled forKey:S7TVAdblockHideAdFreeButtonKey];
 }
 
 void S7TVAdblockSetCustomProxyAddress(NSString *address) {

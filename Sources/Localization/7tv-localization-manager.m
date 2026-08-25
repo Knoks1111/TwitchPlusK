@@ -132,6 +132,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Adblock vidéo / proxy ────────────────────────────────────────
         @"adblock_enable":                  @[@"Activer l’adblock", @"Enable adblock"],
+        @"adblock_hide_go_ad_free":         @[@"Masquer Twitch Turbo", @"Hide Twitch Turbo"],
         @"adblock_section_proxy":           @[@"Proxy vidéo", @"Video proxy"],
         @"adblock_video_proxy":             @[@"Utiliser le proxy vidéo", @"Use video proxy"],
         @"adblock_custom_proxy":            @[@"Proxy personnalisé", @"Custom proxy"],
@@ -140,8 +141,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"adblock_proxy_not_configured":    @[@"Non configurée", @"Not configured"],
         @"adblock_proxy_format":            @[@"Formats acceptés : host:port ou user:pass@host:port. Plusieurs proxys peuvent être séparés par une virgule.",
                                                @"Accepted formats: host:port or user:pass@host:port. Multiple proxies can be separated with commas."],
-        @"adblock_engine_footer":           @[@"Bloque les domaines publicitaires, modifie les jetons de lecture et retire les promotions du fil Twitch.",
-                                               @"Blocks ad domains, adjusts playback tokens, and removes promotions from the Twitch feed."],
+        @"adblock_engine_footer":           @[@"Bloque les domaines publicitaires, modifie les jetons de lecture et peut masquer la promotion Twitch Turbo dans Abonnements.",
+                                               @"Blocks ad domains, adjusts playback tokens, and can hide the Twitch Turbo promotion in Following."],
         @"adblock_proxy_privacy_footer":    @[@"Le proxy sert à récupérer les playlists vidéo sans publicité. Le proxy intégré provient de TwitchAdBlock ; tu peux le remplacer par le tien.",
                                                @"The proxy fetches ad-free video playlists. The built-in proxy comes from TwitchAdBlock; you can replace it with your own."],
 

@@ -4,6 +4,7 @@
  */
 
 #import "System/7tv-system-home-features.h"
+#import "Adblock/7tv-adblock-runtime.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -212,6 +213,9 @@ static char S7TVStoriesRetriesScheduledKey;
 
 - (void)s7tv_home_discoveryViewDidLayoutSubviews {
     [self s7tv_home_discoveryViewDidLayoutSubviews];
+    // Même scan de secours que TwitchAdBlock : le bouton vit parfois dans
+    // l'en-tête du fil et non directement dans FollowingViewController.
+    S7TVAdblockHideAdFreeUpsellIfNeeded();
 
     NSInteger tab = -1;
     NSInteger subTab = -1;

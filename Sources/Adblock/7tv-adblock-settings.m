@@ -44,6 +44,23 @@ NSString *S7TVAdblockCustomProxyAddress(void) {
     return [S7TVAdblockDefaults() stringForKey:S7TVAdblockCustomProxyKey];
 }
 
+NSArray<NSString *> *S7TVAdblockCustomProxyAddresses(void) {
+    NSString *raw = S7TVAdblockCustomProxyAddress();
+    if (!raw.length) return @[];
+    // TwitchAdBlock accepte aussi les virgules pour migrer sans perte les
+    // anciennes valeurs, mais les nouvelles sauvegardes utilisent des lignes.
+    NSMutableCharacterSet *separators =
+        [NSMutableCharacterSet characterSetWithCharactersInString:@","];
+    [separators formUnionWithCharacterSet:NSCharacterSet.newlineCharacterSet];
+    NSMutableArray<NSString *> *addresses = [NSMutableArray array];
+    for (NSString *part in [raw componentsSeparatedByCharactersInSet:separators]) {
+        NSString *clean = [part stringByTrimmingCharactersInSet:
+                           NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (clean.length) [addresses addObject:clean];
+    }
+    return addresses.copy;
+}
+
 void S7TVAdblockSetEnabled(BOOL enabled) {
     [S7TVAdblockDefaults() setBool:enabled forKey:S7TVAdblockEnabledKey];
 }
@@ -65,6 +82,16 @@ void S7TVAdblockSetCustomProxyAddress(NSString *address) {
                        NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (clean.length) [S7TVAdblockDefaults() setObject:clean forKey:S7TVAdblockCustomProxyKey];
     else [S7TVAdblockDefaults() removeObjectForKey:S7TVAdblockCustomProxyKey];
+}
+
+void S7TVAdblockSetCustomProxyAddresses(NSArray<NSString *> *addresses) {
+    NSMutableArray<NSString *> *cleanAddresses = [NSMutableArray array];
+    for (NSString *address in addresses) {
+        NSString *clean = [address stringByTrimmingCharactersInSet:
+                           NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (clean.length) [cleanAddresses addObject:clean];
+    }
+    S7TVAdblockSetCustomProxyAddress([cleanAddresses componentsJoinedByString:@"\n"]);
 }
 
 // Exact XOR-obfuscated default proxy shipped by TwitchAdBlock v0.1.13.
@@ -90,24 +117,13 @@ NSString *S7TVAdblockDefaultProxyAddress(void) {
 }
 
 NSString *S7TVAdblockEffectiveProxyAddress(void) {
-    return S7TVAdblockCustomProxyIsEnabled()
-        ? S7TVAdblockCustomProxyAddress()
-        : S7TVAdblockDefaultProxyAddress();
+    return S7TVAdblockEffectiveProxyAddresses().firstObject;
 }
 
 NSArray<NSString *> *S7TVAdblockEffectiveProxyAddresses(void) {
-    NSString *raw = S7TVAdblockEffectiveProxyAddress();
-    if (!raw.length) return @[];
-    NSMutableCharacterSet *separators =
-        [NSMutableCharacterSet characterSetWithCharactersInString:@","];
-    [separators formUnionWithCharacterSet:NSCharacterSet.newlineCharacterSet];
-    NSMutableArray<NSString *> *result = [NSMutableArray array];
-    for (NSString *part in [raw componentsSeparatedByCharactersInSet:separators]) {
-        NSString *clean = [part stringByTrimmingCharactersInSet:
-                           NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (clean.length) [result addObject:clean];
-    }
-    return result.copy;
+    return S7TVAdblockCustomProxyIsEnabled()
+        ? S7TVAdblockCustomProxyAddresses()
+        : @[S7TVAdblockDefaultProxyAddress()];
 }
 
 NSURL *S7TVAdblockNormalizedProxyURL(NSString *address) {

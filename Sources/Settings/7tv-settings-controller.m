@@ -22,6 +22,7 @@
 #import "System/7tv-system-native-behavior-hooks.h"
 #import "System/7tv-system-home-features.h"
 #import "Adblock/7tv-adblock-settings.h"
+#import "Adblock/7tv-adblock-proxy-status.h"
 #import <objc/runtime.h>
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names";
@@ -776,10 +777,23 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 // séparables, et l'adresse intégrée peut être remplacée sans toucher au code.
 // ─────────────────────────────────────────────────────────────────────────────
 
+@interface SevenTVAdblockPageController () <UITextFieldDelegate>
+@property (nonatomic, assign) S7TVAdblockProxyStatus proxyStatus;
+@property (nonatomic, strong) NSMutableArray<NSString *> *proxies;
+@end
+
+static const NSInteger kS7TVProxyTextFieldTag = 0x7A01;
+static const NSInteger kS7TVProxyUpButtonTag  = 0x7A02;
+static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
+
 @implementation SevenTVAdblockPageController
 
 - (instancetype)init {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) {
+        _proxyStatus = S7TVAdblockProxyStatusUnknown;
+        _proxies = S7TVAdblockCustomProxyAddresses().mutableCopy;
+    }
     return self;
 }
 
@@ -788,12 +802,19 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     self.title = L(@"title_adblock");
     S7TVStyleTableView(self.tableView);
     S7TVAdblockRegisterDefaults();
+    self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
+    if (S7TVAdblockIsEnabled() && S7TVAdblockProxyIsEnabled()) {
+        [self refreshProxyStatus];
+    }
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? 2 : 3;
+    if (section == 0) return 2;
+    if (!S7TVAdblockIsEnabled()) return 0;
+    if (!S7TVAdblockProxyIsEnabled()) return 1;
+    return S7TVAdblockCustomProxyIsEnabled() ? 4 + self.proxies.count : 3;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
@@ -806,12 +827,18 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     return L(@"adblock_proxy_privacy_footer");
 }
 
-- (void)s7tv_applyAdblockDependencyState:(UITableViewCell *)cell enabled:(BOOL)enabled {
-    cell.userInteractionEnabled = enabled;
-    cell.contentView.alpha = enabled ? 1.0 : 0.4;
-    for (UIView *view in cell.contentView.subviews) {
-        if ([view isKindOfClass:UISwitch.class]) ((UISwitch *)view).enabled = enabled;
-    }
+- (NSInteger)proxyIndexForRow:(NSInteger)row {
+    if (!S7TVAdblockCustomProxyIsEnabled() || row < 2 ||
+        row >= 2 + (NSInteger)self.proxies.count) return -1;
+    return row - 2;
+}
+
+- (NSInteger)addProxyRowIndex {
+    return 2 + self.proxies.count;
+}
+
+- (NSInteger)statusRowIndex {
+    return S7TVAdblockCustomProxyIsEnabled() ? 3 + self.proxies.count : 2;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
@@ -827,66 +854,42 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
             @selector(toggleHideGoAdFree:));
     }
 
-    BOOL engineEnabled = S7TVAdblockIsEnabled();
     BOOL proxyEnabled = S7TVAdblockProxyIsEnabled();
     if (indexPath.row == 0) {
-        UITableViewCell *cell = S7TVSwitchCell(L(@"adblock_video_proxy"),
+        return S7TVSwitchCell(L(@"adblock_video_proxy"),
             @"network", [UIColor colorWithWhite:0.75 alpha:1.0], proxyEnabled,
             self, @selector(toggleAdblockProxy:));
-        [self s7tv_applyAdblockDependencyState:cell enabled:engineEnabled];
-        return cell;
     }
     if (indexPath.row == 1) {
-        UITableViewCell *cell = S7TVSwitchCell(L(@"adblock_custom_proxy"),
+        return S7TVSwitchCell(L(@"adblock_custom_proxy"),
             @"server.rack", [UIColor colorWithWhite:0.75 alpha:1.0],
             S7TVAdblockCustomProxyIsEnabled(), self,
             @selector(toggleAdblockCustomProxy:));
-        [self s7tv_applyAdblockDependencyState:cell
-            enabled:engineEnabled && proxyEnabled];
-        return cell;
     }
 
-    NSString *subtitle = S7TVAdblockCustomProxyAddress().length
-        ? L(@"adblock_proxy_configured") : L(@"adblock_proxy_not_configured");
-    UITableViewCell *cell = S7TVNavCell(L(@"adblock_proxy_address"), subtitle,
-        @"slider.horizontal.3", [UIColor colorWithWhite:0.75 alpha:1.0]);
-    [self s7tv_applyAdblockDependencyState:cell
-        enabled:engineEnabled && proxyEnabled && S7TVAdblockCustomProxyIsEnabled()];
-    return cell;
+    if (!S7TVAdblockCustomProxyIsEnabled()) return [self proxyStatusCell];
+    NSInteger proxyIndex = [self proxyIndexForRow:indexPath.row];
+    if (proxyIndex >= 0) return [self proxyRowCellForIndex:proxyIndex];
+    if (indexPath.row == [self addProxyRowIndex]) return [self addProxyCell];
+    return [self proxyStatusCell];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section != 1 || indexPath.row != 2 ||
-        !S7TVAdblockIsEnabled() || !S7TVAdblockProxyIsEnabled() ||
-        !S7TVAdblockCustomProxyIsEnabled()) return;
-
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:L(@"adblock_proxy_address")
-        message:L(@"adblock_proxy_format")
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"user:pass@host:port";
-        field.text = S7TVAdblockCustomProxyAddress();
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-        field.keyboardType = UIKeyboardTypeURL;
-        field.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
-        style:UIAlertActionStyleCancel handler:nil]];
-    __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
-        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            S7TVAdblockSetCustomProxyAddress(alert.textFields.firstObject.text);
-            [weakSelf.tableView reloadData];
-        }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    if (indexPath.section == 1 && S7TVAdblockIsEnabled() &&
+        S7TVAdblockProxyIsEnabled() && S7TVAdblockCustomProxyIsEnabled() &&
+        indexPath.row == [self addProxyRowIndex]) {
+        [self.proxies addObject:@""];
+        [self saveProxies];
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+                      withRowAnimation:UITableViewRowAnimationAutomatic];
+    }
 }
 
 - (void)toggleAdblock:(UISwitch *)sender {
     S7TVAdblockSetEnabled(sender.isOn);
     [self.tableView reloadData];
+    if (sender.isOn && S7TVAdblockProxyIsEnabled()) [self refreshProxyStatus];
 }
 
 - (void)toggleHideGoAdFree:(UISwitch *)sender {
@@ -895,12 +898,247 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (void)toggleAdblockProxy:(UISwitch *)sender {
     S7TVAdblockSetProxyEnabled(sender.isOn);
-    [self.tableView reloadData];
+    self.proxyStatus = S7TVAdblockProxyStatusUnknown;
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+                  withRowAnimation:UITableViewRowAnimationFade];
+    if (sender.isOn) [self refreshProxyStatus];
 }
 
 - (void)toggleAdblockCustomProxy:(UISwitch *)sender {
     S7TVAdblockSetCustomProxyEnabled(sender.isOn);
-    [self.tableView reloadData];
+    self.proxyStatus = S7TVAdblockProxyStatusUnknown;
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+                  withRowAnimation:UITableViewRowAnimationFade];
+    [self refreshProxyStatus];
+}
+
+- (UITableViewCell *)proxyStatusCell {
+    UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"S7TVProxyStatusCell"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                      reuseIdentifier:@"S7TVProxyStatusCell"];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    }
+    cell.backgroundColor = S7TVCellBg();
+    cell.textLabel.text = S7TVAdblockCustomProxyIsEnabled()
+        ? L(@"adblock_proxy_custom_status") : L(@"adblock_proxy_default_status");
+    cell.textLabel.textColor = UIColor.whiteColor;
+    switch (self.proxyStatus) {
+        case S7TVAdblockProxyStatusOnline:
+            cell.detailTextLabel.text = L(@"adblock_proxy_status_online");
+            cell.detailTextLabel.textColor = UIColor.systemGreenColor;
+            break;
+        case S7TVAdblockProxyStatusOffline:
+            cell.detailTextLabel.text = L(@"adblock_proxy_status_offline");
+            cell.detailTextLabel.textColor = UIColor.systemRedColor;
+            break;
+        case S7TVAdblockProxyStatusChecking:
+            cell.detailTextLabel.text = L(@"adblock_proxy_status_checking");
+            cell.detailTextLabel.textColor = UIColor.systemGrayColor;
+            break;
+        default:
+            cell.detailTextLabel.text = L(@"adblock_proxy_status_unknown");
+            cell.detailTextLabel.textColor = UIColor.systemGrayColor;
+            break;
+    }
+    return cell;
+}
+
+- (UIButton *)proxyArrowButton:(NSString *)symbol tag:(NSInteger)tag action:(SEL)action {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.tag = tag;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration
+        configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
+    [button setImage:[UIImage systemImageNamed:symbol withConfiguration:configuration]
+            forState:UIControlStateNormal];
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (UITableViewCell *)proxyRowCellForIndex:(NSInteger)index {
+    UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"S7TVProxyRowCell"];
+    UIButton *up = nil;
+    UIButton *down = nil;
+    UITextField *field = nil;
+    if (cell) {
+        up = (UIButton *)[cell.contentView viewWithTag:kS7TVProxyUpButtonTag];
+        down = (UIButton *)[cell.contentView viewWithTag:kS7TVProxyDownButtonTag];
+        field = (UITextField *)[cell.contentView viewWithTag:kS7TVProxyTextFieldTag];
+    } else {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:@"S7TVProxyRowCell"];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        up = [self proxyArrowButton:@"chevron.up" tag:kS7TVProxyUpButtonTag
+                             action:@selector(proxyUpTapped:)];
+        down = [self proxyArrowButton:@"chevron.down" tag:kS7TVProxyDownButtonTag
+                               action:@selector(proxyDownTapped:)];
+        field = [[UITextField alloc] init];
+        field.tag = kS7TVProxyTextFieldTag;
+        field.translatesAutoresizingMaskIntoConstraints = NO;
+        field.placeholder = @"user:pass@host:port";
+        field.textColor = UIColor.whiteColor;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.keyboardType = UIKeyboardTypeURL;
+        field.returnKeyType = UIReturnKeyDone;
+        field.font = [UIFont systemFontOfSize:15];
+        field.delegate = self;
+        [field addTarget:self action:@selector(proxyFieldChanged:)
+        forControlEvents:UIControlEventEditingChanged];
+        [cell.contentView addSubview:up];
+        [cell.contentView addSubview:down];
+        [cell.contentView addSubview:field];
+        [NSLayoutConstraint activateConstraints:@[
+            [up.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:12],
+            [up.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [up.widthAnchor constraintEqualToConstant:30],
+            [up.heightAnchor constraintEqualToConstant:30],
+            [down.leadingAnchor constraintEqualToAnchor:up.trailingAnchor constant:2],
+            [down.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [down.widthAnchor constraintEqualToConstant:30],
+            [down.heightAnchor constraintEqualToConstant:30],
+            [field.leadingAnchor constraintEqualToAnchor:down.trailingAnchor constant:10],
+            [field.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+            [field.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [field.heightAnchor constraintEqualToConstant:40],
+        ]];
+    }
+    cell.backgroundColor = S7TVCellBg();
+    field.text = index < (NSInteger)self.proxies.count ? self.proxies[index] : @"";
+    BOOL canMoveUp = index > 0;
+    BOOL canMoveDown = index < (NSInteger)self.proxies.count - 1;
+    up.enabled = canMoveUp;
+    up.alpha = canMoveUp ? 1.0 : 0.25;
+    down.enabled = canMoveDown;
+    down.alpha = canMoveDown ? 1.0 : 0.25;
+    return cell;
+}
+
+- (UITableViewCell *)addProxyCell {
+    UITableViewCell *cell = [[UITableViewCell alloc]
+        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.backgroundColor = S7TVCellBg();
+    cell.textLabel.text = L(@"adblock_proxy_add");
+    cell.textLabel.textColor = S7TVAccent();
+    return cell;
+}
+
+- (UITableViewCell *)cellForProxySubview:(UIView *)view {
+    UIView *candidate = view;
+    while (candidate && ![candidate isKindOfClass:UITableViewCell.class]) {
+        candidate = candidate.superview;
+    }
+    return (UITableViewCell *)candidate;
+}
+
+- (void)saveProxies {
+    S7TVAdblockSetCustomProxyAddresses(self.proxies);
+}
+
+- (void)proxyUpTapped:(UIButton *)button {
+    NSIndexPath *path = [self.tableView indexPathForCell:
+        [self cellForProxySubview:button]];
+    NSInteger index = [self proxyIndexForRow:path.row];
+    if (index <= 0) return;
+    [self.proxies exchangeObjectAtIndex:index withObjectAtIndex:index - 1];
+    [self saveProxies];
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+                  withRowAnimation:UITableViewRowAnimationFade];
+}
+
+- (void)proxyDownTapped:(UIButton *)button {
+    NSIndexPath *path = [self.tableView indexPathForCell:
+        [self cellForProxySubview:button]];
+    NSInteger index = [self proxyIndexForRow:path.row];
+    if (index < 0 || index >= (NSInteger)self.proxies.count - 1) return;
+    [self.proxies exchangeObjectAtIndex:index withObjectAtIndex:index + 1];
+    [self saveProxies];
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+                  withRowAnimation:UITableViewRowAnimationFade];
+}
+
+- (void)proxyFieldChanged:(UITextField *)field {
+    NSIndexPath *path = [self.tableView indexPathForCell:
+        [self cellForProxySubview:field]];
+    NSInteger index = [self proxyIndexForRow:path.row];
+    if (index < 0 || index >= (NSInteger)self.proxies.count) return;
+    self.proxies[index] = field.text ?: @"";
+    [self saveProxies];
+}
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    return indexPath.section == 1 && [self proxyIndexForRow:indexPath.row] >= 0;
+}
+
+- (void)tableView:(UITableView *)tableView
+    commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
+     forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle != UITableViewCellEditingStyleDelete) return;
+    NSInteger index = [self proxyIndexForRow:indexPath.row];
+    if (index < 0 || index >= (NSInteger)self.proxies.count) return;
+    [self.proxies removeObjectAtIndex:index];
+    [self saveProxies];
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+                  withRowAnimation:UITableViewRowAnimationAutomatic];
+    [self refreshProxyStatus];
+}
+
+- (void)refreshProxyStatus {
+    if (!S7TVAdblockIsEnabled() || !S7TVAdblockProxyIsEnabled()) return;
+    NSString *address = nil;
+    if (S7TVAdblockCustomProxyIsEnabled()) {
+        for (NSString *proxy in self.proxies) {
+            NSString *clean = [proxy stringByTrimmingCharactersInSet:
+                               NSCharacterSet.whitespaceCharacterSet];
+            if (clean.length) {
+                address = clean;
+                break;
+            }
+        }
+        if (!address) {
+            self.proxyStatus = S7TVAdblockProxyStatusOffline;
+            [self reloadProxyStatusRow];
+            return;
+        }
+    } else {
+        address = S7TVAdblockDefaultProxyAddress();
+    }
+    self.proxyStatus = S7TVAdblockProxyStatusChecking;
+    [self reloadProxyStatusRow];
+    __weak typeof(self) weakSelf = self;
+    S7TVAdblockCheckProxyStatus(address, ^(S7TVAdblockProxyStatus status) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        self.proxyStatus = status;
+        [self reloadProxyStatusRow];
+    });
+}
+
+- (void)reloadProxyStatusRow {
+    if (!S7TVAdblockIsEnabled() || !S7TVAdblockProxyIsEnabled()) return;
+    NSIndexPath *path = [NSIndexPath indexPathForRow:[self statusRowIndex] inSection:1];
+    [self.tableView reloadRowsAtIndexPaths:@[path]
+                          withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    [textField resignFirstResponder];
+    return YES;
+}
+
+- (void)textFieldDidEndEditing:(UITextField *)textField {
+    NSIndexPath *path = [self.tableView indexPathForCell:
+        [self cellForProxySubview:textField]];
+    NSInteger index = [self proxyIndexForRow:path.row];
+    if (index >= 0 && index < (NSInteger)self.proxies.count) {
+        self.proxies[index] = textField.text ?: @"";
+        [self saveProxies];
+    }
+    if (S7TVAdblockProxyIsEnabled() && S7TVAdblockCustomProxyIsEnabled()) {
+        [self refreshProxyStatus];
+    }
 }
 
 @end

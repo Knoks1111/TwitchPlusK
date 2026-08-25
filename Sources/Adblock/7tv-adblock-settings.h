@@ -21,11 +21,13 @@ BOOL S7TVAdblockProxyIsEnabled(void);
 BOOL S7TVAdblockCustomProxyIsEnabled(void);
 BOOL S7TVAdblockHideAdFreeButtonIsEnabled(void);
 NSString * _Nullable S7TVAdblockCustomProxyAddress(void);
+NSArray<NSString *> *S7TVAdblockCustomProxyAddresses(void);
 void S7TVAdblockSetEnabled(BOOL enabled);
 void S7TVAdblockSetProxyEnabled(BOOL enabled);
 void S7TVAdblockSetCustomProxyEnabled(BOOL enabled);
 void S7TVAdblockSetHideAdFreeButtonEnabled(BOOL enabled);
 void S7TVAdblockSetCustomProxyAddress(NSString * _Nullable address);
+void S7TVAdblockSetCustomProxyAddresses(NSArray<NSString *> *addresses);
 
 NSString *S7TVAdblockDefaultProxyAddress(void);
 NSString * _Nullable S7TVAdblockEffectiveProxyAddress(void);

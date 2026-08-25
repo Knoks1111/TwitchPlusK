@@ -926,7 +926,12 @@ static void TwitchSevenTVInit(void) {
     // Auto Collect Channel Points — module 100% autonome (voir
     // 7tv-system-native-behavior-hooks.m), aucune dépendance avec les
     // swizzles ci-dessus. Démarré directement ici, pas via didMoveToWindow.
-    s7tv_scanForChannelPointsLoop();
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL autoCollectEnabled = [defaults objectForKey:@"TCDBGLiveAutoCollectChannelPoints"] != nil
+        ? [defaults boolForKey:@"TCDBGLiveAutoCollectChannelPoints"] : YES;
+    if (autoCollectEnabled) {
+        s7tv_scanForChannelPointsLoop();
+    }
 
     // Setup sur le main thread
     dispatch_async(dispatch_get_main_queue(), ^{

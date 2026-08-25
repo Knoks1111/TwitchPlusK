@@ -39,8 +39,8 @@ static NSError *S7TVSettingsTransferError(S7TVSettingsTransferErrorCode code,
 }
 
 static NSDictionary<NSString *, id> *S7TVSettingsTransferValues(void) {
-    NSDictionary<NSString *, id> *defaults =
-        [[NSUserDefaults standardUserDefaults] dictionaryRepresentation];
+    NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
+    NSDictionary<NSString *, id> *defaults = [userDefaults dictionaryRepresentation];
     NSMutableDictionary<NSString *, id> *values = [NSMutableDictionary dictionary];
     [defaults enumerateKeysAndObjectsUsingBlock:^(NSString *key, id value, BOOL *stop) {
         if (S7TVSettingsTransferOwnsKey(key) &&
@@ -56,7 +56,7 @@ static NSDictionary<NSString *, id> *S7TVSettingsTransferValues(void) {
     // ancien OFF sur l'autre appareil.
     if (!values[S7TVLegacyChannelPointsKey]) {
         BOOL autoClaim = [defaults objectForKey:S7TVLegacyChannelPointsKey] != nil
-            ? [defaults boolForKey:S7TVLegacyChannelPointsKey] : YES;
+            ? [userDefaults boolForKey:S7TVLegacyChannelPointsKey] : YES;
         values[S7TVLegacyChannelPointsKey] = @(autoClaim);
     }
     return values.copy;

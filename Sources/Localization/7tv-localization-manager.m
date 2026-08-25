@@ -150,10 +150,16 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
                                                @"The proxy fetches ad-free video playlists. In custom mode, each proxy has its own row and the order defines priority."],
 
         // ── Menu principal (Apparence / Contenu / Adblock / Avancé) ──────
-        @"menu_apparence_subtitle":         @[@"Chat custom, animations", @"Custom chat, animations"],
+        @"menu_apparence_subtitle":         @[@"Animations", @"Animations"],
         @"menu_contenu_subtitle":           @[@"Favoris, accueil, lecture", @"Favorites, home, playback"],
         @"menu_adblock_subtitle":           @[@"Pubs vidéo, proxy", @"Video ads, proxy"],
         @"menu_avance_subtitle":            @[@"Cache, logs, options", @"Cache, logs, options"],
+
+        // ── Page Apparence : où trouver les réglages du chat custom ──────
+        @"desc_chat_custom_location":       @[
+            @"Les réglages du chat custom se trouvent dans le chat d’une chaîne : appuie sur le bouton 7TV à côté de la barre de saisie, puis sur « Aa » en bas à droite du sélecteur d’emotes.",
+            @"Custom chat settings are found in a channel’s chat: tap the 7TV button next to the input bar, then tap “Aa” at the bottom right of the emote picker."
+        ],
 
         // ── En-têtes de section ──────────────────────────────────────────
         @"section_general":                 @[@"Général", @"General"],

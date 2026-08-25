@@ -217,11 +217,59 @@ static id s7tv_activeThemeManager(void) {
     return s7tv_lastThemeManager;
 }
 
+static BOOL s7tv_resolveDarkThemeForObject(id themeObject, BOOL *resolved) {
+    if (!themeObject) return NO;
+
+    SEL isDarkModeEnabledSelector = sel_registerName("isDarkModeEnabled");
+    if ([themeObject respondsToSelector:isDarkModeEnabledSelector]) {
+        if (resolved) *resolved = YES;
+        return ((BOOL (*)(id, SEL))objc_msgSend)(themeObject, isDarkModeEnabledSelector);
+    }
+
+    SEL currentThemeIdentifierSelector = sel_registerName("currentThemeIdentifier");
+    if ([themeObject respondsToSelector:currentThemeIdentifierSelector]) {
+        id identifier = ((id (*)(id, SEL))objc_msgSend)(themeObject,
+                                                         currentThemeIdentifierSelector);
+        NSString *identifierText = [[identifier description] lowercaseString];
+        if ([identifierText containsString:@"dark"]) {
+            if (resolved) *resolved = YES;
+            return YES;
+        }
+        if ([identifierText containsString:@"light"]) {
+            if (resolved) *resolved = YES;
+            return NO;
+        }
+    }
+
+    SEL currentThemeSelector = sel_registerName("currentTheme");
+    if ([themeObject respondsToSelector:currentThemeSelector]) {
+        id currentTheme = ((id (*)(id, SEL))objc_msgSend)(themeObject, currentThemeSelector);
+        NSString *className = [NSStringFromClass(object_getClass(currentTheme)) lowercaseString];
+        if ([className containsString:@"dark"]) {
+            if (resolved) *resolved = YES;
+            return YES;
+        }
+        if ([className containsString:@"light"]) {
+            if (resolved) *resolved = YES;
+            return NO;
+        }
+    }
+
+    SEL themeSettingsSelector = sel_registerName("themeSettings");
+    if ([themeObject respondsToSelector:themeSettingsSelector]) {
+        id themeSettings = ((id (*)(id, SEL))objc_msgSend)(themeObject, themeSettingsSelector);
+        if (themeSettings && themeSettings != themeObject) {
+            return s7tv_resolveDarkThemeForObject(themeSettings, resolved);
+        }
+    }
+
+    return NO;
+}
+
 static void s7tv_refreshDarkThemeState(id themeManager) {
-    SEL darkModeSelector = sel_registerName("isDarkModeEnabled");
-    if (themeManager && [themeManager respondsToSelector:darkModeSelector]) {
-        BOOL darkModeEnabled =
-            ((BOOL (*)(id, SEL))objc_msgSend)(themeManager, darkModeSelector);
+    BOOL resolved = NO;
+    BOOL darkModeEnabled = s7tv_resolveDarkThemeForObject(themeManager, &resolved);
+    if (resolved) {
         atomic_store_explicit(&s7tv_oledDarkThemeActive,
                               darkModeEnabled,
                               memory_order_relaxed);

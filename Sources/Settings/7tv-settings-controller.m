@@ -793,7 +793,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? 1 : 3;
+    return section == 0 ? 2 : 3;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
@@ -817,8 +817,14 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 0) {
-        return S7TVSwitchCell(L(@"adblock_enable"), @"shield.lefthalf.filled",
-            S7TVAccent(), S7TVAdblockIsEnabled(), self, @selector(toggleAdblock:));
+        if (indexPath.row == 0) {
+            return S7TVSwitchCell(L(@"adblock_enable"), @"shield.lefthalf.filled",
+                S7TVAccent(), S7TVAdblockIsEnabled(), self, @selector(toggleAdblock:));
+        }
+        return S7TVSwitchCell(L(@"adblock_hide_go_ad_free"), @"rectangle.slash",
+            [UIColor colorWithRed:0.95 green:0.45 blue:0.25 alpha:1.0],
+            S7TVAdblockHideAdFreeButtonIsEnabled(), self,
+            @selector(toggleHideGoAdFree:));
     }
 
     BOOL engineEnabled = S7TVAdblockIsEnabled();
@@ -881,6 +887,10 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 - (void)toggleAdblock:(UISwitch *)sender {
     S7TVAdblockSetEnabled(sender.isOn);
     [self.tableView reloadData];
+}
+
+- (void)toggleHideGoAdFree:(UISwitch *)sender {
+    S7TVAdblockSetHideAdFreeButtonEnabled(sender.isOn);
 }
 
 - (void)toggleAdblockProxy:(UISwitch *)sender {

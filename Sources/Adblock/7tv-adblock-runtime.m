@@ -10,6 +10,7 @@
 #import "Adblock/7tv-adblock-settings.h"
 #import "Adblock/Fishhook/fishhook.h"
 #import <AVFoundation/AVFoundation.h>
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <os/log.h>
 
@@ -73,6 +74,83 @@ static BOOL S7TVAdblockExchangeInstanceMethod(Class target, Class source,
     if (!concreteOriginal || !concreteReplacement) return NO;
     method_exchangeImplementations(concreteOriginal, concreteReplacement);
     return YES;
+}
+
+// « Go Ad-Free » est une promotion Twitch Turbo dans l'en-tête Live Now de
+// l'onglet Following. Ce bloc vient de TwitchAdBlock v0.1.13 : il cible le
+// contrôle par son texte/classe, tout en protégeant l'écran d'achat Turbo.
+static BOOL S7TVAdblockViewIsInTurboPurchaseScreen(UIView *view) {
+    Class purchaseClass = objc_getClass("_TtC6Twitch25TurboUpsellViewController");
+    if (!purchaseClass) return NO;
+    for (UIResponder *responder = view.nextResponder;
+         responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:purchaseClass]) return YES;
+    }
+    return NO;
+}
+
+static BOOL S7TVAdblockStringContains(NSString *string, NSString *needle) {
+    return string && [string rangeOfString:needle
+                                  options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+static NSString *S7TVAdblockVisibleViewText(UIView *view) {
+    if ([view isKindOfClass:UILabel.class] && ((UILabel *)view).text.length) {
+        return ((UILabel *)view).text;
+    }
+    if ([view isKindOfClass:UIButton.class]) {
+        UIButton *button = (UIButton *)view;
+        if (button.currentTitle.length) return button.currentTitle;
+        if (button.currentAttributedTitle.string.length) {
+            return button.currentAttributedTitle.string;
+        }
+    }
+    return view.accessibilityLabel.length ? view.accessibilityLabel : nil;
+}
+
+static BOOL S7TVAdblockIsAdFreeText(NSString *text) {
+    return S7TVAdblockStringContains(text, @"Ad-Free") ||
+           S7TVAdblockStringContains(text, @"Ad Free") ||
+           S7TVAdblockStringContains(text, @"Sans publicité") ||
+           S7TVAdblockStringContains(text, @"Sans publicite");
+}
+
+static char S7TVAdblockAdFreeViewHiddenKey;
+
+static void S7TVAdblockHideAdFreeView(UIView *view) {
+    if (!view || objc_getAssociatedObject(view, &S7TVAdblockAdFreeViewHiddenKey) ||
+        S7TVAdblockViewIsInTurboPurchaseScreen(view)) return;
+    objc_setAssociatedObject(view, &S7TVAdblockAdFreeViewHiddenKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    view.hidden = YES;
+    view.translatesAutoresizingMaskIntoConstraints = NO;
+    NSLayoutConstraint *width = [view.widthAnchor constraintEqualToConstant:0.0];
+    NSLayoutConstraint *height = [view.heightAnchor constraintEqualToConstant:0.0];
+    width.priority = height.priority = (UILayoutPriority)999;
+    width.active = height.active = YES;
+}
+
+static void S7TVAdblockScanForAdFreeView(UIView *root) {
+    if (!root) return;
+    NSString *className = NSStringFromClass(root.class);
+    BOOL matchingControlText = [root isKindOfClass:UIControl.class] &&
+        S7TVAdblockIsAdFreeText(S7TVAdblockVisibleViewText(root));
+    if ((S7TVAdblockStringContains(className, @"Upsell") ||
+         S7TVAdblockStringContains(className, @"AdFree") ||
+         matchingControlText) && !root.hidden) {
+        S7TVAdblockHideAdFreeView(root);
+        return;
+    }
+    for (UIView *subview in root.subviews.copy) {
+        S7TVAdblockScanForAdFreeView(subview);
+    }
+}
+
+void S7TVAdblockHideAdFreeUpsellIfNeeded(void) {
+    if (!S7TVAdblockHideAdFreeButtonIsEnabled()) return;
+    for (UIWindow *window in UIApplication.sharedApplication.windows.copy) {
+        S7TVAdblockScanForAdFreeView(window);
+    }
 }
 
 @interface AVURLAsset (S7TVAdblockRuntime)
@@ -172,6 +250,9 @@ shouldWaitForRenewalOfRequestedResource:(AVAssetResourceRenewalRequest *)renewal
 - (instancetype)s7tv_adblock_initWithGraphQL:(id)graphQL themeManager:(id)themeManager
                                 urlController:(id)urlController isInitialTab:(BOOL)isInitialTab;
 + (instancetype)s7tv_adblock_shared;
+- (void)s7tv_adblock_standardButtonDidMoveToWindow;
+- (void)s7tv_adblock_standardButtonLayoutSubviews;
+- (void)s7tv_adblock_followingViewDidLayoutSubviews;
 @end
 
 @implementation NSObject (S7TVAdblockTwitchResourceLoader)
@@ -237,12 +318,38 @@ static void S7TVAdblockClearFollowingAds(id object) {
     return shared;
 }
 
+- (void)s7tv_adblock_standardButtonDidMoveToWindow {
+    [self s7tv_adblock_standardButtonDidMoveToWindow];
+    if (!S7TVAdblockHideAdFreeButtonIsEnabled()) return;
+    UIView *button = (UIView *)self;
+    if (S7TVAdblockIsAdFreeText(S7TVAdblockVisibleViewText(button))) {
+        S7TVAdblockHideAdFreeView(button);
+    }
+}
+
+- (void)s7tv_adblock_standardButtonLayoutSubviews {
+    [self s7tv_adblock_standardButtonLayoutSubviews];
+    if (!S7TVAdblockHideAdFreeButtonIsEnabled()) return;
+    UIView *button = (UIView *)self;
+    if (S7TVAdblockIsAdFreeText(S7TVAdblockVisibleViewText(button))) {
+        S7TVAdblockHideAdFreeView(button);
+    }
+}
+
+- (void)s7tv_adblock_followingViewDidLayoutSubviews {
+    [self s7tv_adblock_followingViewDidLayoutSubviews];
+    S7TVAdblockHideAdFreeUpsellIfNeeded();
+}
+
 @end
 
 static BOOL S7TVAdblockPrivateResourceLoaderInstalled = NO;
 static BOOL S7TVAdblockLegacyGQLInstalled = NO;
 static BOOL S7TVAdblockFollowingInstalled = NO;
 static BOOL S7TVAdblockHeadlinerInstalled = NO;
+static BOOL S7TVAdblockStandardButtonDidMoveInstalled = NO;
+static BOOL S7TVAdblockStandardButtonLayoutInstalled = NO;
+static BOOL S7TVAdblockFollowingLayoutInstalled = NO;
 
 static void S7TVAdblockTryInstallLateHooks(void) {
     @synchronized (S7TVAdblockResourceLoader.class) {
@@ -288,6 +395,34 @@ static void S7TVAdblockTryInstallLateHooks(void) {
                 S7TVAdblockHeadlinerInstalled = S7TVAdblockExchangeInstanceMethod(
                     object_getClass(headliner), object_getClass(NSObject.class),
                     @selector(shared), @selector(s7tv_adblock_shared));
+            }
+        }
+        if (!S7TVAdblockStandardButtonDidMoveInstalled ||
+            !S7TVAdblockStandardButtonLayoutInstalled) {
+            Class standardButton = NSClassFromString(
+                @"_TtC12TwitchCoreUI14StandardButton");
+            if (standardButton) {
+                if (!S7TVAdblockStandardButtonDidMoveInstalled) {
+                    S7TVAdblockStandardButtonDidMoveInstalled =
+                        S7TVAdblockExchangeInstanceMethod(standardButton, NSObject.class,
+                            @selector(didMoveToWindow),
+                            @selector(s7tv_adblock_standardButtonDidMoveToWindow));
+                }
+                if (!S7TVAdblockStandardButtonLayoutInstalled) {
+                    S7TVAdblockStandardButtonLayoutInstalled =
+                        S7TVAdblockExchangeInstanceMethod(standardButton, NSObject.class,
+                            @selector(layoutSubviews),
+                            @selector(s7tv_adblock_standardButtonLayoutSubviews));
+                }
+            }
+        }
+        if (!S7TVAdblockFollowingLayoutInstalled) {
+            Class following = NSClassFromString(@"_TtC6Twitch23FollowingViewController");
+            if (following) {
+                S7TVAdblockFollowingLayoutInstalled =
+                    S7TVAdblockExchangeInstanceMethod(following, NSObject.class,
+                        @selector(viewDidLayoutSubviews),
+                        @selector(s7tv_adblock_followingViewDidLayoutSubviews));
             }
         }
     }

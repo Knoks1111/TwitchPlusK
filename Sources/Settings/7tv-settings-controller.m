@@ -265,6 +265,38 @@ static UITableViewCell *S7TVNavCell(NSString *title,
     return cell;
 }
 
+static char kS7TVSwitchOnColorKey;
+
+// Garde l'icône d'un interrupteur synchronisée avec son état réel : quand
+// l'utilisateur bascule le switch, l'icône passe immédiatement en gris (OFF)
+// ou en couleur (ON), sans attendre un reload de la table (la plupart des
+// handlers de bascule ne relancent pas la tableView).
+@interface S7TVSwitchIconUpdater : NSObject
++ (void)s7tv_switchValueChanged:(UISwitch *)sw;
+@end
+
+@implementation S7TVSwitchIconUpdater
++ (void)s7tv_switchValueChanged:(UISwitch *)sw {
+    UIView *view = sw;
+    while (view && ![view isKindOfClass:[UITableViewCell class]]) view = view.superview;
+    UITableViewCell *cell = (UITableViewCell *)view;
+    if (!cell) return;
+
+    UIImageView *icon = nil;
+    for (UIView *subview in cell.contentView.subviews) {
+        if ([subview isKindOfClass:[UIImageView class]]) {
+            icon = (UIImageView *)subview;
+            break;
+        }
+    }
+    if (!icon) return;
+
+    UIColor *onColor = objc_getAssociatedObject(sw, &kS7TVSwitchOnColorKey);
+    if (!onColor) onColor = [UIColor systemGrayColor];
+    icon.tintColor = sw.isOn ? onColor : [UIColor systemGrayColor];
+}
+@end
+
 // Cellule avec UISwitch
 // Titre 17pt Regular (identique Twitch natif), switch violet 7TV
 // infoKey (optionnel) : clé de description derrière un bouton "i" placé
@@ -302,6 +334,13 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
     sw.on          = isOn;
     sw.onTintColor = S7TVAccent();
     [sw addTarget:target action:action forControlEvents:UIControlEventValueChanged];
+    // Icône synchronisée avec l'état réel du switch (gris quand OFF, couleur
+    // quand ON) — voir S7TVSwitchIconUpdater.
+    objc_setAssociatedObject(sw, &kS7TVSwitchOnColorKey, iconTint,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [sw addTarget:[S7TVSwitchIconUpdater class]
+           action:@selector(s7tv_switchValueChanged:)
+ forControlEvents:UIControlEventValueChanged];
     sw.translatesAutoresizingMaskIntoConstraints = NO;
     [cell.contentView addSubview:sw];
 

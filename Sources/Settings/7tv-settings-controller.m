@@ -26,6 +26,7 @@
 #import "Diagnostics/7tv-hook-diagnostics.h"
 #import "Settings/7tv-settings-transfer.h"
 #import "UI/7tv-info-tooltip.h"
+#import "UI/7tv-oled-mode.h"
 #import <objc/runtime.h>
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names";
@@ -1315,7 +1316,7 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     // Section 0 = description d'introduction, section 1 = réglages.
-    return (s == 0) ? 1 : 3;
+    return (s == 0) ? 1 : 4;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
@@ -1365,12 +1366,17 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
     if (ip.section != 1) return [[UITableViewCell alloc] init];
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     switch (ip.row) {
-        case 0: return S7TVSwitchCell(L(@"switch_animations_picker"),
+        case 0: return S7TVSwitchCell(L(@"switch_oled_mode"),
+                    @"circle.lefthalf.filled",
+                    UIColor.systemIndigoColor,
+                    S7TVOLEDModeEnabled(),
+                    self, @selector(toggleOLEDMode:), @"desc_oled_mode");
+        case 1: return S7TVSwitchCell(L(@"switch_animations_picker"),
                     @"photo.stack",
                     UIColor.systemIndigoColor,
                     mgr.showPickerAnimations,
                     self, @selector(togglePickerAnimations:), nil);
-        case 1: {
+        case 2: {
             UITableViewCell *cell = S7TVSwitchCell(L(@"switch_animations_favorites_only"),
                         @"star.circle",
                         UIColor.systemYellowColor,
@@ -1379,7 +1385,7 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
             [self s7tv_applyPickerAnimSubOptionEnabledState:cell];
             return cell;
         }
-        case 2: {
+        case 3: {
             // Menu de choix (action sheet) plutôt qu'un segmented : même
             // logique que "Écran au lancement" — la valeur courante sert de
             // sous-titre (marquée "- Par défaut" quand c'est celle d'origine),
@@ -1400,11 +1406,14 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section == 1 && ip.row == 2) {
+    if (ip.section == 1 && ip.row == 3) {
         [self presentResolutionPickerFromCell:[tv cellForRowAtIndexPath:ip]];
     }
 }
 
+- (void)toggleOLEDMode:(UISwitch *)sw {
+    S7TVOLEDModeSetEnabled(sw.isOn);
+}
 - (void)togglePickerAnimations:(UISwitch *)sw {
     [SevenTVManager sharedManager].showPickerAnimations = sw.isOn;
     // Reload pour griser/dégriser la sous-option "Favoris uniquement", qui
@@ -2837,6 +2846,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [chatConfig reloadFromDefaults];
     [[NSNotificationCenter defaultCenter]
         postNotificationName:S7TVChatAppearanceConfigDidChangeNotification object:chatConfig];
+    S7TVOLEDModeReloadFromDefaults();
 
     NSInteger language = [NSUserDefaults.standardUserDefaults integerForKey:@"s7tv_language"];
     if (language != S7TVLanguageFrench) language = S7TVLanguageEnglish;

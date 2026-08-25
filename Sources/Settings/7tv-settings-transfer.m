@@ -48,6 +48,17 @@ static NSDictionary<NSString *, id> *S7TVSettingsTransferValues(void) {
             values[key] = value;
         }
     }];
+
+    // La récupération automatique des points est l'unique préférence
+    // historique sans préfixe s7tv_. Son défaut effectif est ON, mais cette
+    // valeur n'est pas écrite tant que l'utilisateur n'a jamais touché le
+    // switch. La sérialiser explicitement évite qu'un import conserve un
+    // ancien OFF sur l'autre appareil.
+    if (!values[S7TVLegacyChannelPointsKey]) {
+        BOOL autoClaim = [defaults objectForKey:S7TVLegacyChannelPointsKey] != nil
+            ? [defaults boolForKey:S7TVLegacyChannelPointsKey] : YES;
+        values[S7TVLegacyChannelPointsKey] = @(autoClaim);
+    }
     return values.copy;
 }
 

@@ -42,7 +42,8 @@ TwitchPlusK_FILES = \
     Sources/Localization/7tv-localization-manager.m \
     Sources/System/7tv-system-home-features.m \
     Sources/System/7tv-system-native-behavior-hooks.m \
-    Sources/UI/7tv-info-tooltip.m
+    Sources/UI/7tv-info-tooltip.m \
+    Sources/UI/7tv-oled-mode.m
 
 # ── Options de compilation ──
 TwitchPlusK_CFLAGS := \

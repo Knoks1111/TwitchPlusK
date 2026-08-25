@@ -32,10 +32,9 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         [self s7tv_buildTable];
 
         NSNumber *stored = [[NSUserDefaults standardUserDefaults] objectForKey:kS7TVLanguageDefaultsKey];
-        // Défaut : français, comportement historique de l'app avant le
-        // support anglais — pas de détection automatique de la langue
+        // Défaut : anglais — pas de détection automatique de la langue
         // système, le choix reste 100% manuel (voir header).
-        _currentLanguage = stored ? (S7TVLanguage)stored.integerValue : S7TVLanguageFrench;
+        _currentLanguage = stored ? (S7TVLanguage)stored.integerValue : S7TVLanguageEnglish;
     }
     return self;
 }
@@ -74,7 +73,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"common_empty_action":             @[@"Vider", @"Clear"],
 
         // ── Titres de page ──────────────────────────────────────────────
-        @"title_7tv_settings":              @[@"7TV Settings", @"7TV Settings"],
+        @"title_7tv_settings":              @[@"TwitchPlusK Settings", @"TwitchPlusK Settings"],
         @"title_apparence":                 @[@"Apparence", @"Appearance"],
         @"title_contenu":                   @[@"Contenu", @"Content"],
         @"title_adblock":                   @[@"Adblock", @"Adblock"], // terme déjà utilisé tel quel en français
@@ -85,7 +84,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Bouton flottant / header (SevenTVSettingsController + TweakSevenTV) ──
         @"label_7tv_badge":                 @[@"7TV", @"7TV"],
-        @"header_7tv_settings_caps":        @[@"7TV SETTINGS", @"7TV SETTINGS"],
+        @"label_twitchplusk_badge":         @[@"TwitchPlusK", @"TwitchPlusK"],
+        @"header_7tv_settings_caps":        @[@"TWITCHPLUSK SETTINGS", @"TWITCHPLUSK SETTINGS"],
 
         // ── Cache (accueil → Avancé) ─────────────────────────────────────
         @"action_clear_cache":              @[@"Vider le cache", @"Clear cache"],
@@ -174,7 +174,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
             @"Une résolution élevée est plus nette, mais utilise plus de stockage et de mémoire et peut provoquer des ralentissements. Le changement vide le cache et s'applique sans redémarrage.",
             @"Higher resolutions look sharper, but use more storage and memory and may cause lag. Changing it clears the cache and applies without restarting."
         ],
-        @"switch_floating_button":          @[@"Bouton flottant 7TV", @"7TV floating button"],
+        @"switch_floating_button":          @[@"Bouton flottant", @"Floating button"],
         @"switch_enable_logs":              @[@"Activer les logs", @"Enable logs"],
         @"switch_logs_console":             @[@"Logs console (Console.app)", @"Console logs (Console.app)"],
 

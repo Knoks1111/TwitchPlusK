@@ -394,16 +394,9 @@ static UIView *s7tv_settingsHeaderView(id self, SEL cmd, UITableView *tableView,
         return implementation(self, original, tableView, s7tv_settingsOriginalSection(section));
     }
 
+    // Header texte seul — pas de logo ici : l'entrée dans les paramètres
+    // Twitch natifs reste sobre, le logo 7TV reste réservé au hub.
     UIView *container = [UIView new];
-    NSData *logoData = [[NSData alloc]
-        initWithBase64EncodedString:kS7TVLogoBase64
-                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    UIImageView *logo = [UIImageView new];
-    if (logoData) logo.image = [UIImage imageWithData:logoData scale:2.0];
-    logo.contentMode = UIViewContentModeScaleAspectFit;
-    logo.translatesAutoresizingMaskIntoConstraints = NO;
-    [container addSubview:logo];
-
     UILabel *label = [UILabel new];
     label.text = L(@"header_7tv_settings_caps");
     label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
@@ -411,11 +404,7 @@ static UIView *s7tv_settingsHeaderView(id self, SEL cmd, UITableView *tableView,
     label.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:label];
     [NSLayoutConstraint activateConstraints:@[
-        [logo.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
-        [logo.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
-        [logo.widthAnchor constraintEqualToConstant:26],
-        [logo.heightAnchor constraintEqualToConstant:19],
-        [label.leadingAnchor constraintEqualToAnchor:logo.trailingAnchor constant:6],
+        [label.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
         [label.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
         [label.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
     ]];
@@ -460,10 +449,6 @@ static UITableViewCell *s7tv_settingsCell(id self, SEL cmd, UITableView *tableVi
     }
     cell.textLabel.text = L(@"title_7tv_settings");
     cell.textLabel.numberOfLines = 0;
-    NSData *logoData = [[NSData alloc]
-        initWithBase64EncodedString:kS7TVLogoBase64
-                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    if (logoData) cell.imageView.image = [UIImage imageWithData:logoData scale:2.0];
     return cell;
 }
 
@@ -571,7 +556,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 }
 
 - (void)buildNavBar {
-    // Titre nav bar : logo 7TV + "7TV"
+    // Titre nav bar : logo 7TV + "TwitchPlusK"
     NSData *d = [[NSData alloc]
         initWithBase64EncodedString:kS7TVLogoBase64
                             options:NSDataBase64DecodingIgnoreUnknownCharacters];
@@ -583,8 +568,9 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
         iv.contentMode = UIViewContentModeScaleAspectFit;
         iv.translatesAutoresizingMaskIntoConstraints = NO;
 
+        NSString *badgeText = L(@"label_twitchplusk_badge");
         UILabel *lbl = [[UILabel alloc] init];
-        lbl.text = L(@"label_7tv_badge");
+        lbl.text = badgeText;
         lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
         lbl.textColor = S7TVAccent();
         lbl.translatesAutoresizingMaskIntoConstraints = NO;
@@ -599,7 +585,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
             [lbl.centerYAnchor constraintEqualToAnchor:tv.centerYAnchor],
             [lbl.trailingAnchor constraintEqualToAnchor:tv.trailingAnchor],
         ]];
-        CGFloat w = 28 + 6 + [@"7TV" sizeWithAttributes:@{
+        CGFloat w = 28 + 6 + [badgeText sizeWithAttributes:@{
             NSFontAttributeName: [UIFont systemFontOfSize:17 weight:UIFontWeightBold]
         }].width;
         tv.frame = CGRectMake(0, 0, w, 20);
@@ -1180,13 +1166,28 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
-    return 8;
+    return UITableViewAutomaticDimension;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
-    UIView *v = [[UIView alloc] init];
-    v.backgroundColor = [UIColor clearColor];
-    return v;
+    // L'explication "résolution élevée = plus net mais plus lourd" vivait
+    // dans la cellule du segmented ; elle devient le footer de section
+    // depuis que la cellule est une simple ligne de navigation.
+    UIView *container = [[UIView alloc] init];
+    UILabel *lbl = [[UILabel alloc] init];
+    lbl.text = L(@"setting_resolution_clears_cache");
+    lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+    lbl.textColor = S7TVGray();
+    lbl.numberOfLines = 0;
+    lbl.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:lbl];
+    [NSLayoutConstraint activateConstraints:@[
+        [lbl.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [lbl.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+        [lbl.topAnchor      constraintEqualToAnchor:container.topAnchor constant:6],
+        [lbl.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor constant:-6],
+    ]];
+    return container;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -1207,59 +1208,14 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
             return cell;
         }
         case 2: {
-            UITableViewCell *cell = [[UITableViewCell alloc]
-                initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
-            cell.backgroundColor = S7TVCellBg();
-
-            UIImageView *icon = S7TVIcon(@"photo.stack.fill", S7TVAccent());
-            [cell.contentView addSubview:icon];
-
-            UILabel *title = [[UILabel alloc] init];
-            title.text = L(@"setting_emote_resolution");
-            title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
-            title.textColor = [UIColor whiteColor];
-            title.translatesAutoresizingMaskIntoConstraints = NO;
-            [cell.contentView addSubview:title];
-
-            UILabel *subtitle = [[UILabel alloc] init];
-            subtitle.text = L(@"setting_resolution_clears_cache");
-            subtitle.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
-            subtitle.textColor = S7TVGray();
-            subtitle.numberOfLines = 0;
-            subtitle.lineBreakMode = NSLineBreakByWordWrapping;
-            subtitle.translatesAutoresizingMaskIntoConstraints = NO;
-            [cell.contentView addSubview:subtitle];
-
-            UISegmentedControl *resolution = [[UISegmentedControl alloc]
-                initWithItems:@[@"1x", @"2x", @"3x", @"4x"]];
+            // Menu de choix (action sheet) plutôt qu'un segmented : même
+            // logique que "Écran au lancement" — la valeur courante sert de
+            // sous-titre, le tap ouvre la liste des résolutions.
             NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
             current = MIN(4, MAX(1, current));
-            resolution.selectedSegmentIndex = current - 1;
-            resolution.selectedSegmentTintColor = S7TVAccent();
-            [resolution setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]}
-                                      forState:UIControlStateSelected];
-            [resolution addTarget:self action:@selector(emoteResolutionChanged:)
-                 forControlEvents:UIControlEventValueChanged];
-            resolution.translatesAutoresizingMaskIntoConstraints = NO;
-            [cell.contentView addSubview:resolution];
-
-            [NSLayoutConstraint activateConstraints:@[
-                [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
-                [icon.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:12],
-                [title.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],
-                [title.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
-                [title.centerYAnchor constraintEqualToAnchor:icon.centerYAnchor],
-                [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
-                [subtitle.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
-                [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:2],
-                [resolution.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
-                [resolution.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
-                [resolution.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:8],
-                [resolution.heightAnchor constraintEqualToConstant:30],
-                [resolution.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
-            ]];
-            return cell;
+            return S7TVNavCell(L(@"setting_emote_resolution"),
+                [NSString stringWithFormat:@"%ldx", (long)current],
+                @"photo.stack.fill", S7TVAccent());
         }
         default: return [[UITableViewCell alloc] init];
     }
@@ -1267,6 +1223,9 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
+    if (ip.row == 2) {
+        [self presentResolutionPickerFromCell:[tv cellForRowAtIndexPath:ip]];
+    }
 }
 
 - (void)togglePickerAnimations:(UISwitch *)sw {
@@ -1280,18 +1239,46 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
     [SevenTVManager sharedManager].showPickerAnimationsFavoritesOnly = sw.isOn;
 }
 
-- (void)emoteResolutionChanged:(UISegmentedControl *)seg {
-    NSInteger resolution = seg.selectedSegmentIndex + 1;
+// Menu de choix de la résolution des emotes (action sheet, même logique que
+// le picker "Écran au lancement" de la page Contenu) : ✓ sur la valeur
+// courante, Annuler, puis vidage du cache si la résolution change.
+- (void)presentResolutionPickerFromCell:(UIView *)anchor {
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:L(@"setting_emote_resolution")
+                          message:nil
+                   preferredStyle:UIAlertControllerStyleActionSheet];
+    NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+    current = MIN(4, MAX(1, current));
+    for (NSInteger resolution = 1; resolution <= 4; resolution++) {
+        NSString *title = [NSString stringWithFormat:@"%ldx", (long)resolution];
+        if (resolution == current) title = [@"✓  " stringByAppendingString:title];
+        __weak typeof(self) weakSelf = self;
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            [weakSelf s7tv_applyEmoteResolution:resolution];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    sheet.popoverPresentationController.sourceView = anchor;
+    sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)s7tv_applyEmoteResolution:(NSInteger)resolution {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
     if (resolution == cfg.emote7TVResolution) return;
 
     // Enregistrer d'abord : tout nouveau chargement créé pendant le refresh
     // utilisera immédiatement l'URL /Nx.webp choisie.
     [cfg setValue:(CGFloat)resolution forSizeKey:@"emote7TVResolution"];
-    seg.enabled = NO;
-    __weak UISegmentedControl *weakSegment = seg;
+    __weak typeof(self) weakSelf = self;
     [[SevenTVManager sharedManager] clearAllCachesWithCompletion:^(NSUInteger clearedCount) {
-        weakSegment.enabled = YES;
+        (void)clearedCount;
+        [weakSelf.tableView reloadData];
     }];
 }
 
@@ -1344,8 +1331,19 @@ static NSString *S7TVLaunchDestinationTitle(S7TVLaunchDestination destination) {
     return L(@"launch_default");
 }
 
+static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mode) {
+    switch (mode) {
+        case S7TVAutoOrientationLockModeLandscapeLeft:  return L(@"orientation_left");
+        case S7TVAutoOrientationLockModeLandscapeRight: return L(@"orientation_right");
+        case S7TVAutoOrientationLockModeBothLandscapes: return L(@"orientation_both");
+        case S7TVAutoOrientationLockModeDisabled:
+        default:                                        return L(@"orientation_auto_off");
+    }
+}
+
 @interface SevenTVContentPageController () <UIDocumentPickerDelegate>
 - (void)presentLaunchDestinationPickerFromCell:(UIView *)anchor;
+- (void)presentAutoOrientationLockPickerFromCell:(UIView *)anchor;
 @end
 
 @implementation SevenTVContentPageController
@@ -1381,7 +1379,6 @@ static NSString *S7TVLaunchDestinationTitle(S7TVLaunchDestination destination) {
 
 - (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
     if (ip.section == S7TVContentSectionFavorites) return 52;
-    if (ip.section == S7TVContentSectionRotation && ip.row == 1) return 94;
     return UITableViewAutomaticDimension;
 }
 
@@ -1470,55 +1467,15 @@ static NSString *S7TVLaunchDestinationTitle(S7TVLaunchDestination destination) {
                         @selector(toggleOrientationLockButton:));
         }
 
-        UITableViewCell *cell = [[UITableViewCell alloc]
-            initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.backgroundColor = S7TVCellBg();
-
-        UIImageView *icon = S7TVIcon(@"iphone.gen3.radiowaves.left.and.right", S7TVAccent());
-        [cell.contentView addSubview:icon];
-
-        UILabel *title = [[UILabel alloc] init];
-        title.text = L(@"setting_orientation_auto_lock");
-        title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
-        title.textColor = UIColor.whiteColor;
-        title.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.contentView addSubview:title];
-
-        UISegmentedControl *mode = [[UISegmentedControl alloc] initWithItems:@[
-            L(@"orientation_auto_off"), L(@"orientation_left"),
-            L(@"orientation_right"), L(@"orientation_both")
-        ]];
-        mode.selectedSegmentIndex = s7tv_autoOrientationLockMode();
-        mode.selectedSegmentTintColor = S7TVAccent();
-        [mode setTitleTextAttributes:@{
-            NSForegroundColorAttributeName: UIColor.whiteColor,
-            NSFontAttributeName: [UIFont systemFontOfSize:11 weight:UIFontWeightMedium]
-        } forState:UIControlStateSelected];
-        [mode setTitleTextAttributes:@{
-            NSFontAttributeName: [UIFont systemFontOfSize:11 weight:UIFontWeightRegular]
-        } forState:UIControlStateNormal];
-        [mode addTarget:self action:@selector(autoOrientationModeChanged:)
-               forControlEvents:UIControlEventValueChanged];
-        mode.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.contentView addSubview:mode];
-
-        [NSLayoutConstraint activateConstraints:@[
-            [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
-            [icon.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:12],
-            [title.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],
-            [title.centerYAnchor constraintEqualToAnchor:icon.centerYAnchor],
-            [title.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12],
-            [mode.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
-            [mode.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12],
-            [mode.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:10],
-            [mode.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
-        ]];
-
+        // Menu de choix (action sheet) plutôt qu'un segmented : même logique
+        // que "Écran au lancement" — la valeur courante sert de sous-titre,
+        // le tap ouvre la liste des modes. Grisé si le bouton est désactivé.
+        UITableViewCell *cell = S7TVNavCell(L(@"setting_orientation_auto_lock"),
+            S7TVAutoOrientationLockModeTitle(s7tv_autoOrientationLockMode()),
+            @"iphone.gen3.radiowaves.left.and.right", S7TVAccent());
         BOOL enabled = s7tv_orientationLockButtonEnabled();
         cell.userInteractionEnabled = enabled;
         cell.contentView.alpha = enabled ? 1.0 : 0.4;
-        mode.enabled = enabled;
         return cell;
     }
 
@@ -1624,6 +1581,10 @@ static NSString *S7TVLaunchDestinationTitle(S7TVLaunchDestination destination) {
     }
     if (ip.section == S7TVContentSectionHome && ip.row == 0) {
         [self presentLaunchDestinationPickerFromCell:[tv cellForRowAtIndexPath:ip]];
+        return;
+    }
+    if (ip.section == S7TVContentSectionRotation && ip.row == 1) {
+        [self presentAutoOrientationLockPickerFromCell:[tv cellForRowAtIndexPath:ip]];
     }
 }
 
@@ -1640,8 +1601,38 @@ static NSString *S7TVLaunchDestinationTitle(S7TVLaunchDestination destination) {
         [NSIndexSet indexSetWithIndex:S7TVContentSectionRotation]
                      withRowAnimation:UITableViewRowAnimationNone];
 }
-- (void)autoOrientationModeChanged:(UISegmentedControl *)seg {
-    s7tv_setAutoOrientationLockMode((S7TVAutoOrientationLockMode)seg.selectedSegmentIndex);
+
+// Menu de choix du mode d'auto-lock (action sheet, même logique que le picker
+// "Écran au lancement") : ✓ sur le mode courant, Annuler, puis application
+// immédiate et rechargement de la section pour rafraîchir le sous-titre.
+- (void)presentAutoOrientationLockPickerFromCell:(UIView *)anchor {
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:L(@"setting_orientation_auto_lock")
+                          message:nil
+                   preferredStyle:UIAlertControllerStyleActionSheet];
+    S7TVAutoOrientationLockMode current = s7tv_autoOrientationLockMode();
+    for (NSInteger raw = S7TVAutoOrientationLockModeDisabled;
+         raw <= S7TVAutoOrientationLockModeBothLandscapes; raw++) {
+        S7TVAutoOrientationLockMode mode = (S7TVAutoOrientationLockMode)raw;
+        NSString *title = S7TVAutoOrientationLockModeTitle(mode);
+        if (mode == current) title = [@"✓  " stringByAppendingString:title];
+        __weak typeof(self) weakSelf = self;
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            s7tv_setAutoOrientationLockMode(mode);
+            [weakSelf.tableView reloadSections:
+                [NSIndexSet indexSetWithIndex:S7TVContentSectionRotation]
+                         withRowAnimation:UITableViewRowAnimationNone];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    sheet.popoverPresentationController.sourceView = anchor;
+    sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)presentLaunchDestinationPickerFromCell:(UIView *)anchor {
@@ -2674,7 +2665,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         postNotificationName:S7TVChatAppearanceConfigDidChangeNotification object:chatConfig];
 
     NSInteger language = [NSUserDefaults.standardUserDefaults integerForKey:@"s7tv_language"];
-    if (language != S7TVLanguageEnglish) language = S7TVLanguageFrench;
+    if (language != S7TVLanguageFrench) language = S7TVLanguageEnglish;
     [S7TVLocalization shared].currentLanguage = (S7TVLanguage)language;
     self.title = L(@"title_avance");
 

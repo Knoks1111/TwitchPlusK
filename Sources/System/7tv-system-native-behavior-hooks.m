@@ -501,6 +501,11 @@ static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
 // une fois toutes les 2 secondes). Silencieuse sauf à la découverte
 // effective d'une nouvelle instance.
 void s7tv_scanForChannelPointsLoop(void) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL autoCollectEnabled = [defaults objectForKey:kTCLiveAutoCollectChannelPoints] != nil
+        ? [defaults boolForKey:kTCLiveAutoCollectChannelPoints] : YES;
+    if (!autoCollectEnabled) return;
+
     UIView *chatInputView = s7tv_findChatInputView();
 
     if (chatInputView && !objc_getAssociatedObject(chatInputView, &kS7TVChannelPointsPolling)) {

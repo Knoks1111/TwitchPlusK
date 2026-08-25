@@ -61,6 +61,23 @@ static UIColor *S7TVSwitchIconColor(UIColor *onColor, BOOL isOn) {
     return isOn ? onColor : [UIColor systemGrayColor];
 }
 
+// Grise/dégrise une cellule dont l'icône doit refléter l'état d'une catégorie
+// mère. Sous-options (switchs) désactivées quand la catégorie mère l'est :
+// icône forcée en gris système quand `enabled` est NO ; quand YES, elle garde
+// la couleur posée à la création (les cellules sont reconstruites à chaque
+// cellForRow, donc jamais obsolètes).
+static void S7TVApplyCellEnabledState(UITableViewCell *cell, BOOL enabled) {
+    cell.userInteractionEnabled = enabled;
+    cell.contentView.alpha = enabled ? 1.0 : 0.4;
+    for (UIView *v in cell.contentView.subviews) {
+        if ([v isKindOfClass:[UISwitch class]]) {
+            ((UISwitch *)v).enabled = enabled;
+        } else if (!enabled && [v isKindOfClass:[UIImageView class]]) {
+            ((UIImageView *)v).tintColor = [UIColor systemGrayColor];
+        }
+    }
+}
+
 @interface S7TVSettingsResolvedEmote : NSObject <S7TVResolvedEmote>
 @property (nonatomic, copy) NSString *emoteID;
 @property (nonatomic, assign) CGSize nativeSize;
@@ -1258,8 +1275,8 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    // Section 0 = description d'introduction (aucune ligne), section 1 = réglages.
-    return (s == 0) ? 0 : 3;
+    // Section 0 = description d'introduction, section 1 = réglages.
+    return (s == 0) ? 1 : 3;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
@@ -1272,29 +1289,10 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
-    return (s == 0) ? UITableViewAutomaticDimension : 8;
+    return 8;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
-    if (s == 0) {
-        // Description d'introduction : les réglages du chat custom vivent
-        // dans le panneau du picker (bouton « Aa »), pas dans cette page.
-        UIView *container = [[UIView alloc] init];
-        UILabel *lbl = [[UILabel alloc] init];
-        lbl.text = L(@"desc_chat_custom_location");
-        lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-        lbl.textColor = S7TVGray();
-        lbl.numberOfLines = 0;
-        lbl.translatesAutoresizingMaskIntoConstraints = NO;
-        [container addSubview:lbl];
-        [NSLayoutConstraint activateConstraints:@[
-            [lbl.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor constant:16],
-            [lbl.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
-            [lbl.topAnchor      constraintEqualToAnchor:container.topAnchor constant:6],
-            [lbl.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor constant:-6],
-        ]];
-        return container;
-    }
     // L'explication "résolution élevée = plus net mais plus lourd" vit
     // désormais derrière le bouton "i" de la ligne de résolution.
     UIView *v = [[UIView alloc] init];
@@ -1303,6 +1301,28 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == 0) {
+        // Description d'introduction : les réglages du chat custom vivent
+        // dans le panneau du picker (bouton « Aa »), pas dans cette page.
+        UITableViewCell *cell = [[UITableViewCell alloc]
+            initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.backgroundColor = S7TVCellBg();
+        UILabel *lbl = [[UILabel alloc] init];
+        lbl.text = L(@"desc_chat_custom_location");
+        lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        lbl.textColor = S7TVGray();
+        lbl.numberOfLines = 0;
+        lbl.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:lbl];
+        [NSLayoutConstraint activateConstraints:@[
+            [lbl.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+            [lbl.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+            [lbl.topAnchor      constraintEqualToAnchor:cell.contentView.topAnchor constant:10],
+            [lbl.bottomAnchor   constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
+        ]];
+        return cell;
+    }
     if (ip.section != 1) return [[UITableViewCell alloc] init];
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     switch (ip.row) {
@@ -1406,15 +1426,7 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 // même pattern que s7tv_applyEnabledState: dans SevenTVDebugPageController,
 // mais dépendant ici de showPickerAnimations plutôt que de logsEnabled.
 - (void)s7tv_applyPickerAnimSubOptionEnabledState:(UITableViewCell *)cell {
-    BOOL enabled = [SevenTVManager sharedManager].showPickerAnimations;
-    cell.userInteractionEnabled = enabled;
-    cell.contentView.alpha = enabled ? 1.0 : 0.4;
-    for (UIView *v in cell.contentView.subviews) {
-        if ([v isKindOfClass:[UISwitch class]]) {
-            ((UISwitch *)v).enabled = enabled;
-            break;
-        }
-    }
+    S7TVApplyCellEnabledState(cell, [SevenTVManager sharedManager].showPickerAnimations);
 }
 
 @end
@@ -1585,8 +1597,7 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
                 mode == S7TVAutoOrientationLockModeDisabled),
             @"iphone.gen3.radiowaves.left.and.right", S7TVAccent(), nil);
         BOOL enabled = s7tv_orientationLockButtonEnabled();
-        cell.userInteractionEnabled = enabled;
-        cell.contentView.alpha = enabled ? 1.0 : 0.4;
+        S7TVApplyCellEnabledState(cell, enabled);
         return cell;
     }
 
@@ -2812,15 +2823,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 // Grise visuellement une cellule de catégorie/console quand logsEnabled == NO,
 // sans jamais modifier la valeur stockée dans NSUserDefaults.
 - (void)s7tv_applyEnabledState:(UITableViewCell *)cell {
-    BOOL enabled = [SevenTVManager sharedManager].logsEnabled;
-    cell.userInteractionEnabled = enabled;
-    cell.contentView.alpha = enabled ? 1.0 : 0.4;
-    for (UIView *v in cell.contentView.subviews) {
-        if ([v isKindOfClass:[UISwitch class]]) {
-            ((UISwitch *)v).enabled = enabled;
-            break;
-        }
-    }
+    S7TVApplyCellEnabledState(cell, [SevenTVManager sharedManager].logsEnabled);
 }
 
 - (void)toggleLogsEnabled:(UISwitch *)sw {

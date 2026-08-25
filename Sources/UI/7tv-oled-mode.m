@@ -29,19 +29,30 @@ typedef struct {
     Class targetClass;
     SEL selector;
     S7TVOLEDColorGetterIMP original;
+    BOOL requiresDarkThemeCheck;
 } S7TVOLEDHook;
 
 // Deux implémentations de thème sombre sont présentes dans Twitch 30.6.
-// Les fonds structurels ci-dessous peuvent donc installer jusqu'à 26 hooks.
-static const NSUInteger kS7TVOLEDMaxHooks = 32;
-static S7TVOLEDHook s7tv_oledHooks[32];
+// Twitch conserve aussi deux providers historiques utilisés notamment par
+// l'accueil. Les fonds structurels peuvent donc installer jusqu'à 52 hooks.
+static const NSUInteger kS7TVOLEDMaxHooks = 64;
+static S7TVOLEDHook s7tv_oledHooks[64];
 static NSUInteger s7tv_oledHookCount = 0;
 static _Atomic(bool) s7tv_oledEnabled = false;
+static _Atomic(bool) s7tv_oledDarkThemeActive = false;
 static id s7tv_lastThemeManager = nil;
 
 static const char * const kS7TVOLEDDarkThemeClassNames[] = {
     "_TtC12TwitchCoreUI15CoreUIDarkTheme",
     "_TtC12TwitchCoreUI17DarkMobileUITheme",
+};
+
+// L'accueil et certaines listes utilisent encore ce provider historique.
+// Il est également utilisé par le thème clair : ses hooks sont donc protégés
+// par s7tv_oledDarkThemeActive.
+static const char * const kS7TVOLEDLegacyThemeClassNames[] = {
+    "TWTheme",
+    "TWMobileUITheme",
 };
 
 // @selector(...) cannot be used in a C static initializer with the older
@@ -120,17 +131,27 @@ static UIColor *s7tv_oledBackgroundColorGetter(id self, SEL _cmd) {
     const S7TVOLEDHook *hook = s7tv_oledHookForReceiver(self, _cmd);
     if (!hook || !hook->original) return nil;
 
-    // Les overrides sont installés uniquement sur CoreUIDarkTheme et
-    // DarkMobileUITheme. Le test est donc un unique bool atomique, sans
-    // inspection de vue, conversion de couleur ni traitement en arrière-plan.
-    if (S7TVOLEDModeEnabled()) return UIColor.blackColor;
+    // Les providers TwitchCoreUI sont exclusivement sombres. Le provider
+    // historique est partagé avec le thème clair : dans ce cas, deux lectures
+    // atomiques suffisent à préserver ses couleurs sans inspection de vue,
+    // conversion de couleur ni traitement en arrière-plan.
+    if (S7TVOLEDModeEnabled() &&
+        (!hook->requiresDarkThemeCheck ||
+         atomic_load_explicit(&s7tv_oledDarkThemeActive, memory_order_relaxed))) {
+        return UIColor.blackColor;
+    }
     return hook->original(self, _cmd);
 }
 
-static void s7tv_installOLEDHook(Class targetClass, SEL selector) {
+static void s7tv_installOLEDHook(Class targetClass, SEL selector,
+                                 BOOL requiresDarkThemeCheck) {
     if (!targetClass || s7tv_oledHookCount >= kS7TVOLEDMaxHooks ||
-        s7tv_oledHookExists(targetClass, selector) ||
-        s7tv_oledSuperclassAlreadyHooked(targetClass, selector)) return;
+        s7tv_oledHookExists(targetClass, selector)) return;
+
+    Method declaredMethod = s7tv_oledMethodDeclaredOnClass(targetClass, selector);
+    // Si le sous-type n'a pas son propre getter, il hérite déjà du hook du
+    // parent. En revanche, un override doit toujours être couvert.
+    if (!declaredMethod && s7tv_oledSuperclassAlreadyHooked(targetClass, selector)) return;
 
     Method inheritedOrDeclaredMethod = class_getInstanceMethod(targetClass, selector);
     if (!inheritedOrDeclaredMethod) return;
@@ -139,7 +160,6 @@ static void s7tv_installOLEDHook(Class targetClass, SEL selector) {
         (S7TVOLEDColorGetterIMP)method_getImplementation(inheritedOrDeclaredMethod);
     if (!original) return;
 
-    Method declaredMethod = s7tv_oledMethodDeclaredOnClass(targetClass, selector);
     if (declaredMethod) {
         method_setImplementation(declaredMethod, (IMP)s7tv_oledBackgroundColorGetter);
     } else if (!class_addMethod(targetClass, selector,
@@ -154,23 +174,35 @@ static void s7tv_installOLEDHook(Class targetClass, SEL selector) {
         .targetClass = targetClass,
         .selector = selector,
         .original = original,
+        .requiresDarkThemeCheck = requiresDarkThemeCheck,
     };
 }
 
-static void s7tv_installOLEDPaletteHooks(void) {
-    const NSUInteger themeCount = sizeof(kS7TVOLEDDarkThemeClassNames) /
-        sizeof(kS7TVOLEDDarkThemeClassNames[0]);
+static void s7tv_installOLEDHooksForThemeClasses(const char * const *classNames,
+                                                  NSUInteger themeCount,
+                                                  BOOL requiresDarkThemeCheck) {
     const NSUInteger selectorCount = sizeof(kS7TVOLEDBackgroundSelectorNames) /
         sizeof(kS7TVOLEDBackgroundSelectorNames[0]);
 
     for (NSUInteger themeIndex = 0; themeIndex < themeCount; themeIndex++) {
-        Class themeClass = objc_getClass(kS7TVOLEDDarkThemeClassNames[themeIndex]);
+        Class themeClass = objc_getClass(classNames[themeIndex]);
         if (!themeClass) continue;
         for (NSUInteger selectorIndex = 0; selectorIndex < selectorCount; selectorIndex++) {
             SEL selector = sel_registerName(kS7TVOLEDBackgroundSelectorNames[selectorIndex]);
-            s7tv_installOLEDHook(themeClass, selector);
+            s7tv_installOLEDHook(themeClass, selector, requiresDarkThemeCheck);
         }
     }
+}
+
+static void s7tv_installOLEDPaletteHooks(void) {
+    s7tv_installOLEDHooksForThemeClasses(
+        kS7TVOLEDDarkThemeClassNames,
+        sizeof(kS7TVOLEDDarkThemeClassNames) / sizeof(kS7TVOLEDDarkThemeClassNames[0]),
+        NO);
+    s7tv_installOLEDHooksForThemeClasses(
+        kS7TVOLEDLegacyThemeClassNames,
+        sizeof(kS7TVOLEDLegacyThemeClassNames) / sizeof(kS7TVOLEDLegacyThemeClassNames[0]),
+        YES);
 }
 
 static id s7tv_activeThemeManager(void) {
@@ -183,6 +215,29 @@ static id s7tv_activeThemeManager(void) {
         if (themeManager) s7tv_lastThemeManager = themeManager;
     }
     return s7tv_lastThemeManager;
+}
+
+static void s7tv_refreshDarkThemeState(id themeManager) {
+    SEL darkModeSelector = sel_registerName("isDarkModeEnabled");
+    if (themeManager && [themeManager respondsToSelector:darkModeSelector]) {
+        BOOL darkModeEnabled =
+            ((BOOL (*)(id, SEL))objc_msgSend)(themeManager, darkModeSelector);
+        atomic_store_explicit(&s7tv_oledDarkThemeActive,
+                              darkModeEnabled,
+                              memory_order_relaxed);
+        return;
+    }
+
+    // Ce fallback n'est utilisé qu'avant la création du ThemeManager. Il
+    // protège le thème clair au premier affichage sans suivre les UIView.
+    if (NSThread.isMainThread) {
+        UIWindow *window = UIApplication.sharedApplication.windows.firstObject;
+        BOOL darkModeEnabled = window.traitCollection.userInterfaceStyle ==
+            UIUserInterfaceStyleDark;
+        atomic_store_explicit(&s7tv_oledDarkThemeActive,
+                              darkModeEnabled,
+                              memory_order_relaxed);
+    }
 }
 
 static void s7tv_requestNativeThemeRefresh(void) {
@@ -231,11 +286,14 @@ void S7TVOLEDModeSetup(void) {
                          queue:nil
                     usingBlock:^(NSNotification *note) {
             if (note.object) s7tv_lastThemeManager = note.object;
+            s7tv_refreshDarkThemeState(s7tv_lastThemeManager);
         }];
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            s7tv_activeThemeManager();
+            id themeManager = s7tv_activeThemeManager();
+            s7tv_refreshDarkThemeState(themeManager);
             s7tv_installOLEDPaletteHooks();
+            if (S7TVOLEDModeEnabled()) s7tv_requestNativeThemeRefresh();
         });
     });
 }

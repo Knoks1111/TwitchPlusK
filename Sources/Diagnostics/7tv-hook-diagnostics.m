@@ -48,9 +48,6 @@ void S7TVHookDiagnosticsRegisterKnownTargets(void) {
         S7TVHookDiagnosticRegister(@"[TwitchAdBlock] AVURLAsset", @[@"AVURLAsset"]);
         S7TVHookDiagnosticRegister(@"[TwitchAdBlock] AVPlayer", @[@"AVPlayer"]);
         S7TVHookDiagnosticRegister(
-            @"[TwitchAdBlock] _TtC6Twitch27AssetResourceLoaderDelegate",
-            @[@"_TtC6Twitch27AssetResourceLoaderDelegate"]);
-        S7TVHookDiagnosticRegister(
             @"[TwitchAdBlock] _TtC6Twitch23FollowingViewController",
             @[@"_TtC6Twitch23FollowingViewController"]);
         S7TVHookDiagnosticRegister(

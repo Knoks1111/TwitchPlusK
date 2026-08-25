@@ -29,8 +29,7 @@ typedef NS_ENUM(NSInteger, S7TVLanguage) {
 + (instancetype)shared;
 
 // Langue actuelle — lue/écrite dans NSUserDefaults (clé "s7tv_language"),
-// persistée entre les lancements de l'app. Défaut : français (comportement
-// historique de l'app avant l'ajout du support anglais).
+// persistée entre les lancements de l'app. Défaut : anglais.
 @property (nonatomic, assign) S7TVLanguage currentLanguage;
 
 // Traduction pour une clé donnée dans la langue actuelle. Si la clé est

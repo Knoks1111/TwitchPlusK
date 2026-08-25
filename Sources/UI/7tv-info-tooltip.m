@@ -19,6 +19,9 @@ static S7TVInfoButton *_s7tv_visibleInfoButton = nil;
 static UIView *_s7tv_overlay = nil;
 static UIScrollView *_s7tv_hostScrollView = nil;
 
+@implementation S7TVInfoButton
+@end
+
 @implementation S7TVInfoTooltip
 
 + (void)initialize {

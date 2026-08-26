@@ -147,6 +147,14 @@ void S7TVAdblockSetEnabled(BOOL enabled) {
     s_enabled_snapshot = enabled;
 }
 
+void S7TVAdblockSetEnabledForNextLaunch(BOOL enabled) {
+    // La méthode active est figée au lancement. Quand l'utilisateur choisit
+    // une autre méthode, on prépare son activation sans allumer par erreur
+    // le moteur actuellement installé avant le redémarrage demandé.
+    [S7TVAdblockDefaults() setBool:enabled forKey:S7TVAdblockEnabledKey];
+    [S7TVAdblockDefaults() synchronize];
+}
+
 void S7TVAdblockSetProxyEnabled(BOOL enabled) {
     [S7TVAdblockDefaults() setBool:enabled forKey:S7TVAdblockProxyEnabledKey];
 }

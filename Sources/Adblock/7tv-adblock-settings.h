@@ -56,6 +56,9 @@ void S7TVAdblockSetConfiguredMethod(S7TVAdblockMethod method);
 NSString * _Nullable S7TVAdblockCustomProxyAddress(void);
 NSArray<NSString *> *S7TVAdblockCustomProxyAddresses(void);
 void S7TVAdblockSetEnabled(BOOL enabled);
+// Persiste l'état pour le prochain lancement sans modifier le snapshot du
+// moteur déjà installé dans le processus courant.
+void S7TVAdblockSetEnabledForNextLaunch(BOOL enabled);
 void S7TVAdblockSetProxyEnabled(BOOL enabled);
 void S7TVAdblockSetCustomProxyEnabled(BOOL enabled);
 void S7TVAdblockSetHideAdFreeButtonEnabled(BOOL enabled);

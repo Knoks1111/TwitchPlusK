@@ -986,9 +986,8 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 
 // Rows logiques de la section Général.
 typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
-    S7TVAdblockGeneralRowEnable = 0,
-    S7TVAdblockGeneralRowMethod = 1,
-    S7TVAdblockGeneralRowHideTurbo = 2,
+    S7TVAdblockGeneralRowMethod = 0,
+    S7TVAdblockGeneralRowHideTurbo = 1,
 };
 
 @implementation SevenTVAdblockPageController
@@ -1009,7 +1008,8 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     S7TVRegisterOLEDObserver(self);
     S7TVAdblockRegisterDefaults();
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
-    if (S7TVAdblockIsEnabled() && S7TVAdblockProxyIsEnabled()) {
+    if (S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy &&
+        S7TVAdblockProxyIsEnabled()) {
         [self refreshProxyStatus];
     }
 }
@@ -1032,8 +1032,8 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) {
-        // Méthode visible seulement si le toggle maître est ON
-        // (mécanisme générique de sous-options dépendantes).
+        // La cellule AdBlock reste toujours visible : sa valeur choisit
+        // directement Désactivé, Proxy ou Local (VAFT).
         return [self s7tv_visibleGeneralRows].count;
     }
     // En Local (VAFT), la section reste présente mais ne contient qu'une
@@ -1062,27 +1062,21 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     return 44.0;
 }
 
-// Rows visibles de Général : « Méthode AdBlock » n'existe que si le moteur
-// maître est ON (mécanisme générique de sous-options dépendantes).
+// Rows visibles de Général : le sélecteur remplace l'ancien toggle maître.
 - (NSArray<NSNumber *> *)s7tv_visibleGeneralRows {
-    return S7TVVisibleRowIndexes(
-        @[@(S7TVAdblockGeneralRowEnable),
-          @(S7TVAdblockGeneralRowHideTurbo)],
-        @{@(S7TVAdblockGeneralRowMethod): @(S7TVAdblockEnabledFast())});
+    return @[@(S7TVAdblockGeneralRowMethod),
+             @(S7TVAdblockGeneralRowHideTurbo)];
 }
 
-// La section Proxy vidéo n'existe que si le toggle maître est ON ET que la
-// méthode configurée est Proxy (réglages exclusivement Proxy).
+// La section Proxy vidéo suit la méthode sélectionnée dans les réglages.
 - (BOOL)s7tv_proxySectionVisible {
-    return S7TVAdblockEnabledFast() &&
-           S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy;
+    return S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy;
 }
 
 // Local (VAFT) partage la même mécanique de section dépendante que le Proxy,
 // mais n'expose volontairement aucun réglage de proxy.
 - (BOOL)s7tv_localVaftSectionVisible {
-    return S7TVAdblockEnabledFast() &&
-           S7TVAdblockConfiguredMethod() == S7TVAdblockMethodLocalVaft;
+    return S7TVAdblockConfiguredMethod() == S7TVAdblockMethodLocalVaft;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -1111,20 +1105,18 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
             return [[UITableViewCell alloc] init];
         }
         switch (visible[indexPath.row].integerValue) {
-            case S7TVAdblockGeneralRowEnable:
-                return S7TVSwitchCell(L(@"adblock_enable"), @"shield.lefthalf.filled",
-                    S7TVAccent(), S7TVAdblockIsEnabled(), self, @selector(toggleAdblock:),
-                    @"adblock_engine_footer");
-            case S7TVAdblockGeneralRowMethod:
+            case S7TVAdblockGeneralRowMethod: {
                 // Sélecteur de méthode : Disabled / Proxy / Local (VAFT).
                 // La méthode configurée s'applique au prochain démarrage.
-                return S7TVNavCell(L(@"adblock_method_title"),
-                    L(S7TVAdblockConfiguredMethod() == S7TVAdblockMethodLocalVaft
-                        ? @"adblock_method_value_local"
-                        : S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy
-                            ? @"adblock_method_value_proxy"
-                            : @"adblock_method_value_disabled"),
-                    @"arrow.triangle.branch", S7TVAccent(), nil);
+                S7TVAdblockMethod configured = S7TVAdblockConfiguredMethod();
+                NSString *valueKey = configured == S7TVAdblockMethodLocalVaft
+                    ? @"adblock_method_value_local"
+                    : configured == S7TVAdblockMethodProxy
+                        ? @"adblock_method_value_proxy"
+                        : @"adblock_method_value_disabled";
+                return S7TVNavCell(L(@"adblock_cell_title"), L(valueKey),
+                    @"shield.lefthalf.filled", S7TVAccent(), @"adblock_engine_footer");
+            }
             case S7TVAdblockGeneralRowHideTurbo:
             default:
                 return S7TVSwitchCell(L(@"adblock_hide_go_ad_free"), @"rectangle.slash",
@@ -1189,7 +1181,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 1 && [self s7tv_localVaftSectionVisible]) return;
-    if (indexPath.section == 1 && S7TVAdblockIsEnabled() &&
+    if (indexPath.section == 1 && [self s7tv_proxySectionVisible] &&
         S7TVAdblockProxyIsEnabled() && S7TVAdblockCustomProxyIsEnabled() &&
         indexPath.row == [self addProxyRowIndex]) {
         [self.proxies addObject:@""];
@@ -1241,12 +1233,24 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 
 - (void)s7tv_applyConfiguredMethod:(S7TVAdblockMethod)method {
     S7TVAdblockSetConfiguredMethod(method);
+    S7TVAdblockMethod active = S7TVAdblockActiveMethod();
+    if (method == S7TVAdblockMethodDisabled) {
+        // Désactiver doit couper immédiatement le moteur actuellement chargé.
+        S7TVAdblockSetEnabled(NO);
+    } else if (method == active) {
+        // Même moteur : le choix remplace l'ancien toggle maître et peut être
+        // appliqué sans redémarrage.
+        S7TVAdblockSetEnabled(YES);
+    } else {
+        // Autre moteur : ne pas modifier le snapshot courant avant le restart.
+        S7TVAdblockSetEnabledForNextLaunch(YES);
+    }
     // Le nombre de sections change avec la méthode (section Proxy vidéo).
     [self.tableView reloadData];
 
     // Méthode configurée != méthode active → redémarrage Twitch requis,
     // en nommant explicitement la méthode choisie.
-    if (method == S7TVAdblockActiveMethod()) return; // déjà active
+    if (method == active) return; // déjà active
 
     NSString *message;
     switch (method) {
@@ -1266,12 +1270,6 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
                                               style:UIAlertActionStyleDefault
                                             handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)toggleAdblock:(UISwitch *)sender {
-    S7TVAdblockSetEnabled(sender.isOn);
-    [self.tableView reloadData];
-    if (sender.isOn && S7TVAdblockProxyIsEnabled()) [self refreshProxyStatus];
 }
 
 - (void)toggleHideGoAdFree:(UISwitch *)sender {
@@ -3288,8 +3286,17 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     // Méthode configurée != méthode active → redémarrage Twitch requis pour
     // appliquer la méthode importée. Aucun hook n'est installé/désinstallé ici.
     if (S7TVAdblockConfiguredMethod() != S7TVAdblockActiveMethod()) {
-        NSString *message = L(S7TVAdblockConfiguredMethodIsLocal()
-            ? @"adblock_restart_local_msg" : @"adblock_restart_proxy_msg");
+        S7TVAdblockMethod configured = S7TVAdblockConfiguredMethod();
+        NSString *message;
+        switch (configured) {
+            case S7TVAdblockMethodLocalVaft:
+                message = L(@"adblock_restart_local_msg"); break;
+            case S7TVAdblockMethodDisabled:
+                message = L(@"adblock_restart_disabled_msg"); break;
+            case S7TVAdblockMethodProxy:
+            default:
+                message = L(@"adblock_restart_proxy_msg"); break;
+        }
         [self s7tv_showSettingsTransferAlertWithTitle:L(@"adblock_restart_title")
                                               message:message];
     }

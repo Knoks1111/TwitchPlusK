@@ -1368,6 +1368,23 @@ static NSString *S7TVNormalizedTwitchBearerToken(NSString *value) {
                                                          channelLogin:&channelLogin];
             if (!broadcasterID) continue;
 
+            // Ce hook voit toutes les réponses GQL de l'app. Une réponse
+            // générique contient très souvent data.user = le compte du viewer
+            // connecté, ce qui ne prouve absolument pas la chaîne affichée :
+            // accepter ce login écraserait currentChannelName et ferait
+            // rejeter tous les messages du chat ouvert (filtre PRIVMSG /
+            // USERNOTICE → currentChannelName). Le JOIN IRC
+            // (loadEmotesForChannelName:) est la source de vérité de la
+            // chaîne affichée ; GQL ne peut ensuite que confirmer le même
+            // login et fournir son broadcaster ID avant/avec le ROOMSTATE.
+            if (!channelLogin.length || !self.currentChannelName.length ||
+                [channelLogin caseInsensitiveCompare:self.currentChannelName] != NSOrderedSame) {
+                [self log:@"ℹ️ Réponse GQL ignorée (login %@ ≠ chaîne jointe %@)",
+                    channelLogin.length ? channelLogin : @"indéterminé",
+                    self.currentChannelName.length ? self.currentChannelName : @"aucune"];
+                continue;
+            }
+
             if (channelLogin.length > 0) {
                 self.currentChannelName = channelLogin;
                 [self log:@"📡 Channel name extrait GQL: %@", channelLogin];

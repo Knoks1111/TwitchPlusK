@@ -23,6 +23,7 @@ static void S7TVAdblockRemoveAdControllers(void *pointer) {
     Ivar theaterIvar = class_getInstanceVariable(object_getClass(object),
                                                   "theaterAdController");
     if (!theaterIvar) return;
+    if (!S7TVAdblockIsEnabled()) return;
     id theaterController = object_getIvar(object, theaterIvar);
     if (!theaterController) return;
     const char *names[] = {
@@ -37,14 +38,14 @@ static void S7TVAdblockRemoveAdControllers(void *pointer) {
 static void *(*S7TVAdblockOriginalWeakAssign)(void *, void *);
 static void *S7TVAdblockWeakAssign(void *reference, void *value) {
     void *result = S7TVAdblockOriginalWeakAssign(reference, value);
-    if (S7TVAdblockIsEnabled()) S7TVAdblockRemoveAdControllers(value);
+    S7TVAdblockRemoveAdControllers(value);
     return result;
 }
 
 static void *(*S7TVAdblockOriginalWeakLoadStrong)(void *);
 static void *S7TVAdblockWeakLoadStrong(void *reference) {
     void *result = S7TVAdblockOriginalWeakLoadStrong(reference);
-    if (S7TVAdblockIsEnabled()) S7TVAdblockRemoveAdControllers(result);
+    S7TVAdblockRemoveAdControllers(result);
     return result;
 }
 

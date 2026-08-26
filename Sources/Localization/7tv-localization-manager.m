@@ -123,12 +123,17 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         //    lecture » ; le bouton de verrouillage reprend la description) ──
         @"switch_orientation_lock_button":  @[@"Bouton de verrouillage", @"Rotation lock button"],
         @"setting_orientation_auto_lock":   @[@"Verrouillage automatique", @"Automatic locking"],
+        @"orientation_mode_disabled":        @[@"Désactivé", @"Disabled"],
+        @"orientation_mode_manual":          @[@"Manuel", @"Manual"],
+        @"orientation_mode_auto_left":       @[@"Automatique à gauche", @"Automatic left"],
+        @"orientation_mode_auto_right":      @[@"Automatique à droite", @"Automatic right"],
+        @"orientation_mode_auto_both":       @[@"Automatique des deux côtés", @"Automatic both sides"],
         @"orientation_auto_off":            @[@"Désactivé", @"Off"],
         @"orientation_left":                @[@"Gauche", @"Left"],
         @"orientation_right":               @[@"Droite", @"Right"],
         @"orientation_both":                @[@"Les deux", @"Both"],
-        @"desc_orientation_lock_settings":  @[@"Une fois activé, le bouton apparaît sur le lecteur. L’auto-lock fonctionne à gauche, à droite ou des deux côtés.",
-                                               @"Once enabled, the button appears on the player. Auto-lock works on the left, right, or both sides."],
+        @"desc_orientation_lock_settings":  @[@"Désactivez le bouton, utilisez-le manuellement ou activez son verrouillage automatique à gauche, à droite ou des deux côtés.",
+                                               @"Disable the button, use it manually, or enable automatic locking on the left, right, or both sides."],
 
         // ── Adblock vidéo / proxy ────────────────────────────────────────
         @"adblock_enable":                  @[@"Activer l’adblock", @"Enable adblock"],

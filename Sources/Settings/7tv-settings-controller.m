@@ -1361,30 +1361,6 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 // MARK: - SevenTVAppearancePageController  (ex-SevenTVEmotesPageController)
 // ─────────────────────────────────────────────────────────────────────────────
 
-@implementation SevenTVAppearancePageController
-
-- (instancetype)init {
-    self = [super initWithStyle:UITableViewStyleInsetGrouped];
-    return self;
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = L(@"title_apparence");
-    S7TVStyleTableView(self.tableView);
-    S7TVRegisterOLEDObserver(self);
-}
-
-- (void)s7tv_oledModeDidChange {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        S7TVApplyOLEDStyle(self);
-    });
-}
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
 // Affichage des emotes (animations + résolution CDN 7TV). Le kill switch du
 // renderer est désormais rangé dans Avancé : ce n'est pas un réglage visuel.
 // Organisation : section 0 = note d'introduction (où trouver les réglages du

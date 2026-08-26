@@ -2294,13 +2294,17 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     CGFloat maximumWidth = MAX(1.0, visibleWidth - 16.0);
     CGFloat targetWidth = 230.0;
     if (isLandscape && self.unseenMessagesBannerLabel.text.length > 0) {
-        // En paysage, la largeur suit le contenu réel (flèche + texte +
-        // marges), puis reste bornée par la zone visible et par la largeur
-        // historique maximale de 230 pt. En portrait, on conserve ce rendu
-        // historique tant qu'il tient dans la colonne.
-        CGFloat labelWidth = [self.unseenMessagesBannerLabel
-            sizeThatFits:CGSizeMake(CGFLOAT_MAX, 36.0)].width;
-        targetWidth = ceil(labelWidth + 44.0);
+        // En paysage, la largeur suit le contenu réel. Le label reste centré
+        // dans la bannière ; la flèche est ancrée à gauche et impose donc
+        // 64 pt de marge structurelle (12 + 14 + 6 à gauche, puis 32 pt
+        // nécessaires pour que le label centré ne recouvre pas la flèche).
+        // L'ancienne marge de 44 pt comprimait le label et coupait les
+        // libellés un peu longs.
+        CGSize fittingSize = [self.unseenMessagesBannerLabel
+            sizeThatFits:CGSizeMake(CGFLOAT_MAX, 36.0)];
+        CGFloat labelWidth = MAX(fittingSize.width,
+                                 self.unseenMessagesBannerLabel.intrinsicContentSize.width);
+        targetWidth = ceil(labelWidth + 64.0);
     }
     targetWidth = MIN(targetWidth, maximumWidth);
     if (targetWidth <= 0) targetWidth = maximumWidth;

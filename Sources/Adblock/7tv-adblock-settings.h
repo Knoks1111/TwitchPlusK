@@ -15,11 +15,40 @@ FOUNDATION_EXPORT NSString *const S7TVAdblockCustomProxyEnabledKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockCustomProxyKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockHideAdFreeButtonKey;
 
+// Méthode AdBlock : "proxy" (moteur Proxy) ou "local" (VAFT).
+// Valeur absente/invalide → fallback interne Proxy.
+FOUNDATION_EXPORT NSString *const S7TVAdblockMethodKey;
+
+typedef NS_ENUM(NSInteger, S7TVAdblockMethod) {
+    S7TVAdblockMethodProxy = 0,
+    S7TVAdblockMethodLocalVaft = 1,
+};
+
 void S7TVAdblockRegisterDefaults(void);
 BOOL S7TVAdblockIsEnabled(void);
 BOOL S7TVAdblockProxyIsEnabled(void);
 BOOL S7TVAdblockCustomProxyIsEnabled(void);
 BOOL S7TVAdblockHideAdFreeButtonIsEnabled(void);
+
+// ── Snapshots runtime (O(1), hot-path safe — leçon PR #2) ───────────────────
+// La méthode active est déterminée UNE SEULE FOIS au lancement, avant
+// l'installation des hooks, puis jamais modifiée. Elle est la seule à pouvoir
+// router un moteur au runtime. La méthode configurée sert uniquement aux
+// settings/persistance/comparaison de redémarrage.
+BOOL S7TVAdblockActiveMethodIsLocal(void);
+S7TVAdblockMethod S7TVAdblockActiveMethod(void);
+void S7TVAdblockTakeRuntimeMethodSnapshot(void);
+
+// Snapshot du toggle maître et du toggle Turbo, rafraîchissable à chaud
+// (setters + import de settings). Hot paths doivent utiliser ces lectures.
+BOOL S7TVAdblockEnabledFast(void);
+BOOL S7TVAdblockHideAdFreeButtonEnabledFast(void);
+void S7TVAdblockRefreshRuntimeSnapshots(void);
+
+// ── Méthode configurée (settings / persistance / prochain lancement) ────────
+BOOL S7TVAdblockConfiguredMethodIsLocal(void);
+S7TVAdblockMethod S7TVAdblockConfiguredMethod(void);
+void S7TVAdblockSetConfiguredMethod(S7TVAdblockMethod method);
 NSString * _Nullable S7TVAdblockCustomProxyAddress(void);
 NSArray<NSString *> *S7TVAdblockCustomProxyAddresses(void);
 void S7TVAdblockSetEnabled(BOOL enabled);

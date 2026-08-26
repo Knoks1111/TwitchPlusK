@@ -8,6 +8,7 @@
 #import "Adblock/7tv-adblock-proxy.h"
 #import "Adblock/7tv-adblock-resource-loader.h"
 #import "Adblock/7tv-adblock-settings.h"
+#import "Adblock/Vaft/7tv-adblock-vaft.h"
 #import "Adblock/Fishhook/fishhook.h"
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
@@ -23,7 +24,8 @@ static void S7TVAdblockRemoveAdControllers(void *pointer) {
     Ivar theaterIvar = class_getInstanceVariable(object_getClass(object),
                                                   "theaterAdController");
     if (!theaterIvar) return;
-    if (!S7TVAdblockIsEnabled()) return;
+    // Moteur Proxy uniquement + snapshots O(1) (fix perf PR #2).
+    if (S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockEnabledFast()) return;
     id theaterController = object_getIvar(object, theaterIvar);
     if (!theaterController) return;
     const char *names[] = {
@@ -148,7 +150,7 @@ static void S7TVAdblockScanForAdFreeView(UIView *root) {
 }
 
 void S7TVAdblockHideAdFreeUpsellIfNeeded(void) {
-    if (!S7TVAdblockHideAdFreeButtonIsEnabled()) return;
+    if (!S7TVAdblockHideAdFreeButtonEnabledFast()) return;
     for (UIWindow *window in UIApplication.sharedApplication.windows.copy) {
         S7TVAdblockScanForAdFreeView(window);
     }
@@ -216,8 +218,11 @@ static char S7TVAdblockPlayerStatusContext;
 
 - (instancetype)s7tv_adblock_init {
     AVPlayer *player = [self s7tv_adblock_init];
-    [player addObserver:player forKeyPath:@"status"
-        options:NSKeyValueObservingOptionNew context:&S7TVAdblockPlayerStatusContext];
+    // Hook Proxy : en mode Local (VAFT) l'original n'attache aucun observer.
+    if (!S7TVAdblockActiveMethodIsLocal()) {
+        [player addObserver:player forKeyPath:@"status"
+            options:NSKeyValueObservingOptionNew context:&S7TVAdblockPlayerStatusContext];
+    }
     return player;
 }
 
@@ -290,7 +295,7 @@ static void S7TVAdblockClearFollowingAds(id object) {
 
 - (instancetype)s7tv_adblock_initWithGraphQL:(id)graphQL themeManager:(id)themeManager {
     id object = [self s7tv_adblock_initWithGraphQL:graphQL themeManager:themeManager];
-    if (S7TVAdblockIsEnabled()) S7TVAdblockClearFollowingAds(object);
+    if (S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockEnabledFast()) S7TVAdblockClearFollowingAds(object);
     return object;
 }
 
@@ -298,7 +303,7 @@ static void S7TVAdblockClearFollowingAds(id object) {
                                 urlController:(id)urlController {
     id object = [self s7tv_adblock_initWithGraphQL:graphQL themeManager:themeManager
                                      urlController:urlController];
-    if (S7TVAdblockIsEnabled()) S7TVAdblockClearFollowingAds(object);
+    if (S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockEnabledFast()) S7TVAdblockClearFollowingAds(object);
     return object;
 }
 
@@ -306,13 +311,13 @@ static void S7TVAdblockClearFollowingAds(id object) {
                                 urlController:(id)urlController isInitialTab:(BOOL)isInitialTab {
     id object = [self s7tv_adblock_initWithGraphQL:graphQL themeManager:themeManager
         urlController:urlController isInitialTab:isInitialTab];
-    if (S7TVAdblockIsEnabled()) S7TVAdblockClearFollowingAds(object);
+    if (S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockEnabledFast()) S7TVAdblockClearFollowingAds(object);
     return object;
 }
 
 + (instancetype)s7tv_adblock_shared {
     id shared = [self s7tv_adblock_shared];
-    if (!S7TVAdblockIsEnabled() || !shared) return shared;
+    if (S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockEnabledFast() || !shared) return shared;
     Ivar displayState = class_getInstanceVariable(object_getClass(shared),
                                                    "displayAdStateManager");
     if (displayState) object_setIvar(shared, displayState, nil);
@@ -321,7 +326,7 @@ static void S7TVAdblockClearFollowingAds(id object) {
 
 - (void)s7tv_adblock_standardButtonDidMoveToWindow {
     [self s7tv_adblock_standardButtonDidMoveToWindow];
-    if (!S7TVAdblockHideAdFreeButtonIsEnabled()) return;
+    if (!S7TVAdblockHideAdFreeButtonEnabledFast()) return;
     UIView *button = (UIView *)self;
     if (S7TVAdblockIsAdFreeText(S7TVAdblockVisibleViewText(button))) {
         S7TVAdblockHideAdFreeView(button);
@@ -330,7 +335,7 @@ static void S7TVAdblockClearFollowingAds(id object) {
 
 - (void)s7tv_adblock_standardButtonLayoutSubviews {
     [self s7tv_adblock_standardButtonLayoutSubviews];
-    if (!S7TVAdblockHideAdFreeButtonIsEnabled()) return;
+    if (!S7TVAdblockHideAdFreeButtonEnabledFast()) return;
     UIView *button = (UIView *)self;
     if (S7TVAdblockIsAdFreeText(S7TVAdblockVisibleViewText(button))) {
         S7TVAdblockHideAdFreeView(button);
@@ -353,8 +358,10 @@ static BOOL S7TVAdblockStandardButtonLayoutInstalled = NO;
 static BOOL S7TVAdblockFollowingLayoutInstalled = NO;
 
 static void S7TVAdblockTryInstallLateHooks(void) {
+    // Méthode active = snapshot figé au lancement (jamais la préférence).
+    BOOL proxyMode = !S7TVAdblockActiveMethodIsLocal();
     @synchronized (S7TVAdblockResourceLoader.class) {
-        if (!S7TVAdblockPrivateResourceLoaderInstalled) {
+        if (proxyMode && !S7TVAdblockPrivateResourceLoaderInstalled) {
             Class loaderClass = NSClassFromString(@"_TtC6Twitch27AssetResourceLoaderDelegate");
             if (loaderClass) {
                 BOOL first = S7TVAdblockExchangeInstanceMethod(loaderClass, NSObject.class,
@@ -366,6 +373,8 @@ static void S7TVAdblockTryInstallLateHooks(void) {
                 S7TVAdblockPrivateResourceLoaderInstalled = first || second;
             }
         }
+        // Commun : sert keepLiveFeedPlaying (les deux modes) et le filtrage
+        // GQL du Proxy (gated par méthode dans Transform*).
         if (!S7TVAdblockLegacyGQLInstalled) {
             Class legacyClient = NSClassFromString(@"_TtC9TwitchKit18TKURLSessionClient");
             if (legacyClient) {
@@ -375,7 +384,7 @@ static void S7TVAdblockTryInstallLateHooks(void) {
                     @selector(s7tv_adblock_URLSession:dataTask:didReceiveData:));
             }
         }
-        if (!S7TVAdblockFollowingInstalled) {
+        if (proxyMode && !S7TVAdblockFollowingInstalled) {
             Class following = NSClassFromString(@"_TtC6Twitch23FollowingViewController");
             if (following) {
                 BOOL two = S7TVAdblockExchangeInstanceMethod(following, NSObject.class,
@@ -390,7 +399,7 @@ static void S7TVAdblockTryInstallLateHooks(void) {
                 S7TVAdblockFollowingInstalled = two || three || four;
             }
         }
-        if (!S7TVAdblockHeadlinerInstalled) {
+        if (proxyMode && !S7TVAdblockHeadlinerInstalled) {
             Class headliner = NSClassFromString(@"_TtC6Twitch27HeadlinerFollowingAdManager");
             if (headliner) {
                 S7TVAdblockHeadlinerInstalled = S7TVAdblockExchangeInstanceMethod(
@@ -398,6 +407,7 @@ static void S7TVAdblockTryInstallLateHooks(void) {
                     @selector(shared), @selector(s7tv_adblock_shared));
             }
         }
+        // Commun : masquage Turbo upsell (réglage indépendant des moteurs).
         if (!S7TVAdblockStandardButtonDidMoveInstalled ||
             !S7TVAdblockStandardButtonLayoutInstalled) {
             Class standardButton = NSClassFromString(
@@ -417,6 +427,7 @@ static void S7TVAdblockTryInstallLateHooks(void) {
                 }
             }
         }
+        // Commun : point d'appel du scan Turbo upsell.
         if (!S7TVAdblockFollowingLayoutInstalled) {
             Class following = NSClassFromString(@"_TtC6Twitch23FollowingViewController");
             if (following) {
@@ -433,18 +444,34 @@ void S7TVAdblockInstallRuntimeHooks(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         S7TVAdblockRegisterDefaults();
-        S7TVAdblockInstallSwiftRuntimeRebindings();
-        BOOL assetHook = S7TVAdblockExchangeInstanceMethod(AVURLAsset.class,
-            AVURLAsset.class, @selector(initWithURL:options:),
-            @selector(s7tv_adblock_initWithURL:options:));
-        BOOL playerInitHook = S7TVAdblockExchangeInstanceMethod(AVPlayer.class,
-            AVPlayer.class, @selector(init), @selector(s7tv_adblock_init));
-        BOOL playerKVOHook = S7TVAdblockExchangeInstanceMethod(AVPlayer.class,
-            AVPlayer.class, @selector(observeValueForKeyPath:ofObject:change:context:),
-            @selector(s7tv_adblock_observeValueForKeyPath:ofObject:change:context:));
-        os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] AVURLAsset hook installed=%d", assetHook);
-        os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] AVPlayer hooks installed=%d/%d",
-               playerInitHook, playerKVOHook);
+        S7TVAdblockRefreshRuntimeSnapshots();
+        // Snapshot de la méthode ACTIVE : une seule lecture au lancement,
+        // avant toute installation ; figé jusqu'à la fin du processus.
+        S7TVAdblockTakeRuntimeMethodSnapshot();
+        BOOL proxyMode = !S7TVAdblockActiveMethodIsLocal();
+
+        os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] Active method: %{public}@",
+               proxyMode ? "proxy" : "local");
+
+        if (proxyMode) {
+            // ── Moteur Proxy : comportement existant inchangé ──────────
+            S7TVAdblockInstallSwiftRuntimeRebindings();
+            BOOL assetHook = S7TVAdblockExchangeInstanceMethod(AVURLAsset.class,
+                AVURLAsset.class, @selector(initWithURL:options:),
+                @selector(s7tv_adblock_initWithURL:options:));
+            BOOL playerInitHook = S7TVAdblockExchangeInstanceMethod(AVPlayer.class,
+                AVPlayer.class, @selector(init), @selector(s7tv_adblock_init));
+            BOOL playerKVOHook = S7TVAdblockExchangeInstanceMethod(AVPlayer.class,
+                AVPlayer.class, @selector(observeValueForKeyPath:ofObject:change:context:),
+                @selector(s7tv_adblock_observeValueForKeyPath:ofObject:change:context:));
+            os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] AVURLAsset hook installed=%d", assetHook);
+            os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] AVPlayer hooks installed=%d/%d",
+                   playerInitHook, playerKVOHook);
+        } else {
+            // ── Moteur Local (VAFT) : upstream adapté (divergence D1/D3) ──
+            vaft_initialize();
+        }
+
         S7TVAdblockTryInstallLateHooks();
         for (NSNumber *delay in @[@0.5, @2.0, @5.0, @10.0]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,

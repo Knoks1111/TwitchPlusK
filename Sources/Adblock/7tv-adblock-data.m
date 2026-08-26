@@ -143,7 +143,10 @@ static BOOL S7TVAdblockIsGQLRequest(NSURLRequest *request) {
 }
 
 NSData *S7TVAdblockTransformRequestData(NSData *data, NSURLRequest *request) {
-    if (!data.length || !S7TVAdblockIsEnabled() || !S7TVAdblockIsGQLRequest(request))
+    // Spoof platform = moteur Proxy uniquement (VAFT normalise playerType
+    // lui-même côté transport Local).
+    if (!data.length || !S7TVAdblockIsEnabled() ||
+        S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockIsGQLRequest(request))
         return data;
     NSError *error = nil;
     id json = [NSJSONSerialization JSONObjectWithData:data
@@ -162,7 +165,10 @@ NSData *S7TVAdblockTransformRequestData(NSData *data, NSURLRequest *request) {
 
 NSData *S7TVAdblockTransformResponseData(NSData *data, NSURLRequest *request) {
     if (!data.length || !S7TVAdblockIsGQLRequest(request)) return data;
-    BOOL filterAds = S7TVAdblockIsEnabled();
+    // Le filtrage d'ads dans les réponses GQL est spécifique au moteur Proxy ;
+    // keepLiveFeedPlaying est une fonctionnalité TwitchPlusK commune aux deux
+    // modes (indépendante de la méthode).
+    BOOL filterAds = S7TVAdblockIsEnabled() && !S7TVAdblockActiveMethodIsLocal();
     BOOL keepLiveFeedPlaying = s7tv_keepLiveFeedPlayingEnabled();
     if (!filterAds && !keepLiveFeedPlaying) return data;
     NSError *error = nil;

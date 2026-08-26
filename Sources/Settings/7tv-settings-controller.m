@@ -27,6 +27,7 @@
 #import "Settings/7tv-settings-transfer.h"
 #import "UI/7tv-info-tooltip.h"
 #import "UI/7tv-oled-mode.h"
+#import "Adblock/Vaft/7tv-adblock-vaft.h"
 #import <objc/runtime.h>
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names";
@@ -1024,7 +1025,7 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 2;
+    if (section == 0) return 3;
     if (!S7TVAdblockIsEnabled()) return 0;
     if (!S7TVAdblockProxyIsEnabled()) return 1;
     return S7TVAdblockCustomProxyIsEnabled() ? 4 + self.proxies.count : 3;
@@ -1060,6 +1061,14 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
             return S7TVSwitchCell(L(@"adblock_enable"), @"shield.lefthalf.filled",
                 S7TVAccent(), S7TVAdblockIsEnabled(), self, @selector(toggleAdblock:),
                 @"adblock_engine_footer");
+        }
+        if (indexPath.row == 1) {
+            // Sélecteur de méthode : Proxy (moteur actuel) ou Local (VAFT).
+            // La méthode configurée s'applique au prochain démarrage de Twitch.
+            NSString *methodLabel = L(S7TVAdblockConfiguredMethodIsLocal()
+                ? @"adblock_method_value_local" : @"adblock_method_value_proxy");
+            return S7TVNavCell(L(@"adblock_method_title"), methodLabel,
+                @"arrow.triangle.branch", S7TVAccent(), nil);
         }
         return S7TVSwitchCell(L(@"adblock_hide_go_ad_free"), @"rectangle.slash",
             [UIColor colorWithRed:0.95 green:0.45 blue:0.25 alpha:1.0],
@@ -1097,6 +1106,67 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
         [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
                       withRowAnimation:UITableViewRowAnimationAutomatic];
     }
+    // Sélecteur de méthode AdBlock (Proxy / Local (VAFT)) : la méthode
+    // configurée ne s'applique qu'au prochain démarrage de Twitch.
+    if (indexPath.section == 0 && indexPath.row == 1) {
+        [self presentMethodActionSheetFromCell:[tableView cellForRowAtIndexPath:indexPath]];
+    }
+}
+
+// Action sheet Proxy / Local (VAFT). La sélection modifie uniquement la
+// méthode CONFIGURÉE ; la méthode ACTIVE est figée au lancement du processus.
+// Si la configuration diffère de la méthode active, un message de redémarrage
+// nommant la méthode choisie est affiché immédiatement.
+- (void)presentMethodActionSheetFromCell:(UITableViewCell *)anchor {
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:L(@"adblock_method_title")
+                          message:nil
+                   preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
+
+    S7TVAdblockMethod configured = S7TVAdblockConfiguredMethod();
+    NSArray *choices = @[
+        @[L(@"adblock_method_value_proxy"), @(S7TVAdblockMethodProxy)],
+        @[L(@"adblock_method_value_local"), @(S7TVAdblockMethodLocalVaft)],
+    ];
+    for (NSArray *choice in choices) {
+        S7TVAdblockMethod method = (S7TVAdblockMethod)[choice[1] integerValue];
+        NSString *title = [choice[0] isKindOfClass:NSString.class] ? choice[0] : @"";
+        if (method == configured) title = [@"✓  " stringByAppendingString:title];
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            [self s7tv_applyConfiguredMethod:method];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    sheet.popoverPresentationController.sourceView = anchor;
+    sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)s7tv_applyConfiguredMethod:(S7TVAdblockMethod)method {
+    S7TVAdblockSetConfiguredMethod(method);
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+                  withRowAnimation:UITableViewRowAnimationNone];
+
+    // Méthode configurée != méthode active → redémarrage Twitch requis.
+    BOOL activeIsLocal = S7TVAdblockActiveMethodIsLocal();
+    BOOL nowLocal = (method == S7TVAdblockMethodLocalVaft);
+    if (nowLocal == activeIsLocal) return; // retour à la méthode déjà active
+
+    NSString *message = L(nowLocal ? @"adblock_restart_local_msg"
+                                   : @"adblock_restart_proxy_msg");
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:L(@"adblock_restart_title")
+                         message:message
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)toggleAdblock:(UISwitch *)sender {
@@ -2596,7 +2666,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
         case S7TV_SECTION_TOOLS:    return 2;
         case S7TV_SECTION_TRANSFER: return 2;
         case S7TV_SECTION_OPTIONS:  return 2;
-        case S7TV_SECTION_LOGS:     return [self s7tv_visibleLogsRows].count;
+        case S7TV_SECTION_LOGS:     return [self s7tv_visibleLogsRows].count + 4; /* + bloc Diagnostics VAFT */
         default: return 0;
     }
 }
@@ -2701,7 +2771,88 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
 
     if (ip.section == S7TV_SECTION_LOGS) {
         NSArray<NSNumber *> *visible = [self s7tv_visibleLogsRows];
-        if (ip.row >= (NSInteger)visible.count) return [[UITableViewCell alloc] init];
+        NSInteger visibleCount = (NSInteger)visible.count;
+
+        // ── Bloc Diagnostics VAFT : dernier bloc de la page Logs ───────────
+        // Indépendant du toggle « Activer les logs » et de la méthode AdBlock
+        // (moteur TASDiagnostics distinct des logs TwitchPlusK).
+        if (ip.row >= visibleCount) {
+            switch (ip.row - visibleCount) {
+                case 0:
+                    return S7TVSwitchCell(L(@"vaft_diag_logging"),
+                                @"record.circle",
+                                UIColor.systemTealColor,
+                                tas_diagnostics_logging_enabled(),
+                                self, @selector(toggleVaftDiagnosticLogging:), nil);
+                case 1:
+                    return S7TVNavCell(L(@"vaft_diag_view"),
+                                L(@"vaft_diag_view_sub"),
+                                @"doc.plaintext", UIColor.systemBlueColor, nil);
+                case 2: {
+                    UITableViewCell *cell = [[UITableViewCell alloc]
+                        initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+                    cell.backgroundColor = S7TVCellBg();
+                    cell.selectedBackgroundView = [[UIView alloc] init];
+                    cell.selectedBackgroundView.backgroundColor =
+                        [UIColor colorWithWhite:1.0 alpha:0.06];
+                    UIImageView *icon = S7TVIcon(@"doc.on.doc", S7TVAccent());
+                    [cell.contentView addSubview:icon];
+                    UILabel *lbl = [[UILabel alloc] init];
+                    lbl.text = L(@"vaft_diag_copy");
+                    lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
+                    lbl.textColor = [UIColor whiteColor];
+                    lbl.numberOfLines = 1;
+                    lbl.translatesAutoresizingMaskIntoConstraints = NO;
+                    [cell.contentView addSubview:lbl];
+                    UILabel *sub = [[UILabel alloc] init];
+                    sub.text = L(@"vaft_diag_copy_sub");
+                    sub.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+                    sub.textColor = S7TVGray();
+                    sub.numberOfLines = 1;
+                    sub.translatesAutoresizingMaskIntoConstraints = NO;
+                    [cell.contentView addSubview:sub];
+                    [NSLayoutConstraint activateConstraints:@[
+                        [icon.leadingAnchor   constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+                        [icon.centerYAnchor   constraintEqualToAnchor:cell.contentView.centerYAnchor],
+                        [icon.widthAnchor     constraintEqualToConstant:22],
+                        [icon.heightAnchor    constraintEqualToConstant:22],
+                        [lbl.leadingAnchor    constraintEqualToAnchor:icon.trailingAnchor constant:14],
+                        [lbl.topAnchor        constraintEqualToAnchor:cell.contentView.topAnchor constant:11],
+                        [sub.leadingAnchor    constraintEqualToAnchor:icon.trailingAnchor constant:14],
+                        [sub.topAnchor        constraintEqualToAnchor:lbl.bottomAnchor constant:1],
+                        [sub.bottomAnchor     constraintLessThanOrEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
+                    ]];
+                    return cell;
+                }
+                case 3:
+                default: {
+                    UITableViewCell *cell = [[UITableViewCell alloc]
+                        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+                    cell.backgroundColor = S7TVCellBg();
+                    cell.selectedBackgroundView = [[UIView alloc] init];
+                    cell.selectedBackgroundView.backgroundColor =
+                        [UIColor colorWithWhite:1.0 alpha:0.06];
+                    UIImageView *icon = S7TVIcon(@"trash", UIColor.systemRedColor);
+                    [cell.contentView addSubview:icon];
+                    UILabel *lbl = [[UILabel alloc] init];
+                    lbl.text = L(@"vaft_diag_clear");
+                    lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
+                    lbl.textColor = UIColor.systemRedColor;
+                    lbl.numberOfLines = 1;
+                    lbl.translatesAutoresizingMaskIntoConstraints = NO;
+                    [cell.contentView addSubview:lbl];
+                    [NSLayoutConstraint activateConstraints:@[
+                        [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+                        [icon.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+                        [lbl.leadingAnchor  constraintEqualToAnchor:icon.trailingAnchor constant:14],
+                        [lbl.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
+                    ]];
+                    return cell;
+                }
+            }
+        }
+
+        if (ip.row >= visibleCount) return [[UITableViewCell alloc] init];
         NSInteger row = visible[ip.row].integerValue;
 
         // --- Activer les logs (interrupteur global, toujours visible) ---
@@ -2837,7 +2988,40 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
     }
 
     if (ip.section == S7TV_SECTION_LOGS) {
-        NSInteger row = [self s7tv_visibleLogsRows][ip.row].integerValue;
+        NSArray<NSNumber *> *visible = [self s7tv_visibleLogsRows];
+        NSInteger visibleCount = (NSInteger)visible.count;
+
+        // ── Bloc Diagnostics VAFT ──────────────────────────────────────────
+        if (ip.row >= visibleCount) {
+            switch (ip.row - visibleCount) {
+                case 1: {
+                    // View Diagnostic Report : écran original du moteur
+                    // TASDiagnostics, poussé dans notre navigation.
+                    id viewer = tas_create_diagnostic_log_viewer();
+                    if (!viewer) return;
+                    [viewer setTitle:L(@"vaft_report_title")];
+                    [self.navigationController pushViewController:viewer
+                                                         animated:YES];
+                    return;
+                }
+                case 2: {
+                    tas_copy_diagnostic_report_to_clipboard();
+                    [self s7tv_showVaftDiagNotice:L(@"vaft_diag_copied_title")
+                                          message:L(@"vaft_diag_copied_msg")];
+                    return;
+                }
+                case 3: {
+                    tas_perform_clear_diagnostic_log();
+                    [tv reloadData];
+                    [self s7tv_showVaftDiagNotice:L(@"vaft_diag_cleared_title")
+                                          message:L(@"vaft_diag_cleared_msg")];
+                    return;
+                }
+                default: return;
+            }
+        }
+
+        NSInteger row = visible[ip.row].integerValue;
         if (row == S7TVLogsRowView) {
             // L'effacement des logs vit dans cet écran (bouton « Effacer »).
             [self.navigationController
@@ -2960,6 +3144,19 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     // dans NSUserDefaults ne ferait pas.
     s7tv_setOrientationLockButtonEnabled(s7tv_orientationLockButtonEnabled());
     s7tv_setAutoOrientationLockMode(s7tv_autoOrientationLockMode());
+
+    // Import AdBlock : le snapshot du toggle maître est rafraîchi à chaud ;
+    // la méthode ACTIVE reste figée au lancement (jamais modifiée par import).
+    S7TVAdblockRefreshRuntimeSnapshots();
+
+    // Méthode configurée != méthode active → redémarrage Twitch requis pour
+    // appliquer la méthode importée. Aucun hook n'est installé/désinstallé ici.
+    if (S7TVAdblockConfiguredMethodIsLocal() != S7TVAdblockActiveMethodIsLocal()) {
+        NSString *message = L(S7TVAdblockConfiguredMethodIsLocal()
+            ? @"adblock_restart_local_msg" : @"adblock_restart_proxy_msg");
+        [self s7tv_showSettingsTransferAlertWithTitle:L(@"adblock_restart_title")
+                                              message:message];
+    }
 }
 
 - (void)s7tv_showSettingsTransferAlertWithTitle:(NSString *)title message:(NSString *)message {
@@ -2976,6 +3173,22 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     // Apparition/disparition de « Voir les logs », « Logs console » et des
     // catégories (sous-options dépendantes — voir S7TVVisibleRowIndexes).
     S7TVReloadSection(self.tableView, S7TV_SECTION_LOGS);
+}
+
+// ── Diagnostics VAFT (moteur TASDiagnostics distinct des logs TwitchPlusK) ──
+
+- (void)toggleVaftDiagnosticLogging:(UISwitch *)sw {
+    tas_diagnostics_set_logging_enabled(sw.isOn);
+}
+
+- (void)s7tv_showVaftDiagNotice:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:title message:message
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 - (void)toggleDebug:(UISwitch *)sw                  { [SevenTVManager sharedManager].debugLogging        = sw.isOn; }
 - (void)toggleChatCustom:(UISwitch *)sw             { [SevenTVManager sharedManager].chatCustomTestEnabled = sw.isOn; }

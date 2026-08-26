@@ -13,13 +13,13 @@ LIBRARY_NAME = TwitchPlusK
 # ── Fichiers source regroupés par domaine ──
 TwitchPlusK_FILES = \
     Sources/Adblock/7tv-adblock-settings.m \
-    Sources/Adblock/7tv-adblock-proxy-status.m \
-    Sources/Adblock/7tv-adblock-data.m \
-    Sources/Adblock/7tv-adblock-proxy.m \
-    Sources/Adblock/7tv-adblock-resource-loader.m \
+    Sources/Adblock/Proxy/7tv-adblock-proxy-status.m \
+    Sources/Adblock/Proxy/7tv-adblock-data.m \
+    Sources/Adblock/Proxy/7tv-adblock-proxy.m \
+    Sources/Adblock/Proxy/7tv-adblock-resource-loader.m \
     Sources/Adblock/7tv-adblock-runtime.m \
     Sources/Diagnostics/7tv-hook-diagnostics.m \
-    Sources/Adblock/Fishhook/fishhook.c \
+    Sources/Adblock/Proxy/Fishhook/fishhook.c \
     Sources/Adblock/Vaft/TwitchAdBlock.c \
     Sources/Adblock/Vaft/TASDiagnostics.c \
     Sources/Core/7tv-core-runtime-hooks.m \

@@ -148,8 +148,11 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // La méthode configurée ne s'applique qu'au prochain démarrage.
         @"adblock_method_title":             @[@"Méthode AdBlock", @"AdBlock Method"],
         @"adblock_method_value_proxy":       @[@"Proxy", @"Proxy"],
+        @"adblock_method_value_disabled":    @[@"Disabled", @"Disabled"],
         @"adblock_method_value_local":       @[@"Local (VAFT)", @"Local (VAFT)"],
         @"adblock_restart_title":            @[@"Redémarrage requis", @"Restart required"],
+        @"adblock_restart_disabled_msg":     @[@"Pour activer Disabled, redémarrez Twitch.",
+                                              @"To activate Disabled, restart Twitch."],
         @"adblock_restart_proxy_msg":        @[@"Pour activer Proxy, redémarrez Twitch.",
                                                 @"To activate Proxy, restart Twitch."],
         @"adblock_restart_local_msg":        @[@"Pour activer Local (VAFT), redémarrez Twitch.",

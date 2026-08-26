@@ -25,7 +25,7 @@ static void S7TVAdblockRemoveAdControllers(void *pointer) {
                                                   "theaterAdController");
     if (!theaterIvar) return;
     // Moteur Proxy uniquement + snapshots O(1) (fix perf PR #2).
-    if (S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockEnabledFast()) return;
+    if (S7TVAdblockActiveMethod() != S7TVAdblockMethodProxy || !S7TVAdblockEnabledFast()) return;
     id theaterController = object_getIvar(object, theaterIvar);
     if (!theaterController) return;
     const char *names[] = {
@@ -219,7 +219,7 @@ static char S7TVAdblockPlayerStatusContext;
 - (instancetype)s7tv_adblock_init {
     AVPlayer *player = [self s7tv_adblock_init];
     // Hook Proxy : en mode Local (VAFT) l'original n'attache aucun observer.
-    if (!S7TVAdblockActiveMethodIsLocal()) {
+    if (S7TVAdblockActiveMethod() != S7TVAdblockMethodProxy) {
         [player addObserver:player forKeyPath:@"status"
             options:NSKeyValueObservingOptionNew context:&S7TVAdblockPlayerStatusContext];
     }
@@ -295,7 +295,7 @@ static void S7TVAdblockClearFollowingAds(id object) {
 
 - (instancetype)s7tv_adblock_initWithGraphQL:(id)graphQL themeManager:(id)themeManager {
     id object = [self s7tv_adblock_initWithGraphQL:graphQL themeManager:themeManager];
-    if (S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockEnabledFast()) S7TVAdblockClearFollowingAds(object);
+    if (S7TVAdblockActiveMethod() != S7TVAdblockMethodProxy || !S7TVAdblockEnabledFast()) S7TVAdblockClearFollowingAds(object);
     return object;
 }
 
@@ -303,7 +303,7 @@ static void S7TVAdblockClearFollowingAds(id object) {
                                 urlController:(id)urlController {
     id object = [self s7tv_adblock_initWithGraphQL:graphQL themeManager:themeManager
                                      urlController:urlController];
-    if (S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockEnabledFast()) S7TVAdblockClearFollowingAds(object);
+    if (S7TVAdblockActiveMethod() != S7TVAdblockMethodProxy || !S7TVAdblockEnabledFast()) S7TVAdblockClearFollowingAds(object);
     return object;
 }
 
@@ -311,13 +311,13 @@ static void S7TVAdblockClearFollowingAds(id object) {
                                 urlController:(id)urlController isInitialTab:(BOOL)isInitialTab {
     id object = [self s7tv_adblock_initWithGraphQL:graphQL themeManager:themeManager
         urlController:urlController isInitialTab:isInitialTab];
-    if (S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockEnabledFast()) S7TVAdblockClearFollowingAds(object);
+    if (S7TVAdblockActiveMethod() != S7TVAdblockMethodProxy || !S7TVAdblockEnabledFast()) S7TVAdblockClearFollowingAds(object);
     return object;
 }
 
 + (instancetype)s7tv_adblock_shared {
     id shared = [self s7tv_adblock_shared];
-    if (S7TVAdblockActiveMethodIsLocal() || !S7TVAdblockEnabledFast() || !shared) return shared;
+    if (S7TVAdblockActiveMethod() != S7TVAdblockMethodProxy || !S7TVAdblockEnabledFast() || !shared) return shared;
     Ivar displayState = class_getInstanceVariable(object_getClass(shared),
                                                    "displayAdStateManager");
     if (displayState) object_setIvar(shared, displayState, nil);
@@ -359,7 +359,7 @@ static BOOL S7TVAdblockFollowingLayoutInstalled = NO;
 
 static void S7TVAdblockTryInstallLateHooks(void) {
     // Méthode active = snapshot figé au lancement (jamais la préférence).
-    BOOL proxyMode = !S7TVAdblockActiveMethodIsLocal();
+    BOOL proxyMode = (S7TVAdblockActiveMethod() == S7TVAdblockMethodProxy);
     @synchronized (S7TVAdblockResourceLoader.class) {
         if (proxyMode && !S7TVAdblockPrivateResourceLoaderInstalled) {
             Class loaderClass = NSClassFromString(@"_TtC6Twitch27AssetResourceLoaderDelegate");
@@ -448,10 +448,11 @@ void S7TVAdblockInstallRuntimeHooks(void) {
         // Snapshot de la méthode ACTIVE : une seule lecture au lancement,
         // avant toute installation ; figé jusqu'à la fin du processus.
         S7TVAdblockTakeRuntimeMethodSnapshot();
-        BOOL proxyMode = !S7TVAdblockActiveMethodIsLocal();
+        BOOL proxyMode = (S7TVAdblockActiveMethod() == S7TVAdblockMethodProxy);
 
         os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] Active method: %{public}s",
-               proxyMode ? "proxy" : "local");
+               (S7TVAdblockActiveMethod() == S7TVAdblockMethodLocalVaft ? "local" :
+                S7TVAdblockActiveMethod() == S7TVAdblockMethodDisabled ? "disabled" : "proxy"));
 
         if (proxyMode) {
             // ── Moteur Proxy : comportement existant inchangé ──────────

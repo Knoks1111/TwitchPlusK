@@ -12,18 +12,21 @@
  * below. Engine behavior (metrics, log file, rotation, sanitization, report,
  * clear) is preserved verbatim.
  */
-#include "TASDiagnostics.h"
-
+/* TwitchPlusK: system/runtime headers first, then the module header (which
+ * now declares id-returning integration wrappers). */
 #include <objc/objc.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
 
+#include <dispatch/dispatch.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include "TASDiagnostics.h"
 
 typedef unsigned long NSUInteger;
 typedef long NSInteger;

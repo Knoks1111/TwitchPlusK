@@ -71,21 +71,41 @@ static UIColor *S7TVSwitchIconColor(UIColor *onColor, BOOL isOn) {
     return isOn ? onColor : [UIColor systemGrayColor];
 }
 
-// Grise/dégrise une cellule dont l'icône doit refléter l'état d'une catégorie
-// mère. Sous-options (switchs) désactivées quand la catégorie mère l'est :
-// icône forcée en gris système quand `enabled` est NO ; quand YES, elle garde
-// la couleur posée à la création (les cellules sont reconstruites à chaque
-// cellForRow, donc jamais obsolètes).
-static void S7TVApplyCellEnabledState(UITableViewCell *cell, BOOL enabled) {
-    cell.userInteractionEnabled = enabled;
-    cell.contentView.alpha = enabled ? 1.0 : 0.4;
-    for (UIView *v in cell.contentView.subviews) {
-        if ([v isKindOfClass:[UISwitch class]]) {
-            ((UISwitch *)v).enabled = enabled;
-        } else if (!enabled && [v isKindOfClass:[UIImageView class]]) {
-            ((UIImageView *)v).tintColor = [UIColor systemGrayColor];
-        }
+// ─────────────────────────────────────────────────────────────────────────────
+// Mécanisme générique de sous-options dépendantes (parent → enfants).
+// ─────────────────────────────────────────────────────────────────────────────
+// Même logique que la section Proxy de l'Adblock, généralisée à toutes les
+// pages : une sous-option dont l'option parente est désactivée DISPARAÎT
+// complètement de la table (jamais de grisage), sans que sa valeur stockée
+// dans NSUserDefaults ne soit modifiée. Le parent, lui, reste visible.
+//
+// Principe : chaque page décrit ses sections par des indexes LOGIQUES de
+// lignes — les lignes "fixes" (toujours affichées) et les lignes
+// "conditionnelles" (affichées seulement si leur parent est ON). Le même
+// tableau visible est recalculé par numberOfSections/cellForRow/didSelect,
+// ce qui garantit un mapping index affiché → ligne logique toujours cohérent.
+// Après bascule d'un parent, un simple reloadSections anime apparition et
+// disparition (comme pour les proxys).
+
+// Construit la liste triée des indexes logiques visibles d'une section.
+//   fixed       : indexes logiques toujours visibles, ex: @[@0, @1]
+//   conditional : dictionnaire {index logique : parent ON ?}, ex: @{@2:@(on)}
+static NSArray<NSNumber *> *S7TVVisibleRowIndexes(NSArray<NSNumber *> *fixed,
+                                                  NSDictionary<NSNumber *, NSNumber *> *conditional) {
+    NSMutableArray<NSNumber *> *visible = [fixed mutableCopy];
+    for (NSNumber *row in conditional) {
+        if (conditional[row].boolValue) [visible addObject:row];
     }
+    return [visible sortedArrayUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+        return [a compare:b];
+    }];
+}
+
+// Recharge une seule section après bascule d'un parent (apparition/disparition
+// animée des sous-options, identique au reloadSections des proxys Adblock).
+static void S7TVReloadSection(UITableView *tableView, NSInteger section) {
+    [tableView reloadSections:[NSIndexSet indexSetWithIndex:section]
+              withRowAnimation:UITableViewRowAnimationAutomatic];
 }
 
 @interface S7TVSettingsResolvedEmote : NSObject <S7TVResolvedEmote>
@@ -1367,20 +1387,76 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 
 // Affichage des emotes (animations + résolution CDN 7TV). Le kill switch du
 // renderer est désormais rangé dans Avancé : ce n'est pas un réglage visuel.
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
+// Organisation : section 0 = note d'introduction (où trouver les réglages du
+// chat custom), section 1 = Émotes, section 2 = Thème.
+typedef NS_ENUM(NSInteger, S7TVAppearanceSection) {
+    S7TVAppearanceSectionIntro = 0,
+    S7TVAppearanceSectionEmotes = 1,
+    S7TVAppearanceSectionTheme = 2,
+};
+
+// Rows logiques de la section Émotes.
+typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
+    S7TVAppearanceEmoteRowResolution = 0,
+    S7TVAppearanceEmoteRowPickerAnimations = 1,
+    S7TVAppearanceEmoteRowPickerFavoritesOnly = 2,
+};
+
+@implementation SevenTVAppearancePageController
+
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = L(@"title_apparence");
+    S7TVStyleTableView(self.tableView);
+    S7TVRegisterOLEDObserver(self);
+}
+
+- (void)s7tv_oledModeDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S7TVApplyOLEDStyle(self);
+    });
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+// Lignes visibles de la section Émotes : « Animations uniquement pour les
+// favoris » n'existe visuellement que si « Animations dans le picker » est ON
+// (mécanisme générique de sous-options dépendantes ; sa valeur reste stockée).
+- (NSArray<NSNumber *> *)s7tv_visibleEmoteRows {
+    BOOL pickerOn = [SevenTVManager sharedManager].showPickerAnimations;
+    return S7TVVisibleRowIndexes(@[
+        @(S7TVAppearanceEmoteRowResolution),
+        @(S7TVAppearanceEmoteRowPickerAnimations),
+    ], @{
+        @(S7TVAppearanceEmoteRowPickerFavoritesOnly): @(pickerOn),
+    });
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    // Section 0 = description d'introduction, section 1 = réglages.
-    return (s == 0) ? 1 : 4;
+    if (s == S7TVAppearanceSectionIntro) return 1;
+    if (s == S7TVAppearanceSectionEmotes) return [self s7tv_visibleEmoteRows].count;
+    if (s == S7TVAppearanceSectionTheme) return 1;
+    return 0;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
-    return (s == 0) ? 8 : 44;
+    return (s == S7TVAppearanceSectionIntro) ? 8 : 44;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
-    if (s == 0) return [[UIView alloc] init];
-    return S7TVSectionHeader(L(@"section_affichage"), NO, nil);
+    if (s == S7TVAppearanceSectionIntro) return [[UIView alloc] init];
+    if (s == S7TVAppearanceSectionEmotes) return S7TVSectionHeader(L(@"section_emotes"), NO, nil);
+    if (s == S7TVAppearanceSectionTheme) return S7TVSectionHeader(L(@"section_theme"), NO, nil);
+    return [[UIView alloc] init];
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
@@ -1396,9 +1472,9 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
-    if (ip.section == 0) {
-        // Description d'introduction : les réglages du chat custom vivent
-        // dans le panneau du picker (bouton « Aa »), pas dans cette page.
+    if (ip.section == S7TVAppearanceSectionIntro) {
+        // Note d'introduction : les réglages du chat custom vivent dans le
+        // panneau du picker (bouton « Aa »), pas dans cette page.
         UITableViewCell *cell = [[UITableViewCell alloc]
             initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -1406,7 +1482,7 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
         UILabel *lbl = [[UILabel alloc] init];
         lbl.text = L(@"desc_chat_custom_location");
         lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-        lbl.textColor = S7TVGray();
+        lbl.textColor = UIColor.whiteColor;
         lbl.numberOfLines = 0;
         lbl.translatesAutoresizingMaskIntoConstraints = NO;
         [cell.contentView addSubview:lbl];
@@ -1418,50 +1494,56 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
         ]];
         return cell;
     }
-    if (ip.section != 1) return [[UITableViewCell alloc] init];
-    SevenTVManager *mgr = [SevenTVManager sharedManager];
-    switch (ip.row) {
-        case 0: return S7TVSwitchCell(L(@"switch_oled_mode"),
+    if (ip.section == S7TVAppearanceSectionEmotes) {
+        NSArray<NSNumber *> *visible = [self s7tv_visibleEmoteRows];
+        if (ip.row >= (NSInteger)visible.count) return [[UITableViewCell alloc] init];
+        switch (visible[ip.row].integerValue) {
+            case S7TVAppearanceEmoteRowPickerAnimations:
+                return S7TVSwitchCell(L(@"switch_animations_picker"),
+                            @"photo.stack",
+                            UIColor.systemIndigoColor,
+                            [SevenTVManager sharedManager].showPickerAnimations,
+                            self, @selector(togglePickerAnimations:), nil);
+            case S7TVAppearanceEmoteRowPickerFavoritesOnly:
+                return S7TVSwitchCell(L(@"switch_animations_favorites_only"),
+                            @"star.circle",
+                            UIColor.systemYellowColor,
+                            [SevenTVManager sharedManager].showPickerAnimationsFavoritesOnly,
+                            self, @selector(togglePickerAnimationsFavoritesOnly:), nil);
+            case S7TVAppearanceEmoteRowResolution:
+            default: {
+                // Menu de choix (action sheet) plutôt qu'un segmented : même
+                // logique que "Écran au lancement" — la valeur courante sert de
+                // sous-titre (marquée "- Par défaut" quand c'est celle d'origine),
+                // le tap ouvre la liste des résolutions. La longue explication
+                // (cache vidé, impact mémoire) est derrière le bouton "i".
+                NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+                current = MIN(4, MAX(1, current));
+                return S7TVNavCell(L(@"setting_emote_resolution"),
+                    S7TVValueWithDefaultMark(
+                        [NSString stringWithFormat:@"%ldx", (long)current],
+                        current == kS7TVDefaultEmoteResolution),
+                    @"photo.stack.fill", S7TVAccent(),
+                    @"setting_resolution_clears_cache");
+            }
+        }
+    }
+    if (ip.section == S7TVAppearanceSectionTheme) {
+        return S7TVSwitchCell(L(@"switch_oled_mode"),
                     @"circle.lefthalf.filled",
                     UIColor.systemIndigoColor,
                     S7TVOLEDModeEnabled(),
                     self, @selector(toggleOLEDMode:), @"desc_oled_mode");
-        case 1: return S7TVSwitchCell(L(@"switch_animations_picker"),
-                    @"photo.stack",
-                    UIColor.systemIndigoColor,
-                    mgr.showPickerAnimations,
-                    self, @selector(togglePickerAnimations:), nil);
-        case 2: {
-            UITableViewCell *cell = S7TVSwitchCell(L(@"switch_animations_favorites_only"),
-                        @"star.circle",
-                        UIColor.systemYellowColor,
-                        mgr.showPickerAnimationsFavoritesOnly,
-                        self, @selector(togglePickerAnimationsFavoritesOnly:), nil);
-            [self s7tv_applyPickerAnimSubOptionEnabledState:cell];
-            return cell;
-        }
-        case 3: {
-            // Menu de choix (action sheet) plutôt qu'un segmented : même
-            // logique que "Écran au lancement" — la valeur courante sert de
-            // sous-titre (marquée "- Par défaut" quand c'est celle d'origine),
-            // le tap ouvre la liste des résolutions. La longue explication
-            // (cache vidé, impact mémoire) est derrière le bouton "i".
-            NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
-            current = MIN(4, MAX(1, current));
-            return S7TVNavCell(L(@"setting_emote_resolution"),
-                S7TVValueWithDefaultMark(
-                    [NSString stringWithFormat:@"%ldx", (long)current],
-                    current == kS7TVDefaultEmoteResolution),
-                @"photo.stack.fill", S7TVAccent(),
-                @"setting_resolution_clears_cache");
-        }
-        default: return [[UITableViewCell alloc] init];
     }
+    return [[UITableViewCell alloc] init];
 }
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section == 1 && ip.row == 3) {
+    if (ip.section != S7TVAppearanceSectionEmotes) return;
+    NSArray<NSNumber *> *visible = [self s7tv_visibleEmoteRows];
+    if (ip.row >= (NSInteger)visible.count) return;
+    if (visible[ip.row].integerValue == S7TVAppearanceEmoteRowResolution) {
         [self presentResolutionPickerFromCell:[tv cellForRowAtIndexPath:ip]];
     }
 }
@@ -1471,10 +1553,9 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 }
 - (void)togglePickerAnimations:(UISwitch *)sw {
     [SevenTVManager sharedManager].showPickerAnimations = sw.isOn;
-    // Reload pour griser/dégriser la sous-option "Favoris uniquement", qui
-    // dépend de ce réglage.
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
-                   withRowAnimation:UITableViewRowAnimationNone];
+    // Apparition/disparition de « Animations uniquement pour les favoris »
+    // (sous-option dépendante — voir S7TVVisibleRowIndexes).
+    S7TVReloadSection(self.tableView, S7TVAppearanceSectionEmotes);
 }
 - (void)togglePickerAnimationsFavoritesOnly:(UISwitch *)sw {
     [SevenTVManager sharedManager].showPickerAnimationsFavoritesOnly = sw.isOn;
@@ -1524,14 +1605,6 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
     }];
 }
 
-// Grise visuellement la sous-option quand "Animations dans le picker" est
-// désactivé, sans jamais modifier sa valeur stockée en NSUserDefaults —
-// même pattern que s7tv_applyEnabledState: dans SevenTVDebugPageController,
-// mais dépendant ici de showPickerAnimations plutôt que de logsEnabled.
-- (void)s7tv_applyPickerAnimSubOptionEnabledState:(UITableViewCell *)cell {
-    S7TVApplyCellEnabledState(cell, [SevenTVManager sharedManager].showPickerAnimations);
-}
-
 @end
 
 
@@ -1545,10 +1618,19 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 // ─────────────────────────────────────────────────────────────────────────────
 
 typedef NS_ENUM(NSInteger, S7TVContentSection) {
-    S7TVContentSectionFavorites = 0,  // Mes favoris (nav) + Importer depuis PC
-    S7TVContentSectionStream    = 1,  // Auto Collect Channel Points
-    S7TVContentSectionHome      = 2,  // Launch Screen + Stories + fil Live
-    S7TVContentSectionRotation  = 3,  // Bouton + auto-lock gauche/droite
+    S7TVContentSectionFavorites = 0,  // Mes favoris (liste + import intégré)
+    S7TVContentSectionHome      = 1,  // Accueil/lecture + points + rotation
+};
+
+// Rows logiques de la section « Accueil et lecture » (rotation et récupération
+// auto des points y sont fusionnées).
+typedef NS_ENUM(NSInteger, S7TVContentHomeRow) {
+    S7TVContentHomeRowLaunchScreen   = 0,
+    S7TVContentHomeRowHideStories    = 1,
+    S7TVContentHomeRowKeepLiveFeed   = 2,
+    S7TVContentHomeRowAutoCollect    = 3,
+    S7TVContentHomeRowLockButton     = 4,
+    S7TVContentHomeRowAutoLock       = 5,
 };
 
 static NSString *S7TVLaunchDestinationTitle(S7TVLaunchDestination destination) {
@@ -1615,20 +1697,33 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
     [S7TVInfoTooltip dismiss];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
+// Lignes visibles de la section « Accueil et lecture » : « Verrouillage
+// automatique » n'existe visuellement que si le « Bouton de verrouillage »
+// est ON (mécanisme générique de sous-options dépendantes).
+- (NSArray<NSNumber *> *)s7tv_visibleHomeRows {
+    BOOL lockButtonOn = s7tv_orientationLockButtonEnabled();
+    return S7TVVisibleRowIndexes(@[
+        @(S7TVContentHomeRowLaunchScreen),
+        @(S7TVContentHomeRowHideStories),
+        @(S7TVContentHomeRowKeepLiveFeed),
+        @(S7TVContentHomeRowAutoCollect),
+        @(S7TVContentHomeRowLockButton),
+    ], @{
+        @(S7TVContentHomeRowAutoLock): @(lockButtonOn),
+    });
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    switch (s) {
-        case S7TVContentSectionFavorites: return 2;
-        case S7TVContentSectionStream:    return 1;
-        case S7TVContentSectionHome:      return 3;
-        case S7TVContentSectionRotation:  return 2;
-        default: return 0;
-    }
+    if (s == S7TVContentSectionFavorites) return 1;
+    if (s == S7TVContentSectionHome) return [self s7tv_visibleHomeRows].count;
+    return 0;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
-    if (ip.section == S7TVContentSectionFavorites) return 52;
+    // Ligne favoris : titre + sous-titre d'export → hauteur standard.
+    if (ip.section == S7TVContentSectionFavorites) return 60;
     return UITableViewAutomaticDimension;
 }
 
@@ -1639,13 +1734,10 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     switch (s) {
         case S7TVContentSectionFavorites: return S7TVSectionHeader(L(@"section_favoris"), NO, nil);
-        case S7TVContentSectionStream:    return S7TVSectionHeader(L(@"section_stream"), NO, nil);
         // Descriptions de section déplacées derrière le "i" du header
         // (ex-footers descriptifs affichés en permanence).
         case S7TVContentSectionHome:      return S7TVSectionHeader(L(@"section_home_playback"), NO,
                                               @"desc_home_playback_settings");
-        case S7TVContentSectionRotation:  return S7TVSectionHeader(L(@"section_rotation"), NO,
-                                              @"desc_orientation_lock_settings");
         default: return [[UIView alloc] init];
     }
 }
@@ -1664,142 +1756,124 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 
-    // ── Section Stream : Auto Collect Channel Points ──────────────────────
-    if (ip.section == S7TVContentSectionStream) {
-        // La description (ex-footer de section) est derrière le "i" de la ligne.
-        return S7TVSwitchCell(L(@"switch_auto_collect_title"),
-                    @"giftcard.fill", [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
-                    S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints), self,
-                    @selector(toggleAutoCollect:), @"desc_auto_collect");
-    }
-
-    // ── Section Accueil et lecture : fonctionnalités TwitchAdBlock ──────
+    // ── Section Accueil et lecture : écran de lancement, stories, fil Live,
+    //    points de chaîne et rotation (fusion des anciennes sections
+    //    Stream / Accueil / Rotation) ──────────────────────────────────────
     if (ip.section == S7TVContentSectionHome) {
-        if (ip.row == 0) {
-            S7TVLaunchDestination destination = s7tv_launchDestination();
-            return S7TVNavCell(L(@"setting_launch_screen"),
-                S7TVValueWithDefaultMark(S7TVLaunchDestinationTitle(destination),
-                    destination == S7TVLaunchDestinationDefault),
-                @"rectangle.stack.fill", S7TVAccent(), nil);
+        NSArray<NSNumber *> *visible = [self s7tv_visibleHomeRows];
+        if (ip.row >= (NSInteger)visible.count) return [[UITableViewCell alloc] init];
+        switch (visible[ip.row].integerValue) {
+            case S7TVContentHomeRowLaunchScreen: {
+                S7TVLaunchDestination destination = s7tv_launchDestination();
+                return S7TVNavCell(L(@"setting_launch_screen"),
+                    S7TVValueWithDefaultMark(S7TVLaunchDestinationTitle(destination),
+                        destination == S7TVLaunchDestinationDefault),
+                    @"rectangle.stack.fill", S7TVAccent(), nil);
+            }
+            case S7TVContentHomeRowHideStories:
+                return S7TVSwitchCell(L(@"switch_hide_twitch_stories"),
+                    @"circle.slash", [UIColor colorWithRed:0.95 green:0.35 blue:0.50 alpha:1.0],
+                    s7tv_hideTwitchStoriesEnabled(), self, @selector(toggleHideTwitchStories:), nil);
+            case S7TVContentHomeRowKeepLiveFeed:
+                return S7TVSwitchCell(L(@"switch_keep_live_feed_playing"),
+                    @"play.circle.fill", [UIColor colorWithRed:0.30 green:0.75 blue:0.45 alpha:1.0],
+                    s7tv_keepLiveFeedPlayingEnabled(), self, @selector(toggleKeepLiveFeedPlaying:), nil);
+            case S7TVContentHomeRowAutoCollect:
+                // La description (ex-footer de section) est derrière le "i" de la ligne.
+                return S7TVSwitchCell(L(@"switch_auto_collect_title"),
+                            @"giftcard.fill", [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
+                            S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints), self,
+                            @selector(toggleAutoCollect:), @"desc_auto_collect");
+            case S7TVContentHomeRowLockButton:
+                // Le "i" reprend l'ancienne description de section Rotation.
+                return S7TVSwitchCell(L(@"switch_orientation_lock_button"),
+                            @"lock.rotation", S7TVAccent(),
+                            s7tv_orientationLockButtonEnabled(), self,
+                            @selector(toggleOrientationLockButton:),
+                            @"desc_orientation_lock_settings");
+            case S7TVContentHomeRowAutoLock:
+                return S7TVNavCell(L(@"setting_orientation_auto_lock"),
+                    S7TVValueWithDefaultMark(S7TVAutoOrientationLockModeTitle(s7tv_autoOrientationLockMode()),
+                        s7tv_autoOrientationLockMode() == S7TVAutoOrientationLockModeDisabled),
+                    @"iphone.gen3.radiowaves.left.and.right", S7TVAccent(), nil);
         }
-        if (ip.row == 1) {
-            return S7TVSwitchCell(L(@"switch_hide_twitch_stories"),
-                @"circle.slash", [UIColor colorWithRed:0.95 green:0.35 blue:0.50 alpha:1.0],
-                s7tv_hideTwitchStoriesEnabled(), self, @selector(toggleHideTwitchStories:), nil);
-        }
-        return S7TVSwitchCell(L(@"switch_keep_live_feed_playing"),
-            @"play.circle.fill", [UIColor colorWithRed:0.30 green:0.75 blue:0.45 alpha:1.0],
-            s7tv_keepLiveFeedPlayingEnabled(), self, @selector(toggleKeepLiveFeedPlaying:), nil);
+        return [[UITableViewCell alloc] init];
     }
 
-    // ── Section Rotation : bouton manuel + détection automatique ─────────
-    if (ip.section == S7TVContentSectionRotation) {
-        if (ip.row == 0) {
-            return S7TVSwitchCell(L(@"switch_orientation_lock_button"),
-                        @"lock.rotation", S7TVAccent(),
-                        s7tv_orientationLockButtonEnabled(), self,
-                        @selector(toggleOrientationLockButton:), nil);
-        }
-
-        // Menu de choix (action sheet) plutôt qu'un segmented : même logique
-        // que "Écran au lancement" — la valeur courante sert de sous-titre
-        // (marquée "- Par défaut" quand c'est le mode d'origine), le tap
-        // ouvre la liste des modes. Grisé si le bouton est désactivé.
-        S7TVAutoOrientationLockMode mode = s7tv_autoOrientationLockMode();
-        UITableViewCell *cell = S7TVNavCell(L(@"setting_orientation_auto_lock"),
-            S7TVValueWithDefaultMark(S7TVAutoOrientationLockModeTitle(mode),
-                mode == S7TVAutoOrientationLockModeDisabled),
-            @"iphone.gen3.radiowaves.left.and.right", S7TVAccent(), nil);
-        BOOL enabled = s7tv_orientationLockButtonEnabled();
-        S7TVApplyCellEnabledState(cell, enabled);
-        return cell;
-    }
-
-    // ── Section Favoris ─────────────────────────────────────────────────────
+    // ── Section Favoris : une seule ligne « Mes favoris » (liste + compteur +
+    //    import intégré via le bouton flèche) ──────────────────────────────
     NSArray *favs = [[SevenTVManager sharedManager] favoriteEmoteIDsSnapshot];
 
     UITableViewCell *cell = [[UITableViewCell alloc]
         initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
     cell.backgroundColor = S7TVCellBg();
-    cell.textLabel.textColor = [UIColor whiteColor];
-    cell.textLabel.numberOfLines = 0;
-    cell.detailTextLabel.textColor = S7TVGray();
-    cell.detailTextLabel.numberOfLines = 0;
-
-    if (ip.row == 0) {
-        // Cellule tappable : ouvre la liste des favoris
-        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-        cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
-        cell.selectedBackgroundView = [[UIView alloc] init];
-        cell.selectedBackgroundView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.06];
-
-        UIView *icon = S7TVFavoriteEmotePreview(favs);
-        [cell.contentView addSubview:icon];
-
-        UILabel *lbl = [[UILabel alloc] init];
-        lbl.text = L(@"section_favoris");
-        lbl.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
-        lbl.textColor = [UIColor whiteColor];
-        lbl.numberOfLines = 1;
-        lbl.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.contentView addSubview:lbl];
-
-        UILabel *countLbl = [[UILabel alloc] init];
-        countLbl.text = [NSString stringWithFormat:@"%lu", (unsigned long)favs.count];
-        countLbl.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightRegular];
-        countLbl.textColor = [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0];
-        countLbl.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.contentView addSubview:countLbl];
-
-        [NSLayoutConstraint activateConstraints:@[
-            [icon.leadingAnchor     constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
-            [icon.centerYAnchor     constraintEqualToAnchor:cell.contentView.centerYAnchor],
-            [lbl.leadingAnchor      constraintEqualToAnchor:icon.trailingAnchor constant:14],
-            [lbl.topAnchor          constraintEqualToAnchor:cell.contentView.topAnchor constant:10],
-            [lbl.bottomAnchor       constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
-            [countLbl.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
-            [countLbl.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
-        ]];
-        return cell;
-    }
-
-    // Row 1 : Importer depuis fichier PC
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
     cell.selectedBackgroundView = [[UIView alloc] init];
     cell.selectedBackgroundView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.06];
 
-    UIImageView *importIcon = S7TVIcon(@"square.and.arrow.down",
-        [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0]);
-    [cell.contentView addSubview:importIcon];
+    UIView *icon = S7TVFavoriteEmotePreview(favs);
+    [cell.contentView addSubview:icon];
 
-    UILabel *importLbl = [[UILabel alloc] init];
-    importLbl.text = L(@"action_import_from_pc");
-    importLbl.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
-    importLbl.textColor = [UIColor whiteColor];
-    importLbl.translatesAutoresizingMaskIntoConstraints = NO;
+    UILabel *lbl = [[UILabel alloc] init];
+    lbl.text = L(@"section_favoris");
+    lbl.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
+    lbl.textColor = [UIColor whiteColor];
+    lbl.numberOfLines = 1;
+    lbl.translatesAutoresizingMaskIntoConstraints = NO;
 
-    UILabel *importSub = [[UILabel alloc] init];
-    importSub.text = L(@"subtitle_import_from_pc");
-    importSub.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
-    importSub.textColor = S7TVGray();
-    importSub.translatesAutoresizingMaskIntoConstraints = NO;
+    UILabel *subLbl = [[UILabel alloc] init];
+    subLbl.text = L(@"subtitle_import_from_pc");
+    subLbl.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
+    subLbl.textColor = S7TVGray();
+    subLbl.numberOfLines = 1;
+    subLbl.translatesAutoresizingMaskIntoConstraints = NO;
 
-    UIStackView *importStack = [[UIStackView alloc]
-        initWithArrangedSubviews:@[importLbl, importSub]];
-    importStack.axis      = UILayoutConstraintAxisVertical;
-    importStack.spacing   = 2;
-    importStack.alignment = UIStackViewAlignmentLeading;
-    importStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [cell.contentView addSubview:importStack];
+    UIStackView *textStack = [[UIStackView alloc]
+        initWithArrangedSubviews:@[lbl, subLbl]];
+    textStack.axis      = UILayoutConstraintAxisVertical;
+    textStack.spacing   = 2;
+    textStack.alignment = UIStackViewAlignmentLeading;
+    textStack.translatesAutoresizingMaskIntoConstraints = NO;
 
+    UILabel *countLbl = [[UILabel alloc] init];
+    countLbl.text = [NSString stringWithFormat:@"%lu", (unsigned long)favs.count];
+    countLbl.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightRegular];
+    countLbl.textColor = [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0];
+    countLbl.translatesAutoresizingMaskIntoConstraints = NO;
+
+    // Import intégré : ouvre le même sélecteur de fichier que l'ancienne
+    // ligne dédiée « Importer depuis PC ».
+    UIButton *importBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *importCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:15 weight:UIImageSymbolWeightMedium];
+    [importBtn setImage:[UIImage systemImageNamed:@"square.and.arrow.down"
+                         withConfiguration:importCfg]
+               forState:UIControlStateNormal];
+    importBtn.tintColor = [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0];
+    importBtn.accessibilityLabel = L(@"action_import_from_pc");
+    importBtn.showsTouchWhenHighlighted = YES;
+    importBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [importBtn addTarget:self action:@selector(importFavoritesFromFile)
+       forControlEvents:UIControlEventTouchUpInside];
+
+    [cell.contentView addSubview:textStack];
+    [cell.contentView addSubview:countLbl];
+    [cell.contentView addSubview:importBtn];
     [NSLayoutConstraint activateConstraints:@[
-        [importIcon.leadingAnchor   constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
-        [importIcon.centerYAnchor   constraintEqualToAnchor:cell.contentView.centerYAnchor],
-        [importStack.leadingAnchor  constraintEqualToAnchor:importIcon.trailingAnchor constant:14],
-        [importStack.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
-        [importStack.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
-        [importStack.topAnchor      constraintGreaterThanOrEqualToAnchor:cell.contentView.topAnchor constant:8],
-        [importStack.bottomAnchor   constraintLessThanOrEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
+        [icon.leadingAnchor     constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+        [icon.centerYAnchor     constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [textStack.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],
+        [textStack.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [textStack.topAnchor    constraintGreaterThanOrEqualToAnchor:cell.contentView.topAnchor constant:8],
+        [textStack.bottomAnchor constraintLessThanOrEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
+        [importBtn.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+        [importBtn.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [importBtn.widthAnchor    constraintEqualToConstant:30],
+        [importBtn.heightAnchor   constraintEqualToConstant:30],
+        [countLbl.trailingAnchor constraintEqualToAnchor:importBtn.leadingAnchor constant:-10],
+        [countLbl.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:countLbl.leadingAnchor constant:-8],
     ]];
     return cell;
 }
@@ -1811,15 +1885,13 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
         [self.navigationController pushViewController:favsVC animated:YES];
         return;
     }
-    if (ip.section == S7TVContentSectionFavorites && ip.row == 1) {
-        [self importFavoritesFromFile];
-        return;
-    }
-    if (ip.section == S7TVContentSectionHome && ip.row == 0) {
+    if (ip.section != S7TVContentSectionHome) return;
+    NSInteger logicalRow = [self s7tv_visibleHomeRows][ip.row].integerValue;
+    if (logicalRow == S7TVContentHomeRowLaunchScreen) {
         [self presentLaunchDestinationPickerFromCell:[tv cellForRowAtIndexPath:ip]];
         return;
     }
-    if (ip.section == S7TVContentSectionRotation && ip.row == 1) {
+    if (logicalRow == S7TVContentHomeRowAutoLock) {
         [self presentAutoOrientationLockPickerFromCell:[tv cellForRowAtIndexPath:ip]];
     }
 }
@@ -1833,9 +1905,9 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
 }
 - (void)toggleOrientationLockButton:(UISwitch *)sw {
     s7tv_setOrientationLockButtonEnabled(sw.isOn);
-    [self.tableView reloadSections:
-        [NSIndexSet indexSetWithIndex:S7TVContentSectionRotation]
-                     withRowAnimation:UITableViewRowAnimationNone];
+    // Apparition/disparition de « Verrouillage automatique » (sous-option
+    // dépendante — voir S7TVVisibleRowIndexes).
+    S7TVReloadSection(self.tableView, S7TVContentSectionHome);
 }
 
 // Menu de choix du mode d'auto-lock (action sheet, même logique que le picker
@@ -1860,7 +1932,7 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
             (void)action;
             s7tv_setAutoOrientationLockMode(mode);
             [weakSelf.tableView reloadSections:
-                [NSIndexSet indexSetWithIndex:S7TVContentSectionRotation]
+                [NSIndexSet indexSetWithIndex:S7TVContentSectionHome]
                          withRowAnimation:UITableViewRowAnimationNone];
         }]];
     }
@@ -2503,52 +2575,66 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     }];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 6; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
 
-// Section 0 = Cache (vider le cache)
-// Section 1 = Options (chat custom + bouton flottant)
-// Section 2 = Sauvegarde (export / import de tous les réglages)
-// Section 3 = Diagnostics (état des hooks Twitch)
-// Section 4 = Logs (activer logs, voir les logs, logs console, puis 14 catégories)
-// Section 5 = Danger (effacer les logs)
-#define S7TV_SECTION_CACHE        0
-#define S7TV_SECTION_OPTIONS      1
-#define S7TV_SECTION_TRANSFER     2
-#define S7TV_SECTION_DIAGNOSTICS  3
-#define S7TV_SECTION_LOGS         4
-#define S7TV_SECTION_DANGER       5
+// Section 0 = Outils (vider le cache + diagnostics hooks)
+// Section 1 = Sauvegarde (export / import de tous les réglages)
+// Section 2 = Options (chat custom + bouton flottant)
+// Section 3 = Logs (activer ; voir/console/catégories n'existent visuellement
+//             que si « Activer les logs » est ON)
+#define S7TV_SECTION_TOOLS        0
+#define S7TV_SECTION_TRANSFER     1
+#define S7TV_SECTION_OPTIONS      2
+#define S7TV_SECTION_LOGS         3
 
-#define S7TV_LOGS_ROW_ENABLE      0
-#define S7TV_LOGS_ROW_VIEW        1
-#define S7TV_LOGS_ROW_CONSOLE     2
-#define S7TV_LOGS_ROW_FIRST_CAT   3
+#define S7TV_TOOLS_ROW_CACHE       0
+#define S7TV_TOOLS_ROW_DIAGNOSTICS 1
+
+// Rows logiques de la section Logs.
+typedef NS_ENUM(NSInteger, S7TVLogsRow) {
+    S7TVLogsRowEnable   = 0,
+    S7TVLogsRowView     = 1,
+    S7TVLogsRowConsole  = 2,
+    S7TVLogsRowFirstCat = 3,
+};
+
 #define S7TV_LOGS_CAT_COUNT       14
-#define S7TV_LOGS_ROW_COUNT       (S7TV_LOGS_ROW_FIRST_CAT + S7TV_LOGS_CAT_COUNT)
+
+// Lignes visibles de la section Logs : « Voir les logs », « Logs console » et
+// les 14 catégories n'existent visuellement que si « Activer les logs » est ON
+// (mécanisme générique de sous-options dépendantes ; leurs valeurs restent
+// stockées dans NSUserDefaults).
+- (NSArray<NSNumber *> *)s7tv_visibleLogsRows {
+    BOOL logsOn = [SevenTVManager sharedManager].logsEnabled;
+    NSMutableDictionary<NSNumber *, NSNumber *> *conditional = [NSMutableDictionary dictionary];
+    conditional[@(S7TVLogsRowView)]    = @(logsOn);
+    conditional[@(S7TVLogsRowConsole)] = @(logsOn);
+    for (NSInteger cat = 0; cat < S7TV_LOGS_CAT_COUNT; cat++) {
+        conditional[@(S7TVLogsRowFirstCat + cat)] = @(logsOn);
+    }
+    return S7TVVisibleRowIndexes(@[@(S7TVLogsRowEnable)], conditional);
+}
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     switch (s) {
-        case S7TV_SECTION_CACHE:   return 1;
-        case S7TV_SECTION_OPTIONS: return 2;
+        case S7TV_SECTION_TOOLS:    return 2;
         case S7TV_SECTION_TRANSFER: return 2;
-        case S7TV_SECTION_DIAGNOSTICS: return 1;
-        case S7TV_SECTION_LOGS:    return S7TV_LOGS_ROW_COUNT;
-        case S7TV_SECTION_DANGER:  return 1;
+        case S7TV_SECTION_OPTIONS:  return 2;
+        case S7TV_SECTION_LOGS:     return [self s7tv_visibleLogsRows].count;
         default: return 0;
     }
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
-    return s == S7TV_SECTION_CACHE ? 8 : 44;
+    return 44;
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     switch (s) {
-        case S7TV_SECTION_CACHE:   return [[UIView alloc] init]; // pas de header : action isolée, comme l'ancien "Recharger" de l'accueil
-        case S7TV_SECTION_OPTIONS: return S7TVSectionHeader(L(@"section_options"), NO, nil);
+        case S7TV_SECTION_TOOLS:    return S7TVSectionHeader(L(@"section_tools"), NO, nil);
         case S7TV_SECTION_TRANSFER: return S7TVSectionHeader(L(@"section_settings_backup"), NO, nil);
-        case S7TV_SECTION_DIAGNOSTICS: return S7TVSectionHeader(L(@"section_diagnostics"), NO, nil);
-        case S7TV_SECTION_LOGS:    return S7TVSectionHeader(L(@"section_logs"), NO, nil);
-        case S7TV_SECTION_DANGER:  return S7TVSectionHeader(L(@"section_danger"), NO, nil);
+        case S7TV_SECTION_OPTIONS:  return S7TVSectionHeader(L(@"section_options"), NO, nil);
+        case S7TV_SECTION_LOGS:     return S7TVSectionHeader(L(@"section_logs"), NO, nil);
         default: return [[UIView alloc] init];
     }
 }
@@ -2566,8 +2652,13 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
 
-    // ── Section Cache : Vider le cache ──────────────────────────────────────
-    if (ip.section == S7TV_SECTION_CACHE) {
+    // ── Section Outils : vider le cache + diagnostics hooks ───────────────
+    if (ip.section == S7TV_SECTION_TOOLS) {
+        if (ip.row == S7TV_TOOLS_ROW_DIAGNOSTICS) {
+            return S7TVNavCell(L(@"diagnostics_title"), L(@"diagnostics_subtitle"),
+                @"stethoscope", UIColor.systemPinkColor, nil);
+        }
+
         UITableViewCell *cell = [[UITableViewCell alloc]
             initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         cell.accessoryType   = UITableViewCellAccessoryDisclosureIndicator;
@@ -2614,7 +2705,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                     @"message.badge.filled.fill",
                     S7TVAccent(),
                     mgr.chatCustomTestEnabled,
-                    self, @selector(toggleChatCustom:), nil);
+                    self, @selector(toggleChatCustom:), @"chat_custom_info");
         }
         return S7TVSwitchCell(L(@"switch_floating_button"),
                     @"circle.grid.2x1.fill",
@@ -2632,16 +2723,13 @@ forRowAtIndexPath:(NSIndexPath *)ip {
             @"square.and.arrow.down", UIColor.systemGreenColor, nil);
     }
 
-    if (ip.section == S7TV_SECTION_DIAGNOSTICS) {
-        return S7TVNavCell(L(@"diagnostics_title"), L(@"diagnostics_subtitle"),
-            @"stethoscope", UIColor.systemPinkColor, nil);
-    }
-
     if (ip.section == S7TV_SECTION_LOGS) {
-        NSInteger row = ip.row;
+        NSArray<NSNumber *> *visible = [self s7tv_visibleLogsRows];
+        if (ip.row >= (NSInteger)visible.count) return [[UITableViewCell alloc] init];
+        NSInteger row = visible[ip.row].integerValue;
 
-        // --- Activer les logs (interrupteur global) ---
-        if (row == S7TV_LOGS_ROW_ENABLE) {
+        // --- Activer les logs (interrupteur global, toujours visible) ---
+        if (row == S7TVLogsRowEnable) {
             return S7TVSwitchCell(L(@"switch_enable_logs"),
                         @"bolt.fill",
                         UIColor.systemYellowColor,
@@ -2649,8 +2737,8 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                         self, @selector(toggleLogsEnabled:), nil);
         }
 
-        // --- Voir les logs (toujours accessible, même si logsEnabled == NO) ---
-        if (row == S7TV_LOGS_ROW_VIEW) {
+        // --- Voir les logs (n'existe visuellement que si logsEnabled == ON) ---
+        if (row == S7TVLogsRowView) {
             UITableViewCell *cell = [[UITableViewCell alloc]
                 initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
             cell.accessoryType   = UITableViewCellAccessoryDisclosureIndicator;
@@ -2692,19 +2780,17 @@ forRowAtIndexPath:(NSIndexPath *)ip {
             return cell;
         }
 
-        // --- Logs console (Console.app) — grisé si logsEnabled == NO ---
-        if (row == S7TV_LOGS_ROW_CONSOLE) {
-            UITableViewCell *cell = S7TVSwitchCell(L(@"switch_logs_console"),
+        // --- Logs console (Console.app) — disparaît si logsEnabled == NO ---
+        if (row == S7TVLogsRowConsole) {
+            return S7TVSwitchCell(L(@"switch_logs_console"),
                         @"terminal.fill",
                         UIColor.systemGreenColor,
                         mgr.debugLogging,
                         self, @selector(toggleDebug:), nil);
-            [self s7tv_applyEnabledState:cell];
-            return cell;
         }
 
         // --- Catégories de logs ---
-        NSInteger catIdx = row - S7TV_LOGS_ROW_FIRST_CAT;
+        NSInteger catIdx = row - S7TVLogsRowFirstCat;
         NSArray<NSString *> *titles = @[
             L(@"log_cat_errors"), L(@"log_cat_chat_custom"), L(@"log_cat_channel_points"),
             L(@"log_cat_tap"), L(@"log_cat_swizzle"),
@@ -2752,44 +2838,21 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                     colors[catIdx],
                     values[catIdx].boolValue,
                     self, NSSelectorFromString(selectors[catIdx]), nil);
-        [self s7tv_applyEnabledState:cell];
         return cell;
     }
 
-    // Section Danger : Effacer les logs
-    UITableViewCell *cell = [[UITableViewCell alloc]
-        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-    cell.backgroundColor = S7TVCellBg();
-    cell.selectedBackgroundView = [[UIView alloc] init];
-    cell.selectedBackgroundView.backgroundColor =
-        [UIColor colorWithWhite:1.0 alpha:0.06];
-
-    UIImageView *icon = S7TVIcon(@"trash.fill", [UIColor systemRedColor]);
-    [cell.contentView addSubview:icon];
-
-    UILabel *lbl = [[UILabel alloc] init];
-    lbl.text = L(@"action_clear_all_logs");
-    lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
-    lbl.textColor = [UIColor systemRedColor];
-    lbl.numberOfLines = 1;
-    lbl.translatesAutoresizingMaskIntoConstraints = NO;
-    [cell.contentView addSubview:lbl];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [icon.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
-        [icon.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
-        [lbl.leadingAnchor   constraintEqualToAnchor:icon.trailingAnchor constant:14],
-        [lbl.trailingAnchor  constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
-        [lbl.topAnchor       constraintEqualToAnchor:cell.contentView.topAnchor constant:10],
-        [lbl.bottomAnchor    constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
-    ]];
-    return cell;
+    return [[UITableViewCell alloc] init];
 }
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
 
-    if (ip.section == S7TV_SECTION_CACHE) { [self clearCache]; return; }
+    if (ip.section == S7TV_SECTION_TOOLS) {
+        if (ip.row == S7TV_TOOLS_ROW_CACHE) [self clearCache];
+        else [self.navigationController pushViewController:[S7TVHookDiagnosticsController new]
+                                                 animated:YES];
+        return;
+    }
 
     if (ip.section == S7TV_SECTION_TRANSFER) {
         if (ip.row == 0) [self s7tv_exportSettingsFromAnchor:[tv cellForRowAtIndexPath:ip]];
@@ -2797,31 +2860,14 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         return;
     }
 
-    if (ip.section == S7TV_SECTION_DIAGNOSTICS) {
-        [self.navigationController pushViewController:[S7TVHookDiagnosticsController new]
-                                             animated:YES];
+    if (ip.section == S7TV_SECTION_LOGS) {
+        NSInteger row = [self s7tv_visibleLogsRows][ip.row].integerValue;
+        if (row == S7TVLogsRowView) {
+            // L'effacement des logs vit dans cet écran (bouton « Effacer »).
+            [self.navigationController
+                pushViewController:[[SevenTVLogsController alloc] init] animated:YES];
+        }
         return;
-    }
-
-    if (ip.section == S7TV_SECTION_LOGS && ip.row == S7TV_LOGS_ROW_VIEW) {
-        [self.navigationController
-            pushViewController:[[SevenTVLogsController alloc] init] animated:YES];
-        return;
-    }
-
-    if (ip.section == S7TV_SECTION_DANGER && ip.row == 0) {
-        UIAlertController *alert = [UIAlertController
-            alertControllerWithTitle:L(@"alert_clear_logs_title")
-                             message:L(@"alert_irreversible")
-                      preferredStyle:UIAlertControllerStyleActionSheet];
-        [alert addAction:[UIAlertAction actionWithTitle:L(@"common_clear")
-            style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
-                [[SevenTVManager sharedManager] clearLogs];
-                [tv reloadData];
-            }]];
-        [alert addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
-            style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
     }
 }
 
@@ -2949,17 +2995,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-// Grise visuellement une cellule de catégorie/console quand logsEnabled == NO,
-// sans jamais modifier la valeur stockée dans NSUserDefaults.
-- (void)s7tv_applyEnabledState:(UITableViewCell *)cell {
-    S7TVApplyCellEnabledState(cell, [SevenTVManager sharedManager].logsEnabled);
-}
-
 - (void)toggleLogsEnabled:(UISwitch *)sw {
     [SevenTVManager sharedManager].logsEnabled = sw.isOn;
-    // Reload pour griser/dégriser les autres lignes de la section Logs
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:S7TV_SECTION_LOGS]
-                   withRowAnimation:UITableViewRowAnimationNone];
+    // Apparition/disparition de « Voir les logs », « Logs console » et des
+    // catégories (sous-options dépendantes — voir S7TVVisibleRowIndexes).
+    S7TVReloadSection(self.tableView, S7TV_SECTION_LOGS);
 }
 - (void)toggleDebug:(UISwitch *)sw                  { [SevenTVManager sharedManager].debugLogging        = sw.isOn; }
 - (void)toggleChatCustom:(UISwitch *)sw             { [SevenTVManager sharedManager].chatCustomTestEnabled = sw.isOn; }

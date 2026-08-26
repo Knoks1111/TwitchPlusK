@@ -22,7 +22,7 @@
 #import "System/7tv-system-native-behavior-hooks.h"
 #import "System/7tv-system-home-features.h"
 #import "Adblock/7tv-adblock-settings.h"
-#import "Adblock/7tv-adblock-proxy-status.h"
+#import "Adblock/Proxy/7tv-adblock-proxy-status.h"
 #import "Diagnostics/7tv-hook-diagnostics.h"
 #import "Settings/7tv-settings-transfer.h"
 #import "UI/7tv-info-tooltip.h"

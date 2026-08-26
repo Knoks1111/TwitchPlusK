@@ -1,10 +1,9 @@
 # TwitchPlusK
 
-Enhanced Twitch app for iOS — 7TV emotes, auto-claim channel points, and ad blocking. Sideloaded, no jailbreak required.
+Enhanced Twitch app for iOS — 7TV emotes, auto-claim channel points, and ad blocking, OLED mode. Sideloaded, no jailbreak required.
 
 ## What it does
 
-TwitchPlusK adds 7TV, ad blocking, and quality-of-life features directly to the native Twitch iOS app.
 
 ### Enhanced chat
 
@@ -15,24 +14,19 @@ TwitchPlusK adds 7TV, ad blocking, and quality-of-life features directly to the 
 
 ### Ad blocking
 
-- Blocks ads on **live streams and VODs** using an ad-free-country proxy.
-- Built-in proxy with support for your own custom proxy.
+- Two AdBlock methods: **Proxy (default or custom)** and **Local (VAFT)**.
+- Blocks ads on **live streams and VODs** using the selected method.
 - Removes additional Twitch ad and promotional elements from the app.
-
-### Channel Points
-
-- **Automatically claims Channel Point bonuses** while watching streams.
-
-### Player
-
-- **Orientation Lock** directly from the Twitch player.
-- Optional automatic landscape lock.
 
 ### App customization
 
+- **OLED Mode** for true black backgrounds in the dark theme.
 - **Choose your launch screen** — Following, Live, Clips, Browse, Activity, Profile, and more.
 - **Hide Twitch Stories** from Home.
 - **Keep Live Feed Playing** without Twitch forcing you to Watch or Follow.
+- **Export and import all TwitchPlusK settings.**
+- **Orientation Lock** directly from the Twitch player. Optional automatic
+- **Automatically claims Channel Point bonuses** while watching streams.
 
 ## Install
 

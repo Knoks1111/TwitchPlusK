@@ -468,7 +468,7 @@ void S7TVAdblockInstallRuntimeHooks(void) {
             os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] AVURLAsset hook installed=%d", assetHook);
             os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] AVPlayer hooks installed=%d/%d",
                    playerInitHook, playerKVOHook);
-        } else {
+        } else if (S7TVAdblockActiveMethod() == S7TVAdblockMethodLocalVaft) {
             // ── Moteur Local (VAFT) : upstream adapté (divergence D1/D3) ──
             vaft_initialize();
         }

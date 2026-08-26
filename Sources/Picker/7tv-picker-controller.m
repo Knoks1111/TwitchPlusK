@@ -156,7 +156,7 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
                 bitsButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
                 bitsButton.tintColor = UIColor.whiteColor;
             }
-            bitsButton.accessibilityLabel = @"7TV Emotes";
+            bitsButton.accessibilityLabel = L(@"label_7tv_emotes");
             objc_setAssociatedObject(bitsButton, &kS7TVTextFieldTagged,
                                      [S7TVPickerWeakRef refWithObject:chatInputView],
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);

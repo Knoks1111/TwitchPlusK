@@ -984,6 +984,13 @@ static const NSInteger kS7TVProxyTextFieldTag = 0x7A01;
 static const NSInteger kS7TVProxyUpButtonTag  = 0x7A02;
 static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 
+// Rows logiques de la section Général.
+typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
+    S7TVAdblockGeneralRowEnable = 0,
+    S7TVAdblockGeneralRowMethod = 1,
+    S7TVAdblockGeneralRowHideTurbo = 2,
+};
+
 @implementation SevenTVAdblockPageController
 
 - (instancetype)init {
@@ -1022,10 +1029,13 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
     [S7TVInfoTooltip dismiss];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 3;
+    if (section == 0) {
+        // Méthode visible seulement si le toggle maître est ON
+        // (mécanisme générique de sous-options dépendantes).
+        return [self s7tv_visibleGeneralRows].count;
+    }
     if (!S7TVAdblockIsEnabled()) return 0;
     if (!S7TVAdblockProxyIsEnabled()) return 1;
     return S7TVAdblockCustomProxyIsEnabled() ? 4 + self.proxies.count : 3;
@@ -1036,6 +1046,26 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
     return S7TVSectionHeader(section == 0 ? L(@"section_general")
                                           : L(@"adblock_section_proxy"), NO,
                              section == 0 ? nil : @"adblock_proxy_privacy_footer");
+}
+
+// Rows visibles de Général : « Méthode AdBlock » n'existe que si le moteur
+// maître est ON (mécanisme générique de sous-options dépendantes).
+- (NSArray<NSNumber *> *)s7tv_visibleGeneralRows {
+    return S7TVVisibleRowIndexes(
+        @[@(S7TVAdblockGeneralRowEnable),
+          @(S7TVAdblockGeneralRowHideTurbo)],
+        @{@(S7TVAdblockGeneralRowMethod): @(S7TVAdblockEnabledFast())});
+}
+
+// La section Proxy vidéo n'existe que si le toggle maître est ON ET que la
+// méthode configurée est Proxy (réglages exclusivement Proxy).
+- (BOOL)s7tv_proxySectionVisible {
+    return S7TVAdblockEnabledFast() &&
+           S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return [self s7tv_proxySectionVisible] ? 2 : 1;
 }
 
 - (NSInteger)proxyIndexForRow:(NSInteger)row {
@@ -1055,28 +1085,34 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 0) {
-        if (indexPath.row == 0) {
-            // La description du moteur (ex-footer de section) est derrière
-            // le "i" de la ligne d'activation.
-            return S7TVSwitchCell(L(@"adblock_enable"), @"shield.lefthalf.filled",
-                S7TVAccent(), S7TVAdblockIsEnabled(), self, @selector(toggleAdblock:),
-                @"adblock_engine_footer");
+        NSArray<NSNumber *> *visible = [self s7tv_visibleGeneralRows];
+        if (indexPath.row >= (NSInteger)visible.count) {
+            return [[UITableViewCell alloc] init];
         }
-        if (indexPath.row == 1) {
-            // Sélecteur de méthode : Proxy (moteur actuel) ou Local (VAFT).
-            // La méthode configurée s'applique au prochain démarrage de Twitch.
-            NSString *methodLabel = L(S7TVAdblockConfiguredMethodIsLocal()
-                ? @"adblock_method_value_local" : @"adblock_method_value_proxy");
-            return S7TVNavCell(L(@"adblock_method_title"), methodLabel,
-                @"arrow.triangle.branch", S7TVAccent(), nil);
+        switch (visible[indexPath.row].integerValue) {
+            case S7TVAdblockGeneralRowEnable:
+                return S7TVSwitchCell(L(@"adblock_enable"), @"shield.lefthalf.filled",
+                    S7TVAccent(), S7TVAdblockIsEnabled(), self, @selector(toggleAdblock:),
+                    @"adblock_engine_footer");
+            case S7TVAdblockGeneralRowMethod:
+                // Sélecteur de méthode : Disabled / Proxy / Local (VAFT).
+                // La méthode configurée s'applique au prochain démarrage.
+                return S7TVNavCell(L(@"adblock_method_title"),
+                    L(S7TVAdblockConfiguredMethod() == S7TVAdblockMethodLocalVaft
+                        ? @"adblock_method_value_local"
+                        : S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy
+                            ? @"adblock_method_value_proxy"
+                            : @"adblock_method_value_disabled"),
+                    @"arrow.triangle.branch", S7TVAccent(), nil);
+            case S7TVAdblockGeneralRowHideTurbo:
+            default:
+                return S7TVSwitchCell(L(@"adblock_hide_go_ad_free"), @"rectangle.slash",
+                    [UIColor colorWithRed:0.95 green:0.45 blue:0.25 alpha:1.0],
+                    S7TVAdblockHideAdFreeButtonEnabledFast(), self,
+                    @selector(toggleHideGoAdFree:), nil);
         }
-        return S7TVSwitchCell(L(@"adblock_hide_go_ad_free"), @"rectangle.slash",
-            [UIColor colorWithRed:0.95 green:0.45 blue:0.25 alpha:1.0],
-            S7TVAdblockHideAdFreeButtonIsEnabled(), self,
-            @selector(toggleHideGoAdFree:), nil);
     }
-
-    BOOL proxyEnabled = S7TVAdblockProxyIsEnabled();
+        BOOL proxyEnabled = S7TVAdblockProxyIsEnabled();
     if (indexPath.row == 0) {
         return S7TVSwitchCell(L(@"adblock_video_proxy"),
             @"network", UIColor.systemBlueColor, proxyEnabled,
@@ -1106,9 +1142,9 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
         [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
                       withRowAnimation:UITableViewRowAnimationAutomatic];
     }
-    // Sélecteur de méthode AdBlock (Proxy / Local (VAFT)) : la méthode
-    // configurée ne s'applique qu'au prochain démarrage de Twitch.
-    if (indexPath.section == 0 && indexPath.row == 1) {
+    NSArray<NSNumber *> *visibleGeneral = [self s7tv_visibleGeneralRows];
+    if (indexPath.section == 0 && indexPath.row < (NSInteger)visibleGeneral.count &&
+        visibleGeneral[indexPath.row].integerValue == S7TVAdblockGeneralRowMethod) {
         [self presentMethodActionSheetFromCell:[tableView cellForRowAtIndexPath:indexPath]];
     }
 }
@@ -1126,6 +1162,7 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 
     S7TVAdblockMethod configured = S7TVAdblockConfiguredMethod();
     NSArray *choices = @[
+        @[L(@"adblock_method_value_disabled"), @(S7TVAdblockMethodDisabled)],
         @[L(@"adblock_method_value_proxy"), @(S7TVAdblockMethodProxy)],
         @[L(@"adblock_method_value_local"), @(S7TVAdblockMethodLocalVaft)],
     ];
@@ -1149,16 +1186,23 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
 
 - (void)s7tv_applyConfiguredMethod:(S7TVAdblockMethod)method {
     S7TVAdblockSetConfiguredMethod(method);
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
-                  withRowAnimation:UITableViewRowAnimationNone];
+    // Le nombre de sections change avec la méthode (section Proxy vidéo).
+    [self.tableView reloadData];
 
-    // Méthode configurée != méthode active → redémarrage Twitch requis.
-    BOOL activeIsLocal = S7TVAdblockActiveMethodIsLocal();
-    BOOL nowLocal = (method == S7TVAdblockMethodLocalVaft);
-    if (nowLocal == activeIsLocal) return; // retour à la méthode déjà active
+    // Méthode configurée != méthode active → redémarrage Twitch requis,
+    // en nommant explicitement la méthode choisie.
+    if (method == S7TVAdblockActiveMethod()) return; // déjà active
 
-    NSString *message = L(nowLocal ? @"adblock_restart_local_msg"
-                                   : @"adblock_restart_proxy_msg");
+    NSString *message;
+    switch (method) {
+        case S7TVAdblockMethodLocalVaft:
+            message = L(@"adblock_restart_local_msg"); break;
+        case S7TVAdblockMethodDisabled:
+            message = L(@"adblock_restart_disabled_msg"); break;
+        case S7TVAdblockMethodProxy:
+        default:
+            message = L(@"adblock_restart_proxy_msg"); break;
+    }
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:L(@"adblock_restart_title")
                          message:message
@@ -3151,7 +3195,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
     // Méthode configurée != méthode active → redémarrage Twitch requis pour
     // appliquer la méthode importée. Aucun hook n'est installé/désinstallé ici.
-    if (S7TVAdblockConfiguredMethodIsLocal() != S7TVAdblockActiveMethodIsLocal()) {
+    if (S7TVAdblockConfiguredMethod() != S7TVAdblockActiveMethod()) {
         NSString *message = L(S7TVAdblockConfiguredMethodIsLocal()
             ? @"adblock_restart_local_msg" : @"adblock_restart_proxy_msg");
         [self s7tv_showSettingsTransferAlertWithTitle:L(@"adblock_restart_title")

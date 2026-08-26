@@ -31,9 +31,17 @@ void S7TVAdblockRegisterDefaults(void) {
 // (setter + import) ; le snapshot méthode est figé au lancement.
 
 static volatile BOOL s_method_snapshot_done = NO;
-static volatile BOOL s_method_is_local_snapshot = NO;
+static volatile S7TVAdblockMethod s_method_snapshot = S7TVAdblockMethodDisabled;
 static volatile BOOL s_enabled_snapshot = NO;
 static volatile BOOL s_hide_ad_free_snapshot = YES;
+
+static S7TVAdblockMethod S7TVAdblockMethodFromStored(NSString * _Nullable stored) {
+    if ([stored isEqualToString:@"local"]) return S7TVAdblockMethodLocalVaft;
+    if ([stored isEqualToString:@"proxy"]) return S7TVAdblockMethodProxy;
+    /* Absente, "disabled" ou valeur inconnue/corrompue -> Disabled:
+     * etat neutre et sur, aucun moteur n'agit sans choix explicite. */
+    return S7TVAdblockMethodDisabled;
+}
 
 void S7TVAdblockRefreshRuntimeSnapshots(void) {
     S7TVAdblockRegisterDefaults();
@@ -51,38 +59,46 @@ BOOL S7TVAdblockHideAdFreeButtonEnabledFast(void) {
 }
 
 void S7TVAdblockTakeRuntimeMethodSnapshot(void) {
-    NSString *method = [S7TVAdblockDefaults() stringForKey:S7TVAdblockMethodKey];
-    // Valeur absente/invalide → fallback déterministe Proxy. Ne fait rien
-    // tant que le toggle maître est OFF.
-    s_method_is_local_snapshot = [method isEqualToString:@"local"];
+    s_method_snapshot = S7TVAdblockMethodFromStored(
+        [S7TVAdblockDefaults() stringForKey:S7TVAdblockMethodKey]);
     s_method_snapshot_done = YES;
 }
 
-BOOL S7TVAdblockActiveMethodIsLocal(void) {
+S7TVAdblockMethod S7TVAdblockActiveMethod(void) {
     if (!s_method_snapshot_done) S7TVAdblockTakeRuntimeMethodSnapshot();
-    return s_method_is_local_snapshot;
+    return s_method_snapshot;
 }
 
-S7TVAdblockMethod S7TVAdblockActiveMethod(void) {
-    return S7TVAdblockActiveMethodIsLocal() ? S7TVAdblockMethodLocalVaft
-                                            : S7TVAdblockMethodProxy;
+BOOL S7TVAdblockActiveMethodIsLocal(void) {
+    return S7TVAdblockActiveMethod() == S7TVAdblockMethodLocalVaft;
+}
+
+BOOL S7TVAdblockActiveMethodIsProxy(void) {
+    return S7TVAdblockActiveMethod() == S7TVAdblockMethodProxy;
 }
 
 // ── Méthode configurée (settings / persistance uniquement) ──────────────────
 
-BOOL S7TVAdblockConfiguredMethodIsLocal(void) {
-    NSString *method = [S7TVAdblockDefaults() stringForKey:S7TVAdblockMethodKey];
-    return [method isEqualToString:@"local"];
+S7TVAdblockMethod S7TVAdblockConfiguredMethod(void) {
+    return S7TVAdblockMethodFromStored(
+        [S7TVAdblockDefaults() stringForKey:S7TVAdblockMethodKey]);
 }
 
-S7TVAdblockMethod S7TVAdblockConfiguredMethod(void) {
-    return S7TVAdblockConfiguredMethodIsLocal() ? S7TVAdblockMethodLocalVaft
-                                                : S7TVAdblockMethodProxy;
+BOOL S7TVAdblockConfiguredMethodIsLocal(void) {
+    return S7TVAdblockConfiguredMethod() == S7TVAdblockMethodLocalVaft;
 }
 
 void S7TVAdblockSetConfiguredMethod(S7TVAdblockMethod method) {
-    NSString *value = (method == S7TVAdblockMethodLocalVaft) ? @"local" : @"proxy";
+    NSString *value;
+    switch (method) {
+        case S7TVAdblockMethodDisabled:  value = @"disabled"; break;
+        case S7TVAdblockMethodLocalVaft: value = @"local";    break;
+        case S7TVAdblockMethodProxy:
+        default:                         value = @"proxy";    break;
+    }
     [S7TVAdblockDefaults() setObject:value forKey:S7TVAdblockMethodKey];
+    // Fiabilise le test terrain « sélection puis relaunch immédiat ».
+    [S7TVAdblockDefaults() synchronize];
 }
 
 BOOL S7TVAdblockIsEnabled(void) {

@@ -1036,16 +1036,30 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
         // (mécanisme générique de sous-options dépendantes).
         return [self s7tv_visibleGeneralRows].count;
     }
-    if (!S7TVAdblockIsEnabled()) return 0;
-    if (!S7TVAdblockProxyIsEnabled()) return 1;
+    // En Local (VAFT), la section reste présente mais ne contient qu'une
+    // information fixe : ce moteur n'utilise aucun proxy vidéo configurable.
+    if ([self s7tv_localVaftSectionVisible]) return 1;
+    if (![self s7tv_proxySectionVisible]) return 0;
     return S7TVAdblockCustomProxyIsEnabled() ? 4 + self.proxies.count : 3;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    if (section == 1 && [self s7tv_localVaftSectionVisible]) {
+        // La note Local remplace entièrement l'en-tête « Proxy vidéo » :
+        // aucun titre de section proxy ne doit rester visible.
+        UIView *empty = [[UIView alloc] init];
+        empty.backgroundColor = UIColor.clearColor;
+        return empty;
+    }
     // Le footer descriptif du proxy vit désormais derrière le "i" du header.
     return S7TVSectionHeader(section == 0 ? L(@"section_general")
                                           : L(@"adblock_section_proxy"), NO,
                              section == 0 ? nil : @"adblock_proxy_privacy_footer");
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    if (section == 1 && [self s7tv_localVaftSectionVisible]) return 8.0;
+    return 44.0;
 }
 
 // Rows visibles de Général : « Méthode AdBlock » n'existe que si le moteur
@@ -1064,8 +1078,15 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
            S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy;
 }
 
+// Local (VAFT) partage la même mécanique de section dépendante que le Proxy,
+// mais n'expose volontairement aucun réglage de proxy.
+- (BOOL)s7tv_localVaftSectionVisible {
+    return S7TVAdblockEnabledFast() &&
+           S7TVAdblockConfiguredMethod() == S7TVAdblockMethodLocalVaft;
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return [self s7tv_proxySectionVisible] ? 2 : 1;
+    return ([self s7tv_proxySectionVisible] || [self s7tv_localVaftSectionVisible]) ? 2 : 1;
 }
 
 - (NSInteger)proxyIndexForRow:(NSInteger)row {
@@ -1112,6 +1133,39 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
                     @selector(toggleHideGoAdFree:), nil);
         }
     }
+
+    if (indexPath.section == 1 && [self s7tv_localVaftSectionVisible]) {
+        // Même construction qu'une cellule descriptive existante de la page
+        // Apparence : texte blanc, multi-ligne et hauteur intrinsèque, sans
+        // nouveau composant ni scroll interne.
+        UITableViewCell *cell = [[UITableViewCell alloc]
+            initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.backgroundColor = S7TVCellBg();
+
+        UILabel *label = [[UILabel alloc] init];
+        label.text = L(@"adblock_local_no_proxy");
+        label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular];
+        label.textColor = UIColor.whiteColor;
+        label.numberOfLines = 0;
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:label];
+        [NSLayoutConstraint activateConstraints:@[
+            [label.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16.0],
+            [label.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16.0],
+            [label.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:12.0],
+            [label.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-12.0],
+        ]];
+        return cell;
+    }
+
+    // La section 1 ne peut être Proxy qu'après les deux tests ci-dessus ; ce
+    // garde évite qu'une préférence devenue Local ne réaffiche une cellule
+    // proxy pendant une transition/reload de la table.
+    if (indexPath.section != 1 || ![self s7tv_proxySectionVisible]) {
+        return [[UITableViewCell alloc] init];
+    }
+
         BOOL proxyEnabled = S7TVAdblockProxyIsEnabled();
     if (indexPath.row == 0) {
         return S7TVSwitchCell(L(@"adblock_video_proxy"),
@@ -1134,6 +1188,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == 1 && [self s7tv_localVaftSectionVisible]) return;
     if (indexPath.section == 1 && S7TVAdblockIsEnabled() &&
         S7TVAdblockProxyIsEnabled() && S7TVAdblockCustomProxyIsEnabled() &&
         indexPath.row == [self addProxyRowIndex]) {
@@ -1226,16 +1281,24 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 - (void)toggleAdblockProxy:(UISwitch *)sender {
     S7TVAdblockSetProxyEnabled(sender.isOn);
     self.proxyStatus = S7TVAdblockProxyStatusUnknown;
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
-                  withRowAnimation:UITableViewRowAnimationFade];
+    if ([self s7tv_proxySectionVisible]) {
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+                      withRowAnimation:UITableViewRowAnimationFade];
+    } else {
+        [self.tableView reloadData];
+    }
     if (sender.isOn) [self refreshProxyStatus];
 }
 
 - (void)toggleAdblockCustomProxy:(UISwitch *)sender {
     S7TVAdblockSetCustomProxyEnabled(sender.isOn);
     self.proxyStatus = S7TVAdblockProxyStatusUnknown;
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
-                  withRowAnimation:UITableViewRowAnimationFade];
+    if ([self s7tv_proxySectionVisible]) {
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+                      withRowAnimation:UITableViewRowAnimationFade];
+    } else {
+        [self.tableView reloadData];
+    }
     [self refreshProxyStatus];
 }
 
@@ -1413,7 +1476,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 }
 
 - (void)refreshProxyStatus {
-    if (!S7TVAdblockIsEnabled() || !S7TVAdblockProxyIsEnabled()) return;
+    if (![self s7tv_proxySectionVisible] || !S7TVAdblockProxyIsEnabled()) return;
     NSString *address = nil;
     if (S7TVAdblockCustomProxyIsEnabled()) {
         for (NSString *proxy in self.proxies) {
@@ -1444,7 +1507,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 }
 
 - (void)reloadProxyStatusRow {
-    if (!S7TVAdblockIsEnabled() || !S7TVAdblockProxyIsEnabled()) return;
+    if (![self s7tv_proxySectionVisible] || !S7TVAdblockProxyIsEnabled()) return;
     NSIndexPath *path = [NSIndexPath indexPathForRow:[self statusRowIndex] inSection:1];
     [self.tableView reloadRowsAtIndexPaths:@[path]
                           withRowAnimation:UITableViewRowAnimationNone];
@@ -2504,7 +2567,8 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - S7TVHookDiagnosticsController
 // Reprise de TWABDiagnosticsVC (TwitchAdBlock) : les lignes indiquent si les
-// classes ciblées par les hooks se résolvent dans cette version de Twitch.
+// classes et selectors ciblés par les hooks se résolvent dans cette version
+// de Twitch, regroupés par moteur.
 // ─────────────────────────────────────────────────────────────────────────────
 
 @interface S7TVHookDiagnosticsController : UITableViewController
@@ -2550,10 +2614,25 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     if (self.isViewLoaded) [self.tableView reloadData];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
+- (NSArray<NSDictionary<NSString *, id> *> *)s7tv_itemsForGroup:(NSInteger)group {
+    NSPredicate *predicate = [NSPredicate predicateWithBlock:
+        ^BOOL(NSDictionary<NSString *, id> *item, NSDictionary *bindings) {
+            (void)bindings;
+            return [item[@"group"] integerValue] == group;
+        }];
+    return [self.items filteredArrayUsingPredicate:predicate];
+}
+
+- (NSDictionary<NSString *, id> *)s7tv_itemAtIndexPath:(NSIndexPath *)indexPath {
+    NSArray<NSDictionary<NSString *, id> *> *groupItems =
+        [self s7tv_itemsForGroup:indexPath.section];
+    return indexPath.row < (NSInteger)groupItems.count ? groupItems[indexPath.row] : nil;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.items.count;
+    return [self s7tv_itemsForGroup:section].count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
@@ -2565,10 +2644,14 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
     }
     cell.backgroundColor = S7TVCellBg();
-    NSDictionary<NSString *, id> *item = self.items[indexPath.row];
+    NSDictionary<NSString *, id> *item = [self s7tv_itemAtIndexPath:indexPath];
+    if (!item) return cell;
+    BOOL applicable = [item[@"applicable"] boolValue];
     BOOL present = [item[@"present"] boolValue];
-    NSString *status = present ? L(@"diagnostics_ok") : L(@"diagnostics_missing");
-    UIColor *color = present ? UIColor.systemGreenColor : UIColor.systemRedColor;
+    NSString *status = !applicable ? L(@"diagnostics_inactive") :
+        (present ? L(@"diagnostics_ok") : L(@"diagnostics_missing"));
+    UIColor *color = !applicable ? UIColor.systemGrayColor :
+        (present ? UIColor.systemGreenColor : UIColor.systemRedColor);
     if ([cell respondsToSelector:@selector(defaultContentConfiguration)]) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunguarded-availability-new"
@@ -2577,6 +2660,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         configuration.textProperties.font = [UIFont monospacedSystemFontOfSize:11
                                                                           weight:UIFontWeightRegular];
         configuration.textProperties.color = UIColor.whiteColor;
+        configuration.textProperties.maximumNumberOfLines = 0;
         configuration.secondaryText = status;
         configuration.secondaryTextProperties.color = color;
         [cell setContentConfiguration:configuration];
@@ -2585,6 +2669,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         cell.textLabel.text = item[@"name"];
         cell.textLabel.font = [UIFont systemFontOfSize:11];
         cell.textLabel.textColor = UIColor.whiteColor;
+        cell.textLabel.numberOfLines = 0;
         cell.detailTextLabel.text = status;
         cell.detailTextLabel.textColor = color;
     }
@@ -2592,11 +2677,18 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return L(@"diagnostics_header");
+    NSArray<NSString *> *keys = @[
+        @"diagnostics_group_proxy",
+        @"diagnostics_group_vaft",
+        @"diagnostics_group_twitchplusk",
+    ];
+    return section < (NSInteger)keys.count ? L(keys[section]) : nil;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return L(@"diagnostics_footer");
+    // Le rappel de lecture n'est affiché qu'une seule fois, sous le dernier
+    // groupe, pour conserver les trois sections immédiatement lisibles.
+    return section == 2 ? L(@"diagnostics_footer") : nil;
 }
 
 @end

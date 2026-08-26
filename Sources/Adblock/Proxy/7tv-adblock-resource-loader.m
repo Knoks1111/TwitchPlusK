@@ -1,5 +1,5 @@
-#import "Adblock/7tv-adblock-resource-loader.h"
-#import "Adblock/7tv-adblock-proxy.h"
+#import "Adblock/Proxy/7tv-adblock-resource-loader.h"
+#import "Adblock/Proxy/7tv-adblock-proxy.h"
 #import "Adblock/7tv-adblock-settings.h"
 
 @implementation S7TVAdblockResourceLoader

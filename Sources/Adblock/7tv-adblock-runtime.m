@@ -4,12 +4,12 @@
  */
 
 #import "Adblock/7tv-adblock-runtime.h"
-#import "Adblock/7tv-adblock-data.h"
-#import "Adblock/7tv-adblock-proxy.h"
-#import "Adblock/7tv-adblock-resource-loader.h"
+#import "Adblock/Proxy/7tv-adblock-data.h"
+#import "Adblock/Proxy/7tv-adblock-proxy.h"
+#import "Adblock/Proxy/7tv-adblock-resource-loader.h"
 #import "Adblock/7tv-adblock-settings.h"
 #import "Adblock/Vaft/7tv-adblock-vaft.h"
-#import "Adblock/Fishhook/fishhook.h"
+#import "Adblock/Proxy/Fishhook/fishhook.h"
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>

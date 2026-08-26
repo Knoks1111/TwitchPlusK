@@ -1,4 +1,4 @@
-#import "Adblock/7tv-adblock-data.h"
+#import "Adblock/Proxy/7tv-adblock-data.h"
 #import "Adblock/7tv-adblock-settings.h"
 #import "System/7tv-system-home-features.h"
 #import <os/log.h>

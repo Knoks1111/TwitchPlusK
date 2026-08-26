@@ -1,4 +1,4 @@
-#import "Adblock/7tv-adblock-proxy-status.h"
+#import "Adblock/Proxy/7tv-adblock-proxy-status.h"
 #import "Adblock/7tv-adblock-settings.h"
 #import <os/log.h>
 #include <sys/socket.h>

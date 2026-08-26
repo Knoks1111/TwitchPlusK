@@ -1,5 +1,5 @@
-#import "Adblock/7tv-adblock-proxy.h"
-#import "Adblock/7tv-adblock-data.h"
+#import "Adblock/Proxy/7tv-adblock-proxy.h"
+#import "Adblock/Proxy/7tv-adblock-data.h"
 #import "Adblock/7tv-adblock-settings.h"
 #import <AVFoundation/AVFoundation.h>
 #import <objc/message.h>

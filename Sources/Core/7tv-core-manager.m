@@ -1977,6 +1977,18 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 @end
 
 
+// ============================================================
+// MARK: - Session IRC (JOIN / ROOMSTATE / USERSTATE)
+// ============================================================
+
+// Passe à YES dès qu'un ROOMSTATE a confirmé le salon courant
+// (currentChannelName) auprès du serveur. Sert à distinguer le JOIN
+// technique du salon du viewer (Twitch joint #<login du compte connecté> à
+// la connexion du chat, indépendamment de la chaîne affichée) d'un vrai
+// changement de chaîne : tant que le salon courant n'est pas confirmé, ce
+// JOIN technique ne doit pas pouvoir prendre la main.
+static BOOL s7tv_currentChannelRoomStateConfirmed = NO;
+
 @implementation SevenTVManager (IRCSessionState)
 
 - (void)handleIRCUserState:(NSString *)ircLine {
@@ -2002,7 +2014,22 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
         NSString *roomChannel = [ircLine substringWithRange:
                                  NSMakeRange(channelStart, end - channelStart)];
         if (roomChannel.length && self.currentChannelName.length &&
-            [roomChannel caseInsensitiveCompare:self.currentChannelName] != NSOrderedSame) return;
+            [roomChannel caseInsensitiveCompare:self.currentChannelName] != NSOrderedSame) {
+            // Garde changement de chaîne : rejette le ROOMSTATE d'une autre
+            // chaîne, SAUF si le salon courant n'est que le salon technique
+            // du viewer (JOIN #<login du compte> pris avant que
+            // GLOBALUSERSTATE ne soit traité) — le ROOMSTATE de la chaîne
+            // réellement ouverte doit alors reprendre la main.
+            if (!(self.currentViewerDisplayName.length &&
+                  [self.currentChannelName caseInsensitiveCompare:self.currentViewerDisplayName] == NSOrderedSame)) {
+                return;
+            }
+            self.currentChannelName = roomChannel;
+            [self log:@"📡 Chaîne courante corrigée par ROOMSTATE: %@", roomChannel];
+        }
+        // Le serveur confirme le salon courant — voir
+        // s7tv_currentChannelRoomStateConfirmed (JOIN technique du viewer).
+        s7tv_currentChannelRoomStateConfirmed = YES;
     }
 
     NSRange roomIDRange = [ircLine rangeOfString:@"room-id="];
@@ -2348,6 +2375,30 @@ static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
 
 - (void)handleOutgoingChatWebSocketMessage:(NSURLSessionWebSocketMessage *)message {
     for (NSString *channel in [self joinedChannelsInOutgoingWebSocketMessage:message]) {
+        NSString *previousChannel = [self.currentChannelName copy];
+        BOOL switchingChannel = previousChannel.length &&
+            [previousChannel caseInsensitiveCompare:channel] != NSOrderedSame;
+
+        // Twitch rejoint aussi le salon technique du compte connecté
+        // (JOIN #<login du viewer>) à la connexion du chat, indépendamment
+        // de la chaîne affichée. Si ce JOIN technique arrive pendant qu'une
+        // vraie chaîne occupe déjà la session et avant que son ROOMSTATE ne
+        // l'ait confirmée, il écrase currentChannelName : le ROOMSTATE et
+        // les PRIVMSG de la chaîne réellement ouverte sont alors rejetés
+        // (aucun message affiché, picker sur le mauvais channel). On ignore
+        // donc ce JOIN tant que le salon courant n'est pas confirmé. Une
+        // fois confirmé, un JOIN du viewer est au contraire un vrai
+        // changement vers sa propre chaîne et reste honoré.
+        if (self.currentViewerDisplayName.length &&
+            previousChannel.length &&
+            [channel caseInsensitiveCompare:self.currentViewerDisplayName] == NSOrderedSame &&
+            [previousChannel caseInsensitiveCompare:channel] != NSOrderedSame &&
+            !s7tv_currentChannelRoomStateConfirmed) {
+            [self log:@"ℹ️ JOIN technique du viewer ignoré (#%@, salon actif: %@)",
+                channel, previousChannel];
+            continue;
+        }
+
         [self log:@"📺 Rejoint le channel: %@", channel];
         // Met currentChannelName à jour avant le reset et avant que
         // l'historique n'entre dans le parseur IRC.
@@ -2355,6 +2406,13 @@ static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
         // Le JOIN est la source de vérité de la transition : suppression des
         // anciens messages immédiate, sans attendre ROOMSTATE.
         [self initializeRecentHistoryForChannel:channel force:YES];
+
+        if (switchingChannel) {
+            // Nouveau salon : invalide la confirmation ROOMSTATE précédente
+            // — le JOIN technique du viewer ne doit pas prendre la main
+            // avant que le serveur n'ait confirmé ce nouveau salon.
+            s7tv_currentChannelRoomStateConfirmed = NO;
+        }
     }
 }
 

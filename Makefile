@@ -20,6 +20,8 @@ TwitchPlusK_FILES = \
     Sources/Adblock/7tv-adblock-runtime.m \
     Sources/Diagnostics/7tv-hook-diagnostics.m \
     Sources/Adblock/Fishhook/fishhook.c \
+    Sources/Adblock/Vaft/TwitchAdBlock.c \
+    Sources/Adblock/Vaft/TASDiagnostics.c \
     Sources/Core/7tv-core-runtime-hooks.m \
     Sources/Core/7tv-core-manager.m \
     Sources/Network/7tv-network-emote-cache.m \

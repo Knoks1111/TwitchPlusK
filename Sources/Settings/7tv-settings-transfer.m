@@ -28,6 +28,9 @@ static BOOL S7TVSettingsTransferIsInternalKey(NSString *key) {
 static BOOL S7TVSettingsTransferOwnsKey(NSString *key) {
     if (![key isKindOfClass:NSString.class]) return NO;
     if ([key isEqualToString:S7TVLegacyChannelPointsKey]) return YES;
+    // Clé originale du moteur TASDiagnostics (VAFT) : conservée telle quelle
+    // pour la provenance upstream, incluse dans l'export/import.
+    if ([key isEqualToString:@"TASDiagnosticsEnabled"]) return YES;
     return [key hasPrefix:@"s7tv_"] && !S7TVSettingsTransferIsInternalKey(key);
 }
 

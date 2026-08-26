@@ -450,7 +450,7 @@ void S7TVAdblockInstallRuntimeHooks(void) {
         S7TVAdblockTakeRuntimeMethodSnapshot();
         BOOL proxyMode = !S7TVAdblockActiveMethodIsLocal();
 
-        os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] Active method: %{public}@",
+        os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] Active method: %{public}s",
                proxyMode ? "proxy" : "local");
 
         if (proxyMode) {

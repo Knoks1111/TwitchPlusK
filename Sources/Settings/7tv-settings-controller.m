@@ -35,14 +35,23 @@ static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names"
 // MARK: - Palette couleurs
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Fond général de la tableView (noir profond Twitch)
+// Fond général de la tableView (noir profond Twitch). En mode OLED : noir pur.
 static UIColor *S7TVBg(void) {
+    if (S7TVOLEDModeEnabled()) return UIColor.blackColor;
     return [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10
 }
 
-// Fond des cellules (gris foncé Twitch)
+// Fond des cellules (gris foncé Twitch). En mode OLED : gris quasi noir pour
+// garder les cellules InsetGrouped discernables sur le fond noir pur.
 static UIColor *S7TVCellBg(void) {
+    if (S7TVOLEDModeEnabled()) return [UIColor colorWithWhite:0.05 alpha:1.0];
     return [UIColor colorWithRed:0.122 green:0.122 blue:0.137 alpha:1.0]; // #1F1F23
+}
+
+// Séparateurs de table : #2A2A2E en mode normal, plus discrets en OLED.
+static UIColor *S7TVSeparatorColor(void) {
+    if (S7TVOLEDModeEnabled()) return [UIColor colorWithWhite:0.12 alpha:1.0];
+    return [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
 }
 
 // Violet 7TV / Twitch
@@ -469,7 +478,7 @@ static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo, NSString *infoK
 
 static void S7TVStyleTableView(UITableView *tv) {
     tv.backgroundColor   = S7TVBg();
-    tv.separatorColor    = [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0];
+    tv.separatorColor    = S7TVSeparatorColor();
     tv.separatorInset    = UIEdgeInsetsMake(0, 52, 0, 0);
     // Défaut : hauteur de ligne auto-calculée à partir du contenu (nécessaire
     // pour que S7TVSwitchCell puisse s'étendre sur 2 lignes — voir son
@@ -479,6 +488,23 @@ static void S7TVStyleTableView(UITableView *tv) {
     // valeur n'est qu'un filet de sécurité pour l'estimation initiale.
     tv.rowHeight         = UITableViewAutomaticDimension;
     tv.estimatedRowHeight = 60;
+}
+
+// Re-style + reload un écran de réglages quand le mode OLED bascule : les
+// couleurs S7TVBg()/S7TVCellBg()/S7TVSeparatorColor() sont OLED-aware, mais
+// la table (fond + séparateurs) et ses cellules doivent être re-rendues pour
+// refléter la nouvelle palette.
+static void S7TVApplyOLEDStyle(UITableViewController *controller) {
+    S7TVStyleTableView(controller.tableView);
+    [controller.tableView reloadData];
+}
+
+// Enregistre l'observateur de bascule OLED commun à tous les écrans de
+// réglages 7TV (chaque controller fournit son propre -s7tv_oledModeDidChange).
+static void S7TVRegisterOLEDObserver(id observer) {
+    [[NSNotificationCenter defaultCenter] addObserver:observer
+        selector:@selector(s7tv_oledModeDidChange)
+            name:S7TVOLEDModeDidChangeNotification object:nil];
 }
 
 // Helper NSUserDefaults
@@ -698,6 +724,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(s7tv_languageDidChange)
             name:S7TVLanguageDidChangeNotification object:nil];
+    S7TVRegisterOLEDObserver(self);
 }
 
 - (void)dealloc {
@@ -707,6 +734,12 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 - (void)s7tv_languageDidChange {
     [self buildNavBar];
     [self.tableView reloadData];
+}
+
+- (void)s7tv_oledModeDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S7TVApplyOLEDStyle(self);
+    });
 }
 
 - (void)buildNavBar {
@@ -945,11 +978,22 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
     [super viewDidLoad];
     self.title = L(@"title_adblock");
     S7TVStyleTableView(self.tableView);
+    S7TVRegisterOLEDObserver(self);
     S7TVAdblockRegisterDefaults();
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     if (S7TVAdblockIsEnabled() && S7TVAdblockProxyIsEnabled()) {
         [self refreshProxyStatus];
     }
+}
+
+- (void)s7tv_oledModeDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S7TVApplyOLEDStyle(self);
+    });
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -1308,6 +1352,17 @@ static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
     [super viewDidLoad];
     self.title = L(@"title_apparence");
     S7TVStyleTableView(self.tableView);
+    S7TVRegisterOLEDObserver(self);
+}
+
+- (void)s7tv_oledModeDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S7TVApplyOLEDStyle(self);
+    });
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 // Affichage des emotes (animations + résolution CDN 7TV). Le kill switch du
@@ -1536,6 +1591,17 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
     [super viewDidLoad];
     self.title = L(@"title_contenu");
     S7TVStyleTableView(self.tableView);
+    S7TVRegisterOLEDObserver(self);
+}
+
+- (void)s7tv_oledModeDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S7TVApplyOLEDStyle(self);
+    });
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -1982,6 +2048,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [super viewDidLoad];
     self.title = L(@"title_mes_favoris");
     S7TVStyleTableView(self.tableView);
+    S7TVRegisterOLEDObserver(self);
     NSDictionary *savedNames = [[NSUserDefaults standardUserDefaults]
         dictionaryForKey:kS7TVFavoriteEmoteNamesKey] ?: @{};
     _favoriteNameCache = [savedNames mutableCopy];
@@ -2004,6 +2071,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)dealloc {
     [_favoriteNameSession invalidateAndCancel];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)s7tv_oledModeDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S7TVApplyOLEDStyle(self);
+    });
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -2397,11 +2471,17 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(s7tv_cacheCountDidChange:)
         name:S7TVEmoteCacheCountDidChangeNotification object:nil];
+    S7TVRegisterOLEDObserver(self);
 }
 
 - (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self
-        name:S7TVEmoteCacheCountDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)s7tv_oledModeDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S7TVApplyOLEDStyle(self);
+    });
 }
 
 - (void)s7tv_cacheCountDidChange:(NSNotification *)notification {

@@ -131,6 +131,11 @@ static const char kS7TVRowKeyTag = 0;
 @property (nonatomic, strong) SevenTVChatCustomView *fakeChatView;
 @property (nonatomic, strong) UIColor *panelTextColor;
 @property (nonatomic, strong) UIColor *panelSubColor;
+// Couleurs structurelles mémorisées pour pouvoir recolorer à la volée le
+// panneau (séparateurs, capsule de catégories, segmented controls) lors d'une
+// bascule du mode OLED, sans reconstruire toute la hiérarchie.
+@property (nonatomic, strong) UIColor *panelSepColor;
+@property (nonatomic, strong) UIColor *panelCardColor;
 @property (nonatomic, weak) S7TVPickerCategoryCapsuleView *categoryCapsuleView;
 @property (nonatomic, strong) NSArray<UIButton *> *categoryButtons;
 @property (nonatomic, weak) UIScrollView *sizesCategoryView;
@@ -148,6 +153,7 @@ static const char kS7TVRowKeyTag = 0;
         @[@"usernameFontSize", L(@"size_label_username"),      @8,  @28],
         @[@"messageFontSize",  L(@"size_label_message"),       @8,  @28],
         @[@"lineSpacing",      L(@"size_label_line_spacing"),  @0,  @30],
+        @[@"usernameMessageSpacing", L(@"size_label_username_message_spacing"), @0, @20],
         @[@"emoteVerticalOffset", L(@"size_label_emote_offset"), @-10, @10],
     ];
 }
@@ -198,6 +204,8 @@ static const char kS7TVRowKeyTag = 0;
     self.colorRowLabels    = [NSMutableDictionary dictionary];
     self.panelTextColor    = textColor;
     self.panelSubColor     = subColor;
+    self.panelSepColor     = sepColor;
+    self.panelCardColor    = cardColor;
 
     // Trois catégories seulement. Cette capsule reprend exactement la logique
     // visuelle des onglets du picker : un fond pilule partagé et un indicateur
@@ -891,7 +899,7 @@ static const char kS7TVRowKeyTag = 0;
     previewControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     previewControl.selectedSegmentIndex = cfg.deletedMessageRevealMode;
     previewControl.selectedSegmentTintColor = accent;
-    previewControl.backgroundColor = [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:0.92];
+    previewControl.backgroundColor = [self.panelCardColor colorWithAlphaComponent:0.92];
     previewControl.layer.cornerRadius = 8;
     previewControl.clipsToBounds = YES;
     [previewControl setTitleTextAttributes:@{
@@ -947,7 +955,7 @@ static const char kS7TVRowKeyTag = 0;
     styleControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     styleControl.selectedSegmentIndex = cfg.deletedMessageStyle;
     styleControl.selectedSegmentTintColor = accent;
-    styleControl.backgroundColor = [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:0.92];
+    styleControl.backgroundColor = [self.panelCardColor colorWithAlphaComponent:0.92];
     styleControl.layer.cornerRadius = 8;
     styleControl.clipsToBounds = YES;
     [styleControl setTitleTextAttributes:@{
@@ -1396,6 +1404,46 @@ static const char kS7TVRowKeyTag = 0;
     [self.fakeChatStore removeAllMessages];
     [self _populateFakeChatStore:self.fakeChatStore];
     [self.fakeChatView reloadMessages];
+}
+
+#pragma mark - Bascule OLED (recoloration à chaud)
+
+// Recolore le panneau sans reconstruire sa hiérarchie : fond, capsule de
+// catégories, segmented controls et séparateurs suivent la palette transmise
+// par le picker. Appelé à chaque bascule du mode OLED (et non à la
+// construction, déjà couverte par buildInView:).
+- (void)s7tv_applyOLEDColorsWithBgColor:(UIColor *)bgColor
+                               sepColor:(UIColor *)sepColor
+                              cardColor:(UIColor *)cardColor {
+    self.panelView.backgroundColor = bgColor;
+    self.panelSepColor = sepColor;
+    self.panelCardColor = cardColor;
+
+    UIColor *cardAlpha = [cardColor colorWithAlphaComponent:0.92];
+    self.categoryCapsuleView.backgroundColor = cardAlpha;
+    self.deletedPreviewControl.backgroundColor = cardAlpha;
+    self.deletedStyleControl.backgroundColor = cardAlpha;
+
+    // Les séparateurs vivent dans les 3 UIScrollView de catégories (fils
+    // des lignes de sliders, section couleurs, modération). On les recolore
+    // en parcourant ces seuls sous-arbres — sans toucher aux segmented
+    // controls ni à la capsule de catégories.
+    for (UIScrollView *category in @[self.sizesCategoryView,
+                                     self.appearanceCategoryView,
+                                     self.moderationCategoryView]) {
+        if (category) [self _s7tv_recolorSeparatorsInView:category withColor:sepColor];
+    }
+}
+
+- (void)_s7tv_recolorSeparatorsInView:(UIView *)view withColor:(UIColor *)color {
+    for (UIView *subview in view.subviews) {
+        CGFloat h = subview.frame.size.height;
+        if (subview.subviews.count == 0 && h > 0 && h < 1.0) {
+            subview.backgroundColor = color;
+        } else {
+            [self _s7tv_recolorSeparatorsInView:subview withColor:color];
+        }
+    }
 }
 
 @end

@@ -28,6 +28,27 @@
 static const char kS7TVTextFieldTagged = 5;
 static const char kS7TVBitsHijacked = 6;
 
+// ── Palette du picker (mode normal / OLED) ───────────────────────────────
+// bgColor = fond de la grille (le plus sombre). cardColor = tout ce qui doit
+// se détacher légèrement du fond (cellules + pastilles/capsules flottantes).
+// sepColor = séparateurs. En OLED tout passe au noir profond, cartes et
+// séparateurs gardent juste assez de contraste pour rester discernables.
+static UIColor *s7tv_pickerBgColor(void) {
+    return S7TVOLEDModeEnabled()
+        ? UIColor.blackColor
+        : [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10
+}
+static UIColor *s7tv_pickerCardColor(void) {
+    return S7TVOLEDModeEnabled()
+        ? [UIColor colorWithWhite:0.05 alpha:1.0]
+        : [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:1.0]; // #19191C
+}
+static UIColor *s7tv_pickerSepColor(void) {
+    return S7TVOLEDModeEnabled()
+        ? [UIColor colorWithWhite:0.12 alpha:1.0]
+        : [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
+}
+
 @interface S7TVPickerWeakRef : NSObject
 @property (nonatomic, weak) id object;
 + (instancetype)refWithObject:(id)object;
@@ -360,12 +381,36 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 - (void)_s7tv_applyOLEDColors {
     if (!self.emotePickerView) return;
 
-    UIColor *backgroundColor = S7TVOLEDModeEnabled()
-        ? UIColor.blackColor
-        : [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0];
+    UIColor *backgroundColor = s7tv_pickerBgColor();
+    UIColor *cardColor       = s7tv_pickerCardColor();
+    UIColor *sepColor        = s7tv_pickerSepColor();
+
     self.emotePickerView.backgroundColor = backgroundColor;
     self.emoteCollectionView.backgroundColor = backgroundColor;
-    _sizesPanel.panelView.backgroundColor = backgroundColor;
+
+    // Capsules flottantes : fond carte translucide, même couleur que les
+    // cellules de la grille (cohérence visuelle).
+    UIColor *capsuleColor = [cardColor colorWithAlphaComponent:0.92];
+    self.pickerTabCapsuleView.backgroundColor   = capsuleColor;
+    self.pickerToolsCapsuleView.backgroundColor = capsuleColor;
+    self.pickerSearchCapsuleView.backgroundColor = capsuleColor;
+
+    // Cellules visibles de la grille : recolorer carte + bordure immédiatement
+    // (le cellForRowAtIndexPath: du reload normal fera le reste pour les
+    // futures cellules déqueuées).
+    for (S7TVEmotePickerCell *cell in self.emoteCollectionView.visibleCells) {
+        [cell s7tv_applyOLEDColors];
+    }
+
+    // Panneau des tailles (séparateurs + capsule de catégories + segmented
+    // controls).
+    if (_sizesPanel) {
+        [_sizesPanel s7tv_applyOLEDColorsWithBgColor:backgroundColor
+                                            sepColor:sepColor
+                                           cardColor:cardColor];
+    }
+
+    // Aperçu du chat flottant.
     self.pickerFakeChatPreviewView.backgroundColor = S7TVOLEDModeEnabled()
         ? UIColor.blackColor
         : [UIColor colorWithWhite:0.09 alpha:0.97];
@@ -1169,14 +1214,12 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     // Twitch utilise #0E0E10 pour le fond de la chatbox (confirmé par
     // color picker directement sur l'app Twitch) — ce n'est PAS un gris pur,
     // il y a un léger biais bleu, contrairement à ce qu'on avait supposé.
-    UIColor *bgColor = S7TVOLEDModeEnabled()
-        ? UIColor.blackColor
-        : [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10
-    UIColor *cardColor  = [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:1.0]; // #19191C
-    UIColor *sepColor   = [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
-    UIColor *textColor  = [UIColor whiteColor];
-    UIColor *subColor   = [UIColor colorWithWhite:0.55 alpha:1.0];
-    UIColor *accent     = [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0];    // violet Twitch
+    UIColor *bgColor   = s7tv_pickerBgColor();
+    UIColor *cardColor = s7tv_pickerCardColor();
+    UIColor *sepColor  = s7tv_pickerSepColor();
+    UIColor *textColor = [UIColor whiteColor];
+    UIColor *subColor  = [UIColor colorWithWhite:0.55 alpha:1.0];
+    UIColor *accent    = [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0];    // violet Twitch
 
     // ── Conteneur principal ────────────────────────────────────────────────
     UIView *picker = [[UIView alloc] initWithFrame:frame];
@@ -2139,6 +2182,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
                   cellForItemAtIndexPath:(NSIndexPath *)indexPath {
     S7TVEmotePickerCell *cell = (S7TVEmotePickerCell *)
         [cv dequeueReusableCellWithReuseIdentifier:kEmoteCellID forIndexPath:indexPath];
+    // La couleur de carte/bordure dépend du mode OLED : la réappliquer à
+    // chaque déqueue garantit qu'une cellule recyclée après un changement de
+    // mode ne garde pas une palette obsolète.
+    [cell s7tv_applyOLEDColors];
 
     // Une cellule peut être reconfigurée sans passer immédiatement par
     // prepareForReuse. On coupe donc ici l'ancienne observation, exactement

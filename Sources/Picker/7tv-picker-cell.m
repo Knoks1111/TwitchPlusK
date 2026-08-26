@@ -6,6 +6,7 @@
 #import "Picker/7tv-picker-cell.h"
 #import "Emote/7tv-emote-animation-engine.h"
 #import "Emote/7tv-emote-image-cache.h"
+#import "UI/7tv-oled-mode.h"
 
 @implementation S7TVEmotePickerCell
 
@@ -43,11 +44,24 @@
         self.contentView.layer.cornerRadius = 8;
         CGFloat onePixel = 1.0 / [UIScreen mainScreen].scale;
         self.contentView.layer.borderWidth = onePixel;
-        self.contentView.layer.borderColor = [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0].CGColor; // #2A2A2E
-        self.contentView.backgroundColor = [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:1.0]; // #19191C — carte, un cran au-dessus du fond de grille
         self.backgroundColor = [UIColor clearColor];
+        [self s7tv_applyOLEDColors];
     }
     return self;
+}
+
+- (void)s7tv_applyOLEDColors {
+    BOOL oled = S7TVOLEDModeEnabled();
+    // OLED : carte quasi noire (un cran à peine au-dessus du fond pur) et
+    // bordure plus discrète — même langage que les capsules du picker.
+    UIColor *cardColor = oled
+        ? [UIColor colorWithWhite:0.05 alpha:1.0]
+        : [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:1.0]; // #19191C
+    UIColor *borderColor = oled
+        ? [UIColor colorWithWhite:0.12 alpha:1.0]
+        : [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
+    self.contentView.backgroundColor = cardColor;
+    self.contentView.layer.borderColor = borderColor.CGColor;
 }
 
 - (void)layoutSubviews {

@@ -37,4 +37,9 @@
 // Requête de décodage propre au contenu courant. Annulée dès que la cellule
 // quitte l'écran ou est recyclée afin de ne jamais bloquer les suivantes.
 @property (nonatomic, strong) S7TVEmoteFrameRequest *animationFrameRequest;
+
+// Recolore la carte + la bordure de la cellule selon le mode OLED courant.
+// Appelée à la création et à chaque bascule du mode OLED (voir
+// SevenTVEmotePickerController._s7tv_applyOLEDColors).
+- (void)s7tv_applyOLEDColors;
 @end

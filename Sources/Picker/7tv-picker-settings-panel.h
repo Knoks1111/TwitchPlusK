@@ -66,4 +66,11 @@
 // les UIImageView elles-mêmes ensuite (pas de refetch aux ouvertures suivantes).
 - (void)loadRealPreviewAssetsIfNeeded;
 
+// Recolore à chaud le panneau (fond, capsule de catégories, segmented
+// controls, séparateurs) selon la palette passée — utilisé par le picker lors
+// d'une bascule du mode OLED, sans reconstruire la hiérarchie.
+- (void)s7tv_applyOLEDColorsWithBgColor:(UIColor *)bgColor
+                               sepColor:(UIColor *)sepColor
+                              cardColor:(UIColor *)cardColor;
+
 @end

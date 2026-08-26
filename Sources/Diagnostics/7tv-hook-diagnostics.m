@@ -82,79 +82,47 @@ void S7TVHookDiagnosticsRegisterKnownTargets(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         // ────────────────────────────────────────────────────────────────
-        // Proxy AdBlock — hooks réellement installés par le moteur Proxy.
-        // Les deux chemins GQL (TK et Apollo) sont gardés séparés afin de
-        // diagnostiquer précisément la variante chargée par Twitch.
+        // Proxy AdBlock — registre historique de TwitchAdBlock.  On conserve
+        // volontairement ces 10 entrées globales (sans détailler les selectors)
+        // pour garder le diagnostic Proxy identique à l'ancien écran.
         // ────────────────────────────────────────────────────────────────
         S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] AVURLAsset -initWithURL:options:",
-            @[@"AVURLAsset"], @"initWithURL:options:", NO,
+            @"[TwitchAdBlock] AVURLAsset", @[@"AVURLAsset"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
         S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] AVPlayer -init",
-            @[@"AVPlayer"], @"init", NO,
+            @"[TwitchAdBlock] AVPlayer", @[@"AVPlayer"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
         S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] AVPlayer -observeValueForKeyPath:ofObject:change:context:",
-            @[@"AVPlayer"], @"observeValueForKeyPath:ofObject:change:context:", NO,
+            @"[TwitchAdBlock] _TtC6Twitch23FollowingViewController",
+            @[@"_TtC6Twitch23FollowingViewController"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
         S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] _TtC6Twitch27AssetResourceLoaderDelegate -resourceLoader:shouldWaitForLoadingOfRequestedResource:",
-            @[@"_TtC6Twitch27AssetResourceLoaderDelegate"],
-            @"resourceLoader:shouldWaitForLoadingOfRequestedResource:", NO,
+            @"[TwitchAdBlock] _TtC6Twitch27HeadlinerFollowingAdManager",
+            @[@"_TtC6Twitch27HeadlinerFollowingAdManager"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
         S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] _TtC6Twitch27AssetResourceLoaderDelegate -resourceLoader:shouldWaitForRenewalOfRequestedResource:",
-            @[@"_TtC6Twitch27AssetResourceLoaderDelegate"],
-            @"resourceLoader:shouldWaitForRenewalOfRequestedResource:", NO,
+            @"[TwitchAdBlock] _TtC12TwitchCoreUI14StandardButton",
+            @[@"_TtC12TwitchCoreUI14StandardButton"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
         S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] _TtC9TwitchKit18TKURLSessionClient -URLSession:dataTask:didReceiveData:",
-            @[@"_TtC9TwitchKit18TKURLSessionClient"],
-            @"URLSession:dataTask:didReceiveData:", NO,
+            @"[TwitchAdBlock] URLSessionClient (TK or Apollo)",
+            @[@"_TtC9TwitchKit18TKURLSessionClient", @"Apollo.URLSessionClient"],
+            nil, NO, S7TVHookDiagnosticGroupProxyAdBlock);
+        S7TVHookDiagnosticRegister(
+            @"[TwitchAdBlock] _TtC6Twitch16TabBarController",
+            @[@"_TtC6Twitch16TabBarController"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
         S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] FollowingViewController -initWithGraphQL:themeManager:",
-            @[@"_TtC6Twitch23FollowingViewController"],
-            @"initWithGraphQL:themeManager:", NO,
+            @"[TwitchAdBlock] _TtC6Twitch20BrowseViewController",
+            @[@"_TtC6Twitch20BrowseViewController"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
         S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] FollowingViewController -initWithGraphQL:themeManager:urlController:",
-            @[@"_TtC6Twitch23FollowingViewController"],
-            @"initWithGraphQL:themeManager:urlController:", NO,
+            @"[TwitchAdBlock] _TtC6Twitch30DiscoveryFeedTabViewController",
+            @[@"_TtC6Twitch30DiscoveryFeedTabViewController"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
         S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] FollowingViewController -initWithGraphQL:themeManager:urlController:isInitialTab:",
-            @[@"_TtC6Twitch23FollowingViewController"],
-            @"initWithGraphQL:themeManager:urlController:isInitialTab:", NO,
-            S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] _TtC6Twitch27HeadlinerFollowingAdManager +shared",
-            @[@"_TtC6Twitch27HeadlinerFollowingAdManager"], @"shared", YES,
-            S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] NSURLSession -dataTaskWithRequest:completionHandler:",
-            @[@"NSURLSession"], @"dataTaskWithRequest:completionHandler:", NO,
-            S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] NSURLSession -dataTaskWithURL:completionHandler:",
-            @[@"NSURLSession"], @"dataTaskWithURL:completionHandler:", NO,
-            S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] NSURLSession -dataTaskWithRequest:",
-            @[@"NSURLSession"], @"dataTaskWithRequest:", NO,
-            S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] NSURLSession -uploadTaskWithRequest:fromData:",
-            @[@"NSURLSession"], @"uploadTaskWithRequest:fromData:", NO,
-            S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] Apollo.URLSessionClient -URLSession:dataTask:didReceiveData:",
-            @[@"Apollo.URLSessionClient"], @"URLSession:dataTask:didReceiveData:", NO,
-            S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
-            @"[Proxy AdBlock] Apollo.URLSessionClient -URLSession:task:didCompleteWithError:",
-            @[@"Apollo.URLSessionClient"], @"URLSession:task:didCompleteWithError:", NO,
+            @"[TwitchAdBlock] _TtC6Twitch41DiscoveryFeedShelfContainerViewController",
+            @[@"_TtC6Twitch41DiscoveryFeedShelfContainerViewController"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
 
         // ────────────────────────────────────────────────────────────────

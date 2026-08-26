@@ -85,6 +85,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Bouton flottant / header (SevenTVSettingsController + TweakSevenTV) ──
         @"label_7tv_badge":                 @[@"7TV", @"7TV"],
+        @"label_7tv_emotes":                @[@"Emotes 7TV", @"7TV Emotes"],
         @"label_twitchplusk_badge":         @[@"TwitchPlusK", @"TwitchPlusK"],
         @"header_7tv_settings_caps":        @[@"TWITCHPLUSK SETTINGS", @"TWITCHPLUSK SETTINGS"],
 
@@ -132,8 +133,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"orientation_left":                @[@"Gauche", @"Left"],
         @"orientation_right":               @[@"Droite", @"Right"],
         @"orientation_both":                @[@"Les deux", @"Both"],
-        @"desc_orientation_lock_settings":  @[@"Désactivez le bouton, utilisez-le manuellement ou activez son verrouillage automatique à gauche, à droite ou des deux côtés.",
-                                               @"Disable the button, use it manually, or enable automatic locking on the left, right, or both sides."],
+        @"desc_orientation_lock_settings":  @[@"Lorsqu’il est activé, le bouton apparaît sur le lecteur. Choisissez le mode manuel ou le verrouillage automatique à gauche, à droite ou des deux côtés.",
+                                               @"When enabled, the button appears on the player. Choose manual locking or automatic locking on the left, right, or both sides."],
 
         // ── Adblock vidéo / proxy ────────────────────────────────────────
         @"adblock_enable":                  @[@"Activer l’adblock", @"Enable adblock"],
@@ -298,6 +299,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Page Logs (settings) ─────────────────────────────────────────
         @"view_logs":                       @[@"Voir les logs", @"View logs"],
+        @"logs_copy_empty":                 @[@"Aucun log à copier", @"No logs to copy"],
+        @"logs_copy_success":               @[@"✅ Logs copiés !", @"✅ Logs copied!"],
         // L'effacement des logs vit dans l'écran « Voir les logs » (bouton
         // « Effacer », voir SevenTVLogsController).
 

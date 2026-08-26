@@ -282,12 +282,12 @@ static const NSInteger kAutoScrollThreshold = 20;
 - (void)copyAllTapped {
     NSString *text = self.textView.text;
     if (text.length == 0) {
-        [self showToast:@"Aucun log à copier"];
+        [self showToast:L(@"logs_copy_empty")];
         return;
     }
 
     [UIPasteboard generalPasteboard].string = text;
-    [self showToast:@"✅ Logs copiés !"];
+    [self showToast:L(@"logs_copy_success")];
 }
 
 - (void)clearTapped {

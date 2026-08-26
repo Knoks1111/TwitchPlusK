@@ -239,7 +239,12 @@ static BOOL s7tv_try_swizzle_apollo_gql(void);
 static char kS7TVGQLRequestChannelIDKey;
 static char kS7TVGQLRequestAmbiguousKey;
 
+static NSString *const kS7TVVAFTInternalHeader = @"X-TAS-Internal";
+
 static BOOL s7tv_requestTargetsTwitchGQL(NSURLRequest *request) {
+    // Les requêtes GQL privées de VAFT utilisent leur propre Client-ID : elles
+    // ne doivent jamais alimenter le couple de credentials destiné à Helix.
+    if ([request valueForHTTPHeaderField:kS7TVVAFTInternalHeader].length) return NO;
     return [request.URL.host caseInsensitiveCompare:@"gql.twitch.tv"] == NSOrderedSame;
 }
 
@@ -723,7 +728,9 @@ static void s7tv_swizzle_apollo_gql(void) {
 // pose TOUS les headers d'un coup via cette méthode plutôt que field par
 // field — sans ce hook, ce cas échappe complètement à setValue:forHTTPHeaderField:.
 - (void)s7tv_setAllHTTPHeaderFields:(NSDictionary<NSString *, NSString *> *)headerFields {
-    if (s7tv_requestTargetsTwitchGQL(self)) {
+    BOOL incomingVAFTInternal =
+        s7tv_HTTPHeaderValue(headerFields, kS7TVVAFTInternalHeader).length > 0;
+    if (!incomingVAFTInternal && s7tv_requestTargetsTwitchGQL(self)) {
         NSString *auth = s7tv_HTTPHeaderValue(headerFields, @"Authorization");
         NSString *clientID = s7tv_HTTPHeaderValue(headerFields, @"Client-ID");
         SevenTVManager *manager = [SevenTVManager sharedManager];

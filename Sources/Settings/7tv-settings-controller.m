@@ -1781,7 +1781,17 @@ typedef NS_ENUM(NSInteger, S7TVContentHomeRow) {
     S7TVContentHomeRowKeepLiveFeed   = 2,
     S7TVContentHomeRowAutoCollect    = 3,
     S7TVContentHomeRowLockButton     = 4,
-    S7TVContentHomeRowAutoLock       = 5,
+};
+
+// Valeurs présentées dans une seule ligne de réglage. « Manuel » et les
+// trois modes automatiques sont mappés sur les deux préférences historiques
+// (bouton activé + mode auto) afin de conserver le comportement runtime actuel.
+typedef NS_ENUM(NSInteger, S7TVOrientationLockSetting) {
+    S7TVOrientationLockSettingDisabled = 0,
+    S7TVOrientationLockSettingManual,
+    S7TVOrientationLockSettingAutoLeft,
+    S7TVOrientationLockSettingAutoRight,
+    S7TVOrientationLockSettingAutoBoth,
 };
 
 static NSString *S7TVLaunchDestinationTitle(S7TVLaunchDestination destination) {
@@ -1798,19 +1808,42 @@ static NSString *S7TVLaunchDestinationTitle(S7TVLaunchDestination destination) {
     return L(@"launch_default");
 }
 
-static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mode) {
-    switch (mode) {
-        case S7TVAutoOrientationLockModeLandscapeLeft:  return L(@"orientation_left");
-        case S7TVAutoOrientationLockModeLandscapeRight: return L(@"orientation_right");
-        case S7TVAutoOrientationLockModeBothLandscapes: return L(@"orientation_both");
+static S7TVOrientationLockSetting S7TVCurrentOrientationLockSetting(void) {
+    if (!s7tv_orientationLockButtonEnabled()) {
+        return S7TVOrientationLockSettingDisabled;
+    }
+    switch (s7tv_autoOrientationLockMode()) {
+        case S7TVAutoOrientationLockModeLandscapeLeft:
+            return S7TVOrientationLockSettingAutoLeft;
+        case S7TVAutoOrientationLockModeLandscapeRight:
+            return S7TVOrientationLockSettingAutoRight;
+        case S7TVAutoOrientationLockModeBothLandscapes:
+            return S7TVOrientationLockSettingAutoBoth;
         case S7TVAutoOrientationLockModeDisabled:
-        default:                                        return L(@"orientation_auto_off");
+        default:
+            return S7TVOrientationLockSettingManual;
+    }
+}
+
+static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting setting) {
+    switch (setting) {
+        case S7TVOrientationLockSettingManual:
+            return L(@"orientation_mode_manual");
+        case S7TVOrientationLockSettingAutoLeft:
+            return L(@"orientation_mode_auto_left");
+        case S7TVOrientationLockSettingAutoRight:
+            return L(@"orientation_mode_auto_right");
+        case S7TVOrientationLockSettingAutoBoth:
+            return L(@"orientation_mode_auto_both");
+        case S7TVOrientationLockSettingDisabled:
+        default:
+            return L(@"orientation_mode_disabled");
     }
 }
 
 @interface SevenTVContentPageController () <UIDocumentPickerDelegate>
 - (void)presentLaunchDestinationPickerFromCell:(UIView *)anchor;
-- (void)presentAutoOrientationLockPickerFromCell:(UIView *)anchor;
+- (void)presentOrientationLockSettingPickerFromCell:(UIView *)anchor;
 @end
 
 @implementation SevenTVContentPageController
@@ -1848,20 +1881,16 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
     [S7TVInfoTooltip dismiss];
 }
 
-// Lignes visibles de la section « Accueil et lecture » : « Verrouillage
-// automatique » n'existe visuellement que si le « Bouton de verrouillage »
-// est ON (mécanisme générique de sous-options dépendantes).
+// Lignes visibles de la section « Accueil et lecture ». Le bouton et ses
+// modes (désactivé, manuel ou automatique) sont réunis en une seule cellule.
 - (NSArray<NSNumber *> *)s7tv_visibleHomeRows {
-    BOOL lockButtonOn = s7tv_orientationLockButtonEnabled();
     return S7TVVisibleRowIndexes(@[
         @(S7TVContentHomeRowLaunchScreen),
         @(S7TVContentHomeRowHideStories),
         @(S7TVContentHomeRowKeepLiveFeed),
         @(S7TVContentHomeRowAutoCollect),
         @(S7TVContentHomeRowLockButton),
-    ], @{
-        @(S7TVContentHomeRowAutoLock): @(lockButtonOn),
-    });
+    ], @{});
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
@@ -1935,18 +1964,13 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
                             @"giftcard.fill", [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
                             S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints), self,
                             @selector(toggleAutoCollect:), @"desc_auto_collect");
-            case S7TVContentHomeRowLockButton:
-                // Le "i" reprend l'ancienne description de section Rotation.
-                return S7TVSwitchCell(L(@"switch_orientation_lock_button"),
-                            @"lock.rotation", S7TVAccent(),
-                            s7tv_orientationLockButtonEnabled(), self,
-                            @selector(toggleOrientationLockButton:),
-                            @"desc_orientation_lock_settings");
-            case S7TVContentHomeRowAutoLock:
-                return S7TVNavCell(L(@"setting_orientation_auto_lock"),
-                    S7TVValueWithDefaultMark(S7TVAutoOrientationLockModeTitle(s7tv_autoOrientationLockMode()),
-                        s7tv_autoOrientationLockMode() == S7TVAutoOrientationLockModeDisabled),
-                    @"iphone.gen3.radiowaves.left.and.right", S7TVAccent(), nil);
+            case S7TVContentHomeRowLockButton: {
+                S7TVOrientationLockSetting setting = S7TVCurrentOrientationLockSetting();
+                return S7TVNavCell(L(@"switch_orientation_lock_button"),
+                    S7TVValueWithDefaultMark(S7TVOrientationLockSettingTitle(setting),
+                        setting == S7TVOrientationLockSettingDisabled),
+                    @"lock.rotation", S7TVAccent(), @"desc_orientation_lock_settings");
+            }
         }
         return [[UITableViewCell alloc] init];
     }
@@ -2042,8 +2066,8 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
         [self presentLaunchDestinationPickerFromCell:[tv cellForRowAtIndexPath:ip]];
         return;
     }
-    if (logicalRow == S7TVContentHomeRowAutoLock) {
-        [self presentAutoOrientationLockPickerFromCell:[tv cellForRowAtIndexPath:ip]];
+    if (logicalRow == S7TVContentHomeRowLockButton) {
+        [self presentOrientationLockSettingPickerFromCell:[tv cellForRowAtIndexPath:ip]];
     }
 }
 
@@ -2054,34 +2078,52 @@ static NSString *S7TVAutoOrientationLockModeTitle(S7TVAutoOrientationLockMode mo
 - (void)toggleKeepLiveFeedPlaying:(UISwitch *)sw {
     s7tv_setKeepLiveFeedPlayingEnabled(sw.isOn);
 }
-- (void)toggleOrientationLockButton:(UISwitch *)sw {
-    s7tv_setOrientationLockButtonEnabled(sw.isOn);
-    // Apparition/disparition de « Verrouillage automatique » (sous-option
-    // dépendante — voir S7TVVisibleRowIndexes).
-    S7TVReloadSection(self.tableView, S7TVContentSectionHome);
-}
-
-// Menu de choix du mode d'auto-lock (action sheet, même logique que le picker
-// "Écran au lancement") : ✓ sur le mode courant, Annuler, puis application
+// Menu de choix du verrouillage (action sheet, même logique que le picker
+// « Écran au lancement ») : ✓ sur le mode courant, Annuler, puis application
 // immédiate et rechargement de la section pour rafraîchir le sous-titre.
-- (void)presentAutoOrientationLockPickerFromCell:(UIView *)anchor {
+- (void)presentOrientationLockSettingPickerFromCell:(UIView *)anchor {
     UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:L(@"setting_orientation_auto_lock")
+        alertControllerWithTitle:L(@"switch_orientation_lock_button")
                           message:nil
                    preferredStyle:UIAlertControllerStyleActionSheet];
     sheet.view.tintColor = S7TVAccent();
-    S7TVAutoOrientationLockMode current = s7tv_autoOrientationLockMode();
-    for (NSInteger raw = S7TVAutoOrientationLockModeDisabled;
-         raw <= S7TVAutoOrientationLockModeBothLandscapes; raw++) {
-        S7TVAutoOrientationLockMode mode = (S7TVAutoOrientationLockMode)raw;
-        NSString *title = S7TVAutoOrientationLockModeTitle(mode);
-        if (mode == current) title = [@"✓  " stringByAppendingString:title];
+    S7TVOrientationLockSetting current = S7TVCurrentOrientationLockSetting();
+    NSArray<NSNumber *> *settings = @[
+        @(S7TVOrientationLockSettingDisabled),
+        @(S7TVOrientationLockSettingManual),
+        @(S7TVOrientationLockSettingAutoLeft),
+        @(S7TVOrientationLockSettingAutoRight),
+        @(S7TVOrientationLockSettingAutoBoth),
+    ];
+    for (NSNumber *value in settings) {
+        S7TVOrientationLockSetting setting = (S7TVOrientationLockSetting)value.integerValue;
+        NSString *title = S7TVOrientationLockSettingTitle(setting);
+        if (setting == current) title = [@"✓  " stringByAppendingString:title];
         __weak typeof(self) weakSelf = self;
         [sheet addAction:[UIAlertAction actionWithTitle:title
                                                   style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction *action) {
             (void)action;
+            S7TVAutoOrientationLockMode mode = S7TVAutoOrientationLockModeDisabled;
+            switch (setting) {
+                case S7TVOrientationLockSettingAutoLeft:
+                    mode = S7TVAutoOrientationLockModeLandscapeLeft;
+                    break;
+                case S7TVOrientationLockSettingAutoRight:
+                    mode = S7TVAutoOrientationLockModeLandscapeRight;
+                    break;
+                case S7TVOrientationLockSettingAutoBoth:
+                    mode = S7TVAutoOrientationLockModeBothLandscapes;
+                    break;
+                case S7TVOrientationLockSettingDisabled:
+                case S7TVOrientationLockSettingManual:
+                default:
+                    mode = S7TVAutoOrientationLockModeDisabled;
+                    break;
+            }
             s7tv_setAutoOrientationLockMode(mode);
+            s7tv_setOrientationLockButtonEnabled(
+                setting != S7TVOrientationLockSettingDisabled);
             [weakSelf.tableView reloadSections:
                 [NSIndexSet indexSetWithIndex:S7TVContentSectionHome]
                          withRowAnimation:UITableViewRowAnimationNone];

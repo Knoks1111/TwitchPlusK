@@ -424,7 +424,12 @@ void tas_diagnostics_set_logging_enabled(bool enabled) {
 
 id tas_create_diagnostic_log_viewer(void) {
     if (!register_log_class()) return nil;
-    return msg0((id)g_log_class, "new");
+    /* TwitchPlusK divergence D10 (ARC integration): the caller is compiled
+     * with ARC and treats this plain-C return as +0 — autorelease here so the
+     * freshly created viewer is not leaked. Same lifetime semantics as
+     * upstream's settings_did_select (new + explicit release after push). */
+    id controller = msg0((id)g_log_class, "new");
+    return msg0(controller, "autorelease");
 }
 
 void tas_copy_diagnostic_report_to_clipboard(void) {

@@ -1,5 +1,34 @@
 # Third-party notices
 
+## TwitchAdBlock VAFT for iOS (Local/VAFT engine)
+
+The `Sources/Adblock/Vaft/` engine (TwitchAdBlock.c, TASDiagnostics.c) is
+adapted from [TwitchAdBlock-VAFT-iOS](https://github.com/BananaOnGitHub/TwitchAdBlock-VAFT-iOS),
+port version 2.2.0 — a native iOS port of the VAFT strategy from
+[pixeltris/TwitchAdSolutions](https://github.com/pixeltris/TwitchAdSolutions)
+(VAFT v24, MIT License).
+
+Copyright BananaOnGitHub (TwitchAdBlock-VAFT-iOS) — Apache License, Version 2.0.
+The Apache-2.0 license text is preserved in `Sources/Adblock/Vaft/LICENSE`.
+Modifications by TwitchPlusK are documented in `Sources/Adblock/Vaft/UPSTREAM.md`
+(divergences D1–D9: constructor removal, master-toggle snapshot gates,
+settings-injection cluster removed, report header provenance, localized UI
+controls in the host tweak).
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use these files except in compliance with the License. You may obtain a copy
+of the License at http://www.apache.org/licenses/LICENSE-2.0. Unless required
+by applicable law or agreed to in writing, software distributed under the
+License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS
+OF ANY KIND, either express or implied.
+
+## TwitchAdSolutions (VAFT strategy)
+
+The VAFT strategy implemented by the engine above originates from
+[pixeltris/TwitchAdSolutions](https://github.com/pixeltris/TwitchAdSolutions)
+(`vaft` solution 24, uBlock Origin script distribution), licensed under the
+MIT License.
+
 ## TwitchAdBlock
 
 Parts of the ad-blocking, GraphQL filtering, HLS proxy, proxy authentication,

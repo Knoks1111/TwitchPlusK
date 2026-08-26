@@ -5,19 +5,84 @@ NSString *const S7TVAdblockProxyEnabledKey       = @"s7tv_adblock_proxy_enabled"
 NSString *const S7TVAdblockCustomProxyEnabledKey = @"s7tv_adblock_custom_proxy_enabled";
 NSString *const S7TVAdblockCustomProxyKey        = @"s7tv_adblock_custom_proxy";
 NSString *const S7TVAdblockHideAdFreeButtonKey  = @"s7tv_adblock_hide_go_ad_free";
+NSString *const S7TVAdblockMethodKey             = @"s7tv_adblock_method";
 
 static NSUserDefaults *S7TVAdblockDefaults(void) {
     return NSUserDefaults.standardUserDefaults;
 }
 
 void S7TVAdblockRegisterDefaults(void) {
+    // Toggle maître : OFF par défaut (décision validée). Aucune migration :
+    // les anciens utilisateurs qui reposaient sur l'ancien default implicite
+    // ON sans jamais écrire la clé passent OFF après mise à jour (accepté).
     [S7TVAdblockDefaults() registerDefaults:@{
-        S7TVAdblockEnabledKey: @YES,
+        S7TVAdblockEnabledKey: @NO,
         S7TVAdblockProxyEnabledKey: @YES,
         S7TVAdblockCustomProxyEnabledKey: @NO,
         // Même valeur par défaut que TwitchAdBlock v0.1.13.
         S7TVAdblockHideAdFreeButtonKey: @YES,
     }];
+}
+
+// ── Snapshots runtime ────────────────────────────────────────────────────────
+// Lecture O(1) pour les hot paths (fishhooks weak, NSURLProtocol, callbacks
+// réseau fréquents). Aucune lecture NSUserDefaults ni registerDefaults ici —
+// c'est la leçon de la PR #2. Le snapshot enabled est rafraîchissable à chaud
+// (setter + import) ; le snapshot méthode est figé au lancement.
+
+static volatile BOOL s_method_snapshot_done = NO;
+static volatile BOOL s_method_is_local_snapshot = NO;
+static volatile BOOL s_enabled_snapshot = NO;
+static volatile BOOL s_hide_ad_free_snapshot = YES;
+
+void S7TVAdblockRefreshRuntimeSnapshots(void) {
+    S7TVAdblockRegisterDefaults();
+    NSUserDefaults *defaults = S7TVAdblockDefaults();
+    s_enabled_snapshot = [defaults boolForKey:S7TVAdblockEnabledKey];
+    s_hide_ad_free_snapshot = [defaults boolForKey:S7TVAdblockHideAdFreeButtonKey];
+}
+
+BOOL S7TVAdblockEnabledFast(void) {
+    return s_enabled_snapshot;
+}
+
+BOOL S7TVAdblockHideAdFreeButtonEnabledFast(void) {
+    return s_hide_ad_free_snapshot;
+}
+
+void S7TVAdblockTakeRuntimeMethodSnapshot(void) {
+    NSString *method = [S7TVAdblockDefaults() stringForKey:S7TVAdblockMethodKey];
+    // Valeur absente/invalide → fallback déterministe Proxy. Ne fait rien
+    // tant que le toggle maître est OFF.
+    s_method_is_local_snapshot = [method isEqualToString:@"local"];
+    s_method_snapshot_done = YES;
+}
+
+BOOL S7TVAdblockActiveMethodIsLocal(void) {
+    if (!s_method_snapshot_done) S7TVAdblockTakeRuntimeMethodSnapshot();
+    return s_method_is_local_snapshot;
+}
+
+S7TVAdblockMethod S7TVAdblockActiveMethod(void) {
+    return S7TVAdblockActiveMethodIsLocal() ? S7TVAdblockMethodLocalVaft
+                                            : S7TVAdblockMethodProxy;
+}
+
+// ── Méthode configurée (settings / persistance uniquement) ──────────────────
+
+BOOL S7TVAdblockConfiguredMethodIsLocal(void) {
+    NSString *method = [S7TVAdblockDefaults() stringForKey:S7TVAdblockMethodKey];
+    return [method isEqualToString:@"local"];
+}
+
+S7TVAdblockMethod S7TVAdblockConfiguredMethod(void) {
+    return S7TVAdblockConfiguredMethodIsLocal() ? S7TVAdblockMethodLocalVaft
+                                                : S7TVAdblockMethodProxy;
+}
+
+void S7TVAdblockSetConfiguredMethod(S7TVAdblockMethod method) {
+    NSString *value = (method == S7TVAdblockMethodLocalVaft) ? @"local" : @"proxy";
+    [S7TVAdblockDefaults() setObject:value forKey:S7TVAdblockMethodKey];
 }
 
 BOOL S7TVAdblockIsEnabled(void) {
@@ -63,6 +128,7 @@ NSArray<NSString *> *S7TVAdblockCustomProxyAddresses(void) {
 
 void S7TVAdblockSetEnabled(BOOL enabled) {
     [S7TVAdblockDefaults() setBool:enabled forKey:S7TVAdblockEnabledKey];
+    s_enabled_snapshot = enabled;
 }
 
 void S7TVAdblockSetProxyEnabled(BOOL enabled) {
@@ -75,6 +141,7 @@ void S7TVAdblockSetCustomProxyEnabled(BOOL enabled) {
 
 void S7TVAdblockSetHideAdFreeButtonEnabled(BOOL enabled) {
     [S7TVAdblockDefaults() setBool:enabled forKey:S7TVAdblockHideAdFreeButtonKey];
+    s_hide_ad_free_snapshot = enabled;
 }
 
 void S7TVAdblockSetCustomProxyAddress(NSString *address) {

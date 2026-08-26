@@ -2660,7 +2660,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
         configuration.textProperties.font = [UIFont monospacedSystemFontOfSize:11
                                                                           weight:UIFontWeightRegular];
         configuration.textProperties.color = UIColor.whiteColor;
-        configuration.textProperties.maximumNumberOfLines = 0;
+        configuration.textProperties.numberOfLines = 0;
         configuration.secondaryText = status;
         configuration.secondaryTextProperties.color = color;
         [cell setContentConfiguration:configuration];

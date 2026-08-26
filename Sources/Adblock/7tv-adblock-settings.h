@@ -15,13 +15,16 @@ FOUNDATION_EXPORT NSString *const S7TVAdblockCustomProxyEnabledKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockCustomProxyKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockHideAdFreeButtonKey;
 
-// Méthode AdBlock : "proxy" (moteur Proxy) ou "local" (VAFT).
-// Valeur absente/invalide → fallback interne Proxy.
+// Méthode AdBlock : "disabled" | "proxy" | "local" (VAFT).
+// Valeur absente/invalide/corrompue → fallback interne déterministe Disabled.
+// État le plus neutre et le plus sûr : une valeur invalide n'active aucun
+// qu'un état interne : tant que le toggle maître est OFF, rien n'agit.
 FOUNDATION_EXPORT NSString *const S7TVAdblockMethodKey;
 
 typedef NS_ENUM(NSInteger, S7TVAdblockMethod) {
-    S7TVAdblockMethodProxy = 0,
-    S7TVAdblockMethodLocalVaft = 1,
+    S7TVAdblockMethodDisabled = 0,
+    S7TVAdblockMethodProxy = 1,
+    S7TVAdblockMethodLocalVaft = 2,
 };
 
 void S7TVAdblockRegisterDefaults(void);
@@ -37,6 +40,7 @@ BOOL S7TVAdblockHideAdFreeButtonIsEnabled(void);
 // settings/persistance/comparaison de redémarrage.
 BOOL S7TVAdblockActiveMethodIsLocal(void);
 S7TVAdblockMethod S7TVAdblockActiveMethod(void);
+BOOL S7TVAdblockActiveMethodIsProxy(void);
 void S7TVAdblockTakeRuntimeMethodSnapshot(void);
 
 // Snapshot du toggle maître et du toggle Turbo, rafraîchissable à chaud

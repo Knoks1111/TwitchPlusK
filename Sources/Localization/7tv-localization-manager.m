@@ -132,6 +132,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Adblock vidéo / proxy ────────────────────────────────────────
         @"adblock_enable":                  @[@"Activer l’adblock", @"Enable adblock"],
+        @"adblock_cell_title":              @[@"AdBlock", @"AdBlock"],
         @"adblock_hide_go_ad_free":         @[@"Masquer Twitch Turbo", @"Hide Twitch Turbo"],
         @"adblock_section_proxy":           @[@"Proxy vidéo", @"Video proxy"],
         @"adblock_video_proxy":             @[@"Utiliser le proxy vidéo", @"Use video proxy"],
@@ -181,15 +182,15 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"vaft_diag_footer":                 @[@"Enregistre les chemins de requêtes assainis, les statuts de réponse, les résumés de marqueurs de manifest et les décisions VAFT. Les query strings, en-têtes, tokens d'accès et contenus de manifest ne sont jamais stockés. Le journal est limité à 512 Ko.",
                                                 @"Records sanitized request paths, response status, manifest marker summaries, and VAFT decisions. Query strings, headers, access tokens, and manifest contents are never stored. The log is capped at 512 KiB."],
         @"vaft_report_title":                @[@"Rapport de diagnostic", @"Diagnostic Report"],
-        @"adblock_engine_footer":           @[@"Bloque les domaines publicitaires, modifie les jetons de lecture et peut masquer la promotion Twitch Turbo dans Abonnements.",
-                                               @"Blocks ad domains, adjusts playback tokens, and can hide the Twitch Turbo promotion in Following."],
+        @"adblock_engine_footer":           @[@"Deux méthodes de blocage vidéo sont disponibles : Proxy et Local (VAFT).",
+                                               @"Two video ad-blocking methods are available: Proxy and Local (VAFT)."],
         @"adblock_proxy_privacy_footer":    @[@"Le proxy sert à récupérer les playlists vidéo sans publicité. En mode personnalisé, chaque proxy occupe une ligne et l’ordre définit leur priorité.",
                                                @"The proxy fetches ad-free video playlists. In custom mode, each proxy has its own row and the order defines priority."],
 
         // ── Menu principal (Apparence / Contenu / Adblock / Avancé) ──────
         @"menu_apparence_subtitle":         @[@"Animations", @"Animations"],
         @"menu_contenu_subtitle":           @[@"Favoris, accueil, lecture", @"Favorites, home, playback"],
-        @"menu_adblock_subtitle":           @[@"Pubs vidéo, proxy", @"Video ads, proxy"],
+        @"menu_adblock_subtitle":           @[@"Pubs vidéo, Proxy ou VAFT", @"Video ads, Proxy or VAFT"],
         @"menu_avance_subtitle":            @[@"Cache, logs, options", @"Cache, logs, options"],
 
         // ── Page Apparence : où trouver les réglages du chat custom ──────

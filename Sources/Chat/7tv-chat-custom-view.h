@@ -107,6 +107,11 @@ void s7tv_setupChatCustomIntegration(void);
 // authorDisplayName au pipeline de réponse unique côté hôte.
 @property (nonatomic, copy, nullable) void (^onReplyTargetSelected)(NSString *messageID, NSString *authorDisplayName);
 
+// Notifie un hôte qui dimensionne cette vue (thread/aperçu) lorsque le
+// contentSize réel de sa UITableView change, notamment après le chargement
+// d'un badge ou d'une emote. Le chat principal ne renseigne pas ce callback.
+@property (nonatomic, copy, nullable) void (^onContentHeightChanged)(SevenTVChatCustomView *view);
+
 // Surligne la cible de réponse actuellement choisie sans utiliser la
 // sélection UITableView (les cellules gardent leur comportement normal).
 // Passer nil retire immédiatement l'effet, y compris après « Annuler ».

@@ -98,13 +98,12 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // ── Résumé accueil (remplace l'ancien écran Statistiques) ────────
         @"summary_emotes_channel_format":   @[@"%lu emotes chargées · %@", @"%lu emotes loaded · %@"],
 
-        // ── Contenu : section Stream ──────────────────────────────────────
-        @"section_stream":                  @[@"Stream", @"Stream"], // anglicisme déjà courant en français
+        // ── Contenu : accueil et lecture (TwitchAdBlock) ────────────────
+        // La récupération auto des points (ex-section Stream) vit désormais
+        // dans cette section.
         @"switch_auto_collect_title":       @[@"Récupération auto des points de chaîne", @"Auto Collect Channel Points"],
         @"desc_auto_collect":               @[@"Réclame automatiquement le coffre de points de chaîne quand il apparaît dans le chat.",
                                                @"Automatically claims the live channel-points chest when it appears in chat."],
-
-        // ── Contenu : accueil et lecture (TwitchAdBlock) ────────────────
         @"section_home_playback":           @[@"Accueil et lecture", @"Home & Playback"],
         @"setting_launch_screen":           @[@"Écran au lancement", @"Launch Screen"],
         @"launch_default":                  @[@"Par défaut", @"Default"],
@@ -120,8 +119,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"desc_home_playback_settings":     @[@"Le fil Live ne sera plus interrompu par l’écran Regarder/Suivre. Les changements de l’écran de lancement et des stories s’appliquent au prochain démarrage.",
                                                @"The Live feed will no longer be interrupted by the Watch/Follow screen. Launch Screen and Stories changes apply after restarting."],
 
-        // ── Contenu : verrouillage de rotation ───────────────────────────
-        @"section_rotation":                @[@"Rotation", @"Rotation"],
+        // ── Contenu : verrouillage de rotation (fusionné dans « Accueil et
+        //    lecture » ; le bouton de verrouillage reprend la description) ──
         @"switch_orientation_lock_button":  @[@"Bouton de verrouillage", @"Rotation lock button"],
         @"setting_orientation_auto_lock":   @[@"Verrouillage automatique", @"Automatic locking"],
         @"orientation_auto_off":            @[@"Désactivé", @"Off"],
@@ -163,17 +162,20 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── En-têtes de section ──────────────────────────────────────────
         @"section_general":                 @[@"Général", @"General"],
-        @"section_affichage":               @[@"Affichage", @"Display"],
+        @"section_emotes":                  @[@"Émotes", @"Emotes"],
+        @"section_theme":                   @[@"Thème", @"Theme"],
+        @"section_tools":                   @[@"Outils", @"Tools"],
         @"section_favoris":                 @[@"Favoris", @"Favorites"],
         @"section_options":                 @[@"Options", @"Options"],
         @"section_settings_backup":         @[@"Sauvegarde", @"Backup"],
-        @"section_diagnostics":             @[@"Diagnostics", @"Diagnostics"],
         @"section_logs":                    @[@"Logs", @"Logs"],
-        @"section_danger":                  @[@"Danger", @"Danger"],
         @"section_langue":                  @[@"Langue", @"Language"],
 
         // ── Switchs de réglages ───────────────────────────────────────────
         @"switch_chat_custom":              @[@"Chat custom", @"Custom chat"],
+        // Description derrière le "i" de la ligne Chat custom (Avancé).
+        @"chat_custom_info":                @[@"Active le rendu du chat par TwitchPlusK. Désactivé, seules les emotes natives Twitch s'affichent : toutes les emotes 7TV (globales, chaîne, favoris) disparaissent du chat.",
+                                               @"Enables TwitchPlusK's chat rendering. When disabled, only native Twitch emotes are shown: all 7TV emotes (global, channel, favorites) disappear from the chat."],
         @"switch_oled_mode":                @[@"Mode OLED", @"OLED Mode"],
         @"desc_oled_mode":                  @[
             @"Remplace les fonds du thème sombre de Twitch par du noir pur. Le thème clair n'est pas modifié.",
@@ -228,8 +230,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Page Favoris ──────────────────────────────────────────────────
         @"action_import_from_pc":           @[@"Importer depuis PC", @"Import from PC"],
-        @"subtitle_import_from_pc":         @[@"Export JSON 7TV (Settings → … → Export)",
-                                               @"7TV JSON export (Settings → … → Export)"],
+        @"subtitle_import_from_pc":         @[@"Export JSON 7TV (Settings → Export)",
+                                               @"7TV JSON export (Settings → Export)"],
         @"error_cant_read_file":            @[@"Impossible de lire le fichier.", @"Couldn't read the file."],
         @"error_invalid_json":              @[@"Le fichier n'est pas un JSON valide.", @"The file isn't valid JSON."],
         @"error_missing_favorites_key":     @[@"Clé « ui.emote_menu.favorites » introuvable.\nVérifie que c'est bien un export 7TV PC.",
@@ -248,9 +250,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Page Logs (settings) ─────────────────────────────────────────
         @"view_logs":                       @[@"Voir les logs", @"View logs"],
-        @"action_clear_all_logs":           @[@"Effacer tous les logs", @"Clear all logs"],
-        @"alert_clear_logs_title":          @[@"Effacer les logs", @"Clear logs"],
-        @"alert_irreversible":              @[@"Cette action est irréversible.", @"This action can't be undone."],
+        // L'effacement des logs vit dans l'écran « Voir les logs » (bouton
+        // « Effacer », voir SevenTVLogsController).
 
         // ── SevenTVLogsController ────────────────────────────────────────
         @"empty_no_logs":                   @[@"Aucun log pour l'instant.\nLes messages apparaîtront ici en temps réel.",

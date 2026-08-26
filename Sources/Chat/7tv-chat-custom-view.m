@@ -832,6 +832,11 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
 @property (nonatomic, assign) BOOL snapshotApplyInProgress;
 @property (nonatomic, assign) BOOL widthReloadPending;
 @property (nonatomic, copy, nullable) NSString *highlightedReplyTargetMessageID;
+@property (nonatomic, strong) NSLayoutConstraint *unseenMessagesBannerCenterXConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *unseenMessagesBannerWidthConstraint;
+@property (nonatomic, assign) CGFloat lastNotifiedContentHeight;
+@property (nonatomic, assign) BOOL hasNotifiedContentHeight;
+@property (nonatomic, assign) BOOL returnToBottomRequested;
 - (void)s7tv_dismissEmotePreview;
 - (void)s7tv_observeAnimatedEmotePreview:(id<S7TVResolvedEmote>)emote;
 - (nullable NSString *)s7tv_captureVisibleAnchorAmongIDs:(nullable NSSet<NSString *> *)allowedIDs
@@ -843,6 +848,9 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
 - (void)s7tv_queueFullReloadAnimated:(BOOL)animated completion:(nullable void (^)(void))completion;
 - (void)s7tv_recordFrozenStoreMessages;
 - (void)s7tv_finishSnapshotApply;
+- (void)s7tv_notifyContentHeightIfNeeded;
+- (CGRect)s7tv_actualVisibleRect;
+- (void)s7tv_updateNewMessagesBannerLayout;
 - (void)s7tv_reloadMessageWithID:(NSString *)messageID;
 - (void)s7tv_reloadMessageWithID:(NSString *)messageID
                         animated:(BOOL)animated
@@ -864,6 +872,8 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
         _deferredMessageReloadCompletions = [NSMutableArray array];
         _lastObservedStoreMessageIDs = [NSSet set];
         _lastObservedStoreGeneration = [store generation];
+        _lastNotifiedContentHeight = 0.0;
+        _hasNotifiedContentHeight = NO;
         _showsReplyBanners = YES;
         _usesThreadReplyIndent = NO;
         _freezesTranscriptWhenScrolled = YES;
@@ -951,11 +961,15 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
         [_unseenMessagesBanner addSubview:_unseenMessagesBannerLabel];
         [self addSubview:_unseenMessagesBanner];
 
+        _unseenMessagesBannerCenterXConstraint =
+            [_unseenMessagesBanner.centerXAnchor constraintEqualToAnchor:self.centerXAnchor];
+        _unseenMessagesBannerWidthConstraint =
+            [_unseenMessagesBanner.widthAnchor constraintEqualToConstant:230];
         [NSLayoutConstraint activateConstraints:@[
-            [_unseenMessagesBanner.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
+            _unseenMessagesBannerCenterXConstraint,
             [_unseenMessagesBanner.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
             [_unseenMessagesBanner.heightAnchor constraintEqualToConstant:36],
-            [_unseenMessagesBanner.widthAnchor constraintEqualToConstant:230],
+            _unseenMessagesBannerWidthConstraint,
             [arrowIcon.leadingAnchor constraintEqualToAnchor:_unseenMessagesBanner.leadingAnchor constant:12],
             [arrowIcon.centerYAnchor constraintEqualToAnchor:_unseenMessagesBanner.centerYAnchor],
             [arrowIcon.widthAnchor constraintEqualToConstant:14],
@@ -987,6 +1001,7 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
 
 - (void)layoutSubviews {
     [super layoutSubviews];
+    [self s7tv_updateNewMessagesBannerLayout];
     // s7tv_actualVisibleWidth plutôt que self.bounds.size.width seul : un
     // ancêtre peut recadrer visuellement cette vue (voir commentaire de
     // s7tv_actualVisibleWidth) sans que self.bounds ne change. Avec les
@@ -999,6 +1014,17 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
         self.cachedContentWidth = visibleWidth;
         if (self.snapshotApplyInProgress) self.widthReloadPending = YES;
         else [self.tableView reloadData];
+    }
+}
+
+- (void)s7tv_notifyContentHeightIfNeeded {
+    CGFloat height = self.tableView.contentSize.height;
+    if (!self.hasNotifiedContentHeight ||
+        fabs(height - self.lastNotifiedContentHeight) >= 0.5) {
+        self.hasNotifiedContentHeight = YES;
+        self.lastNotifiedContentHeight = height;
+        void (^callback)(SevenTVChatCustomView *) = self.onContentHeightChanged;
+        if (callback) callback(self);
     }
 }
 
@@ -1024,6 +1050,7 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
     // et déclenche le reloadData nécessaire aux cellules self-sizing.
     [self layoutIfNeeded];
     [self.tableView layoutIfNeeded];
+    [self s7tv_notifyContentHeightIfNeeded];
     return self.tableView.contentSize.height;
 }
 
@@ -1062,6 +1089,7 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
     self.isPinnedToBottom = YES;
     self.pendingNewMessagesCount = 0;
     self.messageInteractionInProgress = NO;
+    self.returnToBottomRequested = NO;
     self.reloadDeferredUntilScrollEnds = NO;
     self.deferredReloadAnimated = NO;
     [self.deferredReloadCompletions removeAllObjects];
@@ -1182,13 +1210,15 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
         [self.tableView reloadData];
         [self.tableView layoutIfNeeded];
     }
+    [self.tableView layoutIfNeeded];
+    [self s7tv_notifyContentHeightIfNeeded];
 }
 
 - (void)s7tv_flushDeferredReloadIfNeeded {
     BOOL tableInteractionActive = self.tableView.isTracking || self.tableView.isDragging ||
         self.tableView.isDecelerating;
     if (self.snapshotApplyInProgress || self.messageInteractionInProgress ||
-        tableInteractionActive) return;
+        (tableInteractionActive && !self.returnToBottomRequested)) return;
 
     // Le gel protège uniquement l'ordre et les IDs du transcript. Une cellule
     // déjà visible doit continuer à se reconfigurer (modération, image chargée,
@@ -1306,7 +1336,7 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
     BOOL tableInteractionActive = self.tableView.isTracking || self.tableView.isDragging ||
         self.tableView.isDecelerating;
     if (self.snapshotApplyInProgress || self.messageInteractionInProgress ||
-        tableInteractionActive) {
+        (tableInteractionActive && !self.returnToBottomRequested)) {
         [self s7tv_queueFullReloadAnimated:animated completion:completion];
         return;
     }
@@ -1425,15 +1455,18 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
     if (!self.automaticallyScrollsToBottom) return;
     NSInteger count = self.displayedMessages.count;
     if (!wasNearBottom || count == 0) {
+        if (count == 0) self.returnToBottomRequested = NO;
         return;
     }
-    if (self.tableView.isTracking || self.tableView.isDragging || self.tableView.isDecelerating) {
+    if ((self.tableView.isTracking || self.tableView.isDragging || self.tableView.isDecelerating) &&
+        !self.returnToBottomRequested) {
         return;
     }
     NSIndexPath *last = [NSIndexPath indexPathForRow:count - 1 inSection:0];
     [self.tableView scrollToRowAtIndexPath:last
                            atScrollPosition:UITableViewScrollPositionBottom
-                                   animated:NO];
+                           animated:NO];
+    self.returnToBottomRequested = NO;
 }
 
 #pragma mark - Cell provider
@@ -2127,6 +2160,10 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
         self.unseenMessagesBannerLabel.text =
             [NSString stringWithFormat:L(@"banner_new_messages_format"), (unsigned long)self.pendingNewMessagesCount];
     }
+    // Le texte peut changer alors que la vue est déjà visible. Forcer une
+    // nouvelle passe Auto Layout garantit que la largeur paysage suit le
+    // contenu, sans attendre un changement de taille du transcript.
+    [self setNeedsLayout];
 }
 
 - (void)s7tv_showNewMessagesBanner {
@@ -2138,6 +2175,12 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
 }
 
 - (void)s7tv_didTapNewMessagesBanner {
+    // L'action explicite de l'utilisateur prime sur la garde utilisée par les
+    // rechargements automatiques : arrêter l'inertie à l'offset courant
+    // permet ensuite au même pipeline de snapshot de rejoindre immédiatement
+    // la dernière ligne, sans attendre didEndDecelerating.
+    self.returnToBottomRequested = YES;
+    [self.tableView setContentOffset:self.tableView.contentOffset animated:NO];
     self.pendingNewMessagesCount = 0;
     [self s7tv_hideNewMessagesBanner];
     self.transcriptFrozen = NO;
@@ -2179,24 +2222,96 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
 // comparaison brute de bounds.size.width. Utilisée par layoutSubviews pour
 // savoir quand forcer un reloadData (self-sizing cells) après un tel
 // recadrage.
-- (CGFloat)s7tv_actualVisibleWidth {
+- (CGRect)s7tv_actualVisibleRect {
     CGRect visibleRect = self.bounds;
-    if (CGRectIsEmpty(visibleRect)) return self.bounds.size.width;
+    if (CGRectIsEmpty(visibleRect)) return self.bounds;
 
     UIView *ancestor = self.superview;
     while (ancestor) {
         if (ancestor.clipsToBounds) {
             CGRect ancestorRectInSelf = [ancestor convertRect:ancestor.bounds toView:self];
             visibleRect = CGRectIntersection(visibleRect, ancestorRectInSelf);
-            if (CGRectIsNull(visibleRect)) {
+            if (CGRectIsNull(visibleRect) || CGRectIsEmpty(visibleRect)) {
                 // Intersection vide (vue actuellement hors écran/masquée) —
                 // pas une largeur exploitable, on retombe sur self.bounds.
-                return self.bounds.size.width;
+                return self.bounds;
             }
         }
         ancestor = ancestor.superview;
     }
-    return ceil(visibleRect.size.width);
+
+    // Le transcript et la ChatInputView sont parfois frères dans la colonne
+    // Twitch : aucune vue ancêtre du transcript ne porte alors le clipping
+    // horizontal. Réutiliser l'ancre de saisie existante permet de mesurer la
+    // même colonne que les overlays, sans supposer que self.bounds représente
+    // la zone réellement affichée.
+    UIView *inputView = s7tv_findChatInputView();
+    if (inputView.window == self.window && !CGRectIsEmpty(inputView.bounds)) {
+        CGRect inputRect = [inputView convertRect:inputView.bounds toView:self];
+        CGFloat minX = MAX(CGRectGetMinX(visibleRect), CGRectGetMinX(inputRect));
+        CGFloat maxX = MIN(CGRectGetMaxX(visibleRect), CGRectGetMaxX(inputRect));
+        if (maxX > minX) {
+            visibleRect.origin.x = minX;
+            visibleRect.size.width = maxX - minX;
+        }
+    }
+
+    // Si l'input n'est pas encore monté pendant une transition, le transcript
+    // natif masqué conserve néanmoins la largeur de la colonne dans le même
+    // UIStackView. Il sert uniquement de seconde contrainte géométrique ; s'il
+    // n'est pas disponible ou ne recouvre pas la vue, le calcul précédent est
+    // conservé tel quel.
+    UIView *nativeChatView = s_activeNativeChatView;
+    if (nativeChatView.window == self.window && !CGRectIsEmpty(nativeChatView.bounds)) {
+        CGRect nativeRect = [nativeChatView convertRect:nativeChatView.bounds toView:self];
+        CGFloat minX = MAX(CGRectGetMinX(visibleRect), CGRectGetMinX(nativeRect));
+        CGFloat maxX = MIN(CGRectGetMaxX(visibleRect), CGRectGetMaxX(nativeRect));
+        if (maxX > minX) {
+            visibleRect.origin.x = minX;
+            visibleRect.size.width = maxX - minX;
+        }
+    }
+    return visibleRect;
+}
+
+- (CGFloat)s7tv_actualVisibleWidth {
+    return ceil(CGRectGetWidth([self s7tv_actualVisibleRect]));
+}
+
+- (void)s7tv_updateNewMessagesBannerLayout {
+    CGRect visibleRect = [self s7tv_actualVisibleRect];
+    CGFloat visibleWidth = CGRectGetWidth(visibleRect);
+    if (visibleWidth <= 0 || !self.unseenMessagesBannerWidthConstraint ||
+        !self.unseenMessagesBannerCenterXConstraint) return;
+
+    // Les bounds du transcript peuvent rester dans les coordonnées portrait
+    // pendant que Twitch applique la rotation au parent. Les bounds de la
+    // fenêtre active donnent l'orientation réellement affichée.
+    UIWindow *window = self.window;
+    BOOL isLandscape = window
+        ? window.bounds.size.width > window.bounds.size.height
+        : self.bounds.size.width > self.bounds.size.height;
+    CGFloat maximumWidth = MAX(1.0, visibleWidth - 16.0);
+    CGFloat targetWidth = 230.0;
+    if (isLandscape && self.unseenMessagesBannerLabel.text.length > 0) {
+        // En paysage, la largeur suit le contenu réel (flèche + texte +
+        // marges), puis reste bornée par la zone visible et par la largeur
+        // historique maximale de 230 pt. En portrait, on conserve ce rendu
+        // historique tant qu'il tient dans la colonne.
+        CGFloat labelWidth = [self.unseenMessagesBannerLabel
+            sizeThatFits:CGSizeMake(CGFLOAT_MAX, 36.0)].width;
+        targetWidth = ceil(labelWidth + 44.0);
+    }
+    targetWidth = MIN(targetWidth, maximumWidth);
+    if (targetWidth <= 0) targetWidth = maximumWidth;
+
+    CGFloat centerOffset = CGRectGetMidX(visibleRect) - CGRectGetMidX(self.bounds);
+    if (fabs(self.unseenMessagesBannerWidthConstraint.constant - targetWidth) >= 0.5) {
+        self.unseenMessagesBannerWidthConstraint.constant = targetWidth;
+    }
+    if (fabs(self.unseenMessagesBannerCenterXConstraint.constant - centerOffset) >= 0.5) {
+        self.unseenMessagesBannerCenterXConstraint.constant = centerOffset;
+    }
 }
 
 #pragma mark - Construction du texte

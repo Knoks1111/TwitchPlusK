@@ -350,6 +350,11 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 @property (nonatomic, strong) NSLayoutConstraint *standaloneReplyBarHeightConstraint;
 @property (nonatomic, copy) NSArray<NSLayoutConstraint *> *standaloneReplyBarConstraints;
 @property (nonatomic, weak) SevenTVChatCustomView *replyTargetSourceView;
+@property (nonatomic, assign) BOOL panelLayoutInProgress;
+@property (nonatomic, assign) BOOL panelRelayoutPending;
+@property (nonatomic, assign) BOOL standaloneResizeInProgress;
+@property (nonatomic, assign) BOOL standaloneResizePending;
+@property (nonatomic, assign) BOOL contentLayoutScheduled;
 - (void)s7tv_clearReplyTargetRemovingMention;
 - (void)showForThreadRootID:(NSString *)threadRootID
             tappedMessageID:(NSString *)tappedMessageID
@@ -359,6 +364,8 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
                       allowsCatchUpPass:(BOOL)allowsCatchUpPass;
 - (void)s7tv_layoutPanelContentInWindow:(UIWindow *)window;
 - (void)s7tv_resizeStandaloneReplyTargetBarInWindow:(UIWindow *)window;
+- (void)s7tv_contentHeightChangedForView:(SevenTVChatCustomView *)view;
+- (void)s7tv_scheduleContentLayoutForView:(SevenTVChatCustomView *)view;
 @end
 
 @implementation S7TVReplyThreadPanel
@@ -463,6 +470,11 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     self.replyTargetMessageView.translatesAutoresizingMaskIntoConstraints = NO;
     self.replyTargetMessageView.hidden = YES;
     self.replyTargetMessageView.renderingSuspended = YES;
+    __weak typeof(self) weakSelfForPreviewHeight = self;
+    self.replyTargetMessageView.onContentHeightChanged =
+        ^(SevenTVChatCustomView *view) {
+        [weakSelfForPreviewHeight s7tv_contentHeightChangedForView:view];
+    };
     [replyBar addSubview:self.replyTargetMessageView];
 
     self.replyTargetMessageViewHeightConstraint =
@@ -554,7 +566,10 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
         self.standaloneReplyBarHeightConstraint,
     ];
     [NSLayoutConstraint activateConstraints:self.standaloneReplyBarConstraints];
-    self.replyTargetBarView.hidden = NO;
+    // La barre reste masquée jusqu'à ce que le snapshot soit appliqué et que
+    // la cellule ait été mesurée à la largeur finale. Cela évite d'exposer
+    // une hauteur intermédiaire (0 pt) lors de la toute première réponse.
+    self.replyTargetBarView.hidden = YES;
     [window bringSubviewToFront:self.replyTargetBarView];
 }
 
@@ -562,16 +577,46 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     if (!window || self.replyTargetBarView.window != window ||
         self.replyTargetBarView.hidden || self.replyTargetMessageView.hidden) return;
 
+    if (self.standaloneResizeInProgress) {
+        self.standaloneResizePending = YES;
+        return;
+    }
+
+    self.standaloneResizeInProgress = YES;
+    BOOL wasHidden = self.replyTargetBarView.hidden;
+    // La barre est déjà attachée : elle reste invisible pendant la transaction
+    // de mesure, évitant d'exposer une hauteur estimée entre deux layouts.
+    self.replyTargetBarView.hidden = YES;
+
     [window layoutIfNeeded];
-    CGFloat width = CGRectGetWidth(self.replyTargetBarView.bounds);
-    if (width <= 0) width = CGRectGetWidth(window.bounds);
-    self.replyTargetMessageView.frame =
-        CGRectMake(0, 0, width, CGRectGetHeight(window.bounds));
+    UIView *inputView = s7tv_findChatInputView();
+    CGFloat availableHeight = CGRectGetHeight(window.bounds) - window.safeAreaInsets.bottom;
+    if (inputView.window == window) {
+        CGRect inputFrame = [inputView convertRect:inputView.bounds toView:window];
+        availableHeight = CGRectGetMinY(inputFrame);
+    }
+    availableHeight = MAX(44.0, availableHeight);
+
+    // Donner une vraie fenêtre de layout au UITableView permet à UIKit de
+    // créer et self-dimensionner la cellule avant de lire contentSize. Il ne
+    // s'agit pas d'un délai : toute la mesure reste dans la même transaction
+    // Auto Layout, puis la contrainte reçoit la hauteur intrinsèque réelle.
+    self.replyTargetMessageViewHeightConstraint.constant = availableHeight;
+    self.standaloneReplyBarHeightConstraint.constant =
+        kS7TVReplyTargetActionRowHeight + availableHeight;
+    [window layoutIfNeeded];
     CGFloat messageHeight = ceil(MAX([self.replyTargetMessageView s7tvContentHeight], 0));
     self.replyTargetMessageViewHeightConstraint.constant = messageHeight;
     self.standaloneReplyBarHeightConstraint.constant =
         kS7TVReplyTargetActionRowHeight + messageHeight;
     [window layoutIfNeeded];
+
+    self.replyTargetBarView.hidden = wasHidden;
+    self.standaloneResizeInProgress = NO;
+    if (self.standaloneResizePending) {
+        self.standaloneResizePending = NO;
+        [self s7tv_scheduleContentLayoutForView:self.replyTargetMessageView];
+    }
 }
 
 - (void)s7tv_updateContainerPositionConstraintsInWindow:(UIWindow *)window {
@@ -598,6 +643,53 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
         [container.bottomAnchor constraintEqualToAnchor:bottomAnchor],
     ];
     [NSLayoutConstraint activateConstraints:self.containerPositionConstraints];
+}
+
+- (void)s7tv_contentHeightChangedForView:(SevenTVChatCustomView *)view {
+    if (!view) return;
+
+    BOOL isThreadView = (view == self.rootChatView || view == self.repliesChatView);
+    BOOL isStandalonePreview = (view == self.replyTargetMessageView);
+    BOOL threadVisible = isThreadView && self.containerView.window &&
+        !self.containerView.hidden && self.currentThreadRootID.length > 0;
+    BOOL standaloneVisible = isStandalonePreview && self.replyTargetBarView.window &&
+        self.replyTargetBarView.superview == self.replyTargetBarView.window &&
+        !self.replyTargetBarView.hidden && !self.replyTargetMessageView.hidden;
+    if (!threadVisible && !standaloneVisible) return;
+
+    if (threadVisible && self.panelLayoutInProgress) {
+        self.panelRelayoutPending = YES;
+        return;
+    }
+    if (standaloneVisible && self.standaloneResizeInProgress) {
+        self.standaloneResizePending = YES;
+        return;
+    }
+    [self s7tv_scheduleContentLayoutForView:view];
+}
+
+- (void)s7tv_scheduleContentLayoutForView:(SevenTVChatCustomView *)view {
+    if (!view || self.contentLayoutScheduled) return;
+    self.contentLayoutScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.contentLayoutScheduled = NO;
+
+        if ((view == strongSelf.rootChatView || view == strongSelf.repliesChatView) &&
+            strongSelf.containerView.window && !strongSelf.containerView.hidden &&
+            strongSelf.currentThreadRootID.length > 0) {
+            [strongSelf s7tv_layoutPanelContentInWindow:strongSelf.containerView.window];
+        } else if (view == strongSelf.replyTargetMessageView &&
+                   strongSelf.replyTargetBarView.window &&
+                   strongSelf.replyTargetBarView.superview == strongSelf.replyTargetBarView.window &&
+                   !strongSelf.replyTargetBarView.hidden &&
+                   !strongSelf.replyTargetMessageView.hidden) {
+            [strongSelf s7tv_resizeStandaloneReplyTargetBarInWindow:
+                strongSelf.replyTargetBarView.window];
+        }
+    });
 }
 
 - (void)s7tv_ensureContainerInWindow:(UIWindow *)window {
@@ -700,6 +792,15 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     // rootChatView.backgroundColor) — demande explicite.
     self.repliesChatView.usesThreadReplyIndent = YES;
     self.repliesChatView.translatesAutoresizingMaskIntoConstraints = NO;
+    __weak typeof(self) weakSelfForThreadHeight = self;
+    self.rootChatView.onContentHeightChanged =
+        ^(SevenTVChatCustomView *view) {
+        [weakSelfForThreadHeight s7tv_contentHeightChangedForView:view];
+    };
+    self.repliesChatView.onContentHeightChanged =
+        ^(SevenTVChatCustomView *view) {
+        [weakSelfForThreadHeight s7tv_contentHeightChangedForView:view];
+    };
     [container addSubview:self.repliesChatView];
 
     // Une seule interaction de réponse partout : l'appui long déjà géré
@@ -955,12 +1056,16 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 // barre de saisie Twitch (voir s7tv_updateContainerPositionConstraints...),
 // et non plus par une frame figée calculée ici.
 - (void)s7tv_layoutPanelContentInWindow:(UIWindow *)window {
+    if (!window || !self.containerView || !self.rootChatView || !self.repliesChatView) return;
+    if (self.panelLayoutInProgress) {
+        self.panelRelayoutPending = YES;
+        return;
+    }
+    self.panelLayoutInProgress = YES;
     [self s7tv_updateContainerPositionConstraintsInWindow:window];
     // Force la résolution des nouvelles ancres avant de mesurer les cellules :
     // leur hauteur self-sizing dépend directement de la largeur du panneau.
     [window layoutIfNeeded];
-    CGFloat width = CGRectGetWidth(self.containerView.bounds);
-    if (width <= 0) width = CGRectGetWidth(window.bounds);
 
     UIView *inputView = s7tv_findChatInputView();
     CGFloat inputTopY = window.bounds.size.height; // repli si la barre de saisie est introuvable (cas extrême)
@@ -989,12 +1094,22 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     CGFloat renderedLineHeight = ceil(glyphLineHeight + MAX(cfg.lineSpacing, 0) + 8.0);
     CGFloat lineBudgetHeight = renderedLineHeight * visibleLineCount;
 
-    // Mesure avec toute la hauteur physiquement disponible. La racine n'est
-    // plus plafonnée à une part du panneau : sa cellule prend sa hauteur
-    // intrinsèque exacte et son UITableView ne peut pas défiler.
-    self.rootChatView.frame = CGRectMake(0, 0, width, availableContentHeight);
-    self.repliesChatView.frame = CGRectMake(0, 0, width, availableContentHeight);
+    // Première phase : donner à la racine une vraie largeur et toute la
+    // hauteur disponible. Auto Layout peut ainsi créer sa cellule et calculer
+    // sa hauteur intrinsèque, même lors de la toute première ouverture.
+    self.containerHeightConstraint.constant = chromeHeight + availableContentHeight;
+    self.rootChatViewHeightConstraint.constant = availableContentHeight;
+    [self.containerView setNeedsLayout];
+    [self.containerView layoutIfNeeded];
     CGFloat rootContentHeight = MAX([self.rootChatView s7tvContentHeight], 0);
+
+    // Deuxième phase : libérer la zone de la racine pour que la table des
+    // réponses obtienne à son tour sa largeur/viewport final et ses hauteurs
+    // self-sizing réelles. Les deux mesures sont donc faites avec les
+    // contraintes finales, jamais avec un frame manuel ou une estimation.
+    self.rootChatViewHeightConstraint.constant = 0;
+    [self.containerView setNeedsLayout];
+    [self.containerView layoutIfNeeded];
     CGFloat repliesContentHeight = [self.repliesChatView s7tvContentHeight];
     repliesContentHeight = MAX(repliesContentHeight, 0);
 
@@ -1028,6 +1143,11 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     self.containerHeightConstraint.constant = totalHeight;
     [self.containerView setNeedsLayout];
     [self.containerView layoutIfNeeded];
+    self.panelLayoutInProgress = NO;
+    if (self.panelRelayoutPending) {
+        self.panelRelayoutPending = NO;
+        [self s7tv_scheduleContentLayoutForView:self.rootChatView];
+    }
 }
 
 - (void)s7tv_finishOpeningThreadRootID:(NSString *)threadRootID
@@ -1191,6 +1311,9 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
                 ![strongSelf.selectedReplyTargetMessageID isEqualToString:requestedMessageID] ||
                 strongSelf.replyTargetSourceView != sourceView) return;
 
+            // Le snapshot et le self-sizing sont maintenant terminés : la
+            // barre peut être révélée après sa mesure atomique.
+            strongSelf.replyTargetBarView.hidden = NO;
             [strongSelf s7tv_resizeStandaloneReplyTargetBarInWindow:window];
         }];
     }

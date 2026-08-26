@@ -143,6 +143,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"adblock_proxy_status_checking":    @[@"Vérification…", @"Checking…"],
         @"adblock_proxy_status_unknown":     @[@"—", @"—"],
         @"adblock_proxy_add":                @[@"+ Ajouter un proxy", @"+ Add proxy"],
+        @"adblock_local_no_proxy":            @[@"Cette méthode d’AdBlock ne nécessite aucune configuration supplémentaire.",
+                                                 @"This AdBlock method requires no additional configuration."],
 
         // ── Méthode AdBlock : Proxy / Local (VAFT) ────────────────────────
         // La méthode configurée ne s'applique qu'au prochain démarrage.
@@ -244,10 +246,14 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"diagnostics_title":               @[@"Diagnostics", @"Diagnostics"],
         @"diagnostics_subtitle":            @[@"Vérifier les hooks Twitch détectés", @"Check detected Twitch hooks"],
         @"diagnostics_header":              @[@"Classes Twitch hookées (cette version)", @"Hooked Twitch classes (this build)"],
+        @"diagnostics_group_proxy":          @[@"Proxy AdBlock", @"AdBlock Proxy"],
+        @"diagnostics_group_vaft":           @[@"Local (VAFT) AdBlock", @"Local (VAFT) AdBlock"],
+        @"diagnostics_group_twitchplusk":    @[@"TwitchPlusK", @"TwitchPlusK"],
         @"diagnostics_ok":                  @[@"✓ OK", @"✓ OK"],
         @"diagnostics_missing":             @[@"✗ absente", @"✗ missing"],
-        @"diagnostics_footer":              @[@"✓ = la classe ciblée a été résolue et le hook peut fonctionner. ✗ = Twitch l’a renommée, supprimée ou ne l’a pas encore chargée.",
-                                               @"✓ = the target class resolved and its hook can run. ✗ = Twitch renamed, removed, or has not loaded it yet."],
+        @"diagnostics_inactive":            @[@"— non actif", @"— inactive"],
+        @"diagnostics_footer":              @[@"✓ = la classe et le selector ciblés sont résolus (compatibilité de la cible uniquement ; pour une classe dynamique, cela confirme sa création). ✗ = cible attendue absente alors que le moteur est actif. — = moteur non actif, donc non applicable.",
+                                               @"✓ = the target class and selector resolved (target compatibility only; for a dynamic class, this confirms its creation). ✗ = expected target absent while the engine is active. — = engine inactive, therefore not applicable."],
 
         // ── Catégories de logs ────────────────────────────────────────────
         @"log_cat_errors":                  @[@"Erreurs / Avertissements", @"Errors / Warnings"],

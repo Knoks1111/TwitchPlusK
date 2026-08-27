@@ -904,11 +904,13 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     // Première visite : pas de mapping → attendre le ROOMSTATE.
     // Timeout de sécurité à 5s au cas où le ROOMSTATE n'arriverait pas.
     [self log:@"⏳ Pas de twitchID en cache pour %@, attente ROOMSTATE...", channelName];
+    NSString *fallbackChannelName = [channelName copy];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
                    dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (self.currentChannelTwitchID) {
-            [self loadEmotesForChannelTwitchID:self.currentChannelTwitchID];
-        }
+        if (!self.currentChannelName.length ||
+            [self.currentChannelName caseInsensitiveCompare:fallbackChannelName] != NSOrderedSame) return;
+        NSString *currentChannelID = [self.currentChannelTwitchID copy];
+        if (currentChannelID.length) [self loadEmotesForChannelTwitchID:currentChannelID];
     });
 }
 

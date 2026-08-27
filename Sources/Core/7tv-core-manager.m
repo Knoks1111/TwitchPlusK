@@ -1089,12 +1089,14 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 - (void)loadEmotesForChannelTwitchID:(NSString *)twitchUserID {
     if (!twitchUserID.length) return;
 
-    // Anti-doublon concurrent: si une requête réseau est déjà en cours → ignorer
+    // Réserver atomiquement l'ID avant toute lecture du cache : deux appels
+    // concurrents ne peuvent pas tous deux devenir propriétaires du fetch.
     @synchronized(self.fetchingChannelIDs) {
         if ([self.fetchingChannelIDs containsObject:twitchUserID]) {
             [self log:@"⏳ Fetch déjà en cours pour channel %@, ignoré", twitchUserID];
             return;
         }
+        [self.fetchingChannelIDs addObject:twitchUserID];
     }
 
     NSString *cacheName = [NSString stringWithFormat:@"ch_%@", twitchUserID];
@@ -1127,6 +1129,9 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if (cacheIsFresh) {
         [self log:@"✅ Cache channel frais (%.0fs < %.0fs), pas de refresh",
          cacheAge, kCacheTTLChannel];
+        @synchronized(self.fetchingChannelIDs) {
+            [self.fetchingChannelIDs removeObject:twitchUserID];
+        }
         return;
     }
 
@@ -1137,16 +1142,18 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         [self log:@"🌐 Pas de cache pour channel %@ → fetch API", twitchUserID];
     }
 
-    @synchronized(self.fetchingChannelIDs) {
-        [self.fetchingChannelIDs addObject:twitchUserID];
-    }
-
     NSString *urlStr = [NSString stringWithFormat:@"%@/users/twitch/%@", S7TV_API_BASE, twitchUserID];
     NSURL *url = [NSURL URLWithString:urlStr];
+    if (!url) {
+        @synchronized(self.fetchingChannelIDs) {
+            [self.fetchingChannelIDs removeObject:twitchUserID];
+        }
+        return;
+    }
     NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
     NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
 
-    [[session dataTaskWithURL:url
+    NSURLSessionDataTask *task = [session dataTaskWithURL:url
             completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
 
         // Retirer de fetchingChannelIDs dans tous les cas
@@ -1192,7 +1199,14 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
         [self saveCacheForName:cacheName withEmotes:parsed];
 
-    }] resume];
+    }];
+    if (!task) {
+        @synchronized(self.fetchingChannelIDs) {
+            [self.fetchingChannelIDs removeObject:twitchUserID];
+        }
+        return;
+    }
+    [task resume];
 }
 
 

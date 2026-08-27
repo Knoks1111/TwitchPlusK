@@ -239,13 +239,14 @@ jobs:
           cp "$DYLIB_PATH" /tmp/TwitchPlusK.dylib
           echo "✅ Copied to /tmp/TwitchPlusK.dylib ($(du -sh /tmp/TwitchPlusK.dylib | cut -f1))"
 
-      - name: 🚀 Publish to GitHub Release (fixed URL)
+      - name: 🚀 Publish Dylib Release (fixed URL)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: "Latest build (run #${{ github.run_number }})"
+          tag_name: dylib-latest
+          name: "Latest Dylib build (run #${{ github.run_number }})"
           files: /tmp/TwitchPlusK.dylib
-          make_latest: true
+          prerelease: true
+          make_latest: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -263,5 +264,5 @@ jobs:
           echo "👉 Paste this link into the 'Build IPA' workflow to inject it"
           echo ""
           echo "👉 OR use the fixed URL (always the latest build):"
-          echo "   https://github.com/Knoks1111/TwitchPlusK/releases/download/latest/TwitchPlusK.dylib"
+          echo "   https://github.com/Knoks1111/TwitchPlusK/releases/download/dylib-latest/TwitchPlusK.dylib"
           echo "========================================"

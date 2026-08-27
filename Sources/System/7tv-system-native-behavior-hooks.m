@@ -49,6 +49,7 @@ static NSString *const kS7TVAutoOrientationLockMode =
 // associated objects" de 7tv-core-runtime-hooks.m où elle vivait aux côtés de clés
 // sans rapport (kS7TVBitsHijacked, kS7TVShareHijacked, etc.).
 static const char kS7TVChannelPointsPolling = 9;
+static BOOL s_s7tvChannelPointsLoopScheduled = NO;
 static const char kS7TVShareHijacked = 8;
 static const char kS7TVShareButtonSnapshot = 10;
 
@@ -504,7 +505,23 @@ void s7tv_scanForChannelPointsLoop(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     BOOL autoCollectEnabled = [defaults objectForKey:kTCLiveAutoCollectChannelPoints] != nil
         ? [defaults boolForKey:kTCLiveAutoCollectChannelPoints] : YES;
-    if (!autoCollectEnabled) return;
+    if (!autoCollectEnabled) {
+        @synchronized ([SevenTVManager class]) {
+            s_s7tvChannelPointsLoopScheduled = NO;
+        }
+        return;
+    }
+
+    // Un appel ON peut arriver alors qu'un tick différé existe encore :
+    // effectuer le scan immédiatement, mais ne jamais créer une seconde
+    // chaîne de dispatch_after.
+    BOOL scheduleNext = NO;
+    @synchronized ([SevenTVManager class]) {
+        if (!s_s7tvChannelPointsLoopScheduled) {
+            s_s7tvChannelPointsLoopScheduled = YES;
+            scheduleNext = YES;
+        }
+    }
 
     UIView *chatInputView = s7tv_findChatInputView();
 
@@ -515,10 +532,15 @@ void s7tv_scanForChannelPointsLoop(void) {
         s7tv_pollChannelPointsClaim(chatInputView);
     }
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        s7tv_scanForChannelPointsLoop();
-    });
+    if (scheduleNext) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            @synchronized ([SevenTVManager class]) {
+                s_s7tvChannelPointsLoopScheduled = NO;
+            }
+            s7tv_scanForChannelPointsLoop();
+        });
+    }
 }
 // Parsing de l'événement PubSub "claim-available" (nouveau coffre qui
 // spawn en cours de session — PAS le cas déjà couvert par le GQL initial

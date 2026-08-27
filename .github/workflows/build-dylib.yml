@@ -4,7 +4,7 @@ on:
   workflow_dispatch: {}
   push:
     branches: [ main ]
-    paths: ['**.m', '**.h', 'Makefile']
+    paths: ['**.m', '**.h', '**.c', 'Makefile']
 
 env:
   THEOS: ${{ github.workspace }}/theos

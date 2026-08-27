@@ -2071,7 +2071,10 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
     }
 }
 
-- (void)toggleAutoCollect:(UISwitch *)sw { S7TVSetBool(kTCLiveAutoCollectChannelPoints, sw.isOn); }
+- (void)toggleAutoCollect:(UISwitch *)sw {
+    S7TVSetBool(kTCLiveAutoCollectChannelPoints, sw.isOn);
+    if (sw.isOn) s7tv_scanForChannelPointsLoop();
+}
 - (void)toggleHideTwitchStories:(UISwitch *)sw {
     s7tv_setHideTwitchStoriesEnabled(sw.isOn);
 }

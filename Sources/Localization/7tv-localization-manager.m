@@ -279,8 +279,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Page Favoris ──────────────────────────────────────────────────
         @"action_import_from_pc":           @[@"Importer depuis PC", @"Import from PC"],
-        @"subtitle_import_from_pc":         @[@"Export JSON 7TV (Settings → Export)",
-                                               @"7TV JSON export (Settings → Export)"],
+        @"subtitle_import_from_pc":         @[@"7TV on PC ( Settings → Export )",
+                                               @"7TV on PC ( Settings → Export )"],
         @"error_cant_read_file":            @[@"Impossible de lire le fichier.", @"Couldn't read the file."],
         @"error_invalid_json":              @[@"Le fichier n'est pas un JSON valide.", @"The file isn't valid JSON."],
         @"error_missing_favorites_key":     @[@"Clé « ui.emote_menu.favorites » introuvable.\nVérifie que c'est bien un export 7TV PC.",

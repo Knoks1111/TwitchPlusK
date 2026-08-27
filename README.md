@@ -32,8 +32,7 @@ Available in <img src="https://flagcdn.com/gb.svg" width="20"> **ENGLISH** and <
 ## Install
 
 1. [Download the latest IPA](https://github.com/Knoks1111/TwitchPlusK/releases/latest)
-2. Install it with SideStore.
-3. On first launch, go to **Settings → General → VPN & Device Management** and trust the profile, otherwise the app will not open.
+2. Install it with SideStore or LiveContainer 
 
 New releases follow new Twitch app versions — check the Releases page when Twitch updates.
 

@@ -1,6 +1,7 @@
 # TwitchPlusK
 
 Enhanced Twitch app for iOS — 7TV emotes, auto-claim channel points, and ad blocking, OLED mode. Sideloaded, no jailbreak required.
+Available in :uk: **ENGLISH** and :fr: **FRENCH** 🇫🇷 from the Settings menu.
 
 ## What it does
 

@@ -27,6 +27,48 @@ static NSURL *S7TVUserURL(NSString *channelID) {
     return components.URL;
 }
 
+static NSString *S7TVChannelBadgeRetryScope(NSString *channelID) {
+    return [@"channel:" stringByAppendingString:channelID];
+}
+
+static const NSUInteger kS7TVMaxBadgeRetries = 3;
+
+static NSTimeInterval S7TVBadgeRetryDelay(NSUInteger retryNumber) {
+    switch (retryNumber) {
+        case 1: return 2.0;
+        case 2: return 5.0;
+        case 3: return 10.0;
+        default: return 0.0;
+    }
+}
+
+static NSInteger S7TVBadgeHTTPStatusCode(NSURLResponse *response) {
+    return [response isKindOfClass:[NSHTTPURLResponse class]]
+        ? ((NSHTTPURLResponse *)response).statusCode : 0;
+}
+
+static BOOL S7TVBadgeFailureIsTransient(NSData *data,
+                                        NSURLResponse *response,
+                                        NSError *error) {
+    NSInteger statusCode = S7TVBadgeHTTPStatusCode(response);
+    if (error && [error.domain isEqualToString:NSURLErrorDomain] &&
+        error.code == NSURLErrorCancelled) {
+        return NO;
+    }
+    if (statusCode == 401 || statusCode == 403) return NO;
+    if (statusCode == 408 || statusCode == 429 ||
+        (statusCode >= 500 && statusCode <= 599)) return YES;
+    if (statusCode >= 400 && statusCode <= 499) return NO;
+    if (error && ([error.domain isEqualToString:NSURLErrorDomain] ||
+                  [error.domain isEqualToString:NSPOSIXErrorDomain])) {
+        return YES;
+    }
+    if (statusCode != 0) return NO; // autres statuts HTTP : erreur permanente
+
+    if (error) return NO;
+    return data.length == 0;
+}
+
 
 // ============================================================
 // MARK: - S7TVResolvedBadge
@@ -61,6 +103,23 @@ static NSURL *S7TVUserURL(NSString *channelID) {
 @property (nonatomic, strong) NSDictionary<NSString *, NSString *> *sharedChatAvatarURLs;
 @property (nonatomic, strong) NSMutableSet<NSString *> *fetchingSharedChatAvatarChannelIDs;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *sharedChatAvatarRetryAfter;
+// État privé des retries des catalogues de badges. Une entrée est indexée
+// par scope (global ou channel:<id>) et invalidée par génération au succès,
+// au reset de chaîne ou à l'épuisement des tentatives.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *badgeRetryGenerations;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *badgeRetryCounts;
+@property (nonatomic, strong) NSMutableSet<NSString *> *scheduledBadgeRetryScopes;
+@property (nonatomic, assign) NSUInteger channelBadgeContextGeneration;
+
+- (void)s7tv_loadGlobalBadgesWithRetryGeneration:(NSNumber *)retryGeneration;
+- (void)s7tv_loadBadgesForChannelID:(NSString *)channelID
+                   retryGeneration:(NSNumber *)retryGeneration
+                 contextGeneration:(NSUInteger)contextGeneration;
+- (void)s7tv_scheduleBadgeRetryForScope:(NSString *)scope
+                             generation:(NSUInteger)generation
+                           retryNumber:(NSUInteger)retryNumber
+                                action:(dispatch_block_t)action;
+- (void)s7tv_resetBadgeRetryForScope:(NSString *)scope generation:(NSUInteger)generation;
 @end
 
 @implementation SevenTVBadgeProvider
@@ -94,6 +153,10 @@ static NSURL *S7TVUserURL(NSString *channelID) {
         _sharedChatAvatarURLs = @{};
         _fetchingSharedChatAvatarChannelIDs = [NSMutableSet set];
         _sharedChatAvatarRetryAfter = [NSMutableDictionary dictionary];
+        _badgeRetryGenerations = [NSMutableDictionary dictionary];
+        _badgeRetryCounts = [NSMutableDictionary dictionary];
+        _scheduledBadgeRetryScopes = [NSMutableSet set];
+        _channelBadgeContextGeneration = 0;
         _badgeQueue = dispatch_queue_create("tv.s7tv.badge-provider", DISPATCH_QUEUE_CONCURRENT);
     }
     return self;
@@ -123,6 +186,59 @@ static NSURL *S7TVUserURL(NSString *channelID) {
     });
 }
 
+- (void)s7tv_scheduleBadgeRetryForScope:(NSString *)scope
+                             generation:(NSUInteger)generation
+                           retryNumber:(NSUInteger)retryNumber
+                                action:(dispatch_block_t)action {
+    if (!scope.length || !action || retryNumber == 0 ||
+        retryNumber > kS7TVMaxBadgeRetries) return;
+
+    NSTimeInterval delay = S7TVBadgeRetryDelay(retryNumber);
+    @synchronized (self) {
+        NSNumber *currentGeneration = self.badgeRetryGenerations[scope];
+        if (!currentGeneration || currentGeneration.unsignedIntegerValue != generation ||
+            [self.scheduledBadgeRetryScopes containsObject:scope]) {
+            return;
+        }
+        self.badgeRetryCounts[scope] = @(retryNumber);
+        [self.scheduledBadgeRetryScopes addObject:scope];
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        BOOL shouldRun = NO;
+        @synchronized (strongSelf) {
+            NSNumber *currentGeneration = strongSelf.badgeRetryGenerations[scope];
+            if (currentGeneration && currentGeneration.unsignedIntegerValue == generation &&
+                [strongSelf.scheduledBadgeRetryScopes containsObject:scope]) {
+                [strongSelf.scheduledBadgeRetryScopes removeObject:scope];
+                shouldRun = YES;
+            }
+        }
+        if (shouldRun) action();
+    });
+}
+
+- (void)s7tv_resetBadgeRetryForScope:(NSString *)scope generation:(NSUInteger)generation {
+    if (!scope.length) return;
+
+    @synchronized (self) {
+        NSNumber *currentGeneration = self.badgeRetryGenerations[scope];
+        if (!currentGeneration || currentGeneration.unsignedIntegerValue != generation) {
+            return;
+        }
+        [self.scheduledBadgeRetryScopes removeObject:scope];
+        [self.badgeRetryCounts removeObjectForKey:scope];
+        // Conserve une génération distincte pour invalider un callback retardé
+        // si un nouveau chargement du même scope démarre immédiatement.
+        self.badgeRetryGenerations[scope] = @(generation + 1);
+    }
+}
+
 #pragma mark - Chargement réseau
 
 - (NSURLRequest *)s7tv_helixRequestWithURL:(NSURL *)url {
@@ -134,17 +250,43 @@ static NSURL *S7TVUserURL(NSString *channelID) {
 }
 
 - (void)loadGlobalBadges {
+    [self s7tv_loadGlobalBadgesWithRetryGeneration:nil];
+}
+
+- (void)s7tv_loadGlobalBadgesWithRetryGeneration:(NSNumber *)retryGeneration {
     NSURL *url = [NSURL URLWithString:kS7TVGlobalBadgesURL];
     if (!url) return;
 
     SevenTVManager *mgr = [SevenTVManager sharedManager];
+    NSString *scope = @"global";
     if (!mgr.twitchToken.length || !mgr.twitchClientID.length) {
         [mgr log:@"⏳ Badges global: credentials pas encore disponibles, attente GQL..."];
+        if (retryGeneration) {
+            [self s7tv_resetBadgeRetryForScope:scope
+                                    generation:retryGeneration.unsignedIntegerValue];
+        }
         return; // saveTwitchToken:clientID: rappellera loadGlobalBadges dès que le token arrive
     }
 
+    BOOL isRetry = retryGeneration != nil;
+    NSUInteger requestGeneration = 0;
     @synchronized (self) {
         if (self.fetchingGlobalBadges) return;
+
+        if (isRetry) {
+            requestGeneration = retryGeneration.unsignedIntegerValue;
+            NSNumber *currentGeneration = self.badgeRetryGenerations[scope];
+            if (!currentGeneration || currentGeneration.unsignedIntegerValue != requestGeneration) {
+                return;
+            }
+        } else {
+            // Une nouvelle entrée publique ne doit pas doubler un retry déjà
+            // programmé pour le même catalogue.
+            if ([self.scheduledBadgeRetryScopes containsObject:scope]) return;
+            requestGeneration = [self.badgeRetryGenerations[scope] unsignedIntegerValue] + 1;
+            self.badgeRetryGenerations[scope] = @(requestGeneration);
+            self.badgeRetryCounts[scope] = @0;
+        }
         self.fetchingGlobalBadges = YES;
     }
 
@@ -152,29 +294,50 @@ static NSURL *S7TVUserURL(NSString *channelID) {
 
     __weak typeof(self) weakSelf = self;
     NSURLRequest *req = [self s7tv_helixRequestWithURL:url];
-    NSString *requestToken = [req valueForHTTPHeaderField:@"Authorization"];
-    NSString *requestClientID = [req valueForHTTPHeaderField:@"Client-ID"];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
         dataTaskWithRequest:req
       completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
 
+        BOOL requestIsCurrent = NO;
         @synchronized (strongSelf) {
-            strongSelf.fetchingGlobalBadges = NO;
+            NSNumber *currentGeneration = strongSelf.badgeRetryGenerations[scope];
+            requestIsCurrent = currentGeneration &&
+                currentGeneration.unsignedIntegerValue == requestGeneration;
+            if (requestIsCurrent) strongSelf.fetchingGlobalBadges = NO;
         }
+        if (!requestIsCurrent) return;
 
         NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *parsed =
             [strongSelf s7tv_parseBadgeSetsFromData:data response:response error:error];
         if (!parsed) {
-            SevenTVManager *currentManager = [SevenTVManager sharedManager];
-            BOOL credentialsChanged =
-                ![requestToken isEqualToString:currentManager.twitchToken] ||
-                ![requestClientID isEqualToString:currentManager.twitchClientID];
-            if (credentialsChanged) [strongSelf loadGlobalBadges];
+            BOOL retryable = S7TVBadgeFailureIsTransient(data, response, error);
+
+            if (retryable) {
+                NSUInteger retryNumber = 0;
+                @synchronized (strongSelf) {
+                    retryNumber = [strongSelf.badgeRetryCounts[scope] unsignedIntegerValue] + 1;
+                }
+                if (retryNumber <= kS7TVMaxBadgeRetries) {
+                    [strongSelf s7tv_scheduleBadgeRetryForScope:scope
+                                                       generation:requestGeneration
+                                                     retryNumber:retryNumber
+                                                          action:^{
+                        [strongSelf s7tv_loadGlobalBadgesWithRetryGeneration:
+                            @(requestGeneration)];
+                    }];
+                } else {
+                    [strongSelf s7tv_resetBadgeRetryForScope:scope
+                                                  generation:requestGeneration];
+                }
+            } else {
+                [strongSelf s7tv_resetBadgeRetryForScope:scope generation:requestGeneration];
+            }
             return;
         }
 
+        [strongSelf s7tv_resetBadgeRetryForScope:scope generation:requestGeneration];
         dispatch_barrier_async(strongSelf.badgeQueue, ^{
             strongSelf.globalBadges = parsed;
             // Voir S7TVBadgesCatalogUpdatedNotification (header) : sans ce
@@ -192,12 +355,21 @@ static NSURL *S7TVUserURL(NSString *channelID) {
 }
 
 - (void)loadBadgesForChannelID:(NSString *)channelID {
+    [self s7tv_loadBadgesForChannelID:channelID
+                       retryGeneration:nil
+                     contextGeneration:0];
+}
+
+- (void)s7tv_loadBadgesForChannelID:(NSString *)channelID
+                   retryGeneration:(NSNumber *)retryGeneration
+                 contextGeneration:(NSUInteger)contextGeneration {
     if (!channelID.length) return;
 
     NSURL *url = [NSURL URLWithString:S7TVChannelBadgesURL(channelID)];
     if (!url) return;
 
     SevenTVManager *mgr = [SevenTVManager sharedManager];
+    NSString *scope = S7TVChannelBadgeRetryScope(channelID);
     if (!mgr.twitchToken.length || !mgr.twitchClientID.length) {
         // CRITIQUE : ne PAS marquer lastLoadedChannelID ici. S7TVChannelJoined
         // arrive souvent avant que le token (capturé depuis les headers GQL)
@@ -209,41 +381,103 @@ static NSURL *S7TVUserURL(NSString *channelID) {
         // sub (channel-only, pas de repli global côté Twitch pour ce set)
         // manquants alors que les badges globaux (mod/VIP/turbo) s'affichaient.
         [mgr log:@"⏳ Badges channel: credentials pas encore disponibles, attente GQL..."];
+        if (retryGeneration) {
+            [self s7tv_resetBadgeRetryForScope:scope
+                                    generation:retryGeneration.unsignedIntegerValue];
+        }
         return;
     }
 
+    BOOL isRetry = retryGeneration != nil;
+    if (isRetry) {
+        NSString *currentChannelID = mgr.currentChannelTwitchID;
+        if (currentChannelID.length && ![currentChannelID isEqualToString:channelID]) {
+            [self s7tv_resetBadgeRetryForScope:scope
+                                    generation:retryGeneration.unsignedIntegerValue];
+            return;
+        }
+    }
+
+    NSUInteger requestGeneration = 0;
+    NSUInteger requestContextGeneration = 0;
     @synchronized (self) {
-        if ([channelID isEqualToString:self.lastLoadedChannelID] ||
-            [self.fetchingBadgeChannelIDs containsObject:channelID]) return;
-        [self.fetchingBadgeChannelIDs addObject:channelID];
+        if (isRetry) {
+            requestGeneration = retryGeneration.unsignedIntegerValue;
+            requestContextGeneration = contextGeneration;
+            NSNumber *currentGeneration = self.badgeRetryGenerations[scope];
+            if (!currentGeneration || currentGeneration.unsignedIntegerValue != requestGeneration ||
+                self.channelBadgeContextGeneration != contextGeneration ||
+                [self.fetchingBadgeChannelIDs containsObject:channelID]) {
+                return;
+            }
+            [self.fetchingBadgeChannelIDs addObject:channelID];
+        } else {
+            if ([channelID isEqualToString:self.lastLoadedChannelID] ||
+                [self.fetchingBadgeChannelIDs containsObject:channelID] ||
+                [self.scheduledBadgeRetryScopes containsObject:scope]) return;
+            requestContextGeneration = self.channelBadgeContextGeneration;
+            requestGeneration = [self.badgeRetryGenerations[scope] unsignedIntegerValue] + 1;
+            self.badgeRetryGenerations[scope] = @(requestGeneration);
+            self.badgeRetryCounts[scope] = @0;
+            [self.fetchingBadgeChannelIDs addObject:channelID];
+        }
     }
 
     [mgr log:@"🏗 Badges: chargement catalogue channel %@", channelID];
 
     __weak typeof(self) weakSelf = self;
     NSURLRequest *req = [self s7tv_helixRequestWithURL:url];
-    NSString *requestToken = [req valueForHTTPHeaderField:@"Authorization"];
-    NSString *requestClientID = [req valueForHTTPHeaderField:@"Client-ID"];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
         dataTaskWithRequest:req
       completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
 
+        BOOL requestIsCurrent = NO;
         @synchronized (strongSelf) {
-            [strongSelf.fetchingBadgeChannelIDs removeObject:channelID];
+            NSNumber *currentGeneration = strongSelf.badgeRetryGenerations[scope];
+            requestIsCurrent = currentGeneration &&
+                currentGeneration.unsignedIntegerValue == requestGeneration;
+            if (requestIsCurrent) {
+                [strongSelf.fetchingBadgeChannelIDs removeObject:channelID];
+            }
+        }
+        if (!requestIsCurrent) return;
+
+        BOOL contextIsCurrent = NO;
+        @synchronized (strongSelf) {
+            contextIsCurrent = strongSelf.channelBadgeContextGeneration == requestContextGeneration;
+        }
+        if (!contextIsCurrent) {
+            [strongSelf s7tv_resetBadgeRetryForScope:scope generation:requestGeneration];
+            return;
         }
 
         NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *parsed =
             [strongSelf s7tv_parseBadgeSetsFromData:data response:response error:error];
         if (!parsed) {
-            SevenTVManager *currentManager = [SevenTVManager sharedManager];
-            BOOL credentialsChanged =
-                ![requestToken isEqualToString:currentManager.twitchToken] ||
-                ![requestClientID isEqualToString:currentManager.twitchClientID];
-            if (credentialsChanged &&
-                [channelID isEqualToString:currentManager.currentChannelTwitchID]) {
-                [strongSelf loadBadgesForChannelID:channelID];
+            BOOL retryable = S7TVBadgeFailureIsTransient(data, response, error);
+
+            if (retryable) {
+                NSUInteger retryNumber = 0;
+                @synchronized (strongSelf) {
+                    retryNumber = [strongSelf.badgeRetryCounts[scope] unsignedIntegerValue] + 1;
+                }
+                if (retryNumber <= kS7TVMaxBadgeRetries) {
+                    [strongSelf s7tv_scheduleBadgeRetryForScope:scope
+                                                       generation:requestGeneration
+                                                     retryNumber:retryNumber
+                                                          action:^{
+                        [strongSelf s7tv_loadBadgesForChannelID:channelID
+                                                retryGeneration:@(requestGeneration)
+                                              contextGeneration:requestContextGeneration];
+                    }];
+                } else {
+                    [strongSelf s7tv_resetBadgeRetryForScope:scope
+                                                  generation:requestGeneration];
+                }
+            } else {
+                [strongSelf s7tv_resetBadgeRetryForScope:scope generation:requestGeneration];
             }
             return;
         }
@@ -254,14 +488,35 @@ static NSURL *S7TVUserURL(NSString *channelID) {
         if (currentChannelID.length && ![currentChannelID isEqualToString:channelID]) {
             [[SevenTVManager sharedManager]
                 log:@"ℹ️ Réponse badges ignorée pour ancienne chaîne %@", channelID];
+            [strongSelf s7tv_resetBadgeRetryForScope:scope generation:requestGeneration];
             return;
         }
 
+        BOOL shouldApply = NO;
         @synchronized (strongSelf) {
-            strongSelf.lastLoadedChannelID = channelID;
+            NSNumber *currentGeneration = strongSelf.badgeRetryGenerations[scope];
+            if (currentGeneration && currentGeneration.unsignedIntegerValue == requestGeneration &&
+                strongSelf.channelBadgeContextGeneration == requestContextGeneration) {
+                strongSelf.lastLoadedChannelID = channelID;
+                [strongSelf.scheduledBadgeRetryScopes removeObject:scope];
+                [strongSelf.badgeRetryCounts removeObjectForKey:scope];
+                strongSelf.badgeRetryGenerations[scope] = @(requestGeneration + 1);
+                shouldApply = YES;
+            }
         }
+        if (!shouldApply) return;
 
         dispatch_barrier_async(strongSelf.badgeQueue, ^{
+            BOOL contextStillCurrent = NO;
+            @synchronized (strongSelf) {
+                contextStillCurrent =
+                    strongSelf.channelBadgeContextGeneration == requestContextGeneration;
+            }
+            NSString *visibleChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+            if (!contextStillCurrent ||
+                (visibleChannelID.length && ![visibleChannelID isEqualToString:channelID])) {
+                return;
+            }
             strongSelf.channelBadges = parsed;
             dispatch_async(dispatch_get_main_queue(), ^{
                 [[NSNotificationCenter defaultCenter]
@@ -353,6 +608,13 @@ static NSURL *S7TVUserURL(NSString *channelID) {
 - (void)resetChannelBadges {
     @synchronized (self) {
         self.lastLoadedChannelID = nil;
+        self.channelBadgeContextGeneration++;
+        for (NSString *scope in [self.badgeRetryGenerations.allKeys copy]) {
+            if ([scope hasPrefix:@"channel:"]) {
+                [self.scheduledBadgeRetryScopes removeObject:scope];
+                [self.badgeRetryCounts removeObjectForKey:scope];
+            }
+        }
     }
     dispatch_barrier_async(self.badgeQueue, ^{
         self.channelBadges = @{};

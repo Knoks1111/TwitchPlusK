@@ -443,6 +443,20 @@ static UITableViewCell *S7TVSwitchCellWithEnabledState(NSString *title,
     if (!sw) return cell;
     sw.enabled = switchEnabled;
 
+    // Une suspension runtime doit être lisible sur toute la ligne, pas
+    // uniquement sur le contrôle UISwitch : l'icône et le libellé adoptent le
+    // même gris que les réglages OFF. Le bouton « ! » ajouté ensuite conserve
+    // volontairement sa couleur rouge et reste tappable.
+    if (!switchEnabled) {
+        for (UIView *subview in cell.contentView.subviews) {
+            if ([subview isKindOfClass:UIImageView.class]) {
+                ((UIImageView *)subview).tintColor = UIColor.systemGrayColor;
+            } else if ([subview isKindOfClass:UILabel.class]) {
+                ((UILabel *)subview).textColor = S7TVGray();
+            }
+        }
+    }
+
     if (!warningKey.length) return cell;
 
     UIButton *warningButton = [S7TVInfoTooltip warningButtonWithKey:warningKey];
@@ -2684,6 +2698,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 @interface S7TVHookDiagnosticsController : UITableViewController
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *items;
+@property (nonatomic, strong) S7TVAutoClaimDiagnosticsState *autoClaimState;
 @end
 
 @implementation S7TVHookDiagnosticsController
@@ -2722,14 +2737,116 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 - (void)reloadDiagnostics {
     self.items = S7TVHookDiagnosticItems();
+    self.autoClaimState = S7TVAutoClaimDiagnosticsCurrentState();
     if (self.isViewLoaded) [self.tableView reloadData];
 }
 
+- (NSArray<NSString *> *)s7tv_autoClaimDiagnosticTitles {
+    return @[
+        L(@"diagnostics_autoclaim_chat_controller"),
+        L(@"diagnostics_autoclaim_native_chain"),
+        L(@"diagnostics_autoclaim_shows_claim"),
+        L(@"diagnostics_autoclaim_selector"),
+        L(@"diagnostics_autoclaim_balance"),
+        L(@"diagnostics_autoclaim_watcher"),
+        L(@"diagnostics_autoclaim_effective_state"),
+    ];
+}
+
+- (NSArray<NSString *> *)s7tv_autoClaimDiagnosticValues {
+    S7TVAutoClaimDiagnosticsState *state = self.autoClaimState;
+    NSString *(^yesNo)(BOOL) = ^NSString *(BOOL value) {
+        return L(value ? @"diagnostics_autoclaim_yes"
+                       : @"diagnostics_autoclaim_no");
+    };
+
+    NSString *effectiveState = nil;
+    switch (state.effectiveState) {
+        case S7TVAutoClaimEffectiveStateActive:
+            effectiveState = L(@"diagnostics_autoclaim_state_active");
+            break;
+        case S7TVAutoClaimEffectiveStateSuspendedByAdblock:
+            effectiveState = L(@"diagnostics_autoclaim_state_suspended");
+            break;
+        case S7TVAutoClaimEffectiveStateDisabledByUser:
+        default:
+            effectiveState = L(@"diagnostics_autoclaim_state_disabled");
+            break;
+    }
+
+    return @[
+        yesNo(state.channelChatViewControllerDetected),
+        yesNo(state.nativeChainResolved),
+        yesNo(state.showsClaimAvailable),
+        yesNo(state.claimSelectorAvailable),
+        yesNo(state.balanceAvailable),
+        yesNo(state.watcherActive),
+        effectiveState,
+    ];
+}
+
+- (UITableViewCell *)s7tv_autoClaimDiagnosticCellForRow:(NSInteger)row
+                                               tableView:(UITableView *)tableView {
+    static NSString *reuseIdentifier = @"S7TVAutoClaimDiagnosticCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseIdentifier];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:reuseIdentifier];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    }
+
+    NSArray<NSString *> *titles = [self s7tv_autoClaimDiagnosticTitles];
+    NSArray<NSString *> *values = [self s7tv_autoClaimDiagnosticValues];
+    if (row < 0 || row >= (NSInteger)titles.count || row >= (NSInteger)values.count) {
+        return cell;
+    }
+
+    cell.backgroundColor = S7TVCellBg();
+    cell.textLabel.text = titles[row];
+    cell.textLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightRegular];
+    cell.textLabel.textColor = UIColor.whiteColor;
+    cell.textLabel.numberOfLines = 0;
+    cell.detailTextLabel.text = values[row];
+    cell.detailTextLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightMedium];
+    cell.detailTextLabel.numberOfLines = 0;
+
+    UIColor *valueColor = S7TVGray();
+    if (row < 6) {
+        BOOL available = NO;
+        switch (row) {
+            case 0: available = self.autoClaimState.channelChatViewControllerDetected; break;
+            case 1: available = self.autoClaimState.nativeChainResolved; break;
+            case 2: available = self.autoClaimState.showsClaimAvailable; break;
+            case 3: available = self.autoClaimState.claimSelectorAvailable; break;
+            case 4: available = self.autoClaimState.balanceAvailable; break;
+            case 5: available = self.autoClaimState.watcherActive; break;
+        }
+        valueColor = available ? UIColor.systemGreenColor : UIColor.systemRedColor;
+    } else if (row == 6) {
+        switch (self.autoClaimState.effectiveState) {
+            case S7TVAutoClaimEffectiveStateActive:
+                valueColor = UIColor.systemGreenColor;
+                break;
+            case S7TVAutoClaimEffectiveStateSuspendedByAdblock:
+                valueColor = UIColor.systemOrangeColor;
+                break;
+            case S7TVAutoClaimEffectiveStateDisabledByUser:
+            default:
+                valueColor = UIColor.systemGrayColor;
+                break;
+        }
+    }
+    cell.detailTextLabel.textColor = valueColor;
+    return cell;
+}
+
 - (NSArray<NSDictionary<NSString *, id> *> *)s7tv_itemsForGroup:(NSInteger)group {
+    if (group < 0 || group > 3 || group == 2) return @[];
+    NSInteger hookGroup = group < 2 ? group : group - 1;
     NSPredicate *predicate = [NSPredicate predicateWithBlock:
         ^BOOL(NSDictionary<NSString *, id> *item, NSDictionary *bindings) {
             (void)bindings;
-            return [item[@"group"] integerValue] == group;
+            return [item[@"group"] integerValue] == hookGroup;
         }];
     return [self.items filteredArrayUsingPredicate:predicate];
 }
@@ -2740,14 +2857,19 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     return indexPath.row < (NSInteger)groupItems.count ? groupItems[indexPath.row] : nil;
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 4; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section == 2) return 7;
     return [self s7tv_itemsForGroup:section].count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 2) {
+        return [self s7tv_autoClaimDiagnosticCellForRow:indexPath.row
+                                              tableView:tableView];
+    }
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"S7TVHookDiagnosticCell"];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
@@ -2791,15 +2913,17 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     NSArray<NSString *> *keys = @[
         @"diagnostics_group_proxy",
         @"diagnostics_group_vaft",
+        @"diagnostics_autoclaim_group",
         @"diagnostics_group_twitchplusk",
     ];
     return section < (NSInteger)keys.count ? L(keys[section]) : nil;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section == 2) return L(@"diagnostics_autoclaim_subtitle");
     // Le rappel de lecture n'est affiché qu'une seule fois, sous le dernier
     // groupe, pour conserver les trois sections immédiatement lisibles.
-    return section == 2 ? L(@"diagnostics_footer") : nil;
+    return section == 3 ? L(@"diagnostics_footer") : nil;
 }
 
 @end

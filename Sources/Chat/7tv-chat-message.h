@@ -487,6 +487,12 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 - (void)prependHistoricalMessages:(NSArray<S7TVChatMessage *> *)messages
                         completion:(void (^ _Nullable)(void))completion;
 
+// Variante conditionnelle : isCurrent est évalué dans la barrière juste
+// avant la fusion, afin d'abandonner un historique devenu périmé.
+- (void)prependHistoricalMessages:(NSArray<S7TVChatMessage *> *)messages
+                         ifCurrent:(BOOL (^ _Nullable)(void))isCurrent
+                         completion:(void (^ _Nullable)(void))completion;
+
 // Recalcule les tokens sous une barrière d'écriture, puis appelle completion
 // sur le main thread. Le bloc est exécuté hors du thread UIKit.
 - (void)retokenizeMessagesUsingBlock:(NSArray<S7TVChatToken *> * (^)(S7TVChatMessage *message))tokenizer

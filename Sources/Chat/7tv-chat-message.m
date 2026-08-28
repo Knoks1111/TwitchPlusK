@@ -1704,6 +1704,12 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
 
 - (void)prependHistoricalMessages:(NSArray<S7TVChatMessage *> *)messages
                         completion:(void (^)(void))completion {
+    [self prependHistoricalMessages:messages ifCurrent:nil completion:completion];
+}
+
+- (void)prependHistoricalMessages:(NSArray<S7TVChatMessage *> *)messages
+                         ifCurrent:(BOOL (^)(void))isCurrent
+                         completion:(void (^)(void))completion {
     NSArray<S7TVChatMessage *> *historical = [messages copy] ?: @[];
     dispatch_barrier_async(self.storeQueue, ^{
         NSArray<S7TVChatMessage *> *existing = [self.orderedMessages copy];
@@ -1721,6 +1727,7 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
             }
         }
         [merged addObjectsFromArray:existing];
+        if (isCurrent && !isCurrent()) return;
         [self s7tv_rebuildWithMessages:merged];
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });

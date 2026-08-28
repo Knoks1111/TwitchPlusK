@@ -2282,7 +2282,11 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
 
         if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
         [[SevenTVManager sharedManager].chatMessageStore
-            prependHistoricalMessages:history completion:^{
+            prependHistoricalMessages:history
+            ifCurrent:^BOOL{
+                return s7tv_recentHistoryRequestIsCurrent(channel, generation);
+            }
+            completion:^{
                 if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
                 [[SevenTVManager sharedManager]
                     log:@"🕘 %lu messages historiques chargés pour %@",

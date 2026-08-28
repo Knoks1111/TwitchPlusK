@@ -263,8 +263,8 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
     if (auth.length && clientID.length) {
         [manager saveTwitchToken:auth clientID:clientID];
     } else {
-        if (auth.length) [manager s7tv_captureAuthorizationHeader:auth];
-        if (clientID.length) [manager s7tv_captureClientIDHeader:clientID];
+        if (auth.length) [manager s7tv_captureAuthorizationHeader:auth context:request];
+        if (clientID.length) [manager s7tv_captureClientIDHeader:clientID context:request];
     }
 }
 
@@ -707,9 +707,9 @@ static void s7tv_swizzle_apollo_gql(void) {
     // (proxy compris) d'écraser le token Twitch destiné à Helix.
     if (value.length && s7tv_requestTargetsTwitchGQL(self)) {
         if ([field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame) {
-            [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:value];
+            [[SevenTVManager sharedManager] s7tv_captureAuthorizationHeader:value context:self];
         } else if ([field caseInsensitiveCompare:@"Client-ID"] == NSOrderedSame) {
-            [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:value];
+            [[SevenTVManager sharedManager] s7tv_captureClientIDHeader:value context:self];
         }
     }
     [self s7tv_setValue:value forHTTPHeaderField:field];
@@ -728,8 +728,8 @@ static void s7tv_swizzle_apollo_gql(void) {
         if (auth.length && clientID.length) {
             [manager saveTwitchToken:auth clientID:clientID];
         } else {
-            if (auth.length) [manager s7tv_captureAuthorizationHeader:auth];
-            if (clientID.length) [manager s7tv_captureClientIDHeader:clientID];
+            if (auth.length) [manager s7tv_captureAuthorizationHeader:auth context:self];
+            if (clientID.length) [manager s7tv_captureClientIDHeader:clientID context:self];
         }
     }
     [self s7tv_setAllHTTPHeaderFields:headerFields];
@@ -748,8 +748,8 @@ static void s7tv_swizzle_apollo_gql(void) {
     if (auth.length && clientID.length) {
         [manager saveTwitchToken:auth clientID:clientID];
     } else {
-        if (auth.length) [manager s7tv_captureAuthorizationHeader:auth];
-        if (clientID.length) [manager s7tv_captureClientIDHeader:clientID];
+        if (auth.length) [manager s7tv_captureAuthorizationHeader:auth context:self];
+        if (clientID.length) [manager s7tv_captureClientIDHeader:clientID context:self];
     }
     [self s7tv_setHTTPAdditionalHeaders:headers];
 }

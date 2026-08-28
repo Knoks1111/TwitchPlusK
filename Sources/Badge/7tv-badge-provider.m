@@ -244,8 +244,13 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
 - (NSURLRequest *)s7tv_helixRequestWithURL:(NSURL *)url {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    if (mgr.twitchToken.length)   [req setValue:mgr.twitchToken   forHTTPHeaderField:@"Authorization"];
-    if (mgr.twitchClientID.length) [req setValue:mgr.twitchClientID forHTTPHeaderField:@"Client-ID"];
+    NSDictionary<NSString *, NSString *> *credentials = [mgr s7tv_twitchCredentialsSnapshot];
+    if (credentials[@"Authorization"].length) {
+        [req setValue:credentials[@"Authorization"] forHTTPHeaderField:@"Authorization"];
+    }
+    if (credentials[@"Client-ID"].length) {
+        [req setValue:credentials[@"Client-ID"] forHTTPHeaderField:@"Client-ID"];
+    }
     return req;
 }
 
@@ -259,7 +264,8 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
 
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     NSString *scope = @"global";
-    if (!mgr.twitchToken.length || !mgr.twitchClientID.length) {
+    NSDictionary<NSString *, NSString *> *credentials = [mgr s7tv_twitchCredentialsSnapshot];
+    if (!credentials[@"Authorization"].length || !credentials[@"Client-ID"].length) {
         [mgr log:@"⏳ Badges global: credentials pas encore disponibles, attente GQL..."];
         if (retryGeneration) {
             [self s7tv_resetBadgeRetryForScope:scope
@@ -370,7 +376,8 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
 
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     NSString *scope = S7TVChannelBadgeRetryScope(channelID);
-    if (!mgr.twitchToken.length || !mgr.twitchClientID.length) {
+    NSDictionary<NSString *, NSString *> *credentials = [mgr s7tv_twitchCredentialsSnapshot];
+    if (!credentials[@"Authorization"].length || !credentials[@"Client-ID"].length) {
         // CRITIQUE : ne PAS marquer lastLoadedChannelID ici. S7TVChannelJoined
         // arrive souvent avant que le token (capturé depuis les headers GQL)
         // ne soit disponible — si on marquait la chaîne comme "chargée"
@@ -628,7 +635,8 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
     if (!channelID.length) return;
 
     SevenTVManager *mgr = [SevenTVManager sharedManager];
-    if (!mgr.twitchToken.length || !mgr.twitchClientID.length) {
+    NSDictionary<NSString *, NSString *> *credentials = [mgr s7tv_twitchCredentialsSnapshot];
+    if (!credentials[@"Authorization"].length || !credentials[@"Client-ID"].length) {
         // Ne pas marquer comme "en cours" : le chargement des catalogues de
         // badges, relancé à la capture du token, provoquera un nouveau rendu.
         return;
@@ -686,9 +694,11 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
 
         BOOL succeeded = avatarURLString.length > 0;
         SevenTVManager *currentManager = [SevenTVManager sharedManager];
+        NSDictionary<NSString *, NSString *> *currentCredentials =
+            [currentManager s7tv_twitchCredentialsSnapshot];
         BOOL credentialsChanged =
-            ![requestToken isEqualToString:currentManager.twitchToken] ||
-            ![requestClientID isEqualToString:currentManager.twitchClientID];
+            ![requestToken isEqualToString:currentCredentials[@"Authorization"]] ||
+            ![requestClientID isEqualToString:currentCredentials[@"Client-ID"]];
         dispatch_barrier_async(strongSelf.badgeQueue, ^{
             [strongSelf.fetchingSharedChatAvatarChannelIDs removeObject:channelID];
             if (succeeded) {

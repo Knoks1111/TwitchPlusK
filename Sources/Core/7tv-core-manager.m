@@ -118,6 +118,8 @@ static const NSTimeInterval kCacheTTLChannel = 1800.0;   // 30 minutes
 // Valeurs partielles en attendant d'avoir les deux (voir capture méthodes ci-dessous)
 @property (nonatomic, copy) NSString *pendingAuthHeader;
 @property (nonatomic, copy) NSString *pendingClientIDHeader;
+@property (nonatomic, weak) id pendingAuthContext;
+@property (nonatomic, weak) id pendingClientIDContext;
 
 // Dossier racine du cache JSON (créé à la demande)
 @property (nonatomic, strong) NSString *cacheDirectory;
@@ -1298,22 +1300,68 @@ static NSString *S7TVNormalizedTwitchBearerToken(NSString *value) {
     return [@"Bearer " stringByAppendingString:credential];
 }
 
-- (void)s7tv_captureAuthorizationHeader:(NSString *)value {
+- (void)s7tv_captureAuthorizationHeader:(NSString *)value context:(id)context {
     NSString *normalized = S7TVNormalizedTwitchBearerToken(value);
-    if (!normalized.length) return;
-    self.pendingAuthHeader = value;
-    [self s7tv_tryFinalizeTokenCapture];
+    if (!normalized.length || !context) return;
+
+    NSString *tokenToSave = nil;
+    NSString *clientIDToSave = nil;
+    @synchronized (self) {
+        if (self.pendingClientIDHeader.length && self.pendingClientIDContext != context) {
+            self.pendingClientIDHeader = nil;
+            self.pendingClientIDContext = nil;
+        }
+        self.pendingAuthHeader = value;
+        self.pendingAuthContext = context;
+        if (self.pendingAuthHeader.length && self.pendingClientIDHeader.length &&
+            self.pendingAuthContext == self.pendingClientIDContext) {
+            tokenToSave = [self.pendingAuthHeader copy];
+            clientIDToSave = [self.pendingClientIDHeader copy];
+            self.pendingAuthHeader = nil;
+            self.pendingClientIDHeader = nil;
+            self.pendingAuthContext = nil;
+            self.pendingClientIDContext = nil;
+        }
+    }
+    if (tokenToSave.length && clientIDToSave.length) {
+        [self saveTwitchToken:tokenToSave clientID:clientIDToSave];
+    }
 }
 
-- (void)s7tv_captureClientIDHeader:(NSString *)value {
-    if (!value.length) return;
-    self.pendingClientIDHeader = value;
-    [self s7tv_tryFinalizeTokenCapture];
+- (void)s7tv_captureClientIDHeader:(NSString *)value context:(id)context {
+    if (!value.length || !context) return;
+
+    NSString *tokenToSave = nil;
+    NSString *clientIDToSave = nil;
+    @synchronized (self) {
+        if (self.pendingAuthHeader.length && self.pendingAuthContext != context) {
+            self.pendingAuthHeader = nil;
+            self.pendingAuthContext = nil;
+        }
+        self.pendingClientIDHeader = value;
+        self.pendingClientIDContext = context;
+        if (self.pendingAuthHeader.length && self.pendingClientIDHeader.length &&
+            self.pendingAuthContext == self.pendingClientIDContext) {
+            tokenToSave = [self.pendingAuthHeader copy];
+            clientIDToSave = [self.pendingClientIDHeader copy];
+            self.pendingAuthHeader = nil;
+            self.pendingClientIDHeader = nil;
+            self.pendingAuthContext = nil;
+            self.pendingClientIDContext = nil;
+        }
+    }
+    if (tokenToSave.length && clientIDToSave.length) {
+        [self saveTwitchToken:tokenToSave clientID:clientIDToSave];
+    }
 }
 
-- (void)s7tv_tryFinalizeTokenCapture {
-    if (self.pendingAuthHeader.length && self.pendingClientIDHeader.length) {
-        [self saveTwitchToken:self.pendingAuthHeader clientID:self.pendingClientIDHeader];
+- (NSDictionary<NSString *, NSString *> *)s7tv_twitchCredentialsSnapshot {
+    @synchronized (self) {
+        if (!self.twitchToken.length || !self.twitchClientID.length) return @{};
+        return @{
+            @"Authorization": self.twitchToken,
+            @"Client-ID": self.twitchClientID
+        };
     }
 }
 
@@ -1327,12 +1375,22 @@ static NSString *S7TVNormalizedTwitchBearerToken(NSString *value) {
         [self log:@"⚠️ Credentials Twitch ignorés: schéma Authorization non OAuth/Bearer"];
         return;
     }
-    if ([normalizedToken isEqualToString:self.twitchToken] &&
-        [clientID isEqualToString:self.twitchClientID]) return; // déjà à jour
-    self.twitchToken   = normalizedToken;
-    self.twitchClientID = clientID;
-    self.pendingAuthHeader = nil;
-    self.pendingClientIDHeader = nil;
+    BOOL credentialsChanged = NO;
+    @synchronized (self) {
+        // Une capture complète invalide toute valeur partielle précédente,
+        // même si le couple est déjà celui actuellement stocké.
+        self.pendingAuthHeader = nil;
+        self.pendingClientIDHeader = nil;
+        self.pendingAuthContext = nil;
+        self.pendingClientIDContext = nil;
+        credentialsChanged = !([normalizedToken isEqualToString:self.twitchToken] &&
+                               [clientID isEqualToString:self.twitchClientID]);
+        if (credentialsChanged) {
+            self.twitchToken = normalizedToken;
+            self.twitchClientID = clientID;
+        }
+    }
+    if (!credentialsChanged) return;
     [self log:@"🏗 Badges: token normalisé OAuth→Bearer et sauvegardé"];
     [[NSNotificationCenter defaultCenter]
         postNotificationName:S7TVTwitchCredentialsDidUpdateNotification object:self];

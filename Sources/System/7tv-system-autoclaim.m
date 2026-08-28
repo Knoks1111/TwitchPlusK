@@ -28,6 +28,9 @@ static const NSTimeInterval kS7TVAutoClaimTickInterval = 1.0;
 static const NSTimeInterval kS7TVAutoClaimPostAttemptWarningDelay = 10.0;
 static char kS7TVAutoClaimWatcherAssociationKey;
 
+@implementation S7TVAutoClaimDiagnosticsState
+@end
+
 static void s7tv_autoClaimLog(NSString *format, ...) {
     if (!format.length) return;
 
@@ -1317,4 +1320,74 @@ void S7TVAutoClaimSettingsDidChange(void) {
 
 BOOL S7TVAutoClaimIsSuspendedByAdblock(void) {
     return s7tv_autoClaimEnabled() && s7tv_adblockIsActuallyActive();
+}
+
+static void s7tv_fillAutoClaimDiagnosticsDependencies(
+    S7TVAutoClaimDiagnosticsState *state, UIViewController *controller) {
+    if (!state || !controller || !s7tv_isChannelChatViewController(controller)) {
+        return;
+    }
+
+    state.channelChatViewControllerDetected = YES;
+
+    // This is the same controller-owned chain used by the watcher. The probe
+    // is read-only: it never starts the watcher and never invokes the claim.
+    UIView *chatInputView = s7tv_chatInputViewForController(controller, NULL);
+    id bitsController = s7tv_objectIvar(controller, "bitsController");
+    BOOL hasChatInput = s7tv_isChatInputView(chatInputView);
+    if (hasChatInput) {
+        state.claimSelectorAvailable =
+            [chatInputView respondsToSelector:NSSelectorFromString(
+                @"handleChannelPointsButtonTapped")];
+    }
+
+    id channelPointsButton = s7tv_objectIvar(chatInputView,
+                                             "channelPointsButton");
+    BOOL hasValidBitsController = s7tv_isBitsController(bitsController);
+    BOOL hasValidChannelPointsButton =
+        s7tv_isChannelPointsButton(channelPointsButton);
+    if (hasValidBitsController && hasChatInput && hasValidChannelPointsButton) {
+        state.nativeChainResolved = YES;
+    }
+    if (hasValidChannelPointsButton) {
+        BOOL showsClaim = NO;
+        state.showsClaimAvailable =
+            s7tv_readBoolIvar(channelPointsButton, "showsClaim", &showsClaim);
+    }
+
+    int64_t balance = 0;
+    state.balanceAvailable =
+        s7tv_readNativeChannelPointsBalance(controller, NULL, &balance);
+}
+
+S7TVAutoClaimDiagnosticsState *S7TVAutoClaimDiagnosticsCurrentState(void) {
+    if (![NSThread isMainThread]) {
+        __block S7TVAutoClaimDiagnosticsState *state = nil;
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            state = S7TVAutoClaimDiagnosticsCurrentState();
+        });
+        return state ?: [S7TVAutoClaimDiagnosticsState new];
+    }
+
+    S7TVAutoClaimDiagnosticsState *state =
+        [S7TVAutoClaimDiagnosticsState new];
+    BOOL enabled = s7tv_autoClaimEnabled();
+    BOOL adblockActive = s7tv_adblockIsActuallyActive();
+    state.effectiveState = !enabled
+        ? S7TVAutoClaimEffectiveStateDisabledByUser
+        : (adblockActive
+            ? S7TVAutoClaimEffectiveStateSuspendedByAdblock
+            : S7TVAutoClaimEffectiveStateActive);
+
+    S7TVAutoClaimWatcher *watcher = s_s7tvActiveAutoClaimWatcher;
+    state.watcherActive = watcher != nil && watcher.timer != nil &&
+        watcher.timer.isValid;
+
+    UIViewController *controller = s_s7tvActiveAutoClaimController;
+    if (!s7tv_controllerIsActive(controller)) {
+        controller = s7tv_findActiveChannelChatViewController();
+    }
+    s7tv_fillAutoClaimDiagnosticsDependencies(state, controller);
+
+    return state;
 }

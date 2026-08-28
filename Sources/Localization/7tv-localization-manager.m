@@ -264,7 +264,6 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Catégories de logs ────────────────────────────────────────────
         @"log_cat_errors":                  @[@"Erreurs / Avertissements", @"Errors / Warnings"],
-        @"log_cat_tap":                     @[@"Tap Logger", @"Tap Logger"],
         @"log_cat_swizzle":                 @[@"Swizzle / Boot", @"Swizzle / Boot"],
         @"log_cat_cache":                   @[@"Cache / Réseau", @"Cache / Network"],
         @"log_cat_prefetch":                @[@"Prefetch", @"Prefetch"],

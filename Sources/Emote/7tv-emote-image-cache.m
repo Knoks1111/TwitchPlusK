@@ -641,6 +641,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
                 [SevenTVURLProtocol noteCachedEmoteID:s7tv_emoteIDFromURL(url)];
             }
             dispatch_async(self.syncQueue, ^{
+                if (generation != self.cacheGeneration) return;
                 NSArray<S7TVDataCompletion> *waiting = self.pendingDataCallbacks[key] ?: @[];
                 [self.pendingDataCallbacks removeObjectForKey:key];
                 for (S7TVDataCompletion callback in waiting) callback(data);

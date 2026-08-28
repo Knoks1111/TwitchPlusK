@@ -66,7 +66,6 @@ void s7tv_swizzle(Class targetClass, Class sourceClass, SEL original, SEL swizzl
 // indépendamment depuis SevenTVDebugPageController.
 typedef NS_ENUM(NSInteger, S7TVLogCategory) {
     S7TVLogCategoryError = 0,        // 🚨 Erreurs / Avertissements (❌ ⚠️) — toujours prioritaire
-    S7TVLogCategoryTap,              // 👆 Tap Logger
     S7TVLogCategorySwizzle,          // 🔌 Swizzle / Boot
     S7TVLogCategoryCache,            // ⚡️ Cache / Réseau
     S7TVLogCategoryPrefetch,         // 🚀 Prefetch
@@ -80,7 +79,7 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
     S7TVLogCategoryChannelPoints,    // 🎁 Channel Points (autoclaim)
     S7TVLogCategoryDump,             // 🗑️ Dump (et tout ce qui n'est pas classé)
 };
-#define S7TV_LOG_CATEGORY_COUNT 14
+#define S7TV_LOG_CATEGORY_COUNT 13
 
 
 // ============================================================
@@ -129,7 +128,6 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 
 // --- Logs : catégories (chacune indépendante) ---
 @property (nonatomic, assign) BOOL logErrors;            // 🚨 Erreurs / Avertissements — ON par défaut
-@property (nonatomic, assign) BOOL logTap;                // 👆 Tap Logger
 @property (nonatomic, assign) BOOL logSwizzle;             // 🔌 Swizzle / Boot
 @property (nonatomic, assign) BOOL logCache;               // ⚡️ Cache / Réseau
 @property (nonatomic, assign) BOOL logPrefetch;            // 🚀 Prefetch

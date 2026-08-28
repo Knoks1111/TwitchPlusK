@@ -313,7 +313,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         // des préférences sauvegardées (voir loadPreferences ci-dessous).
         _logsEnabled       = YES;
         _logErrors         = YES;   // Erreurs/Avertissements visibles par défaut
-        _logTap            = NO;
         _logSwizzle        = NO;
         _logCache          = NO;
         _logPrefetch       = NO;
@@ -349,11 +348,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         // paresseusement — voir -pickerController.
 
         [self loadPreferences];
-        // Synchroniser s_tapLogEnabled avec les préférences chargées.
-        // Sans ça, s_tapLogEnabled reste à sa valeur par défaut (7tv-core-runtime-hooks.m)
-        // même si l'utilisateur a une autre préférence sauvegardée.
-        extern BOOL s_tapLogEnabled;
-        s_tapLogEnabled = _logsEnabled && _logTap;
         [self ensureCacheDirectory];
     }
     return self;
@@ -581,7 +575,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     // --- Logs : interrupteur global + catégories ---
     if ([prefs objectForKey:@"s7tv_logs_enabled"]      != nil) _logsEnabled           = [prefs boolForKey:@"s7tv_logs_enabled"];
     if ([prefs objectForKey:@"s7tv_log_errors"]        != nil) _logErrors             = [prefs boolForKey:@"s7tv_log_errors"];
-    if ([prefs objectForKey:@"s7tv_log_tap"]           != nil) _logTap                = [prefs boolForKey:@"s7tv_log_tap"];
     if ([prefs objectForKey:@"s7tv_log_swizzle"]       != nil) _logSwizzle            = [prefs boolForKey:@"s7tv_log_swizzle"];
     if ([prefs objectForKey:@"s7tv_log_cache"]         != nil) _logCache              = [prefs boolForKey:@"s7tv_log_cache"];
     if ([prefs objectForKey:@"s7tv_log_prefetch"]      != nil) _logPrefetch           = [prefs boolForKey:@"s7tv_log_prefetch"];
@@ -607,9 +600,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     // écraserait une partie des valeurs venant juste d'être importées.
     [self loadPreferences];
 
-    extern BOOL s_tapLogEnabled;
-    s_tapLogEnabled = _logsEnabled && _logTap;
-
     dispatch_async(dispatch_get_main_queue(), ^{
         // Ces deux réglages ont aussi un effet visuel immédiat dans une
         // session Twitch déjà ouverte.
@@ -632,7 +622,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
     [prefs setBool:self.logsEnabled          forKey:@"s7tv_logs_enabled"];
     [prefs setBool:self.logErrors            forKey:@"s7tv_log_errors"];
-    [prefs setBool:self.logTap               forKey:@"s7tv_log_tap"];
     [prefs setBool:self.logSwizzle           forKey:@"s7tv_log_swizzle"];
     [prefs setBool:self.logCache             forKey:@"s7tv_log_cache"];
     [prefs setBool:self.logPrefetch          forKey:@"s7tv_log_prefetch"];
@@ -746,7 +735,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 - (void)setDebugLogging:(BOOL)v {
     _debugLogging  = v;
     [self savePreferences];
-    // NOTE : ceci ne touche plus s_tapLogEnabled — c'était le bug.
     // "Logs console" est un simple miroir NSLog, indépendant des catégories.
 }
 
@@ -754,18 +742,10 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 - (void)setLogsEnabled:(BOOL)v {
     _logsEnabled = v;
     [self savePreferences];
-    extern BOOL s_tapLogEnabled;
-    s_tapLogEnabled = v && _logTap;
 }
 
 // --- Logs : catégories ---
 - (void)setLogErrors:(BOOL)v         { _logErrors = v;         [self savePreferences]; }
-- (void)setLogTap:(BOOL)v {
-    _logTap = v;
-    [self savePreferences];
-    extern BOOL s_tapLogEnabled;
-    s_tapLogEnabled = _logsEnabled && v;
-}
 - (void)setLogSwizzle:(BOOL)v         { _logSwizzle = v;         [self savePreferences]; }
 - (void)setLogCache:(BOOL)v           { _logCache = v;           [self savePreferences]; }
 - (void)setLogPrefetch:(BOOL)v        { _logPrefetch = v;        [self savePreferences]; }
@@ -1743,12 +1723,6 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
     // 4. Dump (architecture/méthodes — très verbeux, à part)
     if (has(@"[DBG-DUMP]") || has(@"🩻")) return S7TVLogCategoryDump;
 
-    // 4. Tap Logger
-    if (has(@"👆") || has(@"FIRST_RESPONDER") || has(@"SCAN CHAT") ||
-        has(@"FIN SCAN") || (has(@"HIT:") && has(@"frame=")) ||
-        has(@"fin hiérarchie"))
-        return S7TVLogCategoryTap;
-
     // 4. Orientation Lock
     if (has(@"Orientation") || has(@"orientation") || has(@"verrou") || has(@"Rotation"))
         return S7TVLogCategoryOrientation;
@@ -1804,7 +1778,6 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 - (BOOL)s7tv_isCategoryEnabled:(S7TVLogCategory)cat {
     switch (cat) {
         case S7TVLogCategoryError:           return self.logErrors;
-        case S7TVLogCategoryTap:             return self.logTap;
         case S7TVLogCategorySwizzle:         return self.logSwizzle;
         case S7TVLogCategoryCache:           return self.logCache;
         case S7TVLogCategoryPrefetch:        return self.logPrefetch;

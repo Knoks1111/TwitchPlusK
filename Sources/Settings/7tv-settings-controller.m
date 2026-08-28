@@ -2823,10 +2823,10 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
     S7TVLogsRowFirstCat = 3,
 };
 
-#define S7TV_LOGS_CAT_COUNT       14
+#define S7TV_LOGS_CAT_COUNT       13
 
 // Lignes visibles de la section Logs : « Voir les logs », « Logs console » et
-// les 14 catégories n'existent visuellement que si « Activer les logs » est ON
+// les 13 catégories n'existent visuellement que si « Activer les logs » est ON
 // (mécanisme générique de sous-options dépendantes ; leurs valeurs restent
 // stockées dans NSUserDefaults).
 - (NSArray<NSNumber *> *)s7tv_visibleLogsRows {
@@ -3099,16 +3099,16 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
         NSInteger catIdx = row - S7TVLogsRowFirstCat;
         NSArray<NSString *> *titles = @[
             L(@"log_cat_errors"), L(@"log_cat_chat_custom"), L(@"log_cat_channel_points"),
-            L(@"log_cat_tap"), L(@"log_cat_swizzle"),
-            L(@"log_cat_cache"), L(@"log_cat_prefetch"), L(@"log_cat_api"), L(@"log_cat_irc"),
+            L(@"log_cat_swizzle"), L(@"log_cat_cache"), L(@"log_cat_prefetch"),
+            L(@"log_cat_api"), L(@"log_cat_irc"),
             L(@"log_cat_ui_picker"), L(@"section_favoris"),
             L(@"log_cat_orientation"), L(@"log_cat_cdn"),
             L(@"log_cat_dump"),
         ];
         NSArray<NSString *> *icons = @[
             @"exclamationmark.triangle.fill", @"hammer.fill", @"gift.fill",
-            @"hand.tap.fill", @"bolt.horizontal.circle.fill",
-            @"network", @"arrow.down.circle.fill", @"globe", @"antenna.radiowaves.left.and.right",
+            @"bolt.horizontal.circle.fill", @"network", @"arrow.down.circle.fill", @"globe",
+            @"antenna.radiowaves.left.and.right",
             @"paintbrush.fill", @"star.fill",
             @"lock.rotation", @"photo.fill",
             @"trash.fill",
@@ -3116,7 +3116,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
         // Couleur ON de chaque catégorie (même ordre que "icons" / "values").
         NSArray<UIColor *> *colors = @[
             UIColor.systemRedColor,     UIColor.systemOrangeColor, UIColor.systemYellowColor,
-            UIColor.systemGreenColor,   UIColor.systemTealColor,
+            UIColor.systemTealColor,
             UIColor.systemBlueColor,    UIColor.systemIndigoColor, UIColor.systemPurpleColor, UIColor.systemPinkColor,
             UIColor.systemBrownColor,   UIColor.systemYellowColor,
             UIColor.systemBlueColor,    UIColor.systemTealColor,
@@ -3124,7 +3124,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
         ];
         NSArray<NSNumber *> *values = @[
             @(mgr.logErrors), @(mgr.logChatCustom), @(mgr.logChannelPoints),
-            @(mgr.logTap), @(mgr.logSwizzle), @(mgr.logCache),
+            @(mgr.logSwizzle), @(mgr.logCache),
             @(mgr.logPrefetch), @(mgr.logAPI), @(mgr.logIRCChannel),
             @(mgr.logUIPicker), @(mgr.logFavorites), @(mgr.logOrientation),
             @(mgr.logImageConversion),
@@ -3132,7 +3132,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
         ];
         NSArray *selectors = @[
             @"toggleLogErrors:", @"toggleLogChatCustom:", @"toggleLogChannelPoints:",
-            @"toggleLogTap:", @"toggleLogSwizzle:", @"toggleLogCache:",
+            @"toggleLogSwizzle:", @"toggleLogCache:",
             @"toggleLogPrefetch:", @"toggleLogAPI:", @"toggleLogIRCChannel:",
             @"toggleLogUIPicker:", @"toggleLogFavorites:", @"toggleLogOrientation:",
             @"toggleLogImageConversion:",
@@ -3383,7 +3383,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)toggleFloatingButton:(UISwitch *)sw         { [SevenTVManager sharedManager].showFloatingButton  = sw.isOn; }
 
 - (void)toggleLogErrors:(UISwitch *)sw           { [SevenTVManager sharedManager].logErrors           = sw.isOn; }
-- (void)toggleLogTap:(UISwitch *)sw              { [SevenTVManager sharedManager].logTap              = sw.isOn; }
 - (void)toggleLogSwizzle:(UISwitch *)sw          { [SevenTVManager sharedManager].logSwizzle          = sw.isOn; }
 - (void)toggleLogCache:(UISwitch *)sw            { [SevenTVManager sharedManager].logCache            = sw.isOn; }
 - (void)toggleLogPrefetch:(UISwitch *)sw         { [SevenTVManager sharedManager].logPrefetch         = sw.isOn; }

@@ -252,13 +252,17 @@ void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
 //     déclenchement immédiat n'a pas trouvé de ChatInputView au bon
 //     moment (ex: stream encore en cours de chargement réseau).
 
-// État global : ID du dernier coffre détecté comme réclamable via GQL
-// (nil si aucun), et ID du dernier coffre effectivement déclenché, pour
+// État du dernier coffre détecté comme réclamable via GQL (ID + contexte de
+// chaîne/visite), et ID du dernier coffre effectivement déclenché, pour
 // dédupliquer sans dépendre d'un associated object sur une vue UI qui
 // n'est plus nécessaire à la détection. Protégé par @synchronized car
 // écrit depuis le thread réseau (completion handler NSURLSession) et lu
 // depuis le main thread (boucle de polling).
 static NSString *s_s7tvPendingChannelPointsClaimID = nil;
+static NSString *s_s7tvPendingChannelPointsClaimChannelID = nil;
+static NSUInteger s_s7tvPendingChannelPointsClaimGeneration = 0;
+static NSUInteger s_s7tvChannelPointsContextGeneration = 1;
+static BOOL s_s7tvChannelPointsContextReady = NO;
 
 // Dédup PAR COOLDOWN, pas permanente : on retente le même ID toutes les
 // S7TVChannelPointsClaimRetryCooldown secondes tant que le GQL continue de le signaler
@@ -292,15 +296,126 @@ static NSString      *s_s7tvClaimIDBeingTimed = nil;
 static NSTimeInterval  s_s7tvFirstAttemptTimeForCurrentClaim = 0;
 static const NSTimeInterval kS7TVMaxRetryDuration = 60.0;
 
-void s7tv_setPendingChannelPointsClaimID(NSString *claimID) {
+static BOOL s7tv_channelPointsContextMatchesCurrentLocked(
+    NSString * _Nullable channelID, NSUInteger contextGeneration) {
+    if (contextGeneration == 0 ||
+        contextGeneration != s_s7tvChannelPointsContextGeneration ||
+        !s_s7tvChannelPointsContextReady) {
+        return NO;
+    }
+
+    NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+    if (!channelID.length || !currentChannelID.length) return NO;
+    return [channelID isEqualToString:currentChannelID];
+}
+
+static BOOL s7tv_pendingClaimMatchesContextLocked(
+    NSString * _Nullable channelID, NSUInteger contextGeneration) {
+    if (s_s7tvPendingChannelPointsClaimGeneration != contextGeneration) return NO;
+    if (s_s7tvPendingChannelPointsClaimChannelID.length || channelID.length) {
+        return [s_s7tvPendingChannelPointsClaimChannelID isEqualToString:channelID];
+    }
+    return YES;
+}
+
+static BOOL s7tv_pendingClaimMatchesLocked(
+    NSString *claimID, NSString * _Nullable channelID,
+    NSUInteger contextGeneration) {
+    return s7tv_pendingClaimMatchesContextLocked(channelID, contextGeneration) &&
+        [claimID isEqualToString:s_s7tvPendingChannelPointsClaimID];
+}
+
+NSUInteger s7tv_channelPointsCurrentContextGeneration(void) {
     @synchronized ([SevenTVManager class]) {
-        s_s7tvPendingChannelPointsClaimID = [claimID copy];
+        return s_s7tvChannelPointsContextGeneration;
     }
 }
 
-static NSString *s7tv_getPendingChannelPointsClaimID(void) {
+static void s7tv_resetChannelPointsContextLocked(void) {
+    s_s7tvPendingChannelPointsClaimID = nil;
+    s_s7tvPendingChannelPointsClaimChannelID = nil;
+    s_s7tvPendingChannelPointsClaimGeneration = 0;
+    s_s7tvLastTriggeredChannelPointsClaimID = nil;
+    s_s7tvLastTriggerAttemptTime = 0;
+    s_s7tvClaimIDBeingTimed = nil;
+    s_s7tvFirstAttemptTimeForCurrentClaim = 0;
+}
+
+void s7tv_channelPointsWillChangeChannel(void) {
     @synchronized ([SevenTVManager class]) {
-        return s_s7tvPendingChannelPointsClaimID;
+        s_s7tvChannelPointsContextGeneration++;
+        if (s_s7tvChannelPointsContextGeneration == 0) {
+            s_s7tvChannelPointsContextGeneration = 1;
+        }
+        s_s7tvChannelPointsContextReady = NO;
+        s7tv_resetChannelPointsContextLocked();
+    }
+}
+
+void s7tv_channelPointsMarkChannelReady(void) {
+    @synchronized ([SevenTVManager class]) {
+        s_s7tvChannelPointsContextReady =
+            [SevenTVManager sharedManager].currentChannelTwitchID.length > 0;
+    }
+}
+
+void s7tv_channelPointsDidChangeChannel(void) {
+    @synchronized ([SevenTVManager class]) {
+        s_s7tvChannelPointsContextGeneration++;
+        if (s_s7tvChannelPointsContextGeneration == 0) {
+            s_s7tvChannelPointsContextGeneration = 1;
+        }
+        s_s7tvChannelPointsContextReady =
+            [SevenTVManager sharedManager].currentChannelTwitchID.length > 0;
+        s7tv_resetChannelPointsContextLocked();
+    }
+}
+
+void s7tv_setPendingChannelPointsClaimID(NSString *claimID,
+                                         NSString * _Nullable channelID,
+                                         NSUInteger contextGeneration) {
+    if (!claimID.length) return;
+
+    @synchronized ([SevenTVManager class]) {
+        if (!s7tv_channelPointsContextMatchesCurrentLocked(
+                channelID, contextGeneration)) {
+            return;
+        }
+        s_s7tvPendingChannelPointsClaimID = [claimID copy];
+        s_s7tvPendingChannelPointsClaimChannelID = [channelID copy];
+        s_s7tvPendingChannelPointsClaimGeneration = contextGeneration;
+    }
+}
+
+void s7tv_clearPendingChannelPointsClaimIfMatching(
+    NSString * _Nullable claimID, NSString * _Nullable channelID,
+    NSUInteger contextGeneration) {
+    @synchronized ([SevenTVManager class]) {
+        if (!s7tv_channelPointsContextMatchesCurrentLocked(
+                channelID, contextGeneration) ||
+            !s7tv_pendingClaimMatchesContextLocked(channelID, contextGeneration)) {
+            return;
+        }
+        if (claimID.length &&
+            ![claimID isEqualToString:s_s7tvPendingChannelPointsClaimID]) {
+            return;
+        }
+        s_s7tvPendingChannelPointsClaimID = nil;
+        s_s7tvPendingChannelPointsClaimChannelID = nil;
+        s_s7tvPendingChannelPointsClaimGeneration = 0;
+    }
+}
+
+static NSString *s7tv_getPendingChannelPointsClaimID(
+    NSString **outChannelID, NSUInteger *outContextGeneration) {
+    @synchronized ([SevenTVManager class]) {
+        if (outChannelID) {
+            *outChannelID = [s_s7tvPendingChannelPointsClaimChannelID copy];
+        }
+        if (outContextGeneration) {
+            *outContextGeneration = s_s7tvPendingChannelPointsClaimGeneration;
+        }
+        return [s_s7tvPendingChannelPointsClaimID copy];
     }
 }
 
@@ -308,9 +423,13 @@ static NSString *s7tv_getPendingChannelPointsClaimID(void) {
 // Gate rapide par recherche d'octets bruts avant de payer le coût d'un
 // parsing JSON complet — la quasi-totalité des réponses GQL n'ont rien à
 // voir avec les Channel Points (chat, badges, métadonnées stream...).
-static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID); // forward decl, définie plus bas
+static void s7tv_triggerChannelPointsClaimIfNeeded(
+    NSString *claimID, NSString * _Nullable channelID,
+    NSUInteger contextGeneration); // forward decl
 
-void s7tv_scanGQLResponseForChannelPointsClaim(NSData *data) {
+void s7tv_scanGQLResponseForChannelPointsClaim(NSData *data,
+                                                NSString * _Nullable channelID,
+                                                NSUInteger contextGeneration) {
     if (data.length == 0) return;
 
     static NSData *s_needle = nil;
@@ -331,20 +450,25 @@ void s7tv_scanGQLResponseForChannelPointsClaim(NSData *data) {
     if (!found) return;
 
     if (!claim || [claim isKindOfClass:[NSNull class]]) {
-        s7tv_setPendingChannelPointsClaimID(nil);
+        s7tv_clearPendingChannelPointsClaimIfMatching(
+            nil, channelID, contextGeneration);
         return;
     }
 
     if ([claim isKindOfClass:[NSDictionary class]]) {
         NSString *claimID = claim[@"id"];
         if (!claimID.length) claimID = @"unknown";
-        s7tv_setPendingChannelPointsClaimID(claimID);
+        s7tv_setPendingChannelPointsClaimID(
+            claimID, channelID, contextGeneration);
 
         // Déclenchement immédiat (main thread) plutôt que d'attendre le
         // prochain tick du polling de secours — latence minimale entre la
         // détection réseau et la collecte réelle.
+        NSString *capturedChannelID = [channelID copy];
+        NSUInteger capturedGeneration = contextGeneration;
         dispatch_async(dispatch_get_main_queue(), ^{
-            s7tv_triggerChannelPointsClaimIfNeeded(claimID);
+            s7tv_triggerChannelPointsClaimIfNeeded(
+                claimID, capturedChannelID, capturedGeneration);
         });
     }
 }
@@ -398,8 +522,19 @@ static void s7tv_logAllChatInputViewInstances(void) {
 // Dédup par COOLDOWN (pas permanente) : voir le commentaire sur
 // S7TVChannelPointsClaimRetryCooldown plus haut — un performSelector "réussi" (aucune
 // exception) ne garantit pas qu'une vraie requête soit partie.
-static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
+static void s7tv_triggerChannelPointsClaimIfNeeded(
+    NSString *claimID, NSString * _Nullable channelID,
+    NSUInteger contextGeneration) {
     if (!claimID.length) return;
+
+    @synchronized ([SevenTVManager class]) {
+        if (!s7tv_channelPointsContextMatchesCurrentLocked(
+                channelID, contextGeneration) ||
+            !s7tv_pendingClaimMatchesLocked(
+                claimID, channelID, contextGeneration)) {
+            return;
+        }
+    }
 
     NSString *lastTriggeredClaimID;
     NSTimeInterval lastAttemptTime;
@@ -429,7 +564,8 @@ static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
         [[SevenTVManager sharedManager]
             log:@"⚠️ Channel Points: abandon après %.0fs de tentatives infructueuses (id=%@) — le tap natif ne produit aucune requête de claim, probablement ouverture du panneau de dépense côté Twitch",
             kS7TVMaxRetryDuration, claimID];
-        s7tv_setPendingChannelPointsClaimID(nil); // stoppe le polling pour cet ID
+        s7tv_clearPendingChannelPointsClaimIfMatching(
+            claimID, channelID, contextGeneration); // stoppe le polling pour cet ID
         @synchronized ([SevenTVManager class]) {
             s_s7tvClaimIDBeingTimed = nil;
             s_s7tvFirstAttemptTimeForCurrentClaim = 0;
@@ -453,6 +589,13 @@ static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
         [[SevenTVManager sharedManager]
             log:@"Erreur Channel Points: sélecteur 'handleChannelPointsButtonTapped' introuvable sur ChatInputView"];
         return;
+    }
+
+    @synchronized ([SevenTVManager class]) {
+        if (!s7tv_channelPointsContextMatchesCurrentLocked(
+                channelID, contextGeneration)) {
+            return;
+        }
     }
 
     // Marqué AVANT l'appel (évite un double-déclenchement immédiat si le
@@ -481,9 +624,13 @@ static void s7tv_triggerChannelPointsClaimIfNeeded(NSString *claimID) {
 static void s7tv_pollChannelPointsClaim(UIView *chatInputView) {
     if (!chatInputView || !chatInputView.window) return;
 
-    NSString *pendingClaimID = s7tv_getPendingChannelPointsClaimID();
+    NSString *pendingChannelID = nil;
+    NSUInteger pendingContextGeneration = 0;
+    NSString *pendingClaimID = s7tv_getPendingChannelPointsClaimID(
+        &pendingChannelID, &pendingContextGeneration);
     if (pendingClaimID.length > 0) {
-        s7tv_triggerChannelPointsClaimIfNeeded(pendingClaimID);
+        s7tv_triggerChannelPointsClaimIfNeeded(
+            pendingClaimID, pendingChannelID, pendingContextGeneration);
     }
 
     __weak UIView *weakChatInputView = chatInputView;
@@ -595,15 +742,23 @@ void s7tv_scanWebSocketTextForChannelPointsClaimAvailable(NSString *text) {
     // sur les événements jumeaux "claim-claimed"/"points-earned".
     NSString *claimChannelID = claim[@"channel_id"];
     NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
-    if (claimChannelID.length && currentChannelID.length
-        && ![claimChannelID isEqualToString:currentChannelID]) {
+    if (!claimChannelID.length) {
+        [[SevenTVManager sharedManager]
+            log:@"🎁 Channel Points debug: événement claim-available ignoré — channel_id absent"];
+        return;
+    }
+    if (!currentChannelID.length ||
+        ![claimChannelID isEqualToString:currentChannelID]) {
         [[SevenTVManager sharedManager]
             log:@"🎁 Channel Points debug: événement claim-available ignoré — channel_id=%@ ≠ chaîne actuelle=%@",
             claimChannelID, currentChannelID];
         return;
     }
 
-    s7tv_setPendingChannelPointsClaimID(claimID);
+    NSUInteger contextGeneration = s7tv_channelPointsCurrentContextGeneration();
+    NSString *contextChannelID = [claimChannelID copy];
+    s7tv_setPendingChannelPointsClaimID(
+        claimID, contextChannelID, contextGeneration);
 
     // Délai volontaire avant la 1ère tentative (uniquement pour ce chemin
     // PubSub) : on intercepte les octets bruts de la trame AVANT que le
@@ -616,7 +771,8 @@ void s7tv_scanWebSocketTextForChannelPointsClaimAvailable(NSString *text) {
     // construction de la vue — donc pas de délai ajouté là-bas.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        s7tv_triggerChannelPointsClaimIfNeeded(claimID);
+        s7tv_triggerChannelPointsClaimIfNeeded(
+            claimID, contextChannelID, contextGeneration);
     });
 }
 // État global verrou d'orientation — déplacées depuis le haut de

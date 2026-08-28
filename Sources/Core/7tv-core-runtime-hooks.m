@@ -37,6 +37,7 @@
 #import "Badge/7tv-badge-provider.h"
 #import "Picker/7tv-picker-controller.h"
 #import "System/7tv-system-native-behavior-hooks.h"
+#import "System/7tv-system-autoclaim.h"
 #import "System/7tv-system-home-features.h"
 #import "Adblock/Proxy/7tv-adblock-data.h"
 #import "Adblock/Proxy/7tv-adblock-proxy.h"
@@ -85,32 +86,6 @@ void s7tv_swizzle(Class targetClass,
      NSStringFromClass(targetClass), NSStringFromSelector(original)];
 }
 
-
-// Recherche récursive d'une clé dans un JSON déjà parsé (NSDictionary/
-// NSArray imbriqués). `*found` distingue "clé absente" de "clé présente
-// mais valant null" — cette distinction compte : si la clé est absente,
-// cette réponse GQL ne concerne pas ChannelPointsQuery et on ne doit rien
-// en conclure ; si elle vaut explicitement null, c'est une confirmation
-// positive qu'il n'y a PAS de coffre en attente.
-id s7tv_findValueForKeyRecursive(id json, NSString *key, BOOL *found) {
-    if ([json isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *dict = json;
-        if (dict[key] != nil) {
-            *found = YES;
-            return dict[key];
-        }
-        for (id value in dict.allValues) {
-            id result = s7tv_findValueForKeyRecursive(value, key, found);
-            if (*found) return result;
-        }
-    } else if ([json isKindOfClass:[NSArray class]]) {
-        for (id item in json) {
-            id result = s7tv_findValueForKeyRecursive(item, key, found);
-            if (*found) return result;
-        }
-    }
-    return nil;
-}
 
 // ────────────────────────────────────────────────────────────
 // MARK: - Pont métadonnées Channel Points GQL → chat custom
@@ -187,20 +162,6 @@ static NSString * _Nullable s7tv_channelIDFromGQLRequest(
         ? [[SevenTVManager sharedManager].currentChannelTwitchID copy] : nil;
 }
 
-static void s7tv_captureChannelPointsRequestContext(
-    NSString * _Nullable requestChannelID, BOOL requestChannelIDAmbiguous,
-    NSString **outChannelID, NSUInteger *outGeneration) {
-    // Un ID ambigu/absent n'est jamais remplacé par la chaîne relue au
-    // callback : on conserve seulement le snapshot pris au départ, afin
-    // qu'un changement ultérieur rende la réponse obsolète.
-    NSUInteger generation = s7tv_channelPointsCurrentContextGeneration();
-    NSString *channelID = requestChannelID.length && !requestChannelIDAmbiguous
-        ? [requestChannelID copy]
-        : [[SevenTVManager sharedManager].currentChannelTwitchID copy];
-    if (outChannelID) *outChannelID = channelID;
-    if (outGeneration) *outGeneration = generation;
-}
-
 static void s7tv_ingestChannelPointMetadata(NSData *data,
                                              NSString *requestChannelID,
                                              BOOL requestChannelIDAmbiguous) {
@@ -243,8 +204,6 @@ static void s7tv_ingestChannelPointMetadata(NSData *data,
 static BOOL s7tv_try_swizzle_apollo_gql(void);
 static char kS7TVGQLRequestChannelIDKey;
 static char kS7TVGQLRequestAmbiguousKey;
-static char kS7TVGQLRequestContextChannelIDKey;
-static char kS7TVGQLRequestContextGenerationKey;
 
 static NSString *const kS7TVVAFTInternalHeader = @"X-TAS-Internal";
 
@@ -291,9 +250,8 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
                              completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
 // Variante SANS completion handler — c'est celle-ci qu'utilise Apollo en
 // interne pour ses requêtes delegate-based (voir plus bas, hook
-// Apollo.URLSessionClient). On ne peut voir le corps de la requête SORTANTE
-// (donc confirmer qu'une ClaimChannelPointsMutation part bien) qu'ici —
-// didReceiveData:/didCompleteWithError: ne donnent que la réponse.
+// Apollo.URLSessionClient). Les hooks delegate ne donnent ensuite accès qu'à
+// la réponse, pas au corps de la requête sortante.
 - (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request;
 - (NSURLSessionUploadTask *)s7tv_uploadTaskWithRequest:(NSURLRequest *)request
                                               fromData:(NSData *)bodyData;
@@ -313,28 +271,14 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
     if (blocked) return nil;
 
     // À cet instant Apollo.URLSessionClient est forcément chargé si cette
-    // requête vient d'Apollo. Le hook sera en place avant la première réponse,
-    // même si l'utilisateur ouvre son premier stream bien après les retries
-    // bornés du démarrage.
+    // requête vient d'Apollo. Le hook sera en place avant la première réponse.
     s7tv_try_swizzle_apollo_gql();
     NSString *requestChannelID = nil;
     BOOL requestChannelIDAmbiguous = NO;
-    NSString *requestContextChannelID = nil;
-    NSUInteger requestContextGeneration = 0;
     if ([request.URL.host isEqualToString:@"gql.twitch.tv"]) {
         if (request.HTTPBody) {
             requestChannelID = s7tv_channelIDFromGQLRequest(
                 request, YES, &requestChannelIDAmbiguous);
-        }
-        s7tv_captureChannelPointsRequestContext(
-            requestChannelID, requestChannelIDAmbiguous,
-            &requestContextChannelID, &requestContextGeneration);
-        if (request.HTTPBody) {
-            NSString *bodyStr = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
-            if ([bodyStr containsString:@"ClaimCommunityPoints"] || [bodyStr containsString:@"claimCommunityPoints"]) {
-                [[SevenTVManager sharedManager]
-                    log:@"🎁 Channel Points debug: requête ClaimChannelPointsMutation envoyée — corps :\n%@", bodyStr];
-            }
         }
     }
     NSURLSessionDataTask *task = S7TVAdblockCreateConnectTaskIfNeeded(self, request);
@@ -346,14 +290,6 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
     if (requestChannelIDAmbiguous) {
         objc_setAssociatedObject(task, &kS7TVGQLRequestAmbiguousKey,
                                  @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    if (requestContextGeneration > 0) {
-        objc_setAssociatedObject(task, &kS7TVGQLRequestContextChannelIDKey,
-                                 requestContextChannelID,
-                                 OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(task, &kS7TVGQLRequestContextGenerationKey,
-                                 @(requestContextGeneration),
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return task;
 }
@@ -370,20 +306,12 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
         BOOL requestChannelIDAmbiguous = NO;
         NSString *requestChannelID = s7tv_channelIDFromGQLRequest(
             request, YES, &requestChannelIDAmbiguous);
-        NSString *requestContextChannelID = nil;
-        NSUInteger requestContextGeneration = 0;
-        s7tv_captureChannelPointsRequestContext(
-            requestChannelID, requestChannelIDAmbiguous,
-            &requestContextChannelID, &requestContextGeneration);
         void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
             ^(NSData *data, NSURLResponse *response, NSError *error) {
                 NSData *filteredData = data && !error
                     ? S7TVAdblockTransformResponseData(data, request) : data;
                 if (filteredData && !error) {
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:filteredData];
-                    s7tv_scanGQLResponseForChannelPointsClaim(
-                        filteredData, requestContextChannelID,
-                        requestContextGeneration);
                     s7tv_ingestChannelPointMetadata(
                         filteredData, requestChannelID, requestChannelIDAmbiguous);
                 }
@@ -406,16 +334,10 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
                        completionHandler:completionHandler];
     }
     if ([url.host isEqualToString:@"gql.twitch.tv"] && completionHandler) {
-        NSString *requestContextChannelID =
-            [[SevenTVManager sharedManager].currentChannelTwitchID copy];
-        NSUInteger requestContextGeneration =
-            s7tv_channelPointsCurrentContextGeneration();
         void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
             ^(NSData *data, NSURLResponse *response, NSError *error) {
                 if (data && !error) {
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
-                    s7tv_scanGQLResponseForChannelPointsClaim(
-                        data, requestContextChannelID, requestContextGeneration);
                     s7tv_ingestChannelPointMetadata(data, nil, NO);
                 }
                 completionHandler(data, response, error);
@@ -444,11 +366,8 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
 // MARK: - Hook Apollo.URLSessionClient (GraphQL réel, delegate-based)
 // ────────────────────────────────────────────────────────────
 //
-// DÉCOUVERTE : le swizzle ci-dessus sur -[NSURLSession dataTaskWithRequest:
-// completionHandler:]/dataTaskWithURL:completionHandler: ne voit JAMAIS les
-// requêtes GraphQL réelles de Twitch (ChannelPointsQuery incluse) — confirmé
-// par des dizaines de ticks de logs sans le moindre "availableClaim", même
-// avec un coffre déjà présent à l'arrivée sur la chaîne.
+// Le client Apollo de Twitch utilise l'API delegate de NSURLSession pour les
+// réponses GraphQL, ce qui nécessite un hook séparé de celui des callbacks.
 //
 // Raison confirmée dans le binaire (pas une hypothèse) :
 //   @rpath/TwitchApollo.framework/TwitchApollo
@@ -458,16 +377,8 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
 //   urlSession(_:task:didCompleteWithError:)           (signature réelle)
 //
 // Twitch embarque son propre framework Apollo (le client GraphQL open-source
-// standard), et Apollo-iOS pilote ses requêtes via l'API DELEGATE de
-// NSURLSession (-URLSession:dataTask:didReceiveData:, -URLSession:task:
-// didCompleteWithError:), pas l'API à completion handler qu'on avait
-// swizzlée. C'est un mécanisme de requête entièrement différent, invisible
-// à l'ancien hook — pas un problème de format JSON, de timing, ou de nom de
-// champ. On corrige en swizzlant directement les méthodes délégué
-// d'Apollo.URLSessionClient : didReceiveData: peut être appelé plusieurs
-// fois par tâche (réponse en chunks), donc on accumule par
-// taskIdentifier, puis on traite le corps complet une fois assemblé à
-// didCompleteWithError: (si error == nil).
+// standard), et Apollo-iOS pilote ses requêtes via l'API delegate. Les chunks
+// sont donc accumulés par tâche avant l'extraction des emotes/métadonnées.
 
 static char kS7TVApolloResponseBufferKey;
 
@@ -522,10 +433,6 @@ static char kS7TVApolloResponseBufferKey;
         NSString *host = task.currentRequest.URL.host ?: task.originalRequest.URL.host;
         if ([host isEqualToString:@"gql.twitch.tv"]) {
             [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:fullData];
-            NSString *requestContextChannelID = objc_getAssociatedObject(
-                task, &kS7TVGQLRequestContextChannelIDKey);
-            NSUInteger requestContextGeneration = [objc_getAssociatedObject(
-                task, &kS7TVGQLRequestContextGenerationKey) unsignedIntegerValue];
             NSString *requestChannelID = objc_getAssociatedObject(
                 task, &kS7TVGQLRequestChannelIDKey);
             BOOL requestChannelIDAmbiguous = [objc_getAssociatedObject(
@@ -537,75 +444,8 @@ static char kS7TVApolloResponseBufferKey;
                     &completionAmbiguous);
                 requestChannelIDAmbiguous |= completionAmbiguous;
             }
-            s7tv_scanGQLResponseForChannelPointsClaim(
-                fullData, requestContextChannelID, requestContextGeneration);
             s7tv_ingestChannelPointMetadata(
                 fullData, requestChannelID, requestChannelIDAmbiguous);
-
-            // Preuve directe du résultat serveur de la mutation de claim —
-            // permet de voir un éventuel champ "error" renvoyé par Twitch
-            // (ex: coffre déjà expiré, déjà réclamé...) plutôt que de
-            // déduire l'échec indirectement.
-            // Preuve directe du résultat serveur de la mutation de claim —
-            // c'est la source d'arrêt de la boucle de retry : dès que
-            // Twitch confirme un succès (claim.id + error:null), on efface
-            // pendingClaimID nous-mêmes. On ne peut pas compter sur un
-            // futur ChannelPointsQuery pour le faire : rien ne garantit
-            // que Twitch le rejoue juste après une mutation réussie (vu en
-            // conditions réelles : sans ce correctif, retry en boucle
-            // indéfiniment après un succès confirmé).
-            static NSData *s_claimNeedle = nil;
-            static dispatch_once_t claimOnce;
-            dispatch_once(&claimOnce, ^{
-                s_claimNeedle = [@"claimCommunityPoints" dataUsingEncoding:NSUTF8StringEncoding];
-            });
-            if ([fullData rangeOfData:s_claimNeedle options:0 range:NSMakeRange(0, fullData.length)].location != NSNotFound) {
-                NSError *jsonErr = nil;
-                id json = [NSJSONSerialization JSONObjectWithData:fullData options:0 error:&jsonErr];
-                BOOL found = NO;
-                id payload = (!jsonErr && json)
-                    ? s7tv_findValueForKeyRecursive(json, @"claimCommunityPoints", &found)
-                    : nil;
-
-                if (found && [payload isKindOfClass:[NSDictionary class]]) {
-                    NSDictionary *payloadDict = payload;
-                    id claimObj = payloadDict[@"claim"];
-                    id errorObj = payloadDict[@"error"];
-                    BOOL success = [claimObj isKindOfClass:[NSDictionary class]]
-                        && (!errorObj || [errorObj isKindOfClass:[NSNull class]]);
-
-                    if (success) {
-                        NSString *confirmedID = [(NSDictionary *)claimObj objectForKey:@"id"];
-                        NSNumber *pointsEarned = [(NSDictionary *)claimObj objectForKey:@"pointsEarnedTotal"];
-                        s7tv_clearPendingChannelPointsClaimIfMatching(
-                            confirmedID, requestContextChannelID,
-                            requestContextGeneration); // stoppe le retry — succès confirmé
-                        [[SevenTVManager sharedManager]
-                            log:@"🎁 Channel Points: coffre confirmé collecté par Twitch (id=%@, +%@ points)",
-                            confirmedID, pointsEarned];
-                    } else {
-                        // Échec confirmé côté serveur (ex: integrity check) — on NE
-                        // touche PAS pendingClaimID, le cooldown fera réessayer.
-                        [[SevenTVManager sharedManager]
-                            log:@"🎁 Channel Points debug: mutation refusée par Twitch, nouvel essai dans %.0fs — %@",
-                            S7TVChannelPointsClaimRetryCooldown, payloadDict];
-                    }
-                } else if (found && (!payload || [payload isKindOfClass:[NSNull class]])) {
-                    // "data":{"claimCommunityPoints":null} — cas du
-                    // IntegrityCheckFailed observé : la mutation entière a
-                    // échoué avant même de produire un payload. On laisse
-                    // le retry cooldown reprendre la main.
-                    [[SevenTVManager sharedManager]
-                        log:@"🎁 Channel Points debug: mutation rejetée par Twitch (claimCommunityPoints=null), nouvel essai dans %.0fs",
-                        S7TVChannelPointsClaimRetryCooldown];
-                }
-            }
-        }
-    } else if (error) {
-        NSString *host = task.currentRequest.URL.host ?: task.originalRequest.URL.host;
-        if ([host isEqualToString:@"gql.twitch.tv"]) {
-            [[SevenTVManager sharedManager]
-                log:@"🎁 Channel Points debug: requête gql.twitch.tv terminée en erreur réseau : %@", error];
         }
     }
 
@@ -654,7 +494,7 @@ static void s7tv_swizzle_apollo_gql(void) {
     if (s7tv_try_swizzle_apollo_gql()) return;
 
     [[SevenTVManager sharedManager]
-        log:@"ℹ️ Channel Points: Apollo pas encore chargé, installation différée du hook GQL"];
+        log:@"ℹ️ Apollo pas encore chargé, installation différée du hook GQL"];
 
     // TwitchApollo peut être chargé après le constructeur du tweak. Un échec
     // initial ne doit plus condamner l'acquisition des images de monnaie pour
@@ -675,11 +515,11 @@ static void s7tv_swizzle_apollo_gql(void) {
                 }
                 if (shouldLog) {
                     [[SevenTVManager sharedManager]
-                        log:@"✅ Channel Points: hook GQL Apollo installé après chargement différé"];
+                        log:@"✅ Hook GQL Apollo installé après chargement différé"];
                 }
             } else if (index == delays.count - 1) {
                 [[SevenTVManager sharedManager]
-                    log:@"⚠️ Channel Points: Apollo.URLSessionClient toujours introuvable — images de monnaie indisponibles"];
+                    log:@"⚠️ Apollo.URLSessionClient toujours introuvable — images de monnaie indisponibles"];
             }
         });
     }];
@@ -715,7 +555,6 @@ static void s7tv_swizzle_apollo_gql(void) {
                 }
 
                 if (textToProcess) {
-                    s7tv_scanWebSocketTextForChannelPointsClaimAvailable(textToProcess);
                     [[SevenTVManager sharedManager]
                         handleIncomingChatWebSocketText:textToProcess];
                 }
@@ -973,15 +812,9 @@ static void TwitchSevenTVInit(void) {
     // les cibles qui auraient été renommées par une version de Twitch.
     S7TVHookDiagnosticsRegisterKnownTargets();
 
-    // Auto Collect Channel Points — module 100% autonome (voir
-    // 7tv-system-native-behavior-hooks.m), aucune dépendance avec les
-    // swizzles ci-dessus. Démarré directement ici, pas via didMoveToWindow.
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    BOOL autoCollectEnabled = [defaults objectForKey:@"TCDBGLiveAutoCollectChannelPoints"] != nil
-        ? [defaults boolForKey:@"TCDBGLiveAutoCollectChannelPoints"] : YES;
-    if (autoCollectEnabled) {
-        s7tv_scanForChannelPointsLoop();
-    }
+    // Auto Claim Channel Points — module isolé, piloté par le cycle de vie
+    // du ChannelChatViewController et sans scan global des fenêtres.
+    S7TVAutoClaimSetup();
 
     // Setup sur le main thread
     dispatch_async(dispatch_get_main_queue(), ^{

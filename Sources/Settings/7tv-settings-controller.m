@@ -20,6 +20,7 @@
 #import "Chat/7tv-chat-appearance-config.h"
 #import "Localization/7tv-localization-manager.h"
 #import "System/7tv-system-native-behavior-hooks.h"
+#import "System/7tv-system-autoclaim.h"
 #import "System/7tv-system-home-features.h"
 #import "Adblock/7tv-adblock-settings.h"
 #import "Adblock/Proxy/7tv-adblock-proxy-status.h"
@@ -2073,7 +2074,7 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
 
 - (void)toggleAutoCollect:(UISwitch *)sw {
     S7TVSetBool(kTCLiveAutoCollectChannelPoints, sw.isOn);
-    if (sw.isOn) s7tv_scanForChannelPointsLoop();
+    S7TVAutoClaimSettingsDidChange();
 }
 - (void)toggleHideTwitchStories:(UISwitch *)sw {
     s7tv_setHideTwitchStoriesEnabled(sw.isOn);

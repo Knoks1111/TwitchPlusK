@@ -419,6 +419,53 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
     return cell;
 }
 
+// Variante réservée aux indisponibilités temporaires : elle réutilise toute
+// la construction/layout de S7TVSwitchCell, désactive uniquement l'interrupteur
+// et ajoute le bouton d'alerte dans le même emplacement que le bouton « i ».
+// Le bouton reste donc interactif pour expliquer la suspension.
+static UITableViewCell *S7TVSwitchCellWithEnabledState(NSString *title,
+                                                         NSString *sfName,
+                                                         UIColor  *iconTint,
+                                                         BOOL      isOn,
+                                                         BOOL      switchEnabled,
+                                                         id        target,
+                                                         SEL       action,
+                                                         NSString *warningKey) {
+    UITableViewCell *cell = S7TVSwitchCell(title, sfName, iconTint, isOn,
+                                           target, action, nil);
+    UISwitch *sw = nil;
+    for (UIView *subview in cell.contentView.subviews) {
+        if ([subview isKindOfClass:UISwitch.class]) {
+            sw = (UISwitch *)subview;
+            break;
+        }
+    }
+    if (!sw) return cell;
+    sw.enabled = switchEnabled;
+
+    if (!warningKey.length) return cell;
+
+    UIButton *warningButton = [S7TVInfoTooltip warningButtonWithKey:warningKey];
+    warningButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:warningButton];
+    UILabel *label = nil;
+    for (UIView *subview in cell.contentView.subviews) {
+        if ([subview isKindOfClass:UILabel.class]) {
+            label = (UILabel *)subview;
+            break;
+        }
+    }
+    [NSLayoutConstraint activateConstraints:@[
+        [warningButton.trailingAnchor constraintEqualToAnchor:sw.leadingAnchor constant:-6],
+        [warningButton.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+    ]];
+    if (label) {
+        [label.trailingAnchor constraintLessThanOrEqualToAnchor:warningButton.leadingAnchor
+                                                         constant:-4].active = YES;
+    }
+    return cell;
+}
+
 // Header de section style Twitch : logo (optionnel) + texte gris uppercase
 // Identique visuellement au header "7TV SETTINGS" de la capture
 // infoKey (optionnel) : clé de description derrière un bouton "i" aligné à
@@ -1859,12 +1906,22 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
     self.title = L(@"title_contenu");
     S7TVStyleTableView(self.tableView);
     S7TVRegisterOLEDObserver(self);
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(s7tv_autoClaimRuntimeStateDidChange:)
+            name:S7TVAutoClaimRuntimeStateDidChangeNotification object:nil];
 }
 
 - (void)s7tv_oledModeDidChange {
     dispatch_async(dispatch_get_main_queue(), ^{
         S7TVApplyOLEDStyle(self);
     });
+}
+
+- (void)s7tv_autoClaimRuntimeStateDidChange:(NSNotification *)notification {
+    (void)notification;
+    if (!self.isViewLoaded || !self.view.window) return;
+    [S7TVInfoTooltip dismiss];
+    [self.tableView reloadData];
 }
 
 - (void)dealloc {
@@ -1960,11 +2017,21 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
                     @"play.circle.fill", [UIColor colorWithRed:0.30 green:0.75 blue:0.45 alpha:1.0],
                     s7tv_keepLiveFeedPlayingEnabled(), self, @selector(toggleKeepLiveFeedPlaying:), nil);
             case S7TVContentHomeRowAutoCollect:
-                // La description (ex-footer de section) est derrière le "i" de la ligne.
-                return S7TVSwitchCell(L(@"switch_auto_collect_title"),
-                            @"giftcard.fill", [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
-                            S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints), self,
-                            @selector(toggleAutoCollect:), @"desc_auto_collect");
+                {
+                    BOOL adblockActive = S7TVAdblockEnabledFast() &&
+                        S7TVAdblockActiveMethod() != S7TVAdblockMethodDisabled;
+                    NSString *warningKey = S7TVAutoClaimIsSuspendedByAdblock()
+                        ? @"auto_collect_adblock_suspended" : nil;
+                    return S7TVSwitchCellWithEnabledState(
+                        L(@"switch_auto_collect_title"),
+                        @"giftcard.fill",
+                        [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
+                        S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints),
+                        !adblockActive,
+                        self,
+                        @selector(toggleAutoCollect:),
+                        warningKey);
+                }
             case S7TVContentHomeRowLockButton: {
                 S7TVOrientationLockSetting setting = S7TVCurrentOrientationLockSetting();
                 return S7TVNavCell(L(@"switch_orientation_lock_button"),

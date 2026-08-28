@@ -6,6 +6,8 @@ NSString *const S7TVAdblockCustomProxyEnabledKey = @"s7tv_adblock_custom_proxy_e
 NSString *const S7TVAdblockCustomProxyKey        = @"s7tv_adblock_custom_proxy";
 NSString *const S7TVAdblockHideAdFreeButtonKey  = @"s7tv_adblock_hide_go_ad_free";
 NSString *const S7TVAdblockMethodKey             = @"s7tv_adblock_method";
+NSString *const S7TVAdblockRuntimeStateDidChangeNotification =
+    @"S7TVAdblockRuntimeStateDidChangeNotification";
 
 static NSUserDefaults *S7TVAdblockDefaults(void) {
     return NSUserDefaults.standardUserDefaults;
@@ -46,8 +48,14 @@ static S7TVAdblockMethod S7TVAdblockMethodFromStored(NSString * _Nullable stored
 void S7TVAdblockRefreshRuntimeSnapshots(void) {
     S7TVAdblockRegisterDefaults();
     NSUserDefaults *defaults = S7TVAdblockDefaults();
+    BOOL oldEnabled = s_enabled_snapshot;
     s_enabled_snapshot = [defaults boolForKey:S7TVAdblockEnabledKey];
     s_hide_ad_free_snapshot = [defaults boolForKey:S7TVAdblockHideAdFreeButtonKey];
+    if (oldEnabled != s_enabled_snapshot) {
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:S7TVAdblockRuntimeStateDidChangeNotification
+                          object:nil];
+    }
 }
 
 BOOL S7TVAdblockEnabledFast(void) {
@@ -144,7 +152,13 @@ NSArray<NSString *> *S7TVAdblockCustomProxyAddresses(void) {
 
 void S7TVAdblockSetEnabled(BOOL enabled) {
     [S7TVAdblockDefaults() setBool:enabled forKey:S7TVAdblockEnabledKey];
+    BOOL changed = s_enabled_snapshot != enabled;
     s_enabled_snapshot = enabled;
+    if (changed) {
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:S7TVAdblockRuntimeStateDidChangeNotification
+                          object:nil];
+    }
 }
 
 void S7TVAdblockSetEnabledForNextLaunch(BOOL enabled) {

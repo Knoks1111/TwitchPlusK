@@ -37,6 +37,11 @@ NS_ASSUME_NONNULL_BEGIN
 // la bulle de description correspondant à la clé donnée.
 + (UIButton *)infoButtonWithKey:(NSString *)key;
 
+// Variante d'alerte avec le même comportement de tooltip et une icône rouge
+// « ! ». La clé de localisation est résolue à l'ouverture, comme pour le
+// bouton d'information normal.
++ (UIButton *)warningButtonWithKey:(NSString *)key;
+
 // Ferme la bulle actuellement ouverte, s'il y en a une. No-op sinon.
 // À appeler dans viewWillDisappear des écrans qui utilisent des boutons info.
 + (void)dismiss;

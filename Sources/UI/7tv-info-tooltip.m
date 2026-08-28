@@ -64,6 +64,19 @@ static UIScrollView *_s7tv_hostScrollView = nil;
     return button;
 }
 
++ (UIButton *)warningButtonWithKey:(NSString *)key {
+    // Réutilise exactement le même bouton, la même zone tactile et le même
+    // gestionnaire de tooltip ; seule la présentation de l'icône change.
+    S7TVInfoButton *button = (S7TVInfoButton *)[self infoButtonWithKey:key];
+    UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration
+        configurationWithPointSize:13 weight:UIImageSymbolWeightRegular];
+    [button setImage:[UIImage systemImageNamed:@"exclamationmark.circle"
+                             withConfiguration:configuration]
+            forState:UIControlStateNormal];
+    button.tintColor = UIColor.systemRedColor;
+    return button;
+}
+
 + (void)dismiss {
     if (!_s7tv_overlay) return;
 

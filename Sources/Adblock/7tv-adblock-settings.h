@@ -14,6 +14,10 @@ FOUNDATION_EXPORT NSString *const S7TVAdblockProxyEnabledKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockCustomProxyEnabledKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockCustomProxyKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockHideAdFreeButtonKey;
+// Émis lorsque le snapshot runtime du toggle maître change réellement.
+// Les consommateurs peuvent réconcilier leur état sans relire les réglages
+// dans une boucle.
+FOUNDATION_EXPORT NSString *const S7TVAdblockRuntimeStateDidChangeNotification;
 
 // Méthode AdBlock : "disabled" | "proxy" | "local" (VAFT).
 // Valeur absente/invalide/corrompue → fallback interne déterministe Disabled.

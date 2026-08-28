@@ -105,6 +105,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"switch_auto_collect_title":       @[@"Récupération auto des points de chaîne", @"Auto Collect Channel Points"],
         @"desc_auto_collect":               @[@"Réclame automatiquement le coffre de points de chaîne quand il apparaît dans le chat.",
                                                @"Automatically claims the live channel-points chest when it appears in chat."],
+        @"auto_collect_adblock_suspended":  @[@"Auto Claim est temporairement indisponible tant qu’un AdBlock Proxy ou VAFT est actif. Il reprendra automatiquement lorsque l’AdBlock sera désactivé.\n\nTechnique : quand un AdBlock est actif, il modifie le playback envoyé à Twitch. Twitch ne peut alors plus associer cette session à un visionnage éligible aux Channel Points : les +10 et les coffres ne sont plus envoyés, même si la vidéo continue de fonctionner. Il est donc inutile de le laisser tourner dans cet état.",
+                                               @"Auto Claim is temporarily unavailable while an AdBlock Proxy or VAFT engine is active. It will resume automatically when AdBlock is disabled.\n\nTechnical: when an AdBlock is active, it modifies the playback sent to Twitch. Twitch can no longer associate that session with Channel Points-eligible viewing, so the +10 activity points and chests are not sent even though video playback continues to work. There is therefore no point in leaving it running in this state."],
         @"section_home_playback":           @[@"Accueil et lecture", @"Home & Playback"],
         @"setting_launch_screen":           @[@"Écran au lancement", @"Launch Screen"],
         @"launch_default":                  @[@"Par défaut", @"Default"],

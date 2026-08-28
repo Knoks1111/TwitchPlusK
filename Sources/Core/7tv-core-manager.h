@@ -42,13 +42,6 @@ extern NSString *const S7TVChatCustomToggleDidChangeNotification;
 // ============================================================
 // Fonctions C partagées encore définies dans 7tv-core-runtime-hooks.m
 // ============================================================
-// Recherche récursive d'une clé dans un JSON déjà parsé (NSDictionary/
-// NSArray imbriqués). `*found` distingue "clé absente" de "clé présente
-// mais valant null". Utilitaire générique utilisé par le parsing GQL/PubSub
-// resté dans 7tv-core-runtime-hooks.m ET par le module Channel Points (voir
-// 7tv-system-native-behavior-hooks.m).
-id s7tv_findValueForKeyRecursive(id json, NSString *key, BOOL *found);
-
 // Helper swizzle partagé par tout le tweak (échange les implémentations de
 // `original` et `swizzled` entre sourceClass et targetClass). Utilisé par
 // 7tv-core-runtime-hooks.m ET par le module verrou d'orientation (voir

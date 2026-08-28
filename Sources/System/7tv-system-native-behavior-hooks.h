@@ -20,17 +20,34 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Appelé sur chaque réponse gql.twitch.tv interceptée (hooks NSURLSession/
 // Apollo dans 7tv-core-runtime-hooks.m) — détecte le champ availableClaim.
-void s7tv_scanGQLResponseForChannelPointsClaim(NSData *data);
+// Le channelID et la génération sont capturés au départ de la requête pour
+// rendre les réponses tardives inoffensives.
+void s7tv_scanGQLResponseForChannelPointsClaim(NSData *data,
+                                                NSString * _Nullable channelID,
+                                                NSUInteger contextGeneration);
 
 // Appelé sur chaque trame WebSocket texte interceptée (hook
 // NSURLSessionWebSocketTask dans 7tv-core-runtime-hooks.m) — détecte l'événement
 // PubSub "claim-available" en cours de session.
 void s7tv_scanWebSocketTextForChannelPointsClaimAvailable(NSString *text);
 
-// Stoppe le retry pour l'ID en cours — appelé depuis le hook Apollo
-// (7tv-core-runtime-hooks.m) quand la mutation ClaimChannelPointsMutation est
-// confirmée réussie côté serveur.
-void s7tv_setPendingChannelPointsClaimID(NSString * _Nullable claimID);
+// Enregistre un claim avec le contexte de chaîne capturé à son émission.
+void s7tv_setPendingChannelPointsClaimID(NSString *claimID,
+                                         NSString * _Nullable channelID,
+                                         NSUInteger contextGeneration);
+
+// Efface uniquement un pending appartenant encore au même contexte (et, si
+// fourni, au même claimID). Utilisé pour les réponses null/succès tardives.
+void s7tv_clearPendingChannelPointsClaimIfMatching(
+    NSString * _Nullable claimID,
+    NSString * _Nullable channelID,
+    NSUInteger contextGeneration);
+
+// Contexte de visite de chaîne partagé avec les hooks réseau.
+NSUInteger s7tv_channelPointsCurrentContextGeneration(void);
+void s7tv_channelPointsWillChangeChannel(void);
+void s7tv_channelPointsMarkChannelReady(void);
+void s7tv_channelPointsDidChangeChannel(void);
 
 // Démarre la boucle de polling de secours (filet de sécurité silencieux) —
 // appelé une fois depuis le constructeur (7tv-core-runtime-hooks.m).

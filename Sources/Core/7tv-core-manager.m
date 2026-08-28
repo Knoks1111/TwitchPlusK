@@ -45,6 +45,7 @@
 #import "Emote/7tv-emote-provider.h"
 #import "Chat/7tv-chat-custom-view.h"
 #import "Chat/7tv-chat-reply-thread-panel.h"
+#import "System/7tv-system-native-behavior-hooks.h"
 #import <objc/runtime.h>
 
 // ============================================================
@@ -702,6 +703,11 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     BOOL changed = !((_currentChannelTwitchID == channelID) ||
                      [_currentChannelTwitchID isEqualToString:channelID]);
     _currentChannelTwitchID = [channelID copy];
+    if (changed) {
+        s7tv_channelPointsDidChangeChannel();
+    } else {
+        s7tv_channelPointsMarkChannelReady();
+    }
     if (changed && channelID.length) {
         s7tv_activateChannelPointMetadataForChannelID(channelID, ^{
             s7tv_reloadActiveChatCustomViewForConfiguration();
@@ -830,6 +836,9 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     BOOL shouldResetChannelCatalog = !self.currentChannelName.length ||
         [self.currentChannelName caseInsensitiveCompare:channelName] != NSOrderedSame;
     [self log:@"Channel rejoint: %@, recherche ID Twitch...", channelName];
+    if (shouldResetChannelCatalog) {
+        s7tv_channelPointsWillChangeChannel();
+    }
     self.currentChannelName = channelName;
     if (shouldResetChannelCatalog) [self s7tv_clearChannelEmotesAndNotify];
 

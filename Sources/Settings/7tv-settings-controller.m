@@ -1762,7 +1762,19 @@ typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
 }
 
 - (void)toggleOLEDMode:(UISwitch *)sw {
+    BOOL changed = S7TVOLEDModeEnabled() != sw.isOn;
     S7TVOLEDModeSetEnabled(sw.isOn);
+    if (!changed) return;
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:L(@"oled_restart_title")
+                         message:L(@"oled_restart_message")
+                  preferredStyle:UIAlertControllerStyleAlert];
+    alert.view.tintColor = S7TVAccent();
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
+                                             style:UIAlertActionStyleDefault
+                                           handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 - (void)togglePickerAnimations:(UISwitch *)sw {
     [SevenTVManager sharedManager].showPickerAnimations = sw.isOn;

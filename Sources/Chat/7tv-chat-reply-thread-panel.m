@@ -24,6 +24,29 @@
 #import "Core/7tv-core-manager.h"
 #import "Localization/7tv-localization-manager.h"
 #import "Chat/7tv-chat-tokenizer.h"
+#import "UI/7tv-oled-mode.h"
+
+// Les overlays Fil/Réponse ne passent pas par la palette native. Ils restent
+// volontairement un cran au-dessus du noir OLED afin de conserver leur rôle
+// de contexte visuel, contrairement à la preview d'emote qui peut être noire.
+static UIColor *s7tv_replyContextSurfaceColor(void) {
+    return S7TVOLEDModeEnabled()
+        ? [UIColor colorWithWhite:0.04 alpha:1.0]
+        : [UIColor colorWithWhite:0.08 alpha:1.0];
+}
+
+static UIColor *s7tv_contextMessageBackgroundColor(void) {
+    return [UIColor colorWithWhite:1.0
+                             alpha:S7TVOLEDModeEnabled() ? 0.025 : 0.04];
+}
+
+static UIColor *s7tv_replyContextBorderColor(void) {
+    return [UIColor colorWithWhite:1.0 alpha:0.14];
+}
+
+static CGFloat s7tv_replyContextBorderWidth(void) {
+    return 1.0 / MAX(UIScreen.mainScreen.scale, 1.0);
+}
 
 // Insère "@pseudo " au tout DÉBUT du texte de la barre de saisie native
 // (pas au curseur comme le picker d'emotes le fait pour les noms d'emotes)
@@ -316,6 +339,11 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 // aucune sélection automatique à l'ouverture, l'utilisateur choisit
 // explicitement par appui long sur le message de son choix).
 @property (nonatomic, copy) NSString *pendingReplyTargetMessageID;
+// Message du chat principal depuis lequel le Fil a été ouvert. Son voile
+// reste visible tant que ce Fil est présenté, indépendamment d'une éventuelle
+// cible de réponse choisie à l'intérieur du panneau.
+@property (nonatomic, weak) SevenTVChatCustomView *threadSourceView;
+@property (nonatomic, copy) NSString *threadSourceMessageID;
 
 // ── Sélection de cible de réponse (appui long sur un message) ───────
 // Non-nil uniquement quand l'utilisateur a explicitement maintenu un message
@@ -356,9 +384,11 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 @property (nonatomic, assign) BOOL standaloneResizePending;
 @property (nonatomic, assign) BOOL contentLayoutScheduled;
 - (void)s7tv_clearReplyTargetRemovingMention;
+- (void)s7tv_clearThreadSourceHighlight;
 - (void)showForThreadRootID:(NSString *)threadRootID
             tappedMessageID:(NSString *)tappedMessageID
-     retainedThreadMessages:(NSArray<S7TVChatMessage *> *)retainedThreadMessages;
+     retainedThreadMessages:(NSArray<S7TVChatMessage *> *)retainedThreadMessages
+                  sourceView:(SevenTVChatCustomView *)sourceView;
 - (void)s7tv_finishOpeningThreadRootID:(NSString *)threadRootID
                                 window:(UIWindow *)window
                       allowsCatchUpPass:(BOOL)allowsCatchUpPass;
@@ -366,6 +396,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 - (void)s7tv_resizeStandaloneReplyTargetBarInWindow:(UIWindow *)window;
 - (void)s7tv_contentHeightChangedForView:(SevenTVChatCustomView *)view;
 - (void)s7tv_scheduleContentLayoutForView:(SevenTVChatCustomView *)view;
+- (void)s7tv_applyOLEDColors;
 @end
 
 @implementation S7TVReplyThreadPanel
@@ -386,6 +417,11 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
                selector:@selector(s7tv_handleDeviceOrientationChange:)
                    name:UIDeviceOrientationDidChangeNotification
                  object:nil];
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self
+               selector:@selector(s7tv_oledModeDidChange:)
+                   name:S7TVOLEDModeDidChangeNotification
+                 object:nil];
     }
     return self;
 }
@@ -393,7 +429,36 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self
         name:UIDeviceOrientationDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+        name:S7TVOLEDModeDidChangeNotification object:nil];
     [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
+}
+
+- (void)s7tv_oledModeDidChange:(__unused NSNotification *)note {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self s7tv_applyOLEDColors];
+    });
+}
+
+- (void)s7tv_applyOLEDColors {
+    self.containerView.backgroundColor = s7tv_replyContextSurfaceColor();
+    self.containerView.layer.borderWidth = s7tv_replyContextBorderWidth();
+    self.containerView.layer.borderColor = s7tv_replyContextBorderColor().CGColor;
+    self.rootChatView.backgroundColor = s7tv_contextMessageBackgroundColor();
+    self.replyTargetMessageView.backgroundColor = s7tv_contextMessageBackgroundColor();
+    if (self.replyTargetBarView.superview == self.threadReplyTargetBarHostView) {
+        self.replyTargetBarView.backgroundColor = UIColor.clearColor;
+        self.replyTargetBarView.layer.borderWidth = 0;
+        self.replyTargetBarView.layer.borderColor = UIColor.clearColor.CGColor;
+    } else {
+        self.replyTargetBarView.backgroundColor = s7tv_replyContextSurfaceColor();
+        self.replyTargetBarView.layer.borderWidth = s7tv_replyContextBorderWidth();
+        self.replyTargetBarView.layer.borderColor = s7tv_replyContextBorderColor().CGColor;
+    }
+    [self.replyTargetSourceView
+        setReplyTargetHighlightedMessageID:self.selectedReplyTargetMessageID];
+    [self.threadSourceView
+        setReplyTargetHighlightedMessageID:self.threadSourceMessageID];
 }
 
 - (void)s7tv_handleDeviceOrientationChange:(__unused NSNotification *)note {
@@ -429,7 +494,8 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
                        tappedMessageID:(NSString *)tappedMessageID {
     [self showForThreadRootID:threadRootID
               tappedMessageID:tappedMessageID
-       retainedThreadMessages:[view displayedMessagesForThreadRootID:threadRootID]];
+       retainedThreadMessages:[view displayedMessagesForThreadRootID:threadRootID]
+                    sourceView:view];
 }
 
 - (void)showForThreadRootID:(NSString *)threadRootID
@@ -438,7 +504,8 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
         messagesForThreadRootID:threadRootID];
     [self showForThreadRootID:threadRootID
               tappedMessageID:tappedMessageID
-       retainedThreadMessages:messages ?: @[]];
+       retainedThreadMessages:messages ?: @[]
+                    sourceView:s7tv_activeChatCustomView()];
 }
 
 // Construit la barre de réponse une seule fois. Cette même instance est
@@ -465,8 +532,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     self.replyTargetMessageView.automaticallyScrollsToBottom = NO;
     [self.replyTargetMessageView setScrollingEnabled:NO];
     self.replyTargetMessageView.userInteractionEnabled = NO;
-    self.replyTargetMessageView.backgroundColor =
-        [UIColor colorWithWhite:1.0 alpha:0.04];
+    self.replyTargetMessageView.backgroundColor = s7tv_contextMessageBackgroundColor();
     self.replyTargetMessageView.translatesAutoresizingMaskIntoConstraints = NO;
     self.replyTargetMessageView.hidden = YES;
     self.replyTargetMessageView.renderingSuspended = YES;
@@ -529,6 +595,8 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     self.replyTargetBarView.translatesAutoresizingMaskIntoConstraints = YES;
     self.replyTargetBarView.backgroundColor = [UIColor clearColor];
     self.replyTargetBarView.layer.cornerRadius = 0;
+    self.replyTargetBarView.layer.borderWidth = 0;
+    self.replyTargetBarView.layer.borderColor = UIColor.clearColor.CGColor;
     self.replyTargetBarView.frame = host.bounds;
     self.replyTargetBarView.autoresizingMask =
         UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -541,8 +609,10 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     [NSLayoutConstraint deactivateConstraints:self.standaloneReplyBarConstraints ?: @[]];
     [self.replyTargetBarView removeFromSuperview];
     self.replyTargetBarView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.replyTargetBarView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+    self.replyTargetBarView.backgroundColor = s7tv_replyContextSurfaceColor();
     self.replyTargetBarView.layer.cornerRadius = 10;
+    self.replyTargetBarView.layer.borderWidth = s7tv_replyContextBorderWidth();
+    self.replyTargetBarView.layer.borderColor = s7tv_replyContextBorderColor().CGColor;
     self.replyTargetBarView.layer.maskedCorners =
         kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
 
@@ -694,6 +764,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 
 - (void)s7tv_ensureContainerInWindow:(UIWindow *)window {
     if (self.containerView.window == window) {
+        [self s7tv_applyOLEDColors];
         [self s7tv_updateContainerPositionConstraintsInWindow:window];
         return;
     }
@@ -706,8 +777,10 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 
     UIView *container = [[UIView alloc] init];
     container.translatesAutoresizingMaskIntoConstraints = NO;
-    container.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0]; // opaque (pas 0.97) : évite tout effet de transparence qui laissait deviner le chat derrière
+    container.backgroundColor = s7tv_replyContextSurfaceColor(); // opaque (pas 0.97) : évite tout effet de transparence qui laissait deviner le chat derrière
     container.layer.cornerRadius = 14;
+    container.layer.borderWidth = s7tv_replyContextBorderWidth();
+    container.layer.borderColor = s7tv_replyContextBorderColor().CGColor;
     container.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
     container.clipsToBounds = YES;
     container.hidden = YES;
@@ -774,7 +847,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 
     // Léger fond distinct pour lire "racine" comme un bloc titre séparé des
     // réponses en dessous, sans casser le thème sombre existant.
-    self.rootChatView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.04];
+    self.rootChatView.backgroundColor = s7tv_contextMessageBackgroundColor();
 
     UIView *midSeparator = [[UIView alloc] init];
     midSeparator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
@@ -1183,12 +1256,17 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
 
 - (void)showForThreadRootID:(NSString *)threadRootID
             tappedMessageID:(NSString *)tappedMessageID
-     retainedThreadMessages:(NSArray<S7TVChatMessage *> *)retainedThreadMessages {
+     retainedThreadMessages:(NSArray<S7TVChatMessage *> *)retainedThreadMessages
+                  sourceView:(SevenTVChatCustomView *)sourceView {
     if (!threadRootID.length) return;
     UIView *hostChatView = s7tv_activeChatCustomView();
     UIWindow *window = hostChatView.window;
     if (!hostChatView || !window) return;
 
+    // Un seul contexte flottant à la fois : fermer d'abord une éventuelle
+    // réponse autonome (et retirer sa mention) avant de préparer le Fil.
+    [self s7tv_clearReplyTargetRemovingMention];
+    [self s7tv_clearThreadSourceHighlight];
     [self s7tv_ensureContainerInWindow:window];
     [self s7tv_attachReplyTargetBarToThreadHost];
     self.contentRequestGeneration += 1; // invalide immédiatement show/refresh précédent
@@ -1208,6 +1286,9 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     [self.cancelButton setTitle:L(@"chat_reply_cancel_button") forState:UIControlStateNormal];
     self.currentThreadRootID = threadRootID;
     self.pendingReplyTargetMessageID = tappedMessageID;
+    self.threadSourceView = sourceView;
+    self.threadSourceMessageID = tappedMessageID;
+    [sourceView setReplyTargetHighlightedMessageID:tappedMessageID];
     self.rootChatView.renderingSuspended = NO;
     self.repliesChatView.renderingSuspended = NO;
 
@@ -1216,10 +1297,6 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     // long sur le message de son choix (même geste que le chat principal, voir
     // selectReplyTargetForMessageID:username: plus bas) — demande explicite,
     // l'auto-insertion précédente gênait quand on ouvrait juste pour lire.
-    // Si une mention d'une sélection précédente traînait encore (fil rouvert
-    // sans être passé par -hide entre-temps), on la nettoie aussi.
-    [self s7tv_clearReplyTargetRemovingMention];
-
     // Le contenu doit être RÉELLEMENT appliqué (pas juste "reload appelé")
     // avant de mesurer sa hauteur — sinon le panneau se dimensionne sur du
     // vide et se corrige seulement au refresh suivant (clignotement
@@ -1262,10 +1339,19 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
                            sourceView:(SevenTVChatCustomView *)sourceView {
     if (!messageID.length || !username.length) return;
 
+    BOOL replyComesFromThread =
+        sourceView == self.rootChatView || sourceView == self.repliesChatView;
+
     // Un changement de cible passe par le même nettoyage qu'« Annuler » :
     // l'ancien préfixe exact et son surlignage sont retirés avant d'insérer
-    // puis de peindre la nouvelle sélection.
-    [self s7tv_clearReplyTargetRemovingMention];
+    // puis de peindre la nouvelle sélection. Si la nouvelle réponse vient du
+    // chat principal alors qu'un Fil est ouvert, hide invalide aussi toutes
+    // les completions asynchrones du Fil avant d'afficher la réponse autonome.
+    if (!replyComesFromThread && self.currentThreadRootID.length) {
+        [self hide];
+    } else {
+        [self s7tv_clearReplyTargetRemovingMention];
+    }
 
     self.selectedReplyTargetMessageID = messageID;
     self.selectedReplyTargetUsername = username;
@@ -1275,8 +1361,6 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     [self.cancelButton setTitle:L(@"chat_reply_cancel_button") forState:UIControlStateNormal];
     self.replyTargetBarLabel.attributedText = s7tv_buildReplyTargetBarText(username);
 
-    BOOL replyComesFromThread =
-        sourceView == self.rootChatView || sourceView == self.repliesChatView;
     if (replyComesFromThread) {
         // Dans un fil, le message sélectionné est déjà visible juste au-dessus
         // et reste surligné : aucune copie/preview supplémentaire.
@@ -1351,6 +1435,12 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     }
 }
 
+- (void)s7tv_clearThreadSourceHighlight {
+    [self.threadSourceView setReplyTargetHighlightedMessageID:nil];
+    self.threadSourceView = nil;
+    self.threadSourceMessageID = nil;
+}
+
 - (void)s7tv_cancelReplyTargetTapped {
     UIWindow *window = self.containerView.window;
     BOOL shouldRelayoutThread = self.currentThreadRootID.length > 0 &&
@@ -1375,6 +1465,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     self.openingTranscriptMessages = nil;
     [self.rootChatView resetTransientTranscriptState];
     [self.repliesChatView resetTransientTranscriptState];
+    [self s7tv_clearThreadSourceHighlight];
     // Fermer le panneau retire aussi la mention en cours — demande
     // explicite : contrairement à la version précédente, fermer sans
     // "Annuler" doit quand même nettoyer le texte, pas le laisser en place.

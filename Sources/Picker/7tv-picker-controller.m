@@ -49,6 +49,22 @@ static UIColor *s7tv_pickerSepColor(void) {
         : [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
 }
 
+// UICollectionView crée ses premières cellules pendant le layout préparatoire
+// de l'inputView, donc avant que le picker possède une UIWindow. Le pipeline
+// image refuse volontairement de charger des cellules hors écran ; il faut
+// ainsi un signal fiable au moment exact où UIKit attache réellement le
+// clavier custom, plutôt qu'un dispatch_async susceptible d'arriver trop tôt.
+@interface S7TVPickerContainerView : UIView
+@property (nonatomic, copy) dispatch_block_t didAttachToWindow;
+@end
+
+@implementation S7TVPickerContainerView
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if (self.window && self.didAttachToWindow) self.didAttachToWindow();
+}
+@end
+
 @interface S7TVPickerWeakRef : NSObject
 @property (nonatomic, weak) id object;
 + (instancetype)refWithObject:(id)object;
@@ -1222,13 +1238,30 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     UIColor *accent    = [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0];    // violet Twitch
 
     // ── Conteneur principal ────────────────────────────────────────────────
-    UIView *picker = [[UIView alloc] initWithFrame:frame];
+    S7TVPickerContainerView *picker =
+        [[S7TVPickerContainerView alloc] initWithFrame:frame];
     picker.backgroundColor    = bgColor;
     picker.layer.shadowColor  = [UIColor blackColor].CGColor;
     picker.layer.shadowOffset = CGSizeMake(0, -3);
     picker.layer.shadowRadius = 8;
     picker.layer.shadowOpacity = 0.35;
     self.emotePickerView = picker;
+
+    __weak typeof(self) weakSelf = self;
+    __weak S7TVPickerContainerView *weakPicker = picker;
+    picker.didAttachToWindow = ^{
+        // didMoveToWindow arrive avant la fin du layout du clavier. Le passage
+        // suivant de la main queue crée/positionne toutes les cellules visibles,
+        // puis réactive leur chargement statique et animé dès la 1re ouverture.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            S7TVPickerContainerView *strongPicker = weakPicker;
+            if (!strongSelf || !strongPicker.window ||
+                strongSelf.emotePickerView != strongPicker || strongPicker.hidden) return;
+            [strongSelf.emoteCollectionView layoutIfNeeded];
+            [strongSelf _s7tv_activateVisiblePickerAnimations];
+        });
+    };
 
     // ── Collection View — occupe 100% du picker ─────────────────────────────
     // Plus de bandeau opaque en haut ni en bas : c'est layout.sectionInset qui

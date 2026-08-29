@@ -14,6 +14,7 @@
 #import "Chat/7tv-chat-reply-thread-panel.h"
 #import "Chat/7tv-chat-tokenizer.h"
 #import "Emote/7tv-emote-provider.h"
+#import "UI/7tv-oled-mode.h"
 #import <objc/runtime.h>
 #import <math.h>
 
@@ -410,6 +411,11 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
 - (void)s7tv_cancelAnimationFrameRequests;
 @end
 
+static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
+    CGFloat alpha = usesMainChatOLEDStyle && S7TVOLEDModeEnabled() ? 0.10 : 0.20;
+    return [UIColor colorWithWhite:1.0 alpha:alpha];
+}
+
 @implementation S7TVChatCustomCell
 
 - (void)s7tv_cancelAnimationFrameRequests {
@@ -441,7 +447,7 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
         _replyTargetHighlightView = [[UIView alloc] init];
         _replyTargetHighlightView.translatesAutoresizingMaskIntoConstraints = NO;
         _replyTargetHighlightView.backgroundColor =
-            [UIColor colorWithWhite:1.0 alpha:0.20];
+            s7tv_replyTargetHighlightColor(NO);
         _replyTargetHighlightView.hidden = YES;
         _replyTargetHighlightView.userInteractionEnabled = NO;
         [self.contentView addSubview:_replyTargetHighlightView];
@@ -722,7 +728,10 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
     self.messageLabel.alpha = enabled ? 0.0 : 1.0;
 }
 
-- (void)s7tv_setReplyTargetHighlighted:(BOOL)highlighted {
+- (void)s7tv_setReplyTargetHighlighted:(BOOL)highlighted
+                usesMainChatOLEDStyle:(BOOL)usesMainChatOLEDStyle {
+    self.replyTargetHighlightView.backgroundColor =
+        s7tv_replyTargetHighlightColor(usesMainChatOLEDStyle);
     self.replyTargetHighlightView.hidden = !highlighted;
 }
 
@@ -1590,7 +1599,8 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
         [cell s7tv_setHistoryDividerEnabled:NO];
         [cell s7tv_configureSystemAccentWithColor:nil iconName:nil backgroundEnabled:NO
                                  highlightBadgeText:nil];
-        [cell s7tv_setReplyTargetHighlighted:NO];
+        [cell s7tv_setReplyTargetHighlighted:NO
+                       usesMainChatOLEDStyle:self.showsReplyBanners];
         cell.messageLabelBottomConstraint.constant = -4.0;
         return cell;
     }
@@ -1665,7 +1675,8 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
 
     [cell s7tv_setThreadIndentEnabled:self.usesThreadReplyIndent];
     [cell s7tv_setReplyTargetHighlighted:
-        [msg.messageID isEqualToString:self.highlightedReplyTargetMessageID]];
+        [msg.messageID isEqualToString:self.highlightedReplyTargetMessageID]
+                   usesMainChatOLEDStyle:self.showsReplyBanners];
 
     if (!self.renderingSuspended && animatedEmotes.count > 0) {
         NSMutableSet<NSString *> *animationKeys = [NSMutableSet setWithCapacity:animatedEmotes.count];
@@ -1958,7 +1969,11 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
     cardY = MIN(MAX(cardY, minY), MAX(minY, maxY));
 
     UIView *card = [[UIView alloc] initWithFrame:CGRectMake(cardX, cardY, cardWidth, cardHeight)];
-    card.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+    // Cette preview contourne la palette native Twitch : en OLED, sa carte
+    // doit donc adopter elle aussi le vrai noir au lieu du gris fixe historique.
+    card.backgroundColor = S7TVOLEDModeEnabled()
+        ? UIColor.blackColor
+        : [UIColor colorWithWhite:0.08 alpha:1.0];
     card.layer.cornerRadius = 11.0;
     card.layer.borderWidth = 1.0;
     card.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.14].CGColor;
@@ -2041,9 +2056,8 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
 }
 
 - (void)setReplyTargetHighlightedMessageID:(nullable NSString *)messageID {
-    if ((_highlightedReplyTargetMessageID == messageID) ||
-        [_highlightedReplyTargetMessageID isEqualToString:messageID]) return;
-
+    // Réappliquer même si l'ID ne change pas : une bascule OLED en cours de
+    // réponse doit recolorer immédiatement le voile déjà visible.
     _highlightedReplyTargetMessageID = [messageID copy];
 
     // L'effet doit apparaître dès la fin des 0,45 s d'appui long. Un snapshot
@@ -2055,7 +2069,8 @@ static UIImage *s7tv_circularSharedChatAvatar(UIImage *image, NSString *cacheKey
         S7TVChatCustomCell *cell =
             (S7TVChatCustomCell *)[self.tableView cellForRowAtIndexPath:indexPath];
         [cell s7tv_setReplyTargetHighlighted:
-            [visibleMessageID isEqualToString:_highlightedReplyTargetMessageID]];
+            [visibleMessageID isEqualToString:_highlightedReplyTargetMessageID]
+                       usesMainChatOLEDStyle:self.showsReplyBanners];
     }
 }
 

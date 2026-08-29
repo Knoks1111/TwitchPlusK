@@ -3,6 +3,9 @@ name: 📦 Build IPA (final)
 on:
   workflow_dispatch:
     inputs:
+      twitchplusk_version:
+        description: "TwitchPlusK release version (for example: 1.0.1)"
+        required: true
       dylib_artifact_url:
         description: "Dylib link — either an artifact link from a 'Build Dylib' run's Artifacts page, or any direct download link to a .dylib file"
         required: true
@@ -258,25 +261,35 @@ jobs:
       - name: 🚀 Publish the IPA to Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TWITCHPLUSK_VERSION: ${{ github.event.inputs.twitchplusk_version }}
         run: |
           set -euo pipefail
-          TAG="twitchplusk-${{ env.TWITCH_VERSION }}"
+
+          if [ -z "$TWITCHPLUSK_VERSION" ]; then
+            echo "❌ No TwitchPlusK version provided"
+            exit 1
+          fi
+
+          TAG="twitchplusk-v${TWITCHPLUSK_VERSION}-twitch-${{ env.TWITCH_VERSION }}"
           IPA_NAME="${{ env.IPA_NAME }}"
           TWITCH_VERSION="${{ env.TWITCH_VERSION }}"
-          TITLE="TwitchPlusK — Twitch ${TWITCH_VERSION}"
+          TITLE="TwitchPlusK — v${TWITCHPLUSK_VERSION} | Twitch — ${TWITCH_VERSION}"
+          CHANGELOG_URL="https://github.com/${{ github.repository }}/blob/${{ github.sha }}/CHANGELOG.md"
 
           NOTES_FILE="release_notes.md"
           cat > "$NOTES_FILE" << NOTESEOF
           ## TwitchPlusK release info
+          - **TwitchPlusK release:** \`v${TWITCHPLUSK_VERSION}\`
           - **Twitch app version:** \`${TWITCH_VERSION}\`
-          - **iOS 15+**
-
-          ## Must read
-          - Sideload with SideStore.
+          - **Full changelog:** [CHANGELOG.md](${CHANGELOG_URL})
           NOTESEOF
 
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "📦 Release '$TAG' already exists — uploading asset"
+            echo "📦 Release '$TAG' already exists — updating details and uploading asset"
+            gh release edit "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "$TITLE" \
+              --notes-file "$NOTES_FILE"
             gh release upload "$TAG" "$IPA_NAME" \
               --repo "${{ github.repository }}" \
               --clobber
@@ -296,6 +309,8 @@ jobs:
           echo "========================================"
           echo "  IPA built and published as a release! 🎉"
           echo "========================================"
+          echo "TwitchPlusK version: v${{ github.event.inputs.twitchplusk_version }}"
+          echo "Twitch version: ${{ env.TWITCH_VERSION }}"
           echo "Tag: ${{ env.RELEASE_TAG }}"
           echo "https://github.com/${{ github.repository }}/releases/tag/${{ env.RELEASE_TAG }}"
           echo "========================================"

@@ -32,6 +32,11 @@ NS_ASSUME_NONNULL_BEGIN
 // Reconfigure volontairement le fil même si sa liste d'IDs est inchangée
 // (langue/apparence, badges ou modération groupée).
 - (void)forceRefreshIfNeeded;
+// Re-tokenise the temporary root/replies/standalone-preview stores after a
+// provider, priority or resolution change. Messages normally share the main
+// store's instances, but synthetic roots and autonomous reply previews do not;
+// keeping this hook explicit prevents them from retaining stale emote URLs.
+- (void)retokenizeVisibleMessagesWithCompletion:(void (^ _Nullable)(void))completion;
 // Met à jour uniquement le message concerné dans les sous-vues qui
 // l'affichent. excludedView évite un double snapshot après une interaction
 // provenant directement de cette sous-vue.

@@ -22,6 +22,9 @@
 @interface S7TVEmotePickerCell : UICollectionViewCell
 @property (nonatomic, strong, readonly) UIImageView *emoteImageView;
 @property (nonatomic, strong, readonly) UIImageView *favoriteStarView;
+// Badge discret affichant l'origine de l'emote dans les favoris agrégés.
+// Le contrôleur le masque pour les onglets provider dédiés.
+@property (nonatomic, strong, readonly) UILabel *providerBadgeLabel;
 // Clé (URL absolue) de l'emote actuellement affichée par cette cellule.
 // Sert à valider qu'un callback asynchrone arrivant après un recyclage
 // concerne toujours la bonne emote avant d'appliquer une image/frame.

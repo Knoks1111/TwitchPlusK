@@ -5,34 +5,111 @@
  */
 
 #import "Emote/7tv-emote-provider.h"
-#import "Core/7tv-core-manager.h"
+#import "Emote/7tv-emote-catalog.h"
+#import "Emote/7tv-provider-settings.h"
 #import "Chat/7tv-chat-appearance-config.h"
 #import "Chat/7tv-chat-message.h" // S7TVChatTokenTypeEmote7TV
 
-NSArray<id<S7TVEmoteProvider>> *s7tv_chatEmoteProviders(void) {
-    static NSArray<id<S7TVEmoteProvider>> *providers = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        providers = @[[S7TVSevenTVEmoteProvider new]];
-    });
-    return providers;
+// Adapter around the provider-agnostic catalogue.  Keeping the descriptor
+// behind the existing resolved-emote protocol means the image cache and the
+// TextKit renderer work unchanged for BTTV/FFZ.
+@interface S7TVResolvedCatalogEmote : NSObject <S7TVResolvedEmote>
+@property (nonatomic, copy) NSString *emoteID;
+@property (nonatomic, assign) CGSize nativeSize;
+@property (nonatomic, assign) BOOL isAnimated;
+@property (nonatomic, strong) NSURL *imageURL;
+@property (nonatomic, copy) NSString *providerIdentifier;
+@property (nonatomic, copy) NSString *providerName;
+@property (nonatomic, assign) BOOL zeroWidth;
+@end
+
+@implementation S7TVResolvedCatalogEmote
+@end
+
+static NSInteger s7tv_emoteResolution(void) {
+    SevenTVChatAppearanceConfig *config = [SevenTVChatAppearanceConfig sharedConfig];
+    NSInteger resolution = 2;
+    // The generic setting is introduced by the settings/catalogue layer. Use
+    // KVC so older preference objects remain source-compatible during an
+    // upgrade from emote7TVResolution.
+    if ([config respondsToSelector:@selector(emoteImageResolution)]) {
+        resolution = [[config valueForKey:@"emoteImageResolution"] integerValue];
+    } else {
+        resolution = config.emote7TVResolution;
+    }
+    return MIN(4, MAX(1, resolution));
 }
 
+static id<S7TVResolvedEmote> s7tv_resolvedCatalogEmote(S7TVEmoteDescriptor *descriptor) {
+    if (!descriptor.emoteID.length || !descriptor.name.length) return nil;
+    S7TVResolvedCatalogEmote *resolved = [S7TVResolvedCatalogEmote new];
+    resolved.emoteID = descriptor.emoteID;
+    resolved.nativeSize = descriptor.nativeSize;
+    resolved.isAnimated = descriptor.animated;
+    resolved.providerIdentifier = descriptor.providerIdentifier;
+    resolved.providerName = S7TVEmoteProviderName(descriptor.provider);
+    resolved.zeroWidth = descriptor.zeroWidth;
+    resolved.imageURL = [descriptor imageURLForResolution:s7tv_emoteResolution()];
+    return resolved.imageURL ? resolved : nil;
+}
 
-// ============================================================
-// MARK: - S7TVResolved7TVEmote
-// ============================================================
-
-@interface S7TVResolved7TVEmote : NSObject <S7TVResolvedEmote>
-@property (nonatomic, copy)   NSString *emoteID;
-@property (nonatomic, assign) CGSize    nativeSize;
-@property (nonatomic, assign) BOOL      isAnimated;
-@property (nonatomic, strong) NSURL    *imageURL;
+@interface S7TVProviderEmoteAdapter : NSObject <S7TVEmoteProvider>
+@property (nonatomic, assign) S7TVEmoteProviderID providerID;
 @end
 
-@implementation S7TVResolved7TVEmote
+@implementation S7TVProviderEmoteAdapter
+- (nullable id<S7TVResolvedEmote>)resolveEmoteNamed:(NSString *)name {
+    if (!name.length) return nil;
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    if (![S7TVEmoteProviderSettings isProviderEnabled:
+            (S7TVExternalEmoteProvider)self.providerID]) return nil;
+    S7TVEmoteDescriptor *descriptor = [catalog resolveEmoteNamed:name
+                                                            provider:self.providerID];
+    if (descriptor) return s7tv_resolvedCatalogEmote(descriptor);
+    return nil;
+}
+- (NSInteger)tokenType { return S7TVChatTokenTypeEmote7TV; }
 @end
 
+@interface S7TVBTTVEmoteProvider : S7TVProviderEmoteAdapter @end
+@interface S7TVFFZEmoteProvider : S7TVProviderEmoteAdapter @end
+@implementation S7TVBTTVEmoteProvider
+- (instancetype)init { self = [super init]; if (self) self.providerID = S7TVEmoteProviderIDBTTV; return self; }
+@end
+@implementation S7TVFFZEmoteProvider
+- (instancetype)init { self = [super init]; if (self) self.providerID = S7TVEmoteProviderIDFFZ; return self; }
+@end
+
+NSArray<id<S7TVEmoteProvider>> *s7tv_chatEmoteProviders(void) {
+    static NSArray<id<S7TVEmoteProvider>> *allProviders = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        allProviders = @[[S7TVSevenTVEmoteProvider new],
+                         [S7TVBTTVEmoteProvider new],
+                         [S7TVFFZEmoteProvider new]];
+    });
+
+    // The tokenizer receives providers in the configured collision-priority
+    // order.  Keep the instances stable (important for in-flight UI work)
+    // while deriving the order on every call so a settings change applies to
+    // the next message without restarting chat.
+    NSMutableArray *ordered = [NSMutableArray arrayWithCapacity:allProviders.count];
+    for (NSString *identifier in [S7TVEmoteProviderSettings providerPriority]) {
+        S7TVEmoteProviderID provider =
+            (S7TVEmoteProviderID)S7TVEmoteProviderFromIdentifier(identifier);
+        for (id<S7TVEmoteProvider> candidate in allProviders) {
+            if ([candidate respondsToSelector:@selector(providerID)] &&
+                [candidate providerID] == provider) {
+                [ordered addObject:candidate];
+                break;
+            }
+        }
+    }
+    for (id<S7TVEmoteProvider> candidate in allProviders) {
+        if (![ordered containsObject:candidate]) [ordered addObject:candidate];
+    }
+    return ordered.copy;
+}
 
 // ============================================================
 // MARK: - S7TVSevenTVEmoteProvider
@@ -40,37 +117,23 @@ NSArray<id<S7TVEmoteProvider>> *s7tv_chatEmoteProviders(void) {
 
 @implementation S7TVSevenTVEmoteProvider
 
+- (NSInteger)providerID { return S7TVEmoteProviderIDSevenTV; }
+
 - (nullable id<S7TVResolvedEmote>)resolveEmoteNamed:(NSString *)name {
     if (!name.length) return nil;
 
-    SevenTVEmote *emote = [[SevenTVManager sharedManager] emoteForName:name];
-    if (!emote) return nil;
+    if (![S7TVEmoteProviderSettings isProviderEnabled:S7TVExternalEmoteProvider7TV])
+        return nil;
 
-    // Dimensions absentes (vieilles entrées de cache disque écrites avant
-    // que ce champ n'existe, voir commentaire sur SevenTVEmote.width/height
-    // dans 7tv-core-manager.h) → on ne connaît pas le vrai ratio, mais on ne
-    // renonce PAS pour autant à afficher l'image : la quasi-totalité des
-    // emotes 7TV sont carrées, donc un fallback 1:1 est une bien meilleure
-    // approximation que de retomber sur du texte brut pour une emote pourtant
-    // bien identifiée. Le cache disque se réécrit avec les vraies dimensions
-    // dès le prochain fetch API frais (loadGlobalEmotes/loadEmotesForChannel...),
-    // donc ce fallback ne dure qu'un temps, pas indéfiniment.
-    CGSize nativeSize = (emote.width > 0 && emote.height > 0)
-        ? CGSizeMake(emote.width, emote.height)
-        : CGSizeMake(1, 1);
-
-    S7TVResolved7TVEmote *resolved = [S7TVResolved7TVEmote new];
-    resolved.emoteID    = emote.emoteID;
-    resolved.nativeSize  = nativeSize;
-    resolved.isAnimated  = emote.isAnimated;
-
-    NSInteger res = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
-    if (res < 1) res = 1;
-    if (res > 4) res = 4;
-    resolved.imageURL = [NSURL URLWithString:
-        [NSString stringWithFormat:@"%@/%@/%ldx.webp", S7TV_CDN_BASE, emote.emoteID, (long)res]];
-
-    return resolved;
+    // The shared catalogue is the single source of truth for aliases,
+    // Zero-Width flags, provider identity and cache-backed availability.
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    if ([catalog.providerEnabled[@(S7TVEmoteProviderIDSevenTV)] boolValue]) {
+        S7TVEmoteDescriptor *descriptor =
+            [catalog resolveEmoteNamed:name provider:S7TVEmoteProviderIDSevenTV];
+        if (descriptor) return s7tv_resolvedCatalogEmote(descriptor);
+    }
+    return nil;
 }
 
 - (NSInteger)tokenType {
@@ -89,6 +152,9 @@ NSArray<id<S7TVEmoteProvider>> *s7tv_chatEmoteProviders(void) {
 @property (nonatomic, assign) CGSize    nativeSize;
 @property (nonatomic, assign) BOOL      isAnimated;
 @property (nonatomic, strong) NSURL    *imageURL;
+@property (nonatomic, copy)   NSString *providerIdentifier;
+@property (nonatomic, copy)   NSString *providerName;
+@property (nonatomic, assign) BOOL      zeroWidth;
 @end
 
 @implementation S7TVResolvedTwitchEmote
@@ -101,6 +167,9 @@ NSArray<id<S7TVEmoteProvider>> *s7tv_chatEmoteProviders(void) {
 
     S7TVResolvedTwitchEmote *resolved = [S7TVResolvedTwitchEmote new];
     resolved.emoteID = emoteID;
+    resolved.providerIdentifier = @"twitch";
+    resolved.providerName = @"Twitch";
+    resolved.zeroWidth = NO;
 
     // Twitch ne fournit pas les dimensions réelles dans le tag IRC (contrairement
     // à l'API 7TV) — quasi toutes les emotes Twitch (natives et sub) sont

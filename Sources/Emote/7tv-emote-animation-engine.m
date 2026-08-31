@@ -46,6 +46,51 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 
 @end
 
+@implementation S7TVAnimatedCompositeEmoteAttachment
+
+- (nullable UIImage *)imageForBounds:(CGRect)imageBounds
+                        textContainer:(nullable NSTextContainer *)textContainer
+                       characterIndex:(NSUInteger)charIndex {
+    (void)textContainer;
+    (void)charIndex;
+    NSUInteger count = MIN(self.layerAnimationKeys.count,
+                           self.layerFallbackImages.count);
+    if (count == 0) return nil;
+
+    SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
+    NSMutableArray<UIImage *> *images = [NSMutableArray arrayWithCapacity:count];
+    for (NSUInteger index = 0; index < count; index++) {
+        NSString *key = self.layerAnimationKeys[index];
+        UIImage *image = key.length ? [engine currentFrameForKey:key] : nil;
+        if (!image) image = self.layerFallbackImages[index];
+        if (image) [images addObject:image];
+    }
+    if (images.count == 0) return nil;
+    if (images.count == 1) return images.firstObject;
+
+    CGFloat width = CGRectGetWidth(imageBounds);
+    CGFloat height = CGRectGetHeight(imageBounds);
+    if (width <= 0.0) width = CGRectGetWidth(self.bounds);
+    if (height <= 0.0) height = CGRectGetHeight(self.bounds);
+    if (width <= 0.0 || height <= 0.0) return images.firstObject;
+
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(width, height), NO, 0.0);
+    for (UIImage *image in images) {
+        CGFloat imageHeight = height;
+        CGFloat ratio = image.size.height > 0.0
+            ? image.size.width / image.size.height : 1.0;
+        CGFloat imageWidth = imageHeight * ratio;
+        [image drawInRect:CGRectMake(0.0, (height - imageHeight) * 0.5,
+                                     imageWidth, imageHeight)
+                 blendMode:kCGBlendModeNormal alpha:1.0];
+    }
+    UIImage *composite = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return composite;
+}
+
+@end
+
 
 // ============================================================
 // MARK: - SevenTVEmoteAnimationEngine

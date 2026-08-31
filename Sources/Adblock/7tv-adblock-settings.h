@@ -13,6 +13,7 @@ FOUNDATION_EXPORT NSString *const S7TVAdblockEnabledKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockProxyEnabledKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockCustomProxyEnabledKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockCustomProxyKey;
+FOUNDATION_EXPORT NSString *const S7TVAdblockDefaultProxyKey;
 FOUNDATION_EXPORT NSString *const S7TVAdblockHideAdFreeButtonKey;
 // Émis lorsque le snapshot runtime du toggle maître change réellement.
 // Les consommateurs peuvent réconcilier leur état sans relire les réglages
@@ -70,6 +71,8 @@ void S7TVAdblockSetCustomProxyAddress(NSString * _Nullable address);
 void S7TVAdblockSetCustomProxyAddresses(NSArray<NSString *> *addresses);
 
 NSString *S7TVAdblockDefaultProxyAddress(void);
+NSArray<NSString *> *S7TVAdblockDefaultProxyAddresses(void);
+void S7TVAdblockSetDefaultProxyAddress(NSString *address);
 NSString * _Nullable S7TVAdblockEffectiveProxyAddress(void);
 NSArray<NSString *> *S7TVAdblockEffectiveProxyAddresses(void);
 NSURL * _Nullable S7TVAdblockNormalizedProxyURL(NSString *address);

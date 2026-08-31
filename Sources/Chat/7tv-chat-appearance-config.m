@@ -77,6 +77,7 @@ static NSString *const kS7TVCfgUsernameMessageSpacing  = @"s7tv_cfg_username_mes
 static NSString *const kS7TVCfgEmoteVerticalOffset     = @"s7tv_cfg_emote_vertical_offset";
 static NSString *const kS7TVCfgEmoteOffsetRealMigrated = @"s7tv_cfg_emote_offset_real_v1_migrated";
 static NSString *const kS7TVCfgEmote7TVResolution      = @"s7tv_cfg_emote_7tv_resolution";
+static NSString *const kS7TVCfgEmoteImageResolution    = @"s7tv_cfg_emote_resolution";
 static NSString *const kS7TVCfgSystemBGEnabled         = @"s7tv_cfg_system_bg_enabled";
 static NSString *const kS7TVCfgSubResubColor           = @"s7tv_cfg_color_sub_resub";
 static NSString *const kS7TVCfgPrimeColor              = @"s7tv_cfg_color_prime";
@@ -145,6 +146,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     _usernameMessageSpacing  = kDefaultUsernameMessageSpacing;
     _emoteVerticalOffset     = kDefaultEmoteVerticalOffset;
     _emote7TVResolution      = kDefaultEmote7TVResolution;
+    _emoteImageResolution    = kDefaultEmote7TVResolution;
     _systemMessageBackgroundsEnabled = YES;
     _subResubAccentColor     = S7TVDefaultSubResubColor();
     _primeAccentColor        = S7TVDefaultPrimeColor();
@@ -191,9 +193,15 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
         _emoteVerticalOffset = savedOffset;
     }
     [prefs setBool:YES forKey:kS7TVCfgEmoteOffsetRealMigrated];
-    if ([prefs objectForKey:kS7TVCfgEmote7TVResolution] != nil) {
-        NSInteger savedResolution = [prefs integerForKey:kS7TVCfgEmote7TVResolution];
-        _emote7TVResolution = MIN(4, MAX(1, savedResolution));
+    // Le réglage v2 est commun à tous les providers. Les installations
+    // existantes n'ayant que la clé 7TV sont migrées sans perdre leur choix.
+    NSString *resolutionKey = [prefs objectForKey:kS7TVCfgEmoteImageResolution] != nil
+        ? kS7TVCfgEmoteImageResolution : kS7TVCfgEmote7TVResolution;
+    if ([prefs objectForKey:resolutionKey] != nil) {
+        NSInteger savedResolution = [prefs integerForKey:resolutionKey];
+        _emoteImageResolution = MIN(4, MAX(1, savedResolution));
+        _emote7TVResolution = _emoteImageResolution;
+        [prefs setInteger:_emoteImageResolution forKey:kS7TVCfgEmoteImageResolution];
     }
     if ([prefs objectForKey:kS7TVCfgSystemBGEnabled] != nil)
         _systemMessageBackgroundsEnabled = [prefs boolForKey:kS7TVCfgSystemBGEnabled];
@@ -263,7 +271,19 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
              @"emoteOff=%.1f res=%ldx",
         _emote7TVSize, _emoteTwitchSize, _badgeSize, _usernameFontSize,
         _messageFontSize, _lineSpacing, _usernameMessageSpacing,
-        _emoteVerticalOffset, (long)_emote7TVResolution];
+        _emoteVerticalOffset, (long)_emoteImageResolution];
+}
+
+- (void)setEmoteImageResolution:(NSInteger)value {
+    NSInteger normalized = MIN(4, MAX(1, value));
+    _emoteImageResolution = normalized;
+    _emote7TVResolution = normalized;
+}
+
+- (void)setEmote7TVResolution:(NSInteger)value {
+    // Alias historique : toute écriture de l'ancienne propriété met à jour
+    // le réglage commun afin que les providers ne divergent jamais.
+    [self setEmoteImageResolution:value];
 }
 
 - (void)save {
@@ -276,7 +296,8 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     [prefs setDouble:self.lineSpacing            forKey:kS7TVCfgLineSpacing];
     [prefs setDouble:self.usernameMessageSpacing forKey:kS7TVCfgUsernameMessageSpacing];
     [prefs setDouble:self.emoteVerticalOffset    forKey:kS7TVCfgEmoteVerticalOffset];
-    [prefs setInteger:self.emote7TVResolution    forKey:kS7TVCfgEmote7TVResolution];
+    [prefs setInteger:self.emoteImageResolution  forKey:kS7TVCfgEmoteImageResolution];
+    [prefs setInteger:self.emoteImageResolution  forKey:kS7TVCfgEmote7TVResolution];
     [prefs setBool:self.systemMessageBackgroundsEnabled forKey:kS7TVCfgSystemBGEnabled];
     [prefs setObject:S7TVColorToHexString(self.subResubAccentColor) forKey:kS7TVCfgSubResubColor];
     [prefs setObject:S7TVColorToHexString(self.primeAccentColor)    forKey:kS7TVCfgPrimeColor];
@@ -369,6 +390,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
         @"lineSpacing":            @[@(kDefaultLineSpacing),           kS7TVCfgLineSpacing],
         @"usernameMessageSpacing": @[@(kDefaultUsernameMessageSpacing),kS7TVCfgUsernameMessageSpacing],
         @"emoteVerticalOffset":    @[@(kDefaultEmoteVerticalOffset),   kS7TVCfgEmoteVerticalOffset],
+        @"emoteImageResolution":   @[@(kDefaultEmote7TVResolution),    kS7TVCfgEmoteImageResolution],
         @"emote7TVResolution":     @[@(kDefaultEmote7TVResolution),    kS7TVCfgEmote7TVResolution],
         @"deletedMessageTextOpacity": @[@(kDefaultDeletedMessageOpacity), kS7TVCfgDeletedMessageOpacity],
     };

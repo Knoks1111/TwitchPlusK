@@ -15,7 +15,6 @@ FOUNDATION_EXPORT NSString *const S7TVAutoClaimRuntimeStateDidChangeNotification
 
 typedef NS_ENUM(NSInteger, S7TVAutoClaimEffectiveState) {
     S7TVAutoClaimEffectiveStateActive = 0,
-    S7TVAutoClaimEffectiveStateSuspendedByAdblock,
     S7TVAutoClaimEffectiveStateDisabledByUser,
 };
 
@@ -40,10 +39,6 @@ void S7TVAutoClaimSetup(void);
 // OFF stops the active watcher immediately; ON starts it for the visible
 // controller without requiring a Twitch restart.
 void S7TVAutoClaimSettingsDidChange(void);
-
-// YES uniquement lorsque la préférence Auto Claim est ON mais qu'un moteur
-// Proxy/VAFT est réellement actif dans le processus courant.
-BOOL S7TVAutoClaimIsSuspendedByAdblock(void);
 
 // Renvoie l'état instantané utilisé par Diagnostics. L'appel est thread-safe
 // et est synchronisé sur la file principale lorsque nécessaire.

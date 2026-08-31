@@ -28,11 +28,20 @@ static NSUInteger s7tv_framesMemoryCost(S7TVEmoteAnimatedFrames *frames) {
     return total;
 }
 
-static NSString *s7tv_emoteIDFromURL(NSURL *url) {
-    NSArray<NSString *> *parts = url.pathComponents;
-    NSUInteger index = [parts indexOfObject:@"emote"];
-    if (index != NSNotFound && index + 1 < parts.count) return parts[index + 1];
-    return nil;
+// The shared image cache is used by every external provider.  Validate both
+// the HTTP result and the payload before returning/storing it; otherwise a
+// cached 404/429 HTML or JSON response would be retried as an image forever.
+static BOOL s7tv_isValidImageResponse(NSURLResponse *response, NSData *data) {
+    if (!data.length) return NO;
+    if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
+        NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
+        if (status < 200 || status >= 300) return NO;
+    }
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!source) return NO;
+    BOOL valid = CGImageSourceGetCount(source) > 0;
+    CFRelease(source);
+    return valid;
 }
 
 static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_t index) {
@@ -609,10 +618,16 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
     req.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
     NSCachedURLResponse *cachedResponse =
         [[SevenTVURLProtocol sharedEmoteCache] cachedResponseForRequest:req];
-    if (cachedResponse.data.length) {
-        [SevenTVURLProtocol noteCachedEmoteID:s7tv_emoteIDFromURL(url)];
+    if (cachedResponse.data.length &&
+        s7tv_isValidImageResponse(cachedResponse.response, cachedResponse.data)) {
+        [SevenTVURLProtocol noteCachedEmoteImageURL:url];
         completion(cachedResponse.data);
         return;
+    }
+    if (cachedResponse) {
+        // Remove stale error bodies left by older builds before going to the
+        // network, so a later cache-only lookup cannot report a false hit.
+        [[SevenTVURLProtocol sharedEmoteCache] removeCachedResponseForRequest:req];
     }
 
     NSString *key = url.absoluteString;
@@ -629,16 +644,26 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
         }
         self.pendingDataCallbacks[key] = [NSMutableArray arrayWithObject:completion];
         NSUInteger generation = self.cacheGeneration;
+        // The custom cache is consulted above explicitly. Once it misses (or
+        // an invalid body was evicted), bypass NSURLCache as well so a stale
+        // 404/429 response from an older session cannot mask a fresh CDN
+        // response.
+        NSMutableURLRequest *networkRequest = [req mutableCopy];
+        networkRequest.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
 
         NSURLSessionDataTask *task = [[NSURLSession sharedSession]
-            dataTaskWithURL:url
+            dataTaskWithRequest:networkRequest
           completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             if (generation != self.cacheGeneration) data = nil;
-            if (data.length && response && !error) {
+            if (data.length && response && !error &&
+                s7tv_isValidImageResponse(response, data)) {
                 NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
                     initWithResponse:response data:data];
                 [[SevenTVURLProtocol sharedEmoteCache] storeCachedResponse:toCache forRequest:req];
-                [SevenTVURLProtocol noteCachedEmoteID:s7tv_emoteIDFromURL(url)];
+                [SevenTVURLProtocol noteCachedEmoteImageURL:url];
+            } else {
+                // Do not let callers decode an HTTP error or malformed body.
+                data = nil;
             }
             dispatch_async(self.syncQueue, ^{
                 if (generation != self.cacheGeneration) return;

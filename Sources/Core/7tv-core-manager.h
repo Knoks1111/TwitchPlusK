@@ -82,6 +82,7 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, strong) NSString *emoteID;   // ID 7TV (ex: "63071bb9464de28875c52531")
 @property (nonatomic, strong) NSString *emoteName;  // Nom (ex: "KEKW")
 @property (nonatomic, assign) BOOL isAnimated;      // Si c'est un GIF/animé
+@property (nonatomic, assign) BOOL zeroWidth;       // Emote 7TV superposée
 // Dimensions 1x en points (extraites de data.host.files dans l'API 7TV).
 // Correspondent à la taille d'affichage cible dans le chat.
 // 0 si non disponibles (anciennes entrées cache sans dimensions).
@@ -207,7 +208,7 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 - (SevenTVEmote *)emoteForName:(NSString *)name;
 
 // URL CDN pour une emote à la résolution 1x/2x/3x/4x choisie dans les
-// réglages 7TV (2x par défaut).
+// réglages communs des providers (2x par défaut).
 - (NSURL *)cdnURLForEmote:(SevenTVEmote *)emote;
 
 // --- UI ---

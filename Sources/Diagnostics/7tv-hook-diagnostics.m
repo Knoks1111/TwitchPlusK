@@ -5,6 +5,8 @@
 
 #import "Diagnostics/7tv-hook-diagnostics.h"
 #import "Adblock/7tv-adblock-settings.h"
+#import "Emote/7tv-emote-catalog.h"
+#import "Emote/7tv-provider-settings.h"
 #import <objc/runtime.h>
 #import <os/log.h>
 
@@ -371,6 +373,43 @@ NSArray<NSDictionary<NSString *, id> *> *S7TVHookDiagnosticItems(void) {
                                                             selectorName,
                                                             classMethod)),
         }];
+    }
+    return items.copy;
+}
+
+NSArray<NSDictionary<NSString *, id> *> *S7TVEmoteProviderDiagnosticItems(void) {
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    NSArray<NSNumber *> *providers = @[
+        @(S7TVEmoteProviderIDSevenTV),
+        @(S7TVEmoteProviderIDBTTV),
+        @(S7TVEmoteProviderIDFFZ),
+    ];
+    NSMutableArray<NSDictionary<NSString *, id> *> *items =
+        [NSMutableArray arrayWithCapacity:providers.count];
+
+    for (NSNumber *providerNumber in providers) {
+        S7TVEmoteProviderID provider =
+            (S7TVEmoteProviderID)providerNumber.integerValue;
+        S7TVEmoteProviderSnapshot *snapshot =
+            [catalog snapshotForProvider:provider];
+        S7TVExternalEmoteProvider settingsProvider =
+            (S7TVExternalEmoteProvider)provider;
+        BOOL enabled =
+            [S7TVEmoteProviderSettings isProviderEnabled:settingsProvider];
+        NSUInteger count = [catalog allEmotesForProvider:provider].count;
+
+        NSMutableDictionary<NSString *, id> *item = [@{
+            @"name": [NSString stringWithFormat:@"%@ API",
+                      S7TVEmoteProviderName(provider)],
+            @"provider": providerNumber,
+            @"enabled": @(enabled),
+            @"state": @(snapshot.state),
+            @"count": @(count),
+        } mutableCopy];
+        if (snapshot.errorMessage.length) {
+            item[@"errorMessage"] = snapshot.errorMessage;
+        }
+        [items addObject:item.copy];
     }
     return items.copy;
 }

@@ -69,9 +69,15 @@ typedef NS_ENUM(NSInteger, S7TVDeletedMessageRevealMode) {
 // correction cachée. Défaut -6, identique à la valeur affichée dans le picker.
 @property (nonatomic, assign) CGFloat emoteVerticalOffset;
 
-// --- Résolution d'image emotes 7TV (1x/2x/3x/4x — voir Phase 2) ---
-// Défaut technique x2, pas une mesure Twitch (n'a pas d'équivalent natif à
-// mesurer, c'est un choix de compromis netteté/mémoire — voir Phase 2).
+// --- Résolution d'image emotes (1x/2x/3x/4x) ---
+// Réglage commun aux providers externes. Chaque provider adapte ensuite la
+// valeur aux variantes réellement publiées par son CDN (FFZ, par exemple,
+// propose 1x/2x/4x). Le défaut technique reste 2x.
+@property (nonatomic, assign) NSInteger emoteImageResolution;
+
+// Compatibilité avec les réglages et exports des versions 7TV-only. Cette
+// propriété est un alias synchronisé de emoteImageResolution et sera retirée
+// uniquement après une migration de données suffisamment ancienne.
 @property (nonatomic, assign) NSInteger emote7TVResolution;
 
 // --- Fonds colorés des messages système (sub/resub/prime/gift) ---

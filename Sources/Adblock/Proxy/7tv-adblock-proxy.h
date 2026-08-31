@@ -16,6 +16,9 @@ BOOL S7TVAdblockIsInternalProxyDispatch(void);
 NSString * _Nullable S7TVAdblockBasicAuthHeader(NSURL *proxyURL);
 NSURL *S7TVAdblockRewriteURLThroughProxy(NSURL *URL, NSURL *proxyURL);
 NSURLSession *S7TVAdblockProxySession(NSURLSession *session, NSString *address);
+// Forget cached Luminous V1 detection results after the selected endpoint or
+// the custom proxy order changes. The next playlist request will probe again.
+void S7TVAdblockInvalidateProxyDetectionCache(void);
 
 // Applies domain blocking, GQL playback-token spoofing and Luminous V1 URL
 // rewriting. `blocked` is set when the caller must return a nil task.

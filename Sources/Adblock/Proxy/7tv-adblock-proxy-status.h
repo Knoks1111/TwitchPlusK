@@ -9,8 +9,9 @@ typedef NS_ENUM(NSInteger, S7TVAdblockProxyStatus) {
     S7TVAdblockProxyStatusOffline,
 };
 
-// Reprise de la sonde TwitchAdBlock : vérifie qu'une connexion TCP peut être
-// ouverte vers le proxy. Cela teste sa disponibilité, pas ses identifiants.
+// Vérifie le fonctionnement réel du endpoint Luminous V1 : GET /ping avec
+// l'authentification configurée. « Online » signifie uniquement HTTP 200.
+// La sonde est asynchrone et les appels identiques déjà en cours sont groupés.
 void S7TVAdblockCheckProxyStatus(
     NSString *address,
     void (^completion)(S7TVAdblockProxyStatus status));

@@ -11,35 +11,31 @@
  * (canInitWithRequest:/startLoading/stopLoading) a été supprimé.
  *
  * Ce qui reste et qui est toujours utilisé :
- *   - prefetchEmoteID:completion: / isEmoteIDCached: — appelés directement
- *     par SevenTVManager au JOIN d'un channel (prefetch en masse).
- *   - sharedEmoteCache — lu directement par le picker pour afficher les
- *     images sans réseau supplémentaire.
+ *   - sharedEmoteCache — cache explicite partagé par le renderer, le picker
+ *     et les diagnostics.
+ *   - l'index provider-aware des identités mises en cache, utilisé par les
+ *     réglages pour afficher un compteur fiable.
  *
  * FORMAT: les emotes sont stockées telles que reçues du CDN 7TV, en WebP
  * natif (animé ou statique) — aucune conversion en GIF.
  */
 
 #import "Network/7tv-network-emote-cache.h"
-#import "Core/7tv-core-manager.h"
 #import "Chat/7tv-chat-appearance-config.h"
+#import <ImageIO/ImageIO.h>
 
 NSString *const S7TVEmoteCacheCountDidChangeNotification = @"S7TVEmoteCacheCountDidChangeNotification";
 
-// ── Sessions CDN ──────────────────────────────────────────────────────────────
+// ── Cache d'images partagé ───────────────────────────────────────────────────
 //
-// ARCHITECTURE (important pour la cohérence du cache) :
-//
-//   SevenTVGetCDNSession()    — utilisée par prewarm
-//   SevenTVGetUrgentSession() — utilisée par prefetchEmoteID:completion:
-//
-// Les deux partagent le MÊME objet NSURLCache (s_emoteCache), donc les
-// requêtes arrivent au cache avec la clé URL brute (identique dans les deux).
+// Le catalogue ne télécharge que les métadonnées provider. Les images sont
+// demandées à la demande par SevenTVEmoteImageCache, qui écrit explicitement
+// dans ce NSURLCache. Il n'existe donc plus de session de préchauffage ou de
+// préchargement 7TV séparée.
 
-static NSURLCache      *s_emoteCache     = nil;
-static dispatch_once_t  s_emoteCacheOnce;
+static NSURLCache *s_emoteCache = nil;
+static dispatch_once_t s_emoteCacheOnce;
 
-// Cache partagé entre les deux sessions.
 static NSURLCache *SevenTVGetSharedCache(void) {
     dispatch_once(&s_emoteCacheOnce, ^{
         s_emoteCache = [[NSURLCache alloc]
@@ -50,74 +46,10 @@ static NSURLCache *SevenTVGetSharedCache(void) {
     return s_emoteCache;
 }
 
-static NSURLSession    *s_cdnSession     = nil;
-static dispatch_once_t  s_cdnSessionOnce;
-
-static NSURLSession *SevenTVGetCDNSession(void) {
-    dispatch_once(&s_cdnSessionOnce, ^{
-        // ephemeralSessionConfiguration : configuration VIERGE, sans héritage
-        // du sharedURLCache ni des hooks de TwitchControl (setRequestCachePolicy:,
-        // removeAllCachedResponses). defaultSessionConfiguration hérite du
-        // sharedURLCache que TwitchControl vide périodiquement → cache miss
-        // systématique sur toutes les emotes → re-téléchargement à chaque fois.
-        NSURLSessionConfiguration *cfg =
-            [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        cfg.URLCache           = SevenTVGetSharedCache(); // notre cache isolé
-        cfg.requestCachePolicy = NSURLRequestReturnCacheDataElseLoad;
-        cfg.protocolClasses    = @[]; // isolation totale, aucun protocole custom
-        s_cdnSession = [NSURLSession sessionWithConfiguration:cfg];
-    });
-    return s_cdnSession;
-}
-
-// Session bulk historique, actuellement inactive — même cache, même isolation
-// URLProtocol. Le pipeline actif passe désormais par SevenTVGetUrgentSession().
-static NSURLSession    *s_prefetchSession     = nil;
-static dispatch_once_t  s_prefetchSessionOnce;
-
-static NSURLSession *SevenTVGetPrefetchSession(void) {
-    dispatch_once(&s_prefetchSessionOnce, ^{
-        // Même raison qu'au-dessus : ephemeral isole du sharedURLCache
-        // et des hooks TwitchControl. Même cache partagé s_emoteCache.
-        NSURLSessionConfiguration *cfg =
-            [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        cfg.URLCache           = SevenTVGetSharedCache();
-        cfg.requestCachePolicy = NSURLRequestReturnCacheDataElseLoad;
-        cfg.protocolClasses    = @[];
-        // 4 connexions max pour le bulk — laisse de la place à l'urgent session
-        cfg.HTTPMaximumConnectionsPerHost = 4;
-        s_prefetchSession = [NSURLSession sessionWithConfiguration:cfg];
-    });
-    return s_prefetchSession;
-}
-
-// Session utilisée par prefetchEmoteID:completion:, aussi bien pour le bulk
-// au JOIN que pour une emote demandée en temps réel. Elle reste séparée de
-// la session de préchauffage et partage le même NSURLCache.
-static NSURLSession    *s_urgentSession     = nil;
-static dispatch_once_t  s_urgentSessionOnce;
-
-static NSURLSession *SevenTVGetUrgentSession(void) {
-    dispatch_once(&s_urgentSessionOnce, ^{
-        // Même raison : ephemeral pour isolation totale.
-        NSURLSessionConfiguration *cfg =
-            [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        cfg.URLCache           = SevenTVGetSharedCache(); // même cache que bulk
-        cfg.requestCachePolicy = NSURLRequestReturnCacheDataElseLoad;
-        cfg.protocolClasses    = @[];
-        // 8 connexions — couvre le semaphore bulk (6) + les urgences temps réel.
-        // HTTP/2 multiplex sur une connexion TCP, donc pas de surcoût réseau.
-        cfg.HTTPMaximumConnectionsPerHost = 8;
-        s_urgentSession = [NSURLSession sessionWithConfiguration:cfg];
-    });
-    return s_urgentSession;
-}
-
-// ── URL CDN pour un emote ID ─────────────────────────────────────────────────
-// Résolution commune chat/picker/préfetch, configurable de 1x à 4x dans les
-// vrais réglages 7TV. Défaut 2x. Le WebP reste servi tel quel.
+// ── URL CDN historique 7TV (utilisée uniquement par la migration du compteur)
+// La résolution reste bornée aux valeurs prises en charge par l'ancien index.
 static NSURL *SevenTVCDNURLForEmoteID(NSString *emoteID) {
-    NSInteger resolution = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+    NSInteger resolution = [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution;
     resolution = MIN(4, MAX(1, resolution));
     NSString *str = [NSString stringWithFormat:
         @"https://cdn.7tv.app/emote/%@/%ldx.webp", emoteID, (long)resolution];
@@ -126,14 +58,16 @@ static NSURL *SevenTVCDNURLForEmoteID(NSString *emoteID) {
 
 // ── Validation réponse CDN ───────────────────────────────────────────────────
 //
-// PROBLÈME CORRIGÉ (historique) : prefetchEmoteID:completion: ne vérifiait pas
-// le statut HTTP ni le contenu réel des données avant de les mettre en cache.
+// Validation conservée pour vérifier les anciennes entrées WebP 7TV lors de la
+// migration/actualisation de l'index. Les nouveaux téléchargements passent par
+// SevenTVEmoteImageCache et sa validation provider-agnostique.
 // Si le CDN renvoie un 404 avec un petit corps JSON/HTML d'erreur, ce corps
 // était accepté comme "image valide" et stocké en cache tel quel → entrée de
 // cache corrompue permanente pour cette emote.
 //
 // Double vérification :
-//   - statusCode == 200 — élimine 404/403/5xx etc.
+//   - statusCode 2xx — élimine 404/403/5xx etc. tout en acceptant un éventuel
+//     206 renvoyé par un CDN intermédiaire.
 //   - signature de fichier WebP ("RIFF" + "WEBP" à l'offset 8) — élimine tout
 //     corps de réponse qui ne serait pas un vrai WebP (page d'erreur, JSON,
 //     HTML), même si le CDN renvoyait par erreur un statusCode 200.
@@ -142,7 +76,7 @@ static BOOL SevenTVIsValidWebPResponse(NSURLResponse *response, NSData *data) {
 
     if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
         NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
-        if (status != 200) return NO;
+        if (status < 200 || status >= 300) return NO;
     }
 
     // Format RIFF : 4 octets "RIFF" + 4 octets taille (ignorés) + 4 octets "WEBP".
@@ -152,20 +86,101 @@ static BOOL SevenTVIsValidWebPResponse(NSURLResponse *response, NSData *data) {
     return hasRIFF && hasWEBP;
 }
 
+// BTTV and FFZ can return PNG/GIF as well as WebP.  The cache counter must
+// validate the payload generically instead of reusing the 7TV-only RIFF/WebP
+// check above, otherwise perfectly valid third-party emotes would still be
+// reported as missing.
+static BOOL SevenTVIsValidCachedImageResponse(NSURLResponse *response, NSData *data) {
+    if (!data.length) return NO;
+    if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
+        NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
+        if (status < 200 || status >= 300) return NO;
+    }
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!source) return NO;
+    BOOL valid = CGImageSourceGetCount(source) > 0;
+    CFRelease(source);
+    return valid;
+}
+
+// A descriptor can appear in several picker sections (for example a shared
+// BTTV emote).  Collapse all scale URLs to one provider/id identity so the
+// displayed value is an emote count, not a count of downloaded resolutions.
+static NSString *SevenTVCacheIdentityForImageURL(NSURL *url) {
+    if (!url) return nil;
+    NSString *host = url.host.lowercaseString;
+    if (!host.length) return nil;
+
+    NSString *provider = nil;
+    if ([host isEqualToString:@"cdn.7tv.app"] || [host hasSuffix:@".7tv.app"] ||
+        [host isEqualToString:@"cdn.7tv.io"] || [host hasSuffix:@".7tv.io"]) {
+        provider = @"7tv";
+    } else if ([host isEqualToString:@"cdn.betterttv.net"] ||
+               [host hasSuffix:@".betterttv.net"]) {
+        provider = @"bttv";
+    } else if ([host isEqualToString:@"cdn.frankerfacez.com"] ||
+               [host hasSuffix:@".frankerfacez.com"]) {
+        provider = @"ffz";
+    }
+    // Le compteur ne doit jamais inclure une requête sans identité provider :
+    // cette classe ne gère que les CDN d'emotes connus.
+    if (!provider) return nil;
+
+    NSArray<NSString *> *parts = url.pathComponents;
+    NSUInteger markerIndex = NSNotFound;
+    for (NSUInteger i = 0; i < parts.count; i++) {
+        NSString *part = parts[i].lowercaseString;
+        if ([part isEqualToString:@"emote"] || [part isEqualToString:@"emoticon"]) {
+            markerIndex = i;
+            break;
+        }
+    }
+    if (markerIndex != NSNotFound && markerIndex + 1 < parts.count) {
+        NSString *emoteID = parts[markerIndex + 1];
+        if (emoteID.length && ![emoteID isEqualToString:@"/"])
+            return [NSString stringWithFormat:@"%@:%@", provider, emoteID];
+    }
+    return nil;
+}
+
 // ── Compteur global des emotes mises en cache (WebP natif, plus de conversion) ──
 static _Atomic(NSInteger) s_cachedCount = 0;
-static _Atomic(NSUInteger) s_cacheGeneration = 1;
 static NSMutableSet<NSString *> *s_cachedEmoteIDs = nil;
 static dispatch_once_t s_cachedEmoteIDsOnce;
+static NSMutableSet<NSString *> *s_cachedEmoteIdentities = nil;
+static dispatch_once_t s_cachedEmoteIdentitiesOnce;
 static BOOL s_cacheIndexSaveScheduled = NO;
 static NSString *const kS7TVCachedEmoteIDsKey = @"s7tv_cached_emote_ids";
+static NSString *const kS7TVCachedEmoteIdentitiesKey = @"s7tv_cached_emote_identities";
+
+static NSMutableSet<NSString *> *SevenTVCachedEmoteIdentities(void) {
+    dispatch_once(&s_cachedEmoteIdentitiesOnce, ^{
+        NSArray *saved = [[NSUserDefaults standardUserDefaults]
+            arrayForKey:kS7TVCachedEmoteIdentitiesKey] ?: @[];
+        s_cachedEmoteIdentities = [NSMutableSet set];
+        for (id value in saved) {
+            if ([value isKindOfClass:NSString.class] &&
+                [value rangeOfString:@":"].location != NSNotFound) {
+                [s_cachedEmoteIdentities addObject:value];
+            }
+        }
+    });
+    return s_cachedEmoteIdentities;
+}
 
 static NSMutableSet<NSString *> *SevenTVCachedEmoteIDs(void) {
     dispatch_once(&s_cachedEmoteIDsOnce, ^{
         NSArray *saved = [[NSUserDefaults standardUserDefaults]
             arrayForKey:kS7TVCachedEmoteIDsKey] ?: @[];
         s_cachedEmoteIDs = [NSMutableSet setWithArray:saved];
-        s_cachedCount = (NSInteger)s_cachedEmoteIDs.count;
+        // Migrate the old bare 7TV IDs into the provider-aware index. Keep the
+        // legacy set as well for older exports.
+        NSMutableSet *identities = SevenTVCachedEmoteIdentities();
+        for (id value in s_cachedEmoteIDs) {
+            if ([value isKindOfClass:NSString.class] && [value length])
+                [identities addObject:[NSString stringWithFormat:@"7tv:%@", value]];
+        }
+        s_cachedCount = (NSInteger)identities.count;
     });
     return s_cachedEmoteIDs;
 }
@@ -176,8 +191,11 @@ static BOOL SevenTVAnyCachedResolutionForEmoteID(NSString *emoteID) {
         NSString *urlString = [NSString stringWithFormat:
             @"https://cdn.7tv.app/emote/%@/%ldx.webp", emoteID, (long)scale];
         NSURL *url = [NSURL URLWithString:urlString];
-        if (url && [SevenTVGetSharedCache() cachedResponseForRequest:
-                    [NSURLRequest requestWithURL:url]]) return YES;
+        if (!url) continue;
+        NSCachedURLResponse *cached = [SevenTVGetSharedCache()
+            cachedResponseForRequest:[NSURLRequest requestWithURL:url]];
+        if (cached && SevenTVIsValidWebPResponse(cached.response, cached.data))
+            return YES;
     }
     return NO;
 }
@@ -190,12 +208,17 @@ static void SevenTVScheduleCacheIndexSave(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.75 * NSEC_PER_SEC)),
                    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSArray *snapshot = nil;
+        NSArray *identitySnapshot = nil;
         @synchronized (SevenTVCachedEmoteIDs()) {
             snapshot = SevenTVCachedEmoteIDs().allObjects;
+            @synchronized (SevenTVCachedEmoteIdentities()) {
+                identitySnapshot = SevenTVCachedEmoteIdentities().allObjects;
+            }
             s_cacheIndexSaveScheduled = NO;
         }
-        [[NSUserDefaults standardUserDefaults] setObject:snapshot
-                                                   forKey:kS7TVCachedEmoteIDsKey];
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        [defaults setObject:snapshot forKey:kS7TVCachedEmoteIDsKey];
+        [defaults setObject:identitySnapshot forKey:kS7TVCachedEmoteIdentitiesKey];
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:S7TVEmoteCacheCountDidChangeNotification object:nil];
@@ -208,6 +231,7 @@ static void SevenTVScheduleCacheIndexSave(void) {
 
 + (NSInteger)cachedEmoteCount {
     SevenTVCachedEmoteIDs();
+    SevenTVCachedEmoteIdentities();
     return s_cachedCount;
 }
 
@@ -226,11 +250,72 @@ static void SevenTVScheduleCacheIndexSave(void) {
         NSInteger count = 0;
         @synchronized (SevenTVCachedEmoteIDs()) {
             [SevenTVCachedEmoteIDs() minusSet:[NSSet setWithArray:missing]];
-            s_cachedCount = (NSInteger)SevenTVCachedEmoteIDs().count;
+            @synchronized (SevenTVCachedEmoteIdentities()) {
+                for (NSString *emoteID in missing) {
+                    [SevenTVCachedEmoteIdentities()
+                        removeObject:[NSString stringWithFormat:@"7tv:%@", emoteID]];
+                }
+                s_cachedCount = (NSInteger)SevenTVCachedEmoteIdentities().count;
+            }
             count = s_cachedCount;
         }
         if (missing.count) SevenTVScheduleCacheIndexSave();
         if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(count); });
+    });
+}
+
++ (void)refreshCachedEmoteCountForImageURLs:(NSArray<NSURL *> *)imageURLs
+                                 completion:(void (^)(NSInteger))completion {
+    // Copy and de-duplicate before leaving the caller's thread.  The catalog
+    // can expose the same provider/id in multiple sections, and the picker
+    // may still be updating its snapshots while Settings appears.
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    NSMutableSet<NSString *> *seenURLs = [NSMutableSet set];
+    for (id value in imageURLs ?: @[]) {
+        NSURL *url = [value isKindOfClass:NSURL.class] ? value : nil;
+        NSString *key = url.absoluteString;
+        if (!key.length || [seenURLs containsObject:key]) continue;
+        [seenURLs addObject:key];
+        [urls addObject:url];
+    }
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSMutableSet<NSString *> *cachedIdentities = [NSMutableSet set];
+        // Do not replace the persistent index with only the URLs visible in
+        // the current catalogue. A channel can have changed since those
+        // images were cached, and doing so was the reason the Settings row
+        // reported only a small fraction of the real cache.
+        @synchronized (SevenTVCachedEmoteIdentities()) {
+            [cachedIdentities unionSet:SevenTVCachedEmoteIdentities()];
+        }
+        NSURLCache *cache = SevenTVGetSharedCache();
+        for (NSURL *url in urls) {
+            NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+            request.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
+            NSCachedURLResponse *cached = [cache cachedResponseForRequest:request];
+            if (!cached || !SevenTVIsValidCachedImageResponse(cached.response, cached.data))
+                continue;
+
+            NSString *identity = SevenTVCacheIdentityForImageURL(url);
+            if (identity.length) [cachedIdentities addObject:identity];
+        }
+        BOOL changed = NO;
+        @synchronized (SevenTVCachedEmoteIdentities()) {
+            for (NSString *identity in cachedIdentities) {
+                if (![SevenTVCachedEmoteIdentities() containsObject:identity]) {
+                    [SevenTVCachedEmoteIdentities() addObject:identity];
+                    changed = YES;
+                }
+            }
+            s_cachedCount = (NSInteger)SevenTVCachedEmoteIdentities().count;
+        }
+        if (changed) SevenTVScheduleCacheIndexSave();
+        NSInteger count = s_cachedCount;
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(count);
+            });
+        }
     });
 }
 
@@ -242,116 +327,49 @@ static void SevenTVScheduleCacheIndexSave(void) {
             [SevenTVCachedEmoteIDs() addObject:emoteID];
             added = YES;
         }
-        s_cachedCount = (NSInteger)SevenTVCachedEmoteIDs().count;
+        NSString *identity = [NSString stringWithFormat:@"7tv:%@", emoteID];
+        @synchronized (SevenTVCachedEmoteIdentities()) {
+            if (![SevenTVCachedEmoteIdentities() containsObject:identity]) {
+                [SevenTVCachedEmoteIdentities() addObject:identity];
+                added = YES;
+            }
+            s_cachedCount = (NSInteger)SevenTVCachedEmoteIdentities().count;
+        }
     }
     if (added) SevenTVScheduleCacheIndexSave();
 }
 
-// ============================================================
-// MARK: - Utilitaires (appelés depuis 7tv-core-runtime-hooks.m)
-// ============================================================
++ (void)noteCachedEmoteImageURL:(NSURL *)url {
+    NSString *identity = SevenTVCacheIdentityForImageURL(url);
+    if (!identity.length) return;
 
-// Vérifie si l'image est en cache sans faire de réseau.
-+ (BOOL)isEmoteIDCached:(NSString *)emoteID {
-    if (!emoteID.length) return NO;
-    NSURL *url = SevenTVCDNURLForEmoteID(emoteID);
-    if (!url) return NO;
-
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
-    BOOL cached = ([SevenTVGetSharedCache() cachedResponseForRequest:req] != nil);
-    if (cached) [self noteCachedEmoteID:emoteID];
-    return cached;
-}
-
-// Télécharge l'image et appelle completion quand elle est en cache.
-// completion est toujours appelé (succès, erreur ou délai réseau de 30s).
-//
-// Utilise SevenTVGetUrgentSession() — même NSURLCache que les autres
-// sessions CDN — pour garantir que la réponse est stockée sous la clé
-// URL brute, la même que lit isEmoteIDCached:/le picker.
-+ (void)prefetchEmoteID:(NSString *)emoteID completion:(void(^)(void))completion {
-    if (!emoteID.length) {
-        if (completion) completion();
-        return;
-    }
-
-    NSURL *url = SevenTVCDNURLForEmoteID(emoteID);
-    if (!url) {
-        if (completion) completion();
-        return;
-    }
-
-    // Si déjà en cache → completion immédiate, pas de réseau.
-    NSMutableURLRequest *checkReq = [NSMutableURLRequest requestWithURL:url];
-    checkReq.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
-    if ([SevenTVGetSharedCache() cachedResponseForRequest:checkReq]) {
-        [self noteCachedEmoteID:emoteID];
-        if (completion) completion();
-        return;
-    }
-
-    // Téléchargement en background via la session prefetch dédiée.
-    // La completion est appelée exactement une fois par NSURLSession :
-    // succès, erreur réseau, ou expiration (timeoutInterval).
-    // 30s : avec 6 streams HTTP/2 en parallèle et 335 emotes, les requêtes
-    // en queue pouvaient expirer avant d'être envoyées avec l'ancien 10s.
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.cachePolicy     = NSURLRequestReturnCacheDataElseLoad;
-    req.timeoutInterval = 30.0;
-
-    // Session active de téléchargement — indépendante du préchauffage CDN.
-    NSUInteger requestGeneration = s_cacheGeneration;
-    [[SevenTVGetUrgentSession() dataTaskWithRequest:req
-               completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        if (err) {
-            [[SevenTVManager sharedManager] log:@"⚠️ Préfetch %@ → %@",
-             emoteID, err.localizedDescription];
-        }
-        // Stockage manuel — NSURLSession ne stocke que si le CDN retourne les
-        // bons headers Cache-Control. On utilise une requête propre (juste l'URL)
-        // pour que la clé de cache corresponde exactement à ce que lit
-        // isEmoteIDCached:/le picker via cachedResponseForRequest:.
-        //
-        // Validation AVANT stockage : sans ça, un 404 7TV avec un petit corps
-        // JSON/HTML d'erreur était accepté comme image valide et restait en
-        // cache pour toujours.
-        //
-        // On stocke le WebP natif tel que reçu du CDN 7TV — plus de conversion
-        // GIF, format d'origine conservé tel quel.
-        if (data && resp && !err && requestGeneration == s_cacheGeneration) {
-            if (SevenTVIsValidWebPResponse(resp, data)) {
-                NSHTTPURLResponse *http = (NSHTTPURLResponse *)resp;
-                NSHTTPURLResponse *webpResp = [[NSHTTPURLResponse alloc]
-                    initWithURL:url
-                    statusCode:http.statusCode
-                   HTTPVersion:@"HTTP/1.1"
-                  headerFields:@{@"Content-Type": @"image/webp"}];
-                NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
-                    initWithResponse:webpResp data:data];
-                NSURLRequest *cacheKey = [NSURLRequest requestWithURL:url];
-                [SevenTVGetSharedCache() storeCachedResponse:toCache forRequest:cacheKey];
-
-                [self noteCachedEmoteID:emoteID];
-                [[SevenTVManager sharedManager] log:
-                    @"🖼 Préfetch %@ → WebP natif mis en cache (%lu bytes) [total:%ld]",
-                    emoteID, (unsigned long)data.length, (long)s_cachedCount];
-            } else {
-                NSInteger status = [resp isKindOfClass:[NSHTTPURLResponse class]]
-                    ? ((NSHTTPURLResponse *)resp).statusCode : -1;
-                [[SevenTVManager sharedManager] log:
-                    @"❌ Préfetch %@ → réponse invalide status:%ld bytes:%lu — non mise en cache",
-                    emoteID, (long)status, (unsigned long)data.length];
+    BOOL added = NO;
+    // Keep the same lock order as noteCachedEmoteID:/clearAll... (legacy IDs
+    // first, provider identities second) so concurrent image callbacks cannot
+    // deadlock while updating the two indexes.
+    @synchronized (SevenTVCachedEmoteIDs()) {
+        @synchronized (SevenTVCachedEmoteIdentities()) {
+            if (![SevenTVCachedEmoteIdentities() containsObject:identity]) {
+                [SevenTVCachedEmoteIdentities() addObject:identity];
+                added = YES;
             }
+
+            // Keep the historical 7TV-only index in sync for old callers and
+            // old exports. BTTV/FFZ are intentionally not inserted into that
+            // bare-ID set.
+            if ([identity hasPrefix:@"7tv:"]) {
+                NSString *emoteID = [identity substringFromIndex:5];
+                if (emoteID.length &&
+                    ![SevenTVCachedEmoteIDs() containsObject:emoteID]) {
+                    [SevenTVCachedEmoteIDs() addObject:emoteID];
+                    added = YES;
+                }
+            }
+            s_cachedCount = (NSInteger)SevenTVCachedEmoteIdentities().count;
         }
-        if (completion) completion();
-    }] resume];
+    }
+    if (added) SevenTVScheduleCacheIndexSave();
 }
-
-
-// ============================================================
-// MARK: - Préchauffage connexion CDN
-// ============================================================
 
 // ============================================================
 // MARK: - Cache partagé (accessible depuis SevenTVManager pour le picker)
@@ -363,50 +381,25 @@ static void SevenTVScheduleCacheIndexSave(void) {
 
 + (void)clearAllEmoteCachesWithCompletion:(void (^)(NSUInteger))completion {
     NSUInteger clearedCount = (NSUInteger)[self cachedEmoteCount];
-    s_cacheGeneration++;
-
-    dispatch_group_t cancellationGroup = dispatch_group_create();
-    void (^cancelTasks)(NSURLSession *) = ^(NSURLSession *session) {
-        dispatch_group_enter(cancellationGroup);
-        [session getAllTasksWithCompletionHandler:^(NSArray<__kindof NSURLSessionTask *> *tasks) {
-            for (NSURLSessionTask *task in tasks) [task cancel];
-            dispatch_group_leave(cancellationGroup);
-        }];
-    };
-    cancelTasks(SevenTVGetCDNSession());
-    cancelTasks(SevenTVGetPrefetchSession());
-    cancelTasks(SevenTVGetUrgentSession());
-
-    dispatch_group_notify(cancellationGroup,
-                          dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         [SevenTVGetSharedCache() removeAllCachedResponses];
         @synchronized (SevenTVCachedEmoteIDs()) {
             [SevenTVCachedEmoteIDs() removeAllObjects];
-            s_cachedCount = 0;
+            @synchronized (SevenTVCachedEmoteIdentities()) {
+                [SevenTVCachedEmoteIdentities() removeAllObjects];
+                s_cachedCount = 0;
+            }
             s_cacheIndexSaveScheduled = NO;
         }
         [[NSUserDefaults standardUserDefaults] removeObjectForKey:kS7TVCachedEmoteIDsKey];
+        [[NSUserDefaults standardUserDefaults]
+            removeObjectForKey:kS7TVCachedEmoteIdentitiesKey];
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter]
                 postNotificationName:S7TVEmoteCacheCountDidChangeNotification object:nil];
             if (completion) completion(clearedCount);
         });
     });
-}
-
-+ (void)prewarmCDNConnection {
-    NSURL *warmURL = SevenTVCDNURLForEmoteID(@"01F6MSP3NV00001B6E");
-    if (!warmURL) return;
-
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:warmURL];
-    req.HTTPMethod     = @"HEAD";
-    req.timeoutInterval = 10.0;
-
-    [[SevenTVGetCDNSession() dataTaskWithRequest:req
-                              completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
-        NSLog(@"[TwitchSevenTV] 🔥 CDN prewarm: %@",
-              e ? e.localizedDescription : @"OK");
-    }] resume];
 }
 
 @end

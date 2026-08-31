@@ -14,6 +14,11 @@
 #import "Chat/7tv-chat-reply-thread-panel.h"
 #import "Chat/7tv-chat-tokenizer.h"
 #import "Emote/7tv-emote-provider.h"
+#import "Emote/7tv-emote-catalog.h"
+#import "Emote/7tv-provider-settings.h"
+#import "UI/7tv-ui-logo.h"
+#import "UI/bttv-ui-logo.h"
+#import "UI/ffz-ui-logo.h"
 #import "UI/7tv-oled-mode.h"
 #import <objc/runtime.h>
 #import <math.h>
@@ -26,6 +31,34 @@ static const char kS7TVChatCustomInstalledView = 21;
 static __weak SevenTVChatCustomView *s_activeChatCustomView = nil;
 static __weak UIView *s_activeNativeChatView = nil;
 static BOOL s_chatReloadScheduled = NO;
+
+// Keep the preview's provider identity visible even when the emote name is
+// truncated (or when a Zero-Width composition lists several providers below
+// the image).  The picker already uses these embedded logos; reusing the same
+// assets here keeps the chat preview visually consistent with the picker.
+static UIImage *s7tv_previewProviderLogoForToken(S7TVChatToken *token) {
+    if (!token) return nil;
+
+    NSString *identifier = token.providerIdentifier.lowercaseString;
+    if (!identifier.length && token.type == S7TVChatTokenTypeEmote7TV)
+        identifier = @"7tv";
+
+    NSString *base64 = nil;
+    if ([identifier isEqualToString:@"7tv"]) {
+        base64 = kS7TVLogoBase64;
+    } else if ([identifier isEqualToString:@"bttv"]) {
+        base64 = kS7TVBTTVLogoBase64;
+    } else if ([identifier isEqualToString:@"ffz"]) {
+        base64 = kS7TVFFZLogoBase64;
+    }
+    if (!base64.length) return nil;
+
+    NSData *data = [[NSData alloc]
+        initWithBase64EncodedString:base64
+                             options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    UIImage *image = data.length ? [UIImage imageWithData:data scale:3.0] : nil;
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+}
 
 static UIView *s7tv_findVisibleChatInputViewInWindow(UIWindow *window) {
     if (!window || window.hidden || window.alpha <= 0.01) return nil;
@@ -248,6 +281,12 @@ void s7tv_setupChatCustomIntegration(void) {
     dispatch_once(&onceToken, ^{
         SevenTVManager *manager = [SevenTVManager sharedManager];
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+        // Les tokens retiennent l'URL résolue au moment de leur création.
+        // Mémoriser la résolution courante permet de retokeniser uniquement
+        // lorsqu'elle change, sans refaire le travail pour chaque réglage de
+        // couleur/taille/espacement qui partage la notification d'apparence.
+        __block NSInteger lastEmoteResolution =
+            [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution;
         [center addObserverForName:S7TVChatCustomToggleDidChangeNotification
                            object:manager queue:NSOperationQueue.mainQueue
                        usingBlock:^(__unused NSNotification *note) {
@@ -262,12 +301,72 @@ void s7tv_setupChatCustomIntegration(void) {
                                               twitchEmotesTag:message.twitchEmotesTag ?: @""
                                                     providers:s7tv_chatEmoteProviders()];
                 } completion:^{
+                    [[S7TVReplyThreadPanel sharedPanel]
+                        retokenizeVisibleMessagesWithCompletion:^{
+                        s7tv_reloadActiveChatCustomViewForConfiguration();
+                    }];
+                }];
+        }];
+        // Le catalogue multi-provider publie une notification distincte de
+        // l'ancien cache 7TV. Retokeniser le store sur le main thread garantit
+        // que BTTV/FFZ et les alias deviennent visibles dès leur arrivée,
+        // sans attendre un changement d'onglet ou un scroll du picker.
+        [center addObserverForName:S7TVProviderCatalogDidUpdateNotification
+                           object:nil queue:NSOperationQueue.mainQueue
+                       usingBlock:^(__unused NSNotification *note) {
+            [manager.chatMessageStore
+                retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
+                    return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
+                                              twitchEmotesTag:message.twitchEmotesTag ?: @""
+                                                    providers:s7tv_chatEmoteProviders()];
+                } completion:^{
+                    [[S7TVReplyThreadPanel sharedPanel]
+                        retokenizeVisibleMessagesWithCompletion:^{
+                        s7tv_reloadActiveChatCustomViewForConfiguration();
+                    }];
+                }];
+        }];
+        // Provider switches, collision priority and the Zero-Width toggle all
+        // affect tokens that are already retained in the transcript. Rebuild
+        // them immediately so disabling a provider never leaves its old image
+        // visible and a priority change applies to existing messages too.
+        [center addObserverForName:S7TVEmoteProviderSettingsDidChangeNotification
+                           object:nil queue:NSOperationQueue.mainQueue
+                       usingBlock:^(__unused NSNotification *note) {
+            [manager.chatMessageStore
+                retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
+                    return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
+                                              twitchEmotesTag:message.twitchEmotesTag ?: @""
+                                                    providers:s7tv_chatEmoteProviders()];
+                } completion:^{
+                    [[S7TVReplyThreadPanel sharedPanel]
+                        retokenizeVisibleMessagesWithCompletion:^{
+                        s7tv_reloadActiveChatCustomViewForConfiguration();
+                    }];
+                }];
+        }];
+        [center addObserverForName:S7TVChatAppearanceConfigDidChangeNotification
+                           object:nil queue:NSOperationQueue.mainQueue
+                       usingBlock:^(__unused NSNotification *note) {
+            NSInteger currentResolution =
+                [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution;
+            BOOL resolutionChanged = currentResolution != lastEmoteResolution;
+            lastEmoteResolution = currentResolution;
+            if (!resolutionChanged) {
+                s7tv_reloadActiveChatCustomViewForConfiguration();
+                return;
+            }
+            [manager.chatMessageStore
+                retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
+                    return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
+                                              twitchEmotesTag:message.twitchEmotesTag ?: @""
+                                                    providers:s7tv_chatEmoteProviders()];
+                } completion:^{
                     s7tv_reloadActiveChatCustomViewForConfiguration();
                 }];
         }];
         for (NSString *notificationName in @[
             S7TVBadgesCatalogUpdatedNotification,
-            S7TVChatAppearanceConfigDidChangeNotification,
             S7TVLanguageDidChangeNotification
         ]) {
             [center addObserverForName:notificationName object:nil queue:nil
@@ -283,6 +382,149 @@ void s7tv_setupChatCustomIntegration(void) {
 // résolu, sans rescanner le texte ni réinterroger le provider.
 static NSString *const kS7TVChatEmoteTokenAttributeName = @"S7TVChatEmoteToken";
 static const NSInteger kS7TVChatEmotePreviewOverlayTag = 0x7E7E71;
+
+static BOOL s7tv_isRenderableEmoteToken(S7TVChatToken *token) {
+    return token.type == S7TVChatTokenTypeEmote7TV ||
+           token.type == S7TVChatTokenTypeEmoteTwitch;
+}
+
+static S7TVEmoteDescriptor *s7tv_catalogDescriptorForToken(S7TVChatToken *token) {
+    if (!token.providerEmoteID.length) return nil;
+    // Legacy 7TV tokens predate providerIdentifier.  Zero-Width layers can
+    // still carry that old shape, so infer 7TV only for the 7TV token type;
+    // Twitch-native tokens must never become catalog favorites accidentally.
+    NSString *identifier = token.providerIdentifier.lowercaseString;
+    if (!identifier.length && token.type == S7TVChatTokenTypeEmote7TV)
+        identifier = @"7tv";
+    if (!identifier.length) return nil;
+    S7TVEmoteProviderID provider;
+    if ([identifier isEqualToString:@"7tv"]) provider = S7TVEmoteProviderIDSevenTV;
+    else if ([identifier isEqualToString:@"bttv"]) provider = S7TVEmoteProviderIDBTTV;
+    else if ([identifier isEqualToString:@"ffz"]) provider = S7TVEmoteProviderIDFFZ;
+    else return nil;
+    for (S7TVEmoteDescriptor *descriptor in
+         [[S7TVEmoteCatalog sharedCatalog] allEmotesForProvider:provider]) {
+        if ([descriptor.emoteID isEqualToString:token.providerEmoteID]) return descriptor;
+    }
+
+    // A retained chat message can outlive the channel snapshot that supplied
+    // it (for example after switching channels or while offline).  Keep its
+    // preview/favorite action provider-aware instead of hiding the star just
+    // because the current catalogue no longer contains that descriptor.  The
+    // resolved token already carries the exact URL, dimensions and animation
+    // metadata needed for a lossless offline descriptor; a later catalogue
+    // refresh transparently replaces it with the authoritative entry.
+    id<S7TVResolvedEmote> resolved = token.resolvedEmote;
+    if (!resolved.imageURL || !resolved.imageURL.absoluteString.length) return nil;
+    NSMutableDictionary<NSNumber *, NSString *> *urls = [NSMutableDictionary dictionary];
+    urls[@(2)] = resolved.imageURL.absoluteString;
+    return [[S7TVEmoteDescriptor alloc]
+        initWithProvider:provider
+        providerIdentifier:identifier
+        emoteID:token.providerEmoteID
+        name:token.text.length ? token.text : token.providerEmoteID
+        aliases:@[]
+        sectionKind:S7TVEmoteSectionKindChannel
+        sectionIdentifier:@"chat"
+        sectionTitle:@"Chat"
+        setID:nil
+        nativeSize:resolved.nativeSize.width > 0.0 && resolved.nativeSize.height > 0.0
+            ? resolved.nativeSize : CGSizeMake(1.0, 1.0)
+        animated:resolved.isAnimated
+        zeroWidth:([resolved respondsToSelector:@selector(zeroWidth)] && resolved.zeroWidth)
+        modifierMetadata:@{}
+        imageURLs:urls.copy];
+}
+
+static BOOL s7tv_isLegacySevenTVFavoriteToken(S7TVChatToken *token) {
+    if (!token || token.type != S7TVChatTokenTypeEmote7TV ||
+        !token.providerEmoteID.length) return NO;
+    return !token.providerIdentifier.length ||
+        [token.providerIdentifier.lowercaseString isEqualToString:@"7tv"];
+}
+
+static NSArray<S7TVChatToken *> *s7tv_previewCompositionTokens(S7TVChatToken *root) {
+    if (!root) return @[];
+    NSMutableArray<S7TVChatToken *> *tokens = [NSMutableArray array];
+    if (s7tv_isRenderableEmoteToken(root) && root.providerEmoteID.length)
+        [tokens addObject:root];
+    for (S7TVChatToken *layer in root.overlayTokens ?: @[]) {
+        if (s7tv_isRenderableEmoteToken(layer) && layer.providerEmoteID.length)
+            [tokens addObject:layer];
+    }
+    return tokens.copy;
+}
+
+// Return the state used by the preview star and identify the storage path for
+// one layer.  7TV still mirrors its legacy manager because older settings and
+// the existing picker read that in-memory set; BTTV/FFZ use the shared catalog.
+static BOOL s7tv_isPreviewTokenFavorited(S7TVChatToken *token,
+                                         S7TVEmoteDescriptor **descriptorOut,
+                                         BOOL *supportedOut) {
+    if (descriptorOut) *descriptorOut = nil;
+    if (supportedOut) *supportedOut = NO;
+    if (!s7tv_isRenderableEmoteToken(token) || !token.providerEmoteID.length)
+        return NO;
+
+    S7TVEmoteDescriptor *descriptor = s7tv_catalogDescriptorForToken(token);
+    if (descriptorOut) *descriptorOut = descriptor;
+    if (descriptor) {
+        if (supportedOut) *supportedOut = YES;
+        if (descriptor.provider == S7TVEmoteProviderIDSevenTV)
+            return [[SevenTVManager sharedManager] isEmoteFavorited:descriptor.emoteID];
+        return [[S7TVEmoteCatalog sharedCatalog] isEmoteFavorited:descriptor];
+    }
+    if (s7tv_isLegacySevenTVFavoriteToken(token)) {
+        if (supportedOut) *supportedOut = YES;
+        return [[SevenTVManager sharedManager] isEmoteFavorited:token.providerEmoteID];
+    }
+    return NO;
+}
+
+static UIImage *s7tv_compositeEmoteImage(UIImage *baseImage,
+                                          NSArray<S7TVChatToken *> *overlayTokens,
+                                          CGFloat width,
+                                          CGFloat height,
+                                          SevenTVEmoteImageCache *cache,
+                                          NSMutableArray<id<S7TVResolvedEmote>> *uncached,
+                                          BOOL preferAnimatedFrames) {
+    if (!baseImage || width <= 0 || height <= 0) return nil;
+
+    NSMutableArray<UIImage *> *layers = [NSMutableArray array];
+    [layers addObject:baseImage];
+    for (S7TVChatToken *layerToken in overlayTokens) {
+        id<S7TVResolvedEmote> layer = layerToken.resolvedEmote;
+        UIImage *image = nil;
+        if (preferAnimatedFrames && layer.isAnimated && layer.imageURL.absoluteString.length) {
+            // Keep every animated Zero-Width layer independent in previews
+            // (and in the static fallback used by the chat renderer).  The
+            // base layer already follows this path in the caller; overlays
+            // must read the shared engine as well or they would remain stuck
+            // on their first decoded frame.
+            image = [[SevenTVEmoteAnimationEngine sharedEngine]
+                currentFrameForKey:layer.imageURL.absoluteString];
+        }
+        if (!image) image = layer ? [cache cachedImageForResolvedEmote:layer] : nil;
+        if (!image) {
+            if (layer) [uncached addObject:layer];
+            return nil;
+        }
+        [layers addObject:image];
+    }
+
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(width, height), NO, 0.0);
+    for (UIImage *image in layers) {
+        CGFloat imageHeight = height;
+        CGFloat ratio = image.size.height > 0 ? image.size.width / image.size.height : 1.0;
+        CGFloat imageWidth = imageHeight * ratio;
+        [image drawInRect:CGRectMake(0, (height - imageHeight) * 0.5,
+                                     imageWidth, imageHeight)
+                 blendMode:kCGBlendModeNormal alpha:1.0];
+    }
+    UIImage *composite = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return composite;
+}
 
 static BOOL s7tv_isDeletedMessage(S7TVChatMessage *msg) {
     return msg.state == S7TVChatMessageStateDeletedCollapsed ||
@@ -822,7 +1064,7 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
 @property (nonatomic, strong) S7TVChatToken *previewedEmoteToken;
 @property (nonatomic, weak) UIImageView *emotePreviewImageView;
 @property (nonatomic, weak) UIButton *emotePreviewFavoriteButton;
-@property (nonatomic, strong) S7TVEmoteFrameRequest *emotePreviewFrameRequest;
+@property (nonatomic, strong) NSMutableArray<S7TVEmoteFrameRequest *> *emotePreviewFrameRequests;
 @property (nonatomic, assign) BOOL reloadDeferredUntilScrollEnds;
 @property (nonatomic, assign) BOOL deferredReloadAnimated;
 @property (nonatomic, strong) NSMutableArray *deferredReloadCompletions;
@@ -848,6 +1090,9 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
 @property (nonatomic, assign) BOOL returnToBottomRequested;
 - (void)s7tv_dismissEmotePreview;
 - (void)s7tv_observeAnimatedEmotePreview:(id<S7TVResolvedEmote>)emote;
+- (nullable UIImage *)s7tv_previewImageForToken:(S7TVChatToken *)token;
+- (void)s7tv_refreshEmotePreviewImage;
+- (void)s7tv_requestPreviewImagesForToken:(S7TVChatToken *)token;
 - (nullable NSString *)s7tv_captureVisibleAnchorAmongIDs:(nullable NSSet<NSString *> *)allowedIDs
                                                 viewportY:(CGFloat *)outViewportY;
 - (void)s7tv_restoreVisibleAnchorID:(nullable NSString *)messageID viewportY:(CGFloat)viewportY;
@@ -879,6 +1124,7 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
         _deferredReloadCompletions = [NSMutableArray array];
         _deferredMessageReloadIDs = [NSMutableSet set];
         _deferredMessageReloadCompletions = [NSMutableArray array];
+        _emotePreviewFrameRequests = [NSMutableArray array];
         _lastObservedStoreMessageIDs = [NSSet set];
         _lastObservedStoreGeneration = [store generation];
         _lastNotifiedContentHeight = 0.0;
@@ -1000,7 +1246,9 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
 }
 
 - (void)dealloc {
-    [self.emotePreviewFrameRequest cancel];
+    for (S7TVEmoteFrameRequest *request in self.emotePreviewFrameRequests)
+        [request cancel];
+    [self.emotePreviewFrameRequests removeAllObjects];
     [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:self.emotePreviewImageView];
     [self.emotePreviewOverlay removeFromSuperview];
     [[NSNotificationCenter defaultCenter] removeObserver:self
@@ -1853,8 +2101,9 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
 #pragma mark - UITableViewDelegate
 
 - (void)s7tv_dismissEmotePreview {
-    [self.emotePreviewFrameRequest cancel];
-    self.emotePreviewFrameRequest = nil;
+    for (S7TVEmoteFrameRequest *request in self.emotePreviewFrameRequests)
+        [request cancel];
+    [self.emotePreviewFrameRequests removeAllObjects];
     [[SevenTVEmoteAnimationEngine sharedEngine] removeObserver:self.emotePreviewImageView];
     [self.emotePreviewOverlay removeFromSuperview];
     self.emotePreviewOverlay = nil;
@@ -1863,73 +2112,216 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
     self.emotePreviewFavoriteButton = nil;
 }
 
-- (void)s7tv_observeAnimatedEmotePreview:(id<S7TVResolvedEmote>)emote {
-    UIImageView *imageView = self.emotePreviewImageView;
-    NSString *animationKey = [emote.imageURL.absoluteString copy];
-    if (!emote.isAnimated || !imageView || !animationKey.length) return;
+- (UIImage *)s7tv_previewImageForToken:(S7TVChatToken *)token {
+    if (!token || !s7tv_isRenderableEmoteToken(token)) return nil;
+    id<S7TVResolvedEmote> emote = token.resolvedEmote;
+    if (!emote) return nil;
 
     SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
+    UIImage *baseImage = emote.isAnimated
+        ? [engine currentFrameForKey:emote.imageURL.absoluteString] : nil;
+    if (!baseImage) {
+        baseImage = [[SevenTVEmoteImageCache sharedCache]
+            cachedImageForResolvedEmote:emote];
+    }
+    if (!baseImage) return nil;
+    if (!token.overlayTokens.count) return baseImage;
+
+    // Keep the base emote's natural aspect ratio in the preview canvas.  A
+    // fixed 96×96 bitmap clipped wide emotes (and therefore also clipped the
+    // right-hand part of a Zero-Width composition) before UIImageView could
+    // apply its own aspect-fit scaling inside the card.
+    CGFloat previewHeight = 96.0;
+    CGFloat baseRatio = baseImage.size.height > 0.0
+        ? baseImage.size.width / baseImage.size.height : 1.0;
+    CGFloat previewWidth = MAX(1.0, previewHeight * baseRatio);
+    UIImage *composite = s7tv_compositeEmoteImage(
+        baseImage, token.overlayTokens, previewWidth, previewHeight,
+        [SevenTVEmoteImageCache sharedCache], [NSMutableArray array], YES);
+    return composite ?: baseImage;
+}
+
+- (void)s7tv_refreshEmotePreviewImage {
+    UIImageView *imageView = self.emotePreviewImageView;
+    S7TVChatToken *token = self.previewedEmoteToken;
+    UIImage *image = [self s7tv_previewImageForToken:token];
+    if (imageView && image) imageView.image = image;
+}
+
+- (void)s7tv_requestPreviewImagesForToken:(S7TVChatToken *)token {
+    if (!token || !token.resolvedEmote) return;
+    NSMutableArray<id<S7TVResolvedEmote>> *layers = [NSMutableArray arrayWithObject:token.resolvedEmote];
+    for (S7TVChatToken *layerToken in token.overlayTokens) {
+        if (layerToken.resolvedEmote) [layers addObject:layerToken.resolvedEmote];
+    }
+
+    SevenTVEmoteImageCache *cache = [SevenTVEmoteImageCache sharedCache];
+    __weak typeof(self) weakSelf = self;
+    for (id<S7TVResolvedEmote> layer in layers) {
+        if ([cache cachedImageForResolvedEmote:layer]) continue;
+        [cache imageForResolvedEmote:layer completion:^(__unused UIImage *image) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf.previewedEmoteToken != token) return;
+            [strongSelf s7tv_refreshEmotePreviewImage];
+        }];
+    }
+}
+
+- (void)s7tv_observeAnimatedEmotePreview:(id<S7TVResolvedEmote>)emote {
+    UIImageView *imageView = self.emotePreviewImageView;
+    S7TVChatToken *token = self.previewedEmoteToken;
+    if (!emote || !imageView || !token) return;
+
+    SevenTVEmoteAnimationEngine *engine = [SevenTVEmoteAnimationEngine sharedEngine];
+    NSMutableArray<id<S7TVResolvedEmote>> *animatedLayers = [NSMutableArray array];
+    NSMutableSet<NSString *> *animationKeys = [NSMutableSet set];
+    NSMutableArray<id<S7TVResolvedEmote>> *layers =
+        [NSMutableArray arrayWithObject:emote];
+    for (S7TVChatToken *layerToken in token.overlayTokens) {
+        if (layerToken.resolvedEmote) [layers addObject:layerToken.resolvedEmote];
+    }
+    for (id<S7TVResolvedEmote> layer in layers) {
+        NSString *key = layer.imageURL.absoluteString;
+        if (!layer.isAnimated || !key.length || [animationKeys containsObject:key]) continue;
+        [animationKeys addObject:key];
+        [animatedLayers addObject:layer];
+    }
+    if (!animationKeys.count) return;
+
     __weak typeof(self) weakSelf = self;
     __weak UIImageView *weakImageView = imageView;
-    [engine addObserver:imageView keys:[NSSet setWithObject:animationKey] redraw:^{
+    [engine addObserver:imageView keys:animationKeys redraw:^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         UIImageView *strongImageView = weakImageView;
         if (!strongSelf || !strongImageView ||
-            strongSelf.emotePreviewImageView != strongImageView) return;
-        NSString *currentKey = strongSelf.previewedEmoteToken.resolvedEmote.imageURL.absoluteString;
-        if (![currentKey isEqualToString:animationKey]) return;
-        UIImage *frame = [[SevenTVEmoteAnimationEngine sharedEngine]
-            currentFrameForKey:animationKey];
-        if (frame) strongImageView.image = frame;
+            strongSelf.emotePreviewImageView != strongImageView ||
+            strongSelf.previewedEmoteToken != token) return;
+        [strongSelf s7tv_refreshEmotePreviewImage];
     }];
 
-    UIImage *currentFrame = [engine currentFrameForKey:animationKey];
-    if (currentFrame) imageView.image = currentFrame;
-    if ([engine hasCompleteFramesForKey:animationKey]) return;
-
     SevenTVEmoteImageCache *imageCache = [SevenTVEmoteImageCache sharedCache];
-    S7TVEmoteAnimatedFrames *cachedFrames = [imageCache cachedFramesForResolvedEmote:emote];
-    if (cachedFrames) {
-        [engine registerFrames:cachedFrames forKey:animationKey];
-        return;
-    }
-
-    // Même pipeline que les cellules du chat : preview légère puis boucle
-    // complète, toutes deux enregistrées dans l'unique moteur partagé.
-    self.emotePreviewFrameRequest = [imageCache framesForResolvedEmote:emote
-        preview:^(S7TVEmoteAnimatedFrames *previewFrames) {
-            if (![engine hasCompleteFramesForKey:animationKey]) {
-                [engine registerFrames:previewFrames forKey:animationKey];
-            }
+    for (id<S7TVResolvedEmote> layer in animatedLayers) {
+        NSString *animationKey = layer.imageURL.absoluteString;
+        if ([engine hasCompleteFramesForKey:animationKey]) continue;
+        S7TVEmoteAnimatedFrames *cachedFrames =
+            [imageCache cachedFramesForResolvedEmote:layer];
+        if (cachedFrames) {
+            [engine registerFrames:cachedFrames forKey:animationKey];
+            continue;
         }
-        completion:^(S7TVEmoteAnimatedFrames * _Nullable frames) {
-            if (frames) [engine registerFrames:frames forKey:animationKey];
-        }];
+
+        // Même pipeline que les cellules du chat : preview légère puis boucle
+        // complète, une demande annulable par layer.
+        S7TVEmoteFrameRequest *request = [imageCache framesForResolvedEmote:layer
+            preview:^(S7TVEmoteAnimatedFrames *previewFrames) {
+                if (![engine hasCompleteFramesForKey:animationKey])
+                    [engine registerFrames:previewFrames forKey:animationKey];
+            }
+            completion:^(S7TVEmoteAnimatedFrames * _Nullable frames) {
+                if (frames) [engine registerFrames:frames forKey:animationKey];
+            }];
+        if (request) [self.emotePreviewFrameRequests addObject:request];
+    }
+    [self s7tv_refreshEmotePreviewImage];
 }
 
 - (void)s7tv_refreshEmotePreviewFavoriteState {
-    NSString *emoteID = self.previewedEmoteToken.providerEmoteID;
-    BOOL favorited = [[SevenTVManager sharedManager] isEmoteFavorited:emoteID];
+    NSArray<S7TVChatToken *> *tokens =
+        s7tv_previewCompositionTokens(self.previewedEmoteToken);
+    BOOL supportsFavorites = NO;
+    BOOL favorited = YES;
+    for (S7TVChatToken *token in tokens) {
+        BOOL supported = NO;
+        BOOL layerFavorited = s7tv_isPreviewTokenFavorited(token, NULL, &supported);
+        if (token == tokens.firstObject) supportsFavorites = supported;
+        if (!supported || !layerFavorited) favorited = NO;
+    }
+    if (!supportsFavorites) favorited = NO;
     UIImageSymbolConfiguration *starConfig =
         [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightMedium];
     NSString *symbolName = favorited ? @"star.fill" : @"star";
     [self.emotePreviewFavoriteButton
         setImage:[UIImage systemImageNamed:symbolName withConfiguration:starConfig]
         forState:UIControlStateNormal];
+    self.emotePreviewFavoriteButton.hidden = !supportsFavorites;
     self.emotePreviewFavoriteButton.accessibilityLabel = favorited
         ? L(@"chat_emote_remove_favorite") : L(@"chat_emote_add_favorite");
 }
 
 - (void)s7tv_togglePreviewedEmoteFavorite {
     S7TVChatToken *token = self.previewedEmoteToken;
-    if (token.type != S7TVChatTokenTypeEmote7TV || !token.providerEmoteID.length) return;
+    if (!s7tv_isRenderableEmoteToken(token) ||
+        !token.providerEmoteID.length) return;
 
-    SevenTVManager *manager = [SevenTVManager sharedManager];
-    BOOL wasFavorited = [manager isEmoteFavorited:token.providerEmoteID];
-    [manager setEmote:token.providerEmoteID favorited:!wasFavorited];
-    NSString *logFormat = wasFavorited ? @"💔 Favori retiré depuis le chat : %@"
-                                         : @"⭐ Favori ajouté depuis le chat : %@";
-    [manager log:logFormat, token.text ?: token.providerEmoteID];
+    NSArray<S7TVChatToken *> *tokens = s7tv_previewCompositionTokens(token);
+    if (!tokens.count) return;
+
+    NSMutableArray<NSString *> *memberKeys = [NSMutableArray array];
+    NSMutableArray<NSString *> *memberNames = [NSMutableArray array];
+    BOOL rootSupported = NO;
+    BOOL allFavorited = YES;
+    BOOL hasUnsupportedLayer = NO;
+    for (S7TVChatToken *layer in tokens) {
+        S7TVEmoteDescriptor *descriptor = nil;
+        BOOL supported = NO;
+        BOOL layerFavorited = s7tv_isPreviewTokenFavorited(layer, &descriptor, &supported);
+        if (layer == tokens.firstObject) rootSupported = supported;
+        if (!supported) {
+            hasUnsupportedLayer = YES;
+            allFavorited = NO;
+            continue;
+        }
+        if (!layerFavorited) allFavorited = NO;
+        if (descriptor) {
+            [memberKeys addObject:S7TVEmoteFavoriteKey(descriptor.provider,
+                                                       descriptor.emoteID)];
+        } else {
+            [memberKeys addObject:S7TVEmoteFavoriteKey(
+                S7TVEmoteProviderIDSevenTV, layer.providerEmoteID)];
+        }
+        NSString *name = layer.text.length ? layer.text : descriptor.name;
+        if (!name.length) name = layer.providerEmoteID;
+        if (name.length) [memberNames addObject:name];
+    }
+    // Native Twitch emotes cannot be favorites in this catalog.  Keep the
+    // existing behavior (no star) when they are the composition's base.
+    if (!rootSupported) return;
+
+    BOOL shouldFavorite = !allFavorited;
+    for (S7TVChatToken *layer in tokens) {
+        S7TVEmoteDescriptor *descriptor = nil;
+        BOOL supported = NO;
+        (void)s7tv_isPreviewTokenFavorited(layer, &descriptor, &supported);
+        if (!supported) continue;
+        if (descriptor && descriptor.provider != S7TVEmoteProviderIDSevenTV) {
+            [[S7TVEmoteCatalog sharedCatalog] setEmote:descriptor
+                                             favorited:shouldFavorite];
+        } else {
+            [[SevenTVManager sharedManager] setEmote:layer.providerEmoteID
+                                           favorited:shouldFavorite];
+        }
+    }
+
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    NSString *baseKey = memberKeys.firstObject;
+    if (tokens.count > 1 && !hasUnsupportedLayer && memberKeys.count == tokens.count &&
+        memberNames.count == tokens.count && baseKey.length) {
+        NSString *compositionText = [memberNames componentsJoinedByString:@" "];
+        [catalog setFavoriteCompositionText:shouldFavorite ? compositionText : nil
+                            forBaseEmoteKey:baseKey
+                                  memberKeys:memberKeys];
+    } else if (!shouldFavorite && baseKey.length) {
+        [catalog setFavoriteCompositionText:nil
+                            forBaseEmoteKey:baseKey
+                                  memberKeys:@[]];
+    }
+
+    NSString *logName = memberNames.count
+        ? [memberNames componentsJoinedByString:@" + "]
+        : (token.text ?: token.providerEmoteID);
+    NSString *logFormat = shouldFavorite ? @"⭐ Favori ajouté depuis le chat : %@"
+                                          : @"💔 Favori retiré depuis le chat : %@";
+    [[SevenTVManager sharedManager] log:logFormat, logName];
     [self s7tv_refreshEmotePreviewFavoriteState];
 
     UINotificationFeedbackGenerator *feedback = [[UINotificationFeedbackGenerator alloc] init];
@@ -1938,7 +2330,7 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
 
 - (void)s7tv_showEmotePreviewForToken:(S7TVChatToken *)token
                         atWindowPoint:(CGPoint)windowPoint {
-    if (token.type != S7TVChatTokenTypeEmote7TV ||
+    if (!s7tv_isRenderableEmoteToken(token) ||
         !token.providerEmoteID.length || !token.resolvedEmote) return;
 
     UIWindow *window = self.window;
@@ -1989,9 +2381,35 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
     [card addSubview:imageView];
     self.emotePreviewImageView = imageView;
 
+    // The provider mark sits on top of the image in the upper-left corner,
+    // like the provider badge in the picker.  Use the base token for a
+    // Zero-Width composition: it is the emote that defines the composition's
+    // identity and width. The caption below only contains the composition's
+    // emote names; the logo carries the provider identity.
+    UIImage *providerLogo = s7tv_previewProviderLogoForToken(token);
+    UIImageView *providerLogoView = nil;
+    if (providerLogo) {
+        providerLogoView = [[UIImageView alloc] initWithImage:providerLogo];
+        providerLogoView.translatesAutoresizingMaskIntoConstraints = NO;
+        providerLogoView.contentMode = UIViewContentModeScaleAspectFit;
+        providerLogoView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.88];
+        providerLogoView.layer.cornerRadius = 11.0;
+        providerLogoView.clipsToBounds = YES;
+        [card addSubview:providerLogoView];
+    }
+
     UILabel *nameLabel = [[UILabel alloc] init];
     nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    nameLabel.text = token.text ?: @"";
+    NSMutableArray<NSString *> *previewNames = [NSMutableArray array];
+    if (token.text.length) [previewNames addObject:token.text];
+    for (S7TVChatToken *layerToken in token.overlayTokens) {
+        if (layerToken.text.length) [previewNames addObject:layerToken.text];
+    }
+    NSString *previewName = [previewNames componentsJoinedByString:@" + "];
+    // The provider is already identified by the logo in the upper-left.
+    // Keep the emote name (including all Zero-Width layers), but do not repeat
+    // the provider name or the separator in the caption.
+    nameLabel.text = previewName;
     nameLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     nameLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.90];
     nameLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -2021,34 +2439,18 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
         [favoriteButton.widthAnchor constraintEqualToConstant:26],
         [favoriteButton.heightAnchor constraintEqualToConstant:26],
     ]];
+    if (providerLogoView) {
+        [NSLayoutConstraint activateConstraints:@[
+            [providerLogoView.topAnchor constraintEqualToAnchor:card.topAnchor constant:8],
+            [providerLogoView.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:8],
+            [providerLogoView.widthAnchor constraintEqualToConstant:22],
+            [providerLogoView.heightAnchor constraintEqualToConstant:22],
+        ]];
+    }
 
     id<S7TVResolvedEmote> emote = token.resolvedEmote;
-    UIImage *previewImage = nil;
-    if (emote.isAnimated) {
-        previewImage = [[SevenTVEmoteAnimationEngine sharedEngine]
-            currentFrameForKey:emote.imageURL.absoluteString];
-    }
-    if (!previewImage) {
-        previewImage = [[SevenTVEmoteImageCache sharedCache] cachedImageForResolvedEmote:emote];
-    }
-    imageView.image = previewImage;
-    if (!previewImage) {
-        NSString *expectedEmoteID = [token.providerEmoteID copy];
-        __weak typeof(self) weakSelf = self;
-        [[SevenTVEmoteImageCache sharedCache] imageForResolvedEmote:emote
-            completion:^(UIImage * _Nullable image) {
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf ||
-                ![strongSelf.previewedEmoteToken.providerEmoteID isEqualToString:expectedEmoteID]) return;
-            id<S7TVResolvedEmote> currentEmote = strongSelf.previewedEmoteToken.resolvedEmote;
-            UIImage *currentFrame = currentEmote.isAnimated
-                ? [[SevenTVEmoteAnimationEngine sharedEngine]
-                    currentFrameForKey:currentEmote.imageURL.absoluteString]
-                : nil;
-            strongSelf.emotePreviewImageView.image = currentFrame ?: image;
-        }];
-    }
-
+    [self s7tv_refreshEmotePreviewImage];
+    [self s7tv_requestPreviewImagesForToken:token];
     [self s7tv_observeAnimatedEmotePreview:emote];
 
     [self s7tv_refreshEmotePreviewFavoriteState];
@@ -2840,7 +3242,10 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
     }
 
     for (S7TVChatToken *token in tokens) {
-        if (token.type == S7TVChatTokenTypeEmote7TV || token.type == S7TVChatTokenTypeEmoteTwitch) {
+        // Zero-Width layers and their separators stay in the token stream for
+        // a lossless fallback, but are drawn by their base attachment.
+        if (token.isSuppressedByOverlay || token.isOverlayLayer) continue;
+        if (s7tv_isRenderableEmoteToken(token)) {
             id<S7TVResolvedEmote> emote = token.resolvedEmote;
             if (!emote) {
                 [result appendAttributedString:[[NSAttributedString alloc]
@@ -2850,34 +3255,132 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
                 continue;
             }
 
-            CGFloat targetHeight = (token.type == S7TVChatTokenTypeEmote7TV)
-                ? cfg.emote7TVSize : cfg.emoteTwitchSize;
+            CGFloat targetHeight = (token.type == S7TVChatTokenTypeEmoteTwitch)
+                ? cfg.emoteTwitchSize : cfg.emote7TVSize;
+            BOOL showAnimated = [SevenTVManager sharedManager].showAnimated;
+            UIImage *cachedImage = [imageCache cachedImageForResolvedEmote:emote];
+            // The animation engine can retain the current frame after the
+            // one-frame decoded cache evicts its static image.  Reuse that
+            // frame as the base immediately instead of flashing the original
+            // text while the same animation is still available in memory.
+            if (!cachedImage && showAnimated && emote.isAnimated &&
+                emote.imageURL.absoluteString.length) {
+                cachedImage = [[SevenTVEmoteAnimationEngine sharedEngine]
+                    currentFrameForKey:emote.imageURL.absoluteString];
+            }
             CGFloat ratio = (emote.nativeSize.height > 0)
                 ? emote.nativeSize.width / emote.nativeSize.height : 1.0;
+            // BTTV's public payload does not include dimensions. Its
+            // descriptor deliberately uses a 1×1 placeholder until the image
+            // arrives; once cached, prefer the decoded bitmap ratio so wide
+            // or tall BTTV emotes keep their natural shape with every custom
+            // chat size. The same fallback also helps any provider payload
+            // that omits dimensions.
+            if ((emote.nativeSize.width <= 1.0 || emote.nativeSize.height <= 1.0) &&
+                cachedImage.size.height > 0.0) {
+                ratio = cachedImage.size.width / cachedImage.size.height;
+            }
             CGFloat targetWidth = targetHeight * ratio;
 
-            UIImage *cachedImage = [imageCache cachedImageForResolvedEmote:emote];
             if (!cachedImage) {
+                NSMutableString *fallback = [NSMutableString stringWithString:token.text ?: @""];
+                for (S7TVChatToken *layer in token.overlayTokens) {
+                    if (layer.text.length) [fallback appendFormat:@" %@", layer.text];
+                }
                 [result appendAttributedString:[[NSAttributedString alloc]
-                    initWithString:token.text ?: @""
+                    initWithString:fallback
                         attributes:@{NSFontAttributeName: messageFont,
                                      NSForegroundColorAttributeName: messageColor}]];
                 [outUncachedEmotes addObject:emote];
+                for (S7TVChatToken *layer in token.overlayTokens) {
+                    if (layer.resolvedEmote) [outUncachedEmotes addObject:layer.resolvedEmote];
+                }
                 continue;
             }
 
-            BOOL wantsAnimation = emote.isAnimated && [SevenTVManager sharedManager].showAnimated;
+            BOOL wantsAnimation = showAnimated && emote.isAnimated;
+            UIImage *renderImage = cachedImage;
+            NSMutableArray<NSString *> *layerAnimationKeys = nil;
+            NSMutableArray<UIImage *> *layerFallbackImages = nil;
+            if (token.overlayTokens.count) {
+                // TextKit attachments hold one image. Compose cached layers;
+                // if one layer is pending, preserve every source word until
+                // the catalogue/image-cache notification triggers a refresh.
+                renderImage = s7tv_compositeEmoteImage(cachedImage,
+                    token.overlayTokens, targetWidth, targetHeight, imageCache,
+                    outUncachedEmotes, showAnimated);
+                if (!renderImage) {
+                    NSMutableString *fallback = [NSMutableString stringWithString:token.text ?: @""];
+                    for (S7TVChatToken *layer in token.overlayTokens) {
+                        if (layer.text.length) [fallback appendFormat:@" %@", layer.text];
+                    }
+                    [result appendAttributedString:[[NSAttributedString alloc]
+                        initWithString:fallback
+                            attributes:@{NSFontAttributeName: messageFont,
+                                         NSForegroundColorAttributeName: messageColor}]];
+                    continue;
+                }
+                // Keep the individual decoded images as fallbacks for a
+                // dynamic composite attachment.  The base remains the
+                // attachment's width; every overlay is drawn at the same
+                // target height on every TextKit redraw.
+                layerFallbackImages = [NSMutableArray arrayWithObject:cachedImage];
+                layerAnimationKeys = [NSMutableArray arrayWithObject:
+                    (showAnimated && emote.isAnimated
+                        ? (emote.imageURL.absoluteString ?: @"") : @"")];
+                for (S7TVChatToken *layerToken in token.overlayTokens) {
+                    id<S7TVResolvedEmote> layerEmote = layerToken.resolvedEmote;
+                    UIImage *layerImage = layerEmote
+                        ? [imageCache cachedImageForResolvedEmote:layerEmote] : nil;
+                    // An animated overlay may already have a frame in the
+                    // shared engine while its static decoded image was
+                    // evicted. Keep that frame as the attachment fallback so
+                    // the dynamic composite retains the layer on every draw.
+                    if (!layerImage && showAnimated && layerEmote.isAnimated &&
+                        layerEmote.imageURL.absoluteString.length) {
+                        layerImage = [[SevenTVEmoteAnimationEngine sharedEngine]
+                            currentFrameForKey:layerEmote.imageURL.absoluteString];
+                    }
+                    if (!layerImage) continue;
+                    [layerFallbackImages addObject:layerImage];
+                    NSString *layerKey = showAnimated && layerEmote.isAnimated
+                        ? (layerEmote.imageURL.absoluteString ?: @"") : @"";
+                    [layerAnimationKeys addObject:layerKey];
+                    if (showAnimated && layerEmote.isAnimated &&
+                        outAnimatedEmotes &&
+                        ![outAnimatedEmotes containsObject:layerEmote]) {
+                        [outAnimatedEmotes addObject:layerEmote];
+                    }
+                }
+                // A base can be animated even when all overlays are static.
+                if (showAnimated && emote.isAnimated && outAnimatedEmotes &&
+                    ![outAnimatedEmotes containsObject:emote]) {
+                    [outAnimatedEmotes addObject:emote];
+                }
+                wantsAnimation = showAnimated && layerAnimationKeys.count > 0 &&
+                    [layerAnimationKeys indexOfObjectPassingTest:
+                        ^BOOL(NSString *key, __unused NSUInteger idx, __unused BOOL *stop) {
+                            return key.length > 0;
+                        }] != NSNotFound;
+            }
 
             NSTextAttachment *attachment;
-            if (wantsAnimation) {
+            if (wantsAnimation && token.overlayTokens.count &&
+                layerFallbackImages.count == layerAnimationKeys.count) {
+                S7TVAnimatedCompositeEmoteAttachment *animatedAttachment =
+                    [S7TVAnimatedCompositeEmoteAttachment new];
+                animatedAttachment.layerAnimationKeys = layerAnimationKeys.copy;
+                animatedAttachment.layerFallbackImages = layerFallbackImages.copy;
+                attachment = animatedAttachment;
+            } else if (wantsAnimation) {
                 S7TVAnimatedEmoteAttachment *animatedAttachment = [S7TVAnimatedEmoteAttachment new];
                 animatedAttachment.animationKey = emote.imageURL.absoluteString;
-                animatedAttachment.staticFallbackImage = cachedImage;
+                animatedAttachment.staticFallbackImage = renderImage;
                 attachment = animatedAttachment;
                 if (outAnimatedEmotes) [outAnimatedEmotes addObject:emote];
             } else {
                 attachment = [[NSTextAttachment alloc] init];
-                attachment.image = cachedImage;
+                attachment.image = renderImage;
             }
 
             // Valeur 1:1 du picker : -6 affiché signifie réellement y=-6
@@ -2887,10 +3390,10 @@ static NSString *s7tv_channelPointCostString(NSInteger cost) {
 
             NSMutableAttributedString *attachmentText =
                 [[NSAttributedString attributedStringWithAttachment:attachment] mutableCopy];
-            // Le picker ne contient que les emotes 7TV : seules celles-ci
-            // exposent donc l'action Favori. Une emote Twitch native garde
-            // le comportement d'appui long normal (réponse à l'auteur).
-            if (token.type == S7TVChatTokenTypeEmote7TV && attachmentText.length > 0) {
+            // Toutes les emotes externes (7TV, BTTV et FFZ) exposent l'action
+            // Favori avec une clé provider-aware. Une emote Twitch native
+            // garde le comportement d'appui long normal (réponse à l'auteur).
+            if (token.type != S7TVChatTokenTypeEmoteTwitch && attachmentText.length > 0) {
                 [attachmentText addAttribute:kS7TVChatEmoteTokenAttributeName
                                        value:token
                                        range:NSMakeRange(0, attachmentText.length)];

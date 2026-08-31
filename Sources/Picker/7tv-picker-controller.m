@@ -19,9 +19,13 @@
 #import "Chat/7tv-chat-custom-view.h"
 #import "Badge/7tv-badge-provider.h"
 #import "Emote/7tv-emote-image-cache.h"
+#import "Emote/7tv-emote-catalog.h"
+#import "Emote/7tv-provider-settings.h"
 #import "Emote/7tv-emote-animation-engine.h"
 #import "Network/7tv-network-emote-cache.h"
 #import "UI/7tv-ui-logo.h"
+#import "UI/bttv-ui-logo.h"
+#import "UI/ffz-ui-logo.h"
 #import "UI/7tv-oled-mode.h"
 #import <objc/runtime.h>
 
@@ -47,6 +51,9 @@ static UIColor *s7tv_pickerSepColor(void) {
     return S7TVOLEDModeEnabled()
         ? [UIColor colorWithWhite:0.12 alpha:1.0]
         : [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
+}
+static UIColor *s7tv_pickerAccentColor(void) {
+    return [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0];
 }
 
 // UICollectionView crée ses premières cellules pendant le layout préparatoire
@@ -75,6 +82,103 @@ static UIColor *s7tv_pickerSepColor(void) {
     S7TVPickerWeakRef *reference = [S7TVPickerWeakRef new];
     reference.object = object;
     return reference;
+}
+@end
+
+// Une section de catalogue est gardée séparément de l'array plat historique
+// du picker. Le renderer sélectionne une sous-catégorie à la fois sans casser
+// le pipeline de cellules/animations déjà partagé avec l'ancien picker.
+@interface S7TVPickerDisplaySection : NSObject
+@property (nonatomic, assign) S7TVEmoteProviderID provider;
+@property (nonatomic, assign) S7TVEmoteSectionKind kind;
+@property (nonatomic, copy) NSString *identifier;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSArray<SevenTVEmote *> *items;
+@property (nonatomic, assign) BOOL loaded;
+@property (nonatomic, assign) BOOL loading;
+@property (nonatomic, assign) BOOL empty;
+@property (nonatomic, copy, nullable) NSString *errorMessage;
+@end
+
+@implementation S7TVPickerDisplaySection
+@end
+
+// En-tête léger pour les sections provider. Le bouton transparent couvre
+// toute la ligne ; les labels restent donc lisibles tout en gardant une seule
+// cible VoiceOver/tap pour ouvrir ou replier la section.
+@interface S7TVPickerSectionHeaderView : UICollectionReusableView
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *countLabel;
+@property (nonatomic, strong) UILabel *stateLabel;
+@property (nonatomic, strong) UIButton *toggleButton;
+@property (nonatomic, strong) UIButton *retryButton;
+@end
+
+@implementation S7TVPickerSectionHeaderView
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+    self.backgroundColor = UIColor.clearColor;
+
+    _toggleButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _toggleButton.frame = self.bounds;
+    _toggleButton.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+        UIViewAutoresizingFlexibleHeight;
+    // The button covers the complete row so the whole header is tappable, but
+    // keep its chevron at the trailing edge instead of letting UIKit center it
+    // over the title/count labels.
+    _toggleButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+    _toggleButton.contentEdgeInsets = UIEdgeInsetsMake(0, 0, 0, 8.0);
+    _toggleButton.accessibilityTraits = UIAccessibilityTraitButton;
+    [self addSubview:_toggleButton];
+
+    _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    _titleLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    _titleLabel.userInteractionEnabled = NO;
+    [self addSubview:_titleLabel];
+
+    _countLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    _countLabel.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightRegular];
+    _countLabel.textAlignment = NSTextAlignmentRight;
+    _countLabel.userInteractionEnabled = NO;
+    [self addSubview:_countLabel];
+
+    _stateLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    _stateLabel.font = [UIFont systemFontOfSize:10.0 weight:UIFontWeightRegular];
+    _stateLabel.textAlignment = NSTextAlignmentRight;
+    _stateLabel.userInteractionEnabled = NO;
+    _stateLabel.hidden = YES;
+    [self addSubview:_stateLabel];
+
+    _retryButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration
+        configurationWithPointSize:11.0 weight:UIImageSymbolWeightMedium];
+    [_retryButton setImage:[UIImage systemImageNamed:@"arrow.clockwise"
+                              withConfiguration:config]
+                   forState:UIControlStateNormal];
+    _retryButton.accessibilityLabel = @"Retry";
+    _retryButton.hidden = YES;
+    [self addSubview:_retryButton];
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat inset = 8.0;
+    CGFloat retryWidth = self.retryButton.hidden ? 0.0 : 26.0;
+    self.retryButton.frame = CGRectMake(self.bounds.size.width - inset - retryWidth,
+                                        0, retryWidth, self.bounds.size.height);
+    CGFloat chevronWidth = 24.0;
+    self.toggleButton.frame = self.bounds;
+    self.titleLabel.frame = CGRectMake(inset, 0,
+                                       MAX(0, self.bounds.size.width - inset * 2 - retryWidth - chevronWidth),
+                                       self.bounds.size.height);
+    CGFloat right = self.bounds.size.width - inset - retryWidth - chevronWidth;
+    CGFloat stateWidth = self.stateLabel.hidden ? 0.0 : MIN(110.0, right * 0.40);
+    self.stateLabel.frame = CGRectMake(MAX(inset, right - stateWidth), 0,
+                                       stateWidth, self.bounds.size.height);
+    self.countLabel.frame = CGRectMake(MAX(inset, right - stateWidth - 46.0), 0,
+                                       46.0, self.bounds.size.height);
 }
 @end
 
@@ -255,6 +359,23 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 @property (nonatomic, strong) NSArray<SevenTVEmote *> *emotePickerChannelEmotes;
 @property (nonatomic, strong, readwrite) NSArray<SevenTVEmote *> *emotePickerGlobalEmotes;
 @property (nonatomic, strong) NSArray<SevenTVEmote *> *emotePickerOtherEmotes; // compatibilité
+// Arrays provider-aware alimentés depuis S7TVEmoteCatalog. Les anciennes
+// propriétés restent utilisées par les previews et par le code 7TV historique.
+@property (nonatomic, strong) NSDictionary<NSNumber *, NSArray<SevenTVEmote *> *> *pickerProviderEmotes;
+@property (nonatomic, strong) NSArray<SevenTVEmote *> *pickerCatalogFavorites;
+@property (nonatomic, copy) NSSet<NSString *> *pickerFavoriteKeySet;
+// Sections provider-aware conservées pour les capsules Channel/Global. Les
+// valeurs restent des wrappers SevenTVEmote pour partager toutes les cellules
+// et les animations avec le chemin legacy.
+@property (nonatomic, strong) NSDictionary<NSNumber *, NSArray<S7TVPickerDisplaySection *> *> *pickerProviderSections;
+@property (nonatomic, strong) NSArray<S7TVPickerDisplaySection *> *pickerDisplaySections;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *pickerCollapsedSections;
+// Search temporarily expands every matching section. Keep the user's
+// collapsed/open choices out of that transient state so clearing the search
+// restores the layout they had before typing.
+@property (nonatomic, copy) NSDictionary<NSString *, NSNumber *> *pickerCollapseStateBeforeSearch;
+@property (nonatomic, assign) BOOL pickerCatalogSearchActive;
+@property (nonatomic, assign) BOOL pickerUsesCatalogSections;
 
 // Bouton ⚙️ du panneau des tailles (chrome du picker — voir SevenTVPickerSizesPanel
 // pour la logique/les données du panneau lui-même)
@@ -278,7 +399,9 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 @property (nonatomic, weak) UIView *pickerFakeChatPreviewView;
 
 // ── Refonte tabbed + refonte visuelle du picker (style 7TV PC) ──────────
-// Onglet actif : 0 = Favoris, 1 = 7TV (voir S7TVPickerTab*)
+// Onglet actif : Favoris / Tous / 7TV / BTTV / FFZ. « Tous » est un pseudo-
+// provider uniquement visuel : il ne participe jamais aux requêtes, au
+// tokenizer ni aux réglages provider-aware.
 @property (nonatomic, assign) NSInteger pickerActiveTab;
 // Mémorise l'onglet actif juste avant qu'une recherche démarre, pour le
 // restaurer quand le champ de recherche redevient vide (la recherche
@@ -288,13 +411,15 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 // Plus de header, plus de dock plein fond : TOUT est flottant par-dessus la
 // grille (comme la pastille fermer), même langage visuel partout → aucun
 // bandeau opaque ne mange de la place, on voit plus d'emotes.
-// Capsule unique bas-gauche à 3 boutons (Favoris / Channel / Globales) —
-// fusion de l'ancienne capsule d'onglets (Favoris/7TV) et de l'ancienne
-// capsule sous-choix (Chaîne/Globales, haut-gauche, supprimée).
-@property (nonatomic, weak) UIButton  *pickerSubChoiceChannelBtn;    // bouton "Channel" de la capsule unique (avatar de chaîne)
-@property (nonatomic, weak) UIView    *pickerTabCapsuleView;         // bas gauche (Favoris/Channel/Globales)
+// La capsule provider reste fixe en bas à gauche. Une seconde capsule, juste
+// au-dessus, permet de choisir Channel ou Global pour le provider actif.
+@property (nonatomic, weak) UIView    *pickerSubcategoryCapsuleView;
+@property (nonatomic, weak) UIButton  *pickerSubcategoryChannelBtn;
+@property (nonatomic, weak) UIButton  *pickerSubcategoryGlobalBtn;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *pickerSubcategoryByProvider;
+@property (nonatomic, weak) UIView    *pickerTabCapsuleView;         // bas gauche (Favoris/Tous/7TV/BTTV/FFZ)
 @property (nonatomic, strong) NSMutableArray<UIButton *> *pickerTabButtons;
-@property (nonatomic, weak) UIView    *pickerTabIndicatorView;       // pastille violette qui glisse entre les 3 boutons
+@property (nonatomic, weak) UIView    *pickerTabIndicatorView;       // pastille violette qui glisse entre les 5 boutons
 @property (nonatomic, weak) UIView    *pickerSearchCapsuleView;      // bas, pleine largeur (recherche)
 @property (nonatomic, weak) UIButton  *pickerSearchClearBtn;         // petite croix à droite du champ, visible si texte non vide
 // Pendant un drag/deceleration, les miniatures continuent de charger et chaque
@@ -303,6 +428,18 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 @property (nonatomic, assign) BOOL pickerScrollInProgress;
 @property (nonatomic, assign) BOOL pickerCatalogReloadPending;
 @property (nonatomic, assign) NSUInteger pickerOrientationGeneration;
+// Pendant la première ouverture, si le provider par défaut est encore vide
+// mais qu'un autre provider répond déjà, basculer automatiquement vers le
+// premier provider non vide. Un tap explicite sur un onglet désactive ce
+// comportement pour ne jamais reprendre le contrôle de la sélection utilisateur.
+@property (nonatomic, assign) BOOL pickerInitialProviderSelectionPending;
+// Les snapshots sont coûteux à aplatir (et les favoris peuvent être stockés
+// hors du channel courant). On ne reconstruit donc les wrappers qu'après une
+// vraie notification de catalogue/réglages, jamais à chaque ouverture.
+@property (nonatomic, assign) BOOL pickerCatalogArraysDirty;
+// Un choix explicite dans les réglages ne doit pas être remplacé par la
+// sélection automatique du premier provider pendant le chargement.
+@property (nonatomic, assign) BOOL pickerOpeningLocationExplicit;
 
 - (void)_s7tv_reloadCatalogSnapshotReloadCollection:(BOOL)reloadCollection;
 - (void)_s7tv_emoteCatalogDidUpdate:(NSNotification *)notification;
@@ -310,6 +447,18 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 - (void)_s7tv_badgesCatalogDidUpdate:(NSNotification *)notification;
 - (void)_s7tv_deviceOrientationDidChange:(NSNotification *)notification;
 - (void)_s7tv_applyCatalogUpdateNow;
+- (void)_s7tv_normalizeActivePickerTab;
+- (BOOL)_s7tv_selectInitialProviderIfNeeded;
+- (S7TVEmoteProviderID)_s7tv_providerForPickerTab:(NSInteger)tab;
+- (void)_s7tv_updateSubcategoryCapsule;
+- (void)_pickerSubcategoryTapped:(UIButton *)sender;
+- (BOOL)_s7tv_sectionIsChannel:(S7TVPickerDisplaySection *)section;
+- (BOOL)_s7tv_sectionIsGlobal:(S7TVPickerDisplaySection *)section;
+- (BOOL)_s7tv_pickerTabIsProvider:(NSInteger)tab;
+- (void)_s7tv_updatePickerTabButtonLayout;
+- (NSArray<NSNumber *> *)_s7tv_providerIDsInPriorityOrder;
+- (void)_s7tv_persistLastPickerLocation;
+- (BOOL)_s7tv_applyConfiguredPickerOpeningLocation;
 - (void)_s7tv_oledModeDidChange:(NSNotification *)notification;
 - (void)_s7tv_applyOLEDColors;
 - (void)_s7tv_relayoutPickerForSize:(CGSize)size;
@@ -325,6 +474,8 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
                                        key:(NSString *)key
                                 generation:(NSUInteger)generation
                                allowDecode:(BOOL)allowDecode;
+- (void)_pickerSectionHeaderTapped:(UIButton *)sender;
+- (void)_pickerSectionRetryTapped:(UIButton *)sender;
 
 @end
 
@@ -332,7 +483,7 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 
 // Valeurs par défaut reprises telles quelles de l'ancien -[SevenTVManager setup]
 // (avant l'extraction du picker dans ce fichier) : onglet Favoris au départ,
-// sous-choix Channel pour l'onglet 7TV, tableau des boutons d'onglets prêt
+// sous-catégorie Channel pour les providers, tableau des boutons prêt
 // à être rempli par -_createEmotePickerViewWithFrame:.
 - (instancetype)init {
     self = [super init];
@@ -343,6 +494,19 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
         _emotePickerChannelEmotes  = @[];
         _emotePickerGlobalEmotes   = @[];
         _emotePickerOtherEmotes    = @[];
+        _pickerProviderEmotes      = @{};
+        _pickerCatalogFavorites    = @[];
+        _pickerFavoriteKeySet      = [NSSet set];
+        _pickerProviderSections    = @{};
+        _pickerDisplaySections     = @[];
+        _pickerCollapsedSections   = [NSMutableDictionary dictionary];
+        _pickerSubcategoryByProvider = [NSMutableDictionary dictionary];
+        _pickerCollapseStateBeforeSearch = nil;
+        _pickerCatalogSearchActive = NO;
+        _pickerUsesCatalogSections = NO;
+        _pickerInitialProviderSelectionPending = NO;
+        _pickerCatalogArraysDirty = YES;
+        _pickerOpeningLocationExplicit = NO;
         // Abonnement permanent à S7TVChannelJoined (postée par
         // SevenTVManager lors du ROOMSTATE) — même logique que
         // SevenTVBadgeProvider : ce controller n'est jamais désalloué en
@@ -356,6 +520,14 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(_s7tv_emoteCatalogDidUpdate:)
                                                       name:S7TVEmoteCatalogDidUpdateNotification
+                                                    object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(_s7tv_emoteCatalogDidUpdate:)
+                                                      name:S7TVProviderCatalogDidUpdateNotification
+                                                    object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(_s7tv_emoteCatalogDidUpdate:)
+                                                      name:S7TVEmoteProviderSettingsDidChangeNotification
                                                     object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(_s7tv_twitchCredentialsDidUpdate:)
@@ -408,6 +580,7 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
     // cellules de la grille (cohérence visuelle).
     UIColor *capsuleColor = [cardColor colorWithAlphaComponent:0.92];
     self.pickerTabCapsuleView.backgroundColor   = capsuleColor;
+    self.pickerSubcategoryCapsuleView.backgroundColor = capsuleColor;
     self.pickerToolsCapsuleView.backgroundColor = capsuleColor;
     self.pickerSearchCapsuleView.backgroundColor = capsuleColor;
 
@@ -416,6 +589,14 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
     // futures cellules déqueuées).
     for (S7TVEmotePickerCell *cell in self.emoteCollectionView.visibleCells) {
         [cell s7tv_applyOLEDColors];
+    }
+    UIColor *headerColor = S7TVOLEDModeEnabled()
+        ? [UIColor colorWithWhite:1.0 alpha:0.035]
+        : [UIColor colorWithWhite:1.0 alpha:0.055];
+    for (S7TVPickerSectionHeaderView *header in
+         [self.emoteCollectionView visibleSupplementaryViewsOfKind:
+             UICollectionElementKindSectionHeader]) {
+        header.backgroundColor = headerColor;
     }
 
     // Panneau des tailles (séparateurs + capsule de catégories + segmented
@@ -469,12 +650,14 @@ static NSString *const kEmoteCellID = @"S7TVEmoteCell";
 static const CGFloat kCellSize = 40.0;
 
 // ── Onglets du picker refondu (style 7TV PC) ──────────────────────────────
-// 3 valeurs : Favoris / Channel / Globales, fusion de l'ancien tab
-// (Favoris/7TV) et de l'ancien sous-choix (Chaîne/Globales).
+// 5 valeurs : Favoris / Tous / 7TV / BTTV / FFZ. « Tous » agrège les
+// sections Channel/Shared/Sets et Global de tous les providers activés.
 typedef NS_ENUM(NSInteger, S7TVPickerTab) {
     S7TVPickerTabFavorites = 0,
-    S7TVPickerTabChannel   = 1,
-    S7TVPickerTabGlobal    = 2,
+    S7TVPickerTabAll       = 1,
+    S7TVPickerTabSevenTV   = 2,
+    S7TVPickerTabBTTV      = 3,
+    S7TVPickerTabFFZ       = 4,
 };
 
 // ── Dimensions du picker refondu ────────────────────────────────────────
@@ -483,9 +666,10 @@ typedef NS_ENUM(NSInteger, S7TVPickerTab) {
 // onglets + ⚙️ + recherche en bas), façon pastilles translucides façon
 // petit sélecteur 7TV PC. layout.sectionInset réserve juste assez de place
 // en haut et en bas pour que les cellules ne passent jamais dessous.
-static const CGFloat kS7TVPickerFloatSize    = 30.0; // diamètre/hauteur des pastilles flottantes (fermer, onglets, sous-choix, ⚙️)
+static const CGFloat kS7TVPickerFloatSize    = 28.0; // diamètre/hauteur des pastilles flottantes (fermer, onglets, sous-choix, ⚙️)
 static const CGFloat kS7TVPickerFloatMargin  = 8.0;  // marge entre une pastille et le bord du picker
 static const CGFloat kS7TVPickerFloatGap     = 6.0;  // écart vertical entre 2 rangées de pastilles flottantes
+static const CGFloat kS7TVPickerSubcategoryGap = 4.0; // écart preview entre Channel/Global et les providers
 static const CGFloat kS7TVPickerSearchH      = 38.0; // hauteur de la capsule de recherche
 // Zone totale réservée en bas de la grille (sectionInset.bottom) pour ne
 // jamais cacher une cellule sous les onglets/⚙️/recherche flottants :
@@ -628,6 +812,8 @@ static const CGFloat kS7TVPickerGridDefaultH =
     NSString *channelID = note.userInfo[@"channelID"];
     if (!channelID.length) return;
 
+    self.pickerCatalogArraysDirty = YES;
+
     // CRITIQUE : S7TVChannelJoined est postée depuis -handleIRCRoomState:
     // pendant le traitement des messages IRC (WebSocket), donc HORS main
     // thread. NSNotificationCenter exécute les observers de façon SYNCHRONE
@@ -637,7 +823,7 @@ static const CGFloat kS7TVPickerGridDefaultH =
     // ne change pas au changement de chaîne").
     dispatch_async(dispatch_get_main_queue(), ^{
         // Le bouton n'existe que si le picker a déjà été construit une première fois.
-        if (!self.pickerSubChoiceChannelBtn) return;
+        if (!self.pickerSubcategoryChannelBtn) return;
         // Ne jamais conserver l'image de l'ancienne chaîne pendant que le
         // provider commun résout la nouvelle.
         [self _s7tv_resetChannelButtonToPlaceholder];
@@ -692,8 +878,9 @@ static const CGFloat kS7TVPickerGridDefaultH =
 // le premier appel Helix n'avait pas encore de credentials. Relancer dès leur
 // capture évite d'exiger une fermeture/réouverture manuelle du picker.
 - (void)_s7tv_twitchCredentialsDidUpdate:(__unused NSNotification *)notification {
+    self.pickerCatalogArraysDirty = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!self.pickerSubChoiceChannelBtn) return;
+        if (!self.pickerSubcategoryChannelBtn) return;
         [self _s7tv_refreshChannelAvatarIfNeeded];
     });
 }
@@ -703,7 +890,7 @@ static const CGFloat kS7TVPickerGridDefaultH =
 // en charge le téléchargement et le décodage.
 - (void)_s7tv_badgesCatalogDidUpdate:(__unused NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!self.pickerSubChoiceChannelBtn) return;
+        if (!self.pickerSubcategoryChannelBtn) return;
         [self _s7tv_refreshChannelAvatarIfNeeded];
     });
 }
@@ -768,14 +955,14 @@ static const CGFloat kS7TVPickerGridDefaultH =
 }
 
 // Diamètre réel de l'avatar dessiné — volontairement plus petit que
-// kS7TVPickerFloatSize (30pt, taille du bouton) pour laisser une marge
+// kS7TVPickerFloatSize (28pt, taille du bouton) pour laisser une marge
 // cohérente avec le placeholder SF Symbol (14pt) et le logo 7TV du bouton
 // voisin (insets 9pt) ; un cercle plein cadre 30pt collait aux bords et
 // paraissait trop imposant dans la capsule.
-static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
+static const CGFloat kS7TVPickerAvatarDiameter = 22.0;
 
 - (void)_s7tv_applyChannelAvatarImage:(UIImage *)image {
-    UIButton *btn = self.pickerSubChoiceChannelBtn;
+    UIButton *btn = self.pickerSubcategoryChannelBtn;
     if (!btn || !image) return;
     UIImage *circular = [self _s7tv_circularAvatarFromImage:image diameter:kS7TVPickerAvatarDiameter];
     if (!circular) return;
@@ -787,10 +974,10 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
 // Fallback propre — remet le symbole générique d'origine (mêmes réglages
 // qu'à la création de channelBtn).
 - (void)_s7tv_resetChannelButtonToPlaceholder {
-    UIButton *btn = self.pickerSubChoiceChannelBtn;
+    UIButton *btn = self.pickerSubcategoryChannelBtn;
     if (!btn) return;
     UIImageSymbolConfiguration *avCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
     btn.imageEdgeInsets = UIEdgeInsetsZero;
     [btn setImage:[UIImage systemImageNamed:@"person.crop.circle.fill" withConfiguration:avCfg]
           forState:UIControlStateNormal];
@@ -922,17 +1109,10 @@ static const CGFloat kS7TVPickerAvatarDiameter = 24.0;
     [self cleanupPickerForStreamClose];
 }
 
-// IVar de cache pour le tri — invalidé quand globalEmotes/channelEmotes changent
-// Accédé UNIQUEMENT depuis le main thread (picker).
-static NSArray<SevenTVEmote *> *s_cachedSortedEmotes    = nil;
-static NSString                *s_cachedSortKey          = nil; // hash des deux sets
-
-// Appelée par SevenTVManager quand le catalogue d'emotes change (nouveau
-// channel, refresh global/channel) — sans ça le picker réafficherait un tri
-// obsolète (anciennes emotes) au prochain -toggleEmotePickerForChatInputView:.
+// Kept as a compatibility hook for callers from older picker builds. Sorting
+// is now performed from the provider-aware catalogue on every snapshot.
 - (void)invalidateSortCache {
-    s_cachedSortedEmotes = nil;
-    s_cachedSortKey = nil;
+    // No legacy emote cache remains to invalidate.
 }
 
 - (void)cancelPendingImageLoadsWithCompletion:(void (^)(void))completion {
@@ -945,24 +1125,287 @@ static NSString                *s_cachedSortKey          = nil; // hash des deux
 
 - (void)favoritesDidChange {
     NSAssert([NSThread isMainThread], @"SevenTVEmotePickerController: main thread uniquement");
+    self.pickerCatalogArraysDirty = YES;
     [self _s7tv_reloadCatalogSnapshotReloadCollection:
         (self.emotePickerView && !self.emotePickerView.hidden)];
 }
 
-static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
-                                  NSString *channelID) {
-    // L'ancien count|count confondait deux chaînes contenant le même nombre
-    // d'emotes. L'identité de chaîne et des snapshots rend le cache exact sans
-    // recalculer un hash coûteux de centaines d'identifiants.
-    return [NSString stringWithFormat:@"%@|%p:%lu|%p:%lu", channelID ?: @"",
-            (__bridge void *)channel, (unsigned long)channel.count,
-            (__bridge void *)global, (unsigned long)global.count];
+- (SevenTVEmote *)_pickerEmoteForDescriptor:(S7TVEmoteDescriptor *)descriptor {
+    if (!descriptor.emoteID.length || !descriptor.name.length) return nil;
+    return [[S7TVPickerCatalogEmote alloc] initWithDescriptor:descriptor];
+}
+
+static NSString *S7TVPickerStableEmoteKey(SevenTVEmote *emote) {
+    if (!emote.emoteID.length) return @"";
+    if ([emote isKindOfClass:[S7TVPickerCatalogEmote class]]) {
+        S7TVEmoteDescriptor *descriptor = [(S7TVPickerCatalogEmote *)emote descriptor];
+        if (descriptor.emoteID.length)
+            return S7TVEmoteFavoriteKey(descriptor.provider, descriptor.emoteID);
+    }
+    return S7TVEmoteFavoriteKey(S7TVEmoteProviderIDSevenTV, emote.emoteID);
+}
+
+// Conserver le tri historique du picker : emotes carrées d'abord, puis par
+// aire croissante, et enfin par nom.  Le comparateur peut être utilisé par
+// l'onglet provider-aware (avec un tie-breaker provider déterministe) ou par
+// l'onglet agrégé.  Dans ce dernier cas, aucun champ provider n'intervient :
+// les emotes restent réellement mélangées, même lorsqu'elles ont exactement
+// la même taille et le même nom.
+static NSComparisonResult S7TVPickerCompareEmotes(id firstObject,
+                                                   id secondObject,
+                                                   BOOL includeProviderTieBreak) {
+    SevenTVEmote *a = (SevenTVEmote *)firstObject;
+    SevenTVEmote *b = (SevenTVEmote *)secondObject;
+    if (a == b) return NSOrderedSame;
+
+    BOOL aSquare = (a.width > 0 && a.height > 0 && a.width == a.height);
+    BOOL bSquare = (b.width > 0 && b.height > 0 && b.width == b.height);
+    if (aSquare != bSquare) return aSquare ? NSOrderedAscending : NSOrderedDescending;
+
+    NSInteger aArea = a.width * a.height;
+    NSInteger bArea = b.width * b.height;
+    if (aArea == 0 && bArea == 0) {
+        NSComparisonResult result = [(a.emoteName ?: @"")
+            compare:(b.emoteName ?: @"")
+            options:NSCaseInsensitiveSearch | NSNumericSearch];
+        if (result != NSOrderedSame) return result;
+    } else {
+        if (aArea == 0) return NSOrderedDescending;
+        if (bArea == 0) return NSOrderedAscending;
+        if (aArea < bArea) return NSOrderedAscending;
+        if (aArea > bArea) return NSOrderedDescending;
+
+        NSString *aName = a.emoteName ?: @"";
+        NSString *bName = b.emoteName ?: @"";
+        NSUInteger len = MIN(aName.length, bName.length);
+        for (NSUInteger i = 0; i < len; i++) {
+            unichar ac = [aName characterAtIndex:i];
+            unichar bc = [bName characterAtIndex:i];
+            if (ac >= 'a' && ac <= 'z') ac -= 32;
+            if (bc >= 'a' && bc <= 'z') bc -= 32;
+            if (ac < bc) return NSOrderedAscending;
+            if (ac > bc) return NSOrderedDescending;
+        }
+        if (aName.length < bName.length) return NSOrderedAscending;
+        if (aName.length > bName.length) return NSOrderedDescending;
+    }
+
+    if (includeProviderTieBreak) {
+        NSInteger aProvider = -1;
+        NSInteger bProvider = -1;
+        if ([a isKindOfClass:[S7TVPickerCatalogEmote class]])
+            aProvider = [(S7TVPickerCatalogEmote *)a descriptor].provider;
+        if ([b isKindOfClass:[S7TVPickerCatalogEmote class]])
+            bProvider = [(S7TVPickerCatalogEmote *)b descriptor].provider;
+        if (aProvider < bProvider) return NSOrderedAscending;
+        if (aProvider > bProvider) return NSOrderedDescending;
+    }
+
+    return [(a.emoteID ?: @"") compare:(b.emoteID ?: @"")
+        options:NSCaseInsensitiveSearch | NSNumericSearch];
+}
+
+static NSComparator S7TVPickerEmoteSizeComparator = ^NSComparisonResult(
+    id firstObject, id secondObject) {
+    return S7TVPickerCompareEmotes(firstObject, secondObject, YES);
+};
+
+static NSComparator S7TVPickerMixedEmoteSizeComparator = ^NSComparisonResult(
+    id firstObject, id secondObject) {
+    return S7TVPickerCompareEmotes(firstObject, secondObject, NO);
+};
+
+// The provider logos are shipped as 400px square assets. UIKit's button image
+// view otherwise lets their opaque mark fill the whole 28pt slot, which makes
+// BTTV/FFZ look larger than the star and 7TV symbols. Rasterize them once at
+// the intended visual size instead of relying on per-button content insets.
+static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) {
+    if (!image || pointSize <= 0) return image;
+    CGFloat scale = UIScreen.mainScreen.scale > 0 ? UIScreen.mainScreen.scale : 2.0;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.opaque = NO;
+    format.scale = scale;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
+        initWithSize:CGSizeMake(pointSize, pointSize) format:format];
+    UIImage *scaled = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        [image drawInRect:CGRectMake(0, 0, pointSize, pointSize)];
+    }];
+    return [scaled imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+}
+
+- (void)_s7tv_applyProviderCatalogArrays {
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    // Synchroniser les préférences UI (identifiants texte) avec le catalogue
+    // (enum numérique) avant de construire la grille.
+    NSDictionary *enabledSettings = @{
+        @(S7TVEmoteProviderIDSevenTV): @([S7TVEmoteProviderSettings isProviderEnabled:S7TVExternalEmoteProvider7TV]),
+        @(S7TVEmoteProviderIDBTTV): @([S7TVEmoteProviderSettings isProviderEnabled:S7TVExternalEmoteProviderBTTV]),
+        @(S7TVEmoteProviderIDFFZ): @([S7TVEmoteProviderSettings isProviderEnabled:S7TVExternalEmoteProviderFFZ]),
+    };
+    if (![catalog.providerEnabled isEqualToDictionary:enabledSettings])
+        catalog.providerEnabled = enabledSettings;
+    NSArray<NSString *> *priority = [S7TVEmoteProviderSettings providerPriority];
+    NSMutableArray *numericPriority = [NSMutableArray array];
+    for (NSString *identifier in priority)
+        [numericPriority addObject:@(S7TVEmoteProviderFromIdentifier(identifier))];
+    if (![catalog.providerPriority isEqualToArray:numericPriority])
+        catalog.providerPriority = numericPriority;
+    NSMutableDictionary *providerArrays = [NSMutableDictionary dictionary];
+    NSMutableDictionary *providerSections = [NSMutableDictionary dictionary];
+    NSMutableArray *favorites = [NSMutableArray array];
+    NSMutableSet *seenFavoriteKeys = [NSMutableSet set];
+    NSMutableSet *currentCatalogKeys = [NSMutableSet set];
+    // Lire les favoris une seule fois pour tout le snapshot. L'ancien appel
+    // par émote relisait UserDefaults et relançait la migration à chaque
+    // élément, ce qui bloquait le thread principal avec plusieurs milliers
+    // d'emotes.
+    NSSet<NSString *> *favoriteKeySet = [NSSet setWithArray:[catalog favoriteKeysSnapshot]];
+    self.pickerFavoriteKeySet = favoriteKeySet;
+    BOOL hasSyntheticProviderState = NO;
+    for (NSInteger provider = S7TVEmoteProviderIDSevenTV;
+         provider <= S7TVEmoteProviderIDFFZ; provider++) {
+        NSMutableArray *items = [NSMutableArray array];
+        NSMutableDictionary<NSString *, SevenTVEmote *> *itemsByID = [NSMutableDictionary dictionary];
+        NSMutableArray<S7TVPickerDisplaySection *> *displaySections = [NSMutableArray array];
+        S7TVEmoteProviderSnapshot *snapshot =
+            [catalog snapshotForProvider:(S7TVEmoteProviderID)provider];
+        BOOL providerLoading = snapshot.state == S7TVEmoteProviderStateLoading;
+        NSString *providerError = snapshot.state == S7TVEmoteProviderStateError
+            ? snapshot.errorMessage : nil;
+        if (![catalog.providerEnabled[@(provider)] boolValue]) {
+            providerArrays[@(provider)] = @[];
+            providerSections[@(provider)] = @[];
+            continue;
+        }
+        // The catalog changes Idle -> Loading on its serial state queue. The
+        // first picker snapshot can therefore be built in the tiny interval
+        // before that queue runs. Expose a local loading section immediately
+        // for enabled providers so the first opening never falls back to the
+        // old flat 7TV grid (or an apparently empty picker) while the request
+        // is being reserved. The real provider snapshot replaces this row as
+        // soon as its notification arrives.
+        if (snapshot.state == S7TVEmoteProviderStateIdle &&
+            snapshot.sections.count == 0) {
+            S7TVPickerDisplaySection *initialLoading = [S7TVPickerDisplaySection new];
+            initialLoading.provider = (S7TVEmoteProviderID)provider;
+            initialLoading.kind = S7TVEmoteSectionKindSet;
+            initialLoading.identifier = @"provider-state";
+            initialLoading.title = S7TVEmoteProviderName((S7TVEmoteProviderID)provider);
+            initialLoading.items = @[];
+            initialLoading.loaded = NO;
+            initialLoading.loading = YES;
+            initialLoading.empty = NO;
+            [displaySections addObject:initialLoading];
+            hasSyntheticProviderState = YES;
+        }
+        for (S7TVEmoteDescriptor *descriptor in
+             [catalog allEmotesForProvider:(S7TVEmoteProviderID)provider]) {
+            SevenTVEmote *item = [self _pickerEmoteForDescriptor:descriptor];
+            if (!item) continue;
+            NSString *stableKey = S7TVEmoteFavoriteKey(descriptor.provider, descriptor.emoteID);
+            if (stableKey.length) [currentCatalogKeys addObject:stableKey];
+            if (!itemsByID[stableKey]) {
+                itemsByID[stableKey] = item;
+                [items addObject:item];
+            }
+            if ([favoriteKeySet containsObject:stableKey]) {
+                if (![seenFavoriteKeys containsObject:stableKey]) {
+                    [seenFavoriteKeys addObject:stableKey];
+                    [favorites addObject:item];
+                }
+            }
+        }
+        for (S7TVEmoteSection *section in
+             [catalog sectionsForProvider:(S7TVEmoteProviderID)provider]) {
+            NSMutableArray<SevenTVEmote *> *sectionItems = [NSMutableArray array];
+            for (S7TVEmoteDescriptor *descriptor in section.emotes) {
+                NSString *stableKey = S7TVEmoteFavoriteKey(descriptor.provider, descriptor.emoteID);
+                SevenTVEmote *item = itemsByID[stableKey];
+                if (item && ![sectionItems containsObject:item]) [sectionItems addObject:item];
+            }
+            [sectionItems sortUsingComparator:S7TVPickerEmoteSizeComparator];
+            // Loaded empty sections are deliberately hidden. Loading/error
+            // sections stay visible so the user can understand what happens
+            // and retry without changing tab or scrolling.
+            if (!sectionItems.count && section.loaded && !section.loading && !section.errorMessage.length)
+                continue;
+            S7TVPickerDisplaySection *display = [S7TVPickerDisplaySection new];
+            display.provider = section.provider;
+            display.kind = section.kind;
+            display.identifier = section.identifier ?: @"";
+            display.title = section.title.length ? section.title : @"Emotes";
+            display.items = sectionItems.copy;
+            display.loaded = section.loaded;
+            // A provider snapshot can fail while a cached section remains
+            // available (for example, a background refresh after the first
+            // open). Keep the section visible and expose that state in its
+            // header instead of silently hiding the retry affordance.
+            display.loading = section.loading || providerLoading;
+            display.empty = NO;
+            display.errorMessage = section.errorMessage ?: providerError;
+            [displaySections addObject:display];
+        }
+        [items sortUsingComparator:S7TVPickerEmoteSizeComparator];
+        providerArrays[@(provider)] = items.copy;
+        providerSections[@(provider)] = displaySections.copy;
+    }
+    // Favorites are global to the installation, but a channel emote from an
+    // old channel is not usable in the current chat. Do not hydrate metadata
+    // for descriptors that are absent from the current provider snapshots;
+    // otherwise the picker would offer an emote that cannot be rendered by
+    // anyone in this channel. Current global emotes remain eligible because
+    // they are part of the current provider snapshot as well.
+    for (S7TVEmoteDescriptor *descriptor in [catalog favoriteDescriptorsSnapshot]) {
+        if (![catalog.providerEnabled[@(descriptor.provider)] boolValue]) continue;
+        NSString *stableKey = S7TVEmoteFavoriteKey(descriptor.provider, descriptor.emoteID);
+        if (![currentCatalogKeys containsObject:stableKey]) continue;
+        if (!stableKey.length || [seenFavoriteKeys containsObject:stableKey]) continue;
+        SevenTVEmote *item = [self _pickerEmoteForDescriptor:descriptor];
+        if (!item) continue;
+        [seenFavoriteKeys addObject:stableKey];
+        [favorites addObject:item];
+    }
+    [favorites sortUsingComparator:S7TVPickerEmoteSizeComparator];
+    BOOL hasProviderEmotes = NO;
+    for (NSArray *items in providerArrays.allValues) {
+        if (items.count) { hasProviderEmotes = YES; break; }
+    }
+    BOOL hasProviderState = hasSyntheticProviderState;
+    for (NSInteger provider = S7TVEmoteProviderIDSevenTV;
+         provider <= S7TVEmoteProviderIDFFZ; provider++) {
+        S7TVEmoteProviderState state =
+            [catalog snapshotForProvider:(S7TVEmoteProviderID)provider].state;
+        if (state != S7TVEmoteProviderStateIdle) { hasProviderState = YES; break; }
+    }
+    // Keep the provider-aware tabs active even when a provider is enabled but
+    // currently has no emotes (or is still loading).  Conversely, if the
+    // catalogue has not started yet, do not pretend that the legacy 7TV cache
+    // is BTTV/FFZ content.
+    BOOL hasDisabledProvider = NO;
+    for (NSInteger provider = S7TVEmoteProviderIDSevenTV;
+         provider <= S7TVEmoteProviderIDFFZ; provider++) {
+        if (![catalog.providerEnabled[@(provider)] boolValue]) {
+            hasDisabledProvider = YES;
+            break;
+        }
+    }
+    BOOL useProviderCatalog = hasProviderEmotes || hasProviderState || hasDisabledProvider;
+    self.pickerProviderEmotes = useProviderCatalog ? providerArrays.copy : @{};
+    self.pickerProviderSections = useProviderCatalog ? providerSections.copy : @{};
+    self.pickerCatalogFavorites = favorites.copy;
+    // Once the provider-aware catalogue is active, keep the legacy favorite
+    // array in sync as well.  A favorite removed while the picker is open
+    // must not leave a stale item that keeps the Favorites tab selected on
+    // the next reload/open.
+    if (useProviderCatalog) self.emotePickerFavoriteEmotes = favorites.copy;
+    self.pickerCatalogArraysDirty = NO;
+    [self _s7tv_normalizeActivePickerTab];
 }
 
 - (void)_s7tv_reloadCatalogSnapshotReloadCollection:(BOOL)reloadCollection {
     NSAssert([NSThread isMainThread], @"Le snapshot du picker touche UIKit");
     UICollectionView *collectionView = self.emoteCollectionView;
-    NSString *anchorEmoteID = nil;
+    NSString *anchorEmoteKey = nil;
     CGFloat anchorViewportY = 0;
     CGPoint previousOffset = collectionView.contentOffset;
     if (reloadCollection && collectionView && !collectionView.hidden) {
@@ -973,61 +1416,33 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
             ? [self _emoteForIndexPath:anchorPath] : nil;
         UICollectionViewLayoutAttributes *attributes = anchorPath
             ? [collectionView layoutAttributesForItemAtIndexPath:anchorPath] : nil;
-        if (anchorEmote.emoteID.length && attributes) {
-            anchorEmoteID = [anchorEmote.emoteID copy];
+        NSString *stableAnchorKey = S7TVPickerStableEmoteKey(anchorEmote);
+        if (stableAnchorKey.length && attributes) {
+            anchorEmoteKey = [stableAnchorKey copy];
             anchorViewportY = CGRectGetMinY(attributes.frame) - collectionView.contentOffset.y;
         }
     }
 
-    SevenTVManager *manager = [SevenTVManager sharedManager];
-    __block NSDictionary *global, *channel;
-    dispatch_sync(manager.emoteQueue, ^{
-        global  = manager.globalEmotes  ?: @{};
-        channel = manager.channelEmotes ?: @{};
-    });
-
-    NSString *setKey = s7tv_emoteSetKey(global, channel, manager.currentChannelTwitchID);
-    if (!s_cachedSortedEmotes || ![setKey isEqualToString:s_cachedSortKey]) {
-        NSMutableArray<SevenTVEmote *> *all = [NSMutableArray array];
-        for (NSString *key in [channel.allKeys sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)])
-            [all addObject:channel[key]];
-        for (NSString *key in [global.allKeys sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]) {
-            if (!channel[key]) [all addObject:global[key]]; // pas de doublons
-        }
-        NSArray<SevenTVEmote *> *sorted = [all sortedArrayUsingComparator:
-            ^NSComparisonResult(SevenTVEmote *a, SevenTVEmote *b) {
-                BOOL aSquare = (a.width > 0 && a.height > 0 && a.width == a.height);
-                BOOL bSquare = (b.width > 0 && b.height > 0 && b.width == b.height);
-                if (aSquare != bSquare) return aSquare ? NSOrderedAscending : NSOrderedDescending;
-                NSInteger aArea = a.width * a.height;
-                NSInteger bArea = b.width * b.height;
-                if (aArea == 0 && bArea == 0)
-                    return [a.emoteName compare:b.emoteName options:NSCaseInsensitiveSearch|NSNumericSearch];
-                if (aArea == 0) return NSOrderedDescending;
-                if (bArea == 0) return NSOrderedAscending;
-                if (aArea < bArea) return NSOrderedAscending;
-                if (aArea > bArea) return NSOrderedDescending;
-                NSString *aName = a.emoteName ?: @"";
-                NSString *bName = b.emoteName ?: @"";
-                NSUInteger len = MIN(aName.length, bName.length);
-                for (NSUInteger i = 0; i < len; i++) {
-                    unichar ac = [aName characterAtIndex:i];
-                    unichar bc = [bName characterAtIndex:i];
-                    if (ac >= 'a' && ac <= 'z') ac -= 32;
-                    if (bc >= 'a' && bc <= 'z') bc -= 32;
-                    if (ac < bc) return NSOrderedAscending;
-                    if (ac > bc) return NSOrderedDescending;
-                }
-                if (aName.length < bName.length) return NSOrderedAscending;
-                if (aName.length > bName.length) return NSOrderedDescending;
-                return NSOrderedSame;
-            }];
-        s_cachedSortedEmotes = sorted;
-        s_cachedSortKey      = setKey;
-    }
-    self.emotePickerAllEmotes = s_cachedSortedEmotes;
+    // Les snapshots provider-aware sont la seule source de vérité du picker.
+    if (self.pickerCatalogArraysDirty || !self.pickerProviderSections.count)
+        [self _s7tv_applyProviderCatalogArrays];
+    // The provider snapshots may complete in a different order. During the
+    // first opening, re-evaluate the initially empty tab after every snapshot
+    // merge so BTTV/FFZ can become visible immediately even if 7TV is slower.
+    // The helper is a no-op after a user-selected tab or once a provider has
+    // been chosen, so normal refreshes never jump the picker unexpectedly.
+    [self _s7tv_selectInitialProviderIfNeeded];
+    NSMutableArray *catalogAll = [NSMutableArray array];
+    for (NSArray *items in self.pickerProviderEmotes.allValues)
+        [catalogAll addObjectsFromArray:items];
+    self.emotePickerAllEmotes = catalogAll.count ? catalogAll.copy : @[];
     self.emotePickerEmotes    = self.emotePickerAllEmotes;
     [self _updatePickerArraysForSearch:self.emoteSearchField.text ?: @""];
+    if (collectionView) {
+        UICollectionViewFlowLayout *flowLayout =
+            (UICollectionViewFlowLayout *)collectionView.collectionViewLayout;
+        flowLayout.headerReferenceSize = CGSizeZero;
+    }
     if (reloadCollection && self.emoteCollectionView) {
         [self _s7tv_deactivateVisiblePickerAnimations];
         [self.emoteCollectionView reloadData];
@@ -1035,15 +1450,37 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
         [self.emoteCollectionView layoutIfNeeded];
 
         CGFloat targetY = previousOffset.y;
-        if (anchorEmoteID.length) {
-            NSUInteger newIndex = [self.emotePickerEmotes
-                indexOfObjectPassingTest:^BOOL(SevenTVEmote *emote,
-                                                __unused NSUInteger index,
-                                                __unused BOOL *stop) {
-                    return [emote.emoteID isEqualToString:anchorEmoteID];
-                }];
-            if (newIndex != NSNotFound) {
-                NSIndexPath *newPath = [NSIndexPath indexPathForItem:(NSInteger)newIndex inSection:0];
+        if (anchorEmoteKey.length) {
+            NSIndexPath *newPath = nil;
+            if (self.pickerUsesCatalogSections) {
+                for (NSInteger sectionIndex = 0;
+                     sectionIndex < (NSInteger)self.pickerDisplaySections.count && !newPath;
+                     sectionIndex++) {
+                    S7TVPickerDisplaySection *section =
+                        self.pickerDisplaySections[(NSUInteger)sectionIndex];
+                    NSString *sectionKey = [self _s7tv_displaySectionKey:section];
+                    if ([self.pickerCollapsedSections[sectionKey] boolValue]) continue;
+                    NSUInteger itemIndex = [section.items indexOfObjectPassingTest:
+                        ^BOOL(SevenTVEmote *emote, __unused NSUInteger index, __unused BOOL *stop) {
+                            return [S7TVPickerStableEmoteKey(emote)
+                                isEqualToString:anchorEmoteKey];
+                        }];
+                    if (itemIndex != NSNotFound)
+                        newPath = [NSIndexPath indexPathForItem:(NSInteger)itemIndex
+                                                      inSection:sectionIndex];
+                }
+            } else {
+                NSUInteger newIndex = [self.emotePickerEmotes
+                    indexOfObjectPassingTest:^BOOL(SevenTVEmote *emote,
+                                                    __unused NSUInteger index,
+                                                    __unused BOOL *stop) {
+                        return [S7TVPickerStableEmoteKey(emote)
+                            isEqualToString:anchorEmoteKey];
+                    }];
+                if (newIndex != NSNotFound)
+                    newPath = [NSIndexPath indexPathForItem:(NSInteger)newIndex inSection:0];
+            }
+            if (newPath) {
                 UICollectionViewLayoutAttributes *attributes =
                     [self.emoteCollectionView layoutAttributesForItemAtIndexPath:newPath];
                 if (attributes) targetY = CGRectGetMinY(attributes.frame) - anchorViewportY;
@@ -1071,6 +1508,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
 
 - (void)_s7tv_emoteCatalogDidUpdate:(__unused NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
+        self.pickerCatalogArraysDirty = YES;
         [self invalidateSortCache];
         if (!self.emotePickerView || self.emotePickerView.hidden) return;
         if (self.pickerScrollInProgress || self.emoteCollectionView.isTracking ||
@@ -1093,19 +1531,45 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     // pendant le passage à une requête vide et écraser le choix ci-dessous.
     self.emoteSearchField.text = @"";
     self.pickerIsSearching = NO;
-    // ── Rassembler/trier le snapshot courant une seule fois ───────────────
+    // Apply the user's opening choice before any provider notification arrives.
+    // When no preference exists, preserve the historical automatic fallback
+    // (Favorites, then the first provider with data).
+    self.pickerOpeningLocationExplicit = [self _s7tv_applyConfiguredPickerOpeningLocation];
+    self.pickerInitialProviderSelectionPending = !self.pickerOpeningLocationExplicit;
+    if (!self.pickerOpeningLocationExplicit) {
+        self.pickerActiveTab = [S7TVEmoteProviderSettings mixedPickerEnabled]
+            ? S7TVPickerTabAll : S7TVPickerTabSevenTV;
+    }
+
+    // Build the current cache-first snapshot before scheduling new requests.
+    // This ordering is important: a response parser can now run off the state
+    // queue, and the first layout never waits for a fresh network response.
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
     [self _s7tv_reloadCatalogSnapshotReloadCollection:NO];
+
+    // Déclencher les trois providers après le snapshot initial. Les données
+    // en cache sont donc déjà affichées et les notifications remplaceront les
+    // cellules sans bloquer l'ouverture, ni demander un scroll/onglet manuel.
+    [catalog loadGlobalProviders];
+    NSString *channelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+    if (channelID.length) [catalog loadChannelProvidersForTwitchID:channelID];
 
     // ── Choix de l'onglet de départ : Favoris s'il y a au moins un favori
     // (sur la chaîne courante), sinon 7TV/Channel. Revérifié à CHAQUE
     // ouverture — pas seulement quand on était déjà sur Favoris — pour
     // refléter les favoris ajoutés/retirés ou un changement de chaîne
     // depuis la dernière ouverture du picker.
-    if (self.emotePickerFavoriteEmotes.count > 0) {
+    if (!self.pickerOpeningLocationExplicit &&
+        (self.pickerCatalogFavorites.count > 0 || self.emotePickerFavoriteEmotes.count > 0)) {
         self.pickerActiveTab = S7TVPickerTabFavorites;
-    } else {
-        self.pickerActiveTab = S7TVPickerTabChannel;
+        self.pickerInitialProviderSelectionPending = NO;
     }
+    // `_s7tv_reloadCatalogSnapshotReloadCollection:` normally performs this
+    // check after merging the snapshots. Calling it once more here covers the
+    // synchronous/cache-hit path and keeps the initial selection deterministic
+    // even when the picker view did not exist yet.
+    [self _s7tv_selectInitialProviderIfNeeded];
+    [self _s7tv_normalizeActivePickerTab];
     [self _updatePickerArraysForSearch:@""]; // recalcule emotePickerEmotes pour l'onglet choisi
 
     // ── Créer le picker si besoin ─────────────────────────────────────
@@ -1124,13 +1588,14 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
         self.emoteCollectionView.hidden = NO;
         self.pickerSearchCapsuleView.hidden = NO;
         self.pickerTabCapsuleView.hidden = NO;
-        for (UIButton *btn in self.pickerTabButtons) btn.hidden = NO;
+        self.pickerSubcategoryCapsuleView.hidden = NO;
+        [self _s7tv_updatePickerTabButtonLayout];
         self.pickerSizesToggleBtn.tintColor = [UIColor colorWithWhite:0.55 alpha:1.0];
         // Remettre l'icône ⚙️ (pas juste la couleur) — sans ça le bouton
         // gardait visuellement la flèche "retour" du panneau des tailles
         // alors qu'on vient de revenir en mode grille.
         UIImageSymbolConfiguration *resetCfg = [UIImageSymbolConfiguration
-            configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+            configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
         [self.pickerSizesToggleBtn setImage:[UIImage systemImageNamed:@"textformat.size"
                                                       withConfiguration:resetCfg]
                                     forState:UIControlStateNormal];
@@ -1280,6 +1745,8 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     layout.minimumInteritemSpacing = 3;
     layout.minimumLineSpacing      = 3;
     layout.sectionInset            = UIEdgeInsetsMake(topInset, 6, kS7TVPickerBottomZoneH, 6);
+    // Les sous-catégories sont maintenant de vraies capsules flottantes;
+    // aucune ligne d'en-tête ne doit être réservée dans la grille.
     layout.headerReferenceSize     = CGSizeZero;
 
     UICollectionView *cv = [[UICollectionView alloc]
@@ -1299,6 +1766,9 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     if (@available(iOS 10.0, *)) cv.prefetchingEnabled = NO;
 
     [cv registerClass:[S7TVEmotePickerCell class] forCellWithReuseIdentifier:kEmoteCellID];
+    [cv registerClass:[S7TVPickerSectionHeaderView class]
+        forSupplementaryViewOfKind:UICollectionElementKindSectionHeader
+           withReuseIdentifier:@"S7TVPickerSectionHeader"];
     self.emoteCollectionView = cv;
 
     // Long press → mettre en favori
@@ -1309,12 +1779,10 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
 
     [picker addSubview:cv];
 
-    // ── Capsule unique d'onglets (flottante, bas gauche) — Favoris / Channel /
-    // Globales ───────────────────────────────────────────────────────────
-    // Fusion de l'ancienne capsule d'onglets (Favoris/7TV) et de l'ancienne
-    // capsule sous-choix (Chaîne/Globales, haut-gauche) : 3 boutons sur un
-    // seul fond pilule, pastille qui glisse entre les 3.
-    CGFloat tabCapsuleW = kS7TVPickerFloatSize * 3.0;
+    // ── Capsule provider (flottante, bas gauche) — Favoris / Tous / 7TV / BTTV / FFZ
+    // ─────────────────────────────────────────────────────────────────────
+    BOOL mixedPicker = [S7TVEmoteProviderSettings mixedPickerEnabled];
+    CGFloat tabCapsuleW = kS7TVPickerFloatSize * (mixedPicker ? 2.0 : 4.0);
     CGFloat bottomRowY = frame.size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH
                           - kS7TVPickerFloatGap - kS7TVPickerFloatSize;
     UIView *tabCapsule = [[UIView alloc] initWithFrame:
@@ -1336,12 +1804,31 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
         initWithBase64EncodedString:kS7TVLogoBase64 options:NSDataBase64DecodingIgnoreUnknownCharacters];
     UIImage *_tabLogoImg = [[UIImage imageWithData:_tabLogoData scale:3.0]
         imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    NSData *_bttvLogoData = [[NSData alloc]
+        initWithBase64EncodedString:kS7TVBTTVLogoBase64 options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    UIImage *_bttvLogoImg = [[UIImage imageWithData:_bttvLogoData scale:3.0]
+        imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    NSData *_ffzLogoData = [[NSData alloc]
+        initWithBase64EncodedString:kS7TVFFZLogoBase64 options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    UIImage *_ffzLogoImg = [[UIImage imageWithData:_ffzLogoData scale:3.0]
+        imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    // BTTV/FFZ assets are optically a little smaller than the 7TV mark at the
+    // same point size. Give them a tiny boost while keeping the capsule and
+    // touch target unchanged.
+    UIImage *bttvLogo = S7TVPickerScaledProviderLogo(_bttvLogoImg, 16.0);
+    UIImage *ffzLogo = S7TVPickerScaledProviderLogo(_ffzLogoImg, 16.0);
+    UIImageSymbolConfiguration *providerFallbackCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:13.0 weight:UIImageSymbolWeightMedium];
+    UIImage *bttvFallback = [UIImage systemImageNamed:@"b.circle.fill"
+                                      withConfiguration:providerFallbackCfg];
+    UIImage *ffzFallback = [UIImage systemImageNamed:@"f.circle.fill"
+                                      withConfiguration:providerFallbackCfg];
 
     [self.pickerTabButtons removeAllObjects];
 
     // Bouton 1 — Favoris
     UIImageSymbolConfiguration *starCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
     UIButton *favBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     favBtn.frame = CGRectMake(0, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
     favBtn.tag = S7TVPickerTabFavorites;
@@ -1350,38 +1837,93 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     [tabCapsule addSubview:favBtn];
     [self.pickerTabButtons addObject:favBtn];
 
-    // Bouton 2 — Channel (avatar de la chaîne courante, placeholder générique
-    // en attendant le fetch — voir _s7tv_applyChannelAvatarImage:/
-    // _s7tv_resetChannelButtonToPlaceholder, inchangés).
-    UIImageSymbolConfiguration *avCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+    // Bouton 2 — Tous les providers mélangés.
+    UIButton *allBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    allBtn.frame = CGRectMake(kS7TVPickerFloatSize, 0,
+                              kS7TVPickerFloatSize, kS7TVPickerFloatSize);
+    allBtn.tag = S7TVPickerTabAll;
+    UIImageSymbolConfiguration *allCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
+    [allBtn setImage:[UIImage systemImageNamed:@"square.stack.3d.up.fill"
+                                   withConfiguration:allCfg]
+            forState:UIControlStateNormal];
+    [allBtn addTarget:self action:@selector(_pickerTabTapped:)
+     forControlEvents:UIControlEventTouchUpInside];
+    [tabCapsule addSubview:allBtn];
+    [self.pickerTabButtons addObject:allBtn];
+
+    // Bouton 3 — 7TV (logo provider).
     UIButton *channelBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    channelBtn.frame = CGRectMake(kS7TVPickerFloatSize, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
-    channelBtn.tag = S7TVPickerTabChannel;
-    [channelBtn setImage:[UIImage systemImageNamed:@"person.crop.circle.fill" withConfiguration:avCfg]
-                 forState:UIControlStateNormal];
+    channelBtn.frame = CGRectMake(kS7TVPickerFloatSize * 2.0, 0,
+                                  kS7TVPickerFloatSize, kS7TVPickerFloatSize);
+    channelBtn.tag = S7TVPickerTabSevenTV;
+    [channelBtn setImage:_tabLogoImg forState:UIControlStateNormal];
+    channelBtn.imageView.contentMode = UIViewContentModeScaleAspectFit;
     [channelBtn addTarget:self action:@selector(_pickerTabTapped:) forControlEvents:UIControlEventTouchUpInside];
     [tabCapsule addSubview:channelBtn];
     [self.pickerTabButtons addObject:channelBtn];
-    self.pickerSubChoiceChannelBtn = channelBtn;
+    // Boutons 4/5 — BTTV et FFZ. Les logos sont embarqués localement, avec
+    // les anciens symboles SF Symbols comme fallback si une image est invalide.
+    NSArray *providerButtons = @[
+        @[@(S7TVPickerTabBTTV), bttvLogo ?: bttvFallback],
+        @[@(S7TVPickerTabFFZ), ffzLogo ?: ffzFallback],
+    ];
+    for (NSUInteger idx = 0; idx < providerButtons.count; idx++) {
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.frame = CGRectMake(kS7TVPickerFloatSize * (idx + 3), 0,
+                                  kS7TVPickerFloatSize, kS7TVPickerFloatSize);
+        button.tag = [providerButtons[idx][0] integerValue];
+        [button setImage:providerButtons[idx][1] forState:UIControlStateNormal];
+        button.imageView.contentMode = UIViewContentModeScaleAspectFit;
+        [button addTarget:self action:@selector(_pickerTabTapped:)
+         forControlEvents:UIControlEventTouchUpInside];
+        [tabCapsule addSubview:button];
+        [self.pickerTabButtons addObject:button];
+    }
 
-    // Bouton 3 — Globales (logo 7TV)
-    NSData *_capsuleLogoData = [[NSData alloc]
-        initWithBase64EncodedString:kS7TVLogoBase64 options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    UIImage *_capsuleLogoImg = [[UIImage imageWithData:_capsuleLogoData scale:3.0]
-        imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    UIButton *globalBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    globalBtn.frame = CGRectMake(kS7TVPickerFloatSize * 2.0, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
-    globalBtn.tag = S7TVPickerTabGlobal;
-    [globalBtn setImage:_capsuleLogoImg forState:UIControlStateNormal];
-    globalBtn.imageView.contentMode = UIViewContentModeScaleAspectFit;
-    // Insets calculés pour que le logo occupe kS7TVPickerAvatarDiameter (24pt)
-    // dans le bouton 30pt — même taille visible que l'avatar de chaîne.
-    CGFloat globalBtnInset = (kS7TVPickerFloatSize - kS7TVPickerAvatarDiameter) / 2.0;
-    globalBtn.imageEdgeInsets = UIEdgeInsetsMake(globalBtnInset, globalBtnInset, globalBtnInset, globalBtnInset);
-    [globalBtn addTarget:self action:@selector(_pickerTabTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [tabCapsule addSubview:globalBtn];
-    [self.pickerTabButtons addObject:globalBtn];
+    // ── Capsule sous-catégories (flottante, toujours à gauche, juste au-dessus
+    // de la capsule provider) — Channel / Global ───────────────────────────
+    // Le picker desktop garde ces deux choix à la même position quel que soit
+    // le provider actif. Shared et les sets sont agrégés dans Channel/Global.
+    UIView *subcategoryCapsule = [[UIView alloc] initWithFrame:
+        CGRectMake(kS7TVPickerFloatMargin,
+                   bottomRowY - kS7TVPickerSubcategoryGap - kS7TVPickerFloatSize,
+                   kS7TVPickerFloatSize * 2.0,
+                   kS7TVPickerFloatSize)];
+    subcategoryCapsule.backgroundColor = [cardColor colorWithAlphaComponent:0.92];
+    subcategoryCapsule.layer.cornerRadius = kS7TVPickerFloatSize / 2.0;
+    subcategoryCapsule.clipsToBounds = YES;
+    subcategoryCapsule.autoresizingMask = UIViewAutoresizingFlexibleTopMargin;
+    self.pickerSubcategoryCapsuleView = subcategoryCapsule;
+    [picker addSubview:subcategoryCapsule];
+
+    UIButton *subcategoryChannel = [UIButton buttonWithType:UIButtonTypeSystem];
+    subcategoryChannel.frame = CGRectMake(0, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
+    subcategoryChannel.tag = 1;
+    subcategoryChannel.accessibilityLabel = @"Channel emotes";
+    subcategoryChannel.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    UIImageSymbolConfiguration *subcategoryIconCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
+    [subcategoryChannel setImage:[UIImage systemImageNamed:@"person.crop.circle.fill"
+                                         withConfiguration:subcategoryIconCfg]
+                         forState:UIControlStateNormal];
+    [subcategoryChannel addTarget:self action:@selector(_pickerSubcategoryTapped:)
+                   forControlEvents:UIControlEventTouchUpInside];
+    [subcategoryCapsule addSubview:subcategoryChannel];
+    self.pickerSubcategoryChannelBtn = subcategoryChannel;
+
+    UIButton *subcategoryGlobal = [UIButton buttonWithType:UIButtonTypeSystem];
+    subcategoryGlobal.frame = CGRectMake(kS7TVPickerFloatSize, 0,
+                                         kS7TVPickerFloatSize,
+                                         kS7TVPickerFloatSize);
+    subcategoryGlobal.tag = 2;
+    subcategoryGlobal.accessibilityLabel = @"Global emotes";
+    subcategoryGlobal.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    [subcategoryGlobal addTarget:self action:@selector(_pickerSubcategoryTapped:)
+                  forControlEvents:UIControlEventTouchUpInside];
+    [subcategoryCapsule addSubview:subcategoryGlobal];
+    self.pickerSubcategoryGlobalBtn = subcategoryGlobal;
+    [self _s7tv_resetChannelButtonToPlaceholder];
 
     [self _s7tv_updateTabButtonHighlight];
 
@@ -1409,7 +1951,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     UIButton *settingsBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     settingsBtn.frame = CGRectMake(0, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
     UIImageSymbolConfiguration *settingsCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
     [settingsBtn setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:settingsCfg]
                  forState:UIControlStateNormal];
     settingsBtn.tintColor = subColor;
@@ -1424,7 +1966,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     UIButton *gearBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     gearBtn.frame = CGRectMake(kS7TVPickerFloatSize, 0, kS7TVPickerFloatSize, kS7TVPickerFloatSize);
     UIImageSymbolConfiguration *gearCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
     [gearBtn setImage:[UIImage systemImageNamed:@"textformat.size" withConfiguration:gearCfg]
              forState:UIControlStateNormal];
     gearBtn.tintColor = subColor;
@@ -1459,7 +2001,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
 
     // Icône loupe intégrée à gauche du champ
     UIImageSymbolConfiguration *searchCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:13 weight:UIImageSymbolWeightMedium];
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
     UIImageView *searchIcon = [[UIImageView alloc] initWithImage:
         [[UIImage systemImageNamed:@"magnifyingglass" withConfiguration:searchCfg]
             imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]];
@@ -1476,7 +2018,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     clearBtn.frame = CGRectMake(0, 0, 28, kS7TVPickerSearchH);
     UIImageSymbolConfiguration *clearCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
     [clearBtn setImage:[UIImage systemImageNamed:@"xmark.circle.fill" withConfiguration:clearCfg]
               forState:UIControlStateNormal];
     clearBtn.tintColor = subColor;
@@ -1518,6 +2060,8 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     // pour qu'elle reste visible et cliquable par-dessus le panneau des
     // tailles (bringSubviewToFront sur la capsule suffit pour les 2 boutons
     // qu'elle contient).
+    [picker bringSubviewToFront:tabCapsule];
+    [picker bringSubviewToFront:subcategoryCapsule];
     [picker bringSubviewToFront:toolsCapsule];
 
     // NOTE: pas d'addSubview ici — la vue est attachée via inputView (remplace le clavier)
@@ -1537,18 +2081,187 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
 
 // ── Barre d'onglets — helpers ────────────────────────────────────────────
 
+// Keep the selected tab valid when a provider is disabled from Settings or
+// when the catalogue is still in its legacy-only fallback state.  This is
+// intentionally independent from button creation so it also works while the
+// picker is already visible and a settings notification arrives.
+// Le mode mixte ne remplace pas les boutons à chaque ouverture : les cinq
+// boutons sont créés une seule fois, puis la capsule est compactée et les
+// boutons incompatibles sont masqués. Cela évite de recréer des vues pendant
+// qu'UIKit présente l'inputView et garde les cibles/tags stables.
+- (void)_s7tv_updatePickerTabButtonLayout {
+    if (!self.pickerTabCapsuleView || !self.pickerTabButtons.count) return;
+
+    BOOL mixedMode = [S7TVEmoteProviderSettings mixedPickerEnabled];
+    NSArray<NSNumber *> *visibleTags = mixedMode
+        ? @[@(S7TVPickerTabFavorites), @(S7TVPickerTabAll)]
+        : @[@(S7TVPickerTabFavorites), @(S7TVPickerTabSevenTV),
+            @(S7TVPickerTabBTTV), @(S7TVPickerTabFFZ)];
+    NSInteger slot = 0;
+    for (UIButton *button in self.pickerTabButtons) {
+        BOOL visible = [visibleTags containsObject:@(button.tag)];
+        button.hidden = !visible;
+        if (!visible) continue;
+        button.frame = CGRectMake(kS7TVPickerFloatSize * slot, 0,
+                                  kS7TVPickerFloatSize, kS7TVPickerFloatSize);
+        slot++;
+    }
+
+    CGRect capsuleFrame = self.pickerTabCapsuleView.frame;
+    capsuleFrame.size.width = kS7TVPickerFloatSize * slot;
+    self.pickerTabCapsuleView.frame = capsuleFrame;
+}
+
+- (void)_s7tv_normalizeActivePickerTab {
+    BOOL providerMode = self.pickerProviderEmotes.count > 0 || self.pickerUsesCatalogSections;
+    BOOL mixedMode = [S7TVEmoteProviderSettings mixedPickerEnabled];
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    BOOL (^available)(NSInteger) = ^BOOL(NSInteger tab) {
+        // Do not keep an empty Favorites tab selected after the last favorite
+        // is removed.  Returning NO here lets the configured provider order
+        // choose a useful tab (including a provider that is still loading).
+        if (tab == S7TVPickerTabFavorites)
+            return self.pickerCatalogFavorites.count > 0 ||
+                   self.emotePickerFavoriteEmotes.count > 0;
+        if (tab == S7TVPickerTabAll) {
+            if (!mixedMode) return NO;
+            if (!providerMode && !self.pickerOpeningLocationExplicit &&
+                !self.emotePickerAllEmotes.count) return NO;
+            for (NSNumber *provider in [self _s7tv_providerIDsInPriorityOrder]) {
+                if ([catalog.providerEnabled[provider] boolValue]) return YES;
+            }
+            return NO;
+        }
+        if (mixedMode || ![self _s7tv_pickerTabIsProvider:tab]) return NO;
+        NSInteger provider = tab == S7TVPickerTabSevenTV
+            ? S7TVEmoteProviderIDSevenTV
+            : (tab == S7TVPickerTabBTTV ? S7TVEmoteProviderIDBTTV : S7TVEmoteProviderIDFFZ);
+        if (![catalog.providerEnabled[@(provider)] boolValue]) return NO;
+        // A legacy cache only contains 7TV. Do not let those objects appear
+        // under BTTV/FFZ while their own catalogue is still idle.
+        return providerMode || self.pickerOpeningLocationExplicit ||
+            provider == S7TVEmoteProviderIDSevenTV;
+    };
+
+    if (available(self.pickerActiveTab)) return;
+    NSInteger fallback = S7TVPickerTabFavorites;
+    if (!(self.pickerCatalogFavorites.count || self.emotePickerFavoriteEmotes.count)) {
+        if (mixedMode && available(S7TVPickerTabAll)) {
+            fallback = S7TVPickerTabAll;
+        } else {
+        for (NSString *identifier in [S7TVEmoteProviderSettings providerPriority]) {
+            S7TVExternalEmoteProvider provider = S7TVEmoteProviderFromIdentifier(identifier);
+            NSInteger tab = provider == S7TVExternalEmoteProvider7TV
+                ? S7TVPickerTabSevenTV
+                : (provider == S7TVExternalEmoteProviderBTTV
+                   ? S7TVPickerTabBTTV : S7TVPickerTabFFZ);
+            if (available(tab)) { fallback = tab; break; }
+        }
+        }
+    }
+    self.pickerActiveTab = fallback;
+}
+
+- (BOOL)_s7tv_selectInitialProviderIfNeeded {
+    if (self.pickerOpeningLocationExplicit) {
+        self.pickerInitialProviderSelectionPending = NO;
+        return NO;
+    }
+    if (!self.pickerInitialProviderSelectionPending || self.pickerIsSearching)
+        return NO;
+
+    // Favorites are installation-wide and can arrive from the metadata
+    // sidecar slightly after the provider snapshots. If they become
+    // available during the first open, keep the same initial-open rule and
+    // move to Favorites once; subsequent catalog refreshes never steal the
+    // user's tab because the pending flag is cleared here.
+    if (self.pickerCatalogFavorites.count || self.emotePickerFavoriteEmotes.count) {
+        BOOL changed = self.pickerActiveTab != S7TVPickerTabFavorites;
+        self.pickerActiveTab = S7TVPickerTabFavorites;
+        self.pickerInitialProviderSelectionPending = NO;
+        return changed;
+    }
+
+    // In aggregate mode there is no provider-specific button to select. Once
+    // the provider-aware snapshot (or the legacy 7TV fallback) exists, keep
+    // the initial tab on Tous instead of briefly showing 7TV and then hiding
+    // that button when the compact tab layout is applied.
+    if ([S7TVEmoteProviderSettings mixedPickerEnabled] &&
+        (self.pickerProviderEmotes.count || self.emotePickerAllEmotes.count)) {
+        BOOL changed = self.pickerActiveTab != S7TVPickerTabAll;
+        self.pickerActiveTab = S7TVPickerTabAll;
+        self.pickerInitialProviderSelectionPending = NO;
+        return changed;
+    }
+
+    // A legacy-only snapshot has no provider dictionary. It is already the
+    // valid 7TV fallback, so there is nothing to select automatically.
+    if (!self.pickerProviderEmotes.count) {
+        if (self.emotePickerAllEmotes.count || self.emotePickerEmotes.count)
+            self.pickerInitialProviderSelectionPending = NO;
+        return NO;
+    }
+
+    if (self.pickerActiveTab == S7TVPickerTabAll) {
+        self.pickerInitialProviderSelectionPending = NO;
+        return NO;
+    }
+    S7TVEmoteProviderID activeProvider = [self _s7tv_providerForPickerTab:
+        self.pickerActiveTab];
+    NSArray *activeItems = self.pickerProviderEmotes[@(activeProvider)] ?: @[];
+    if (activeItems.count) {
+        self.pickerInitialProviderSelectionPending = NO;
+        return NO;
+    }
+
+    // Providers are ordered by the user's collision priority. Only a
+    // provider with actual emotes is eligible; loading/error placeholders do
+    // not count, so a later notification can still select the first one that
+    // becomes usable without relying on a tab switch or a scroll.
+    for (NSString *identifier in [S7TVEmoteProviderSettings providerPriority]) {
+        S7TVExternalEmoteProvider provider = S7TVEmoteProviderFromIdentifier(identifier);
+        NSArray *items = self.pickerProviderEmotes[@((S7TVEmoteProviderID)provider)] ?: @[];
+        if (!items.count) continue;
+        NSInteger tab = provider == S7TVExternalEmoteProvider7TV
+            ? S7TVPickerTabSevenTV
+            : (provider == S7TVExternalEmoteProviderBTTV
+               ? S7TVPickerTabBTTV : S7TVPickerTabFFZ);
+        BOOL changed = self.pickerActiveTab != tab;
+        self.pickerActiveTab = tab;
+        self.pickerInitialProviderSelectionPending = NO;
+        return changed;
+    }
+    return NO;
+}
+
 // Met à jour la teinte/opacité de chaque icône + déplace la pastille
-// violette derrière l'onglet actif, dans la capsule flottante bas-gauche à
-// 3 boutons (Favoris / Channel / Globales).
+// violette derrière l'onglet actif. La capsule contient soit Favoris + Tous,
+// soit Favoris + les trois providers selon le réglage choisi.
 - (void)_s7tv_updateTabButtonHighlight {
+    [self _s7tv_updatePickerTabButtonLayout];
+    [self _s7tv_normalizeActivePickerTab];
+    BOOL providerMode = self.pickerProviderEmotes.count > 0 || self.pickerUsesCatalogSections;
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
     UIColor *activeTint   = [UIColor whiteColor];
     UIColor *inactiveTint = [UIColor colorWithWhite:0.55 alpha:1.0];
     for (UIButton *btn in self.pickerTabButtons) {
         BOOL isActive = (btn.tag == self.pickerActiveTab);
-        if (btn.tag == S7TVPickerTabGlobal || btn.tag == S7TVPickerTabChannel) {
-            // Logo 7TV PNG et avatar de chaîne = images non-template (AlwaysOriginal)
-            // → opacité plutôt que teinte (le placeholder SF Symbol du bouton
-            // Channel avant fetch réagit aussi bien à l'opacité).
+        if ([self _s7tv_pickerTabIsProvider:btn.tag]) {
+            NSInteger provider = btn.tag == S7TVPickerTabSevenTV
+                ? S7TVEmoteProviderIDSevenTV
+                : (btn.tag == S7TVPickerTabBTTV ? S7TVEmoteProviderIDBTTV : S7TVEmoteProviderIDFFZ);
+            BOOL enabled = [catalog.providerEnabled[@(provider)] boolValue] &&
+                (providerMode || provider == S7TVEmoteProviderIDSevenTV);
+            btn.enabled = enabled;
+            if (!enabled) { btn.alpha = 0.25; continue; }
+            // A button can be disabled and re-enabled while the picker stays
+            // visible (settings notification). Reset alpha before applying
+            // the active/inactive tint so it does not remain ghosted.
+            btn.alpha = 1.0;
+        }
+        if ([self _s7tv_pickerTabIsProvider:btn.tag]) {
+            // Les logos provider sont des images non-template : l'opacité
+            // reproduit l'état actif/inactif de la preview pour les trois.
             btn.alpha = isActive ? 1.0 : 0.55;
         } else {
             btn.tintColor = isActive ? activeTint : inactiveTint;
@@ -1560,6 +2273,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
             break;
         }
     }
+    [self _s7tv_updateSubcategoryCapsule];
 }
 
 // Recalcule et applique les frames de toutes les zones du picker (grille /
@@ -1574,8 +2288,14 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
 
     CGFloat bottomRowY = size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH
                           - kS7TVPickerFloatGap - kS7TVPickerFloatSize;
-    CGFloat tabCapsuleW = kS7TVPickerFloatSize * 3.0;
+    BOOL mixedPicker = [S7TVEmoteProviderSettings mixedPickerEnabled];
+    CGFloat tabCapsuleW = kS7TVPickerFloatSize * (mixedPicker ? 2.0 : 4.0);
     self.pickerTabCapsuleView.frame = CGRectMake(kS7TVPickerFloatMargin, bottomRowY, tabCapsuleW, kS7TVPickerFloatSize);
+    self.pickerSubcategoryCapsuleView.frame = CGRectMake(
+        kS7TVPickerFloatMargin,
+        bottomRowY - kS7TVPickerSubcategoryGap - kS7TVPickerFloatSize,
+        kS7TVPickerFloatSize * 2.0,
+        kS7TVPickerFloatSize);
     // Dans la grille, la capsule reste en bas à droite. Dans les réglages,
     // elle rejoint la ligne des trois catégories en haut à droite. Seule sa
     // position change : son apparence reste exactement celle du picker.
@@ -1596,8 +2316,18 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
 // ── Onglets — sélection ───────────────────────────────────────────────────
 
 - (void)_pickerTabTapped:(UIButton *)sender {
-    if (self.pickerActiveTab == sender.tag) return; // déjà actif
+    // A tap is an explicit user choice, even when it targets the already
+    // selected (currently empty/loading) provider. Do not let a late network
+    // response switch away from that choice during the first-open window.
+    self.pickerInitialProviderSelectionPending = NO;
+    self.pickerOpeningLocationExplicit = NO;
+    if (self.pickerActiveTab == sender.tag) {
+        [self _s7tv_persistLastPickerLocation];
+        [self _s7tv_updateSubcategoryCapsule];
+        return; // déjà actif
+    }
     self.pickerActiveTab = sender.tag;
+    [self _s7tv_persistLastPickerLocation];
     [self _s7tv_updateTabButtonHighlight];
 
     NSString *q = self.emoteSearchField.text ?: @"";
@@ -1617,11 +2347,43 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
 
 // Retourne l'array d'emotes correspondant à l'onglet actif.
 - (NSArray<SevenTVEmote *> *)_s7tv_currentTabEmotes {
+    if (self.pickerProviderEmotes.count > 0) {
+        if (self.pickerActiveTab == S7TVPickerTabFavorites)
+            return self.pickerCatalogFavorites ?: @[];
+        if (self.pickerActiveTab == S7TVPickerTabAll) {
+            NSMutableArray<SevenTVEmote *> *all = [NSMutableArray array];
+            NSMutableSet<NSString *> *seen = [NSMutableSet set];
+            for (NSNumber *provider in [self _s7tv_providerIDsInPriorityOrder]) {
+                for (SevenTVEmote *item in self.pickerProviderEmotes[provider] ?: @[]) {
+                    NSString *key = S7TVPickerStableEmoteKey(item);
+                    if (!key.length || [seen containsObject:key]) continue;
+                    [seen addObject:key];
+                    [all addObject:item];
+                }
+            }
+            // The aggregate tab must not impose a provider order.  Keep the
+            // historical dimensions/name ordering, but leave provider ties to
+            // the source order instead of grouping 7TV, BTTV and FFZ.
+            [all sortUsingComparator:S7TVPickerMixedEmoteSizeComparator];
+            return all.copy;
+        }
+        NSInteger provider = self.pickerActiveTab == S7TVPickerTabSevenTV
+            ? S7TVEmoteProviderIDSevenTV
+            : (self.pickerActiveTab == S7TVPickerTabBTTV
+               ? S7TVEmoteProviderIDBTTV : S7TVEmoteProviderIDFFZ);
+        return self.pickerProviderEmotes[@(provider)] ?: @[];
+    }
     switch (self.pickerActiveTab) {
-        case S7TVPickerTabChannel:
-            return self.emotePickerChannelEmotes;
-        case S7TVPickerTabGlobal:
-            return self.emotePickerGlobalEmotes;
+        case S7TVPickerTabAll:
+            return self.emotePickerAllEmotes ?: @[];
+        case S7TVPickerTabSevenTV:
+            // The legacy cache is a combined 7TV catalogue.  It is the only
+            // valid fallback while the provider-aware catalogue is idle.
+            return self.emotePickerAllEmotes ?: self.emotePickerChannelEmotes;
+        case S7TVPickerTabBTTV:
+        case S7TVPickerTabFFZ:
+            // Never show legacy 7TV objects under another provider's tab.
+            return @[];
         case S7TVPickerTabFavorites:
         default:
             return self.emotePickerFavoriteEmotes;
@@ -1641,124 +2403,675 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     [self _updatePickerArraysForSearch:query autoSelectTab:NO];
 }
 
+- (S7TVEmoteProviderID)_s7tv_providerForPickerTab:(NSInteger)tab {
+    switch (tab) {
+        case S7TVPickerTabBTTV: return S7TVEmoteProviderIDBTTV;
+        case S7TVPickerTabFFZ: return S7TVEmoteProviderIDFFZ;
+        case S7TVPickerTabSevenTV:
+        default: return S7TVEmoteProviderIDSevenTV;
+    }
+}
+
+- (BOOL)_s7tv_pickerTabIsProvider:(NSInteger)tab {
+    return tab == S7TVPickerTabSevenTV || tab == S7TVPickerTabBTTV ||
+        tab == S7TVPickerTabFFZ;
+}
+
+- (NSArray<NSNumber *> *)_s7tv_providerIDsInPriorityOrder {
+    NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:3];
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    for (NSString *identifier in [S7TVEmoteProviderSettings providerPriority]) {
+        S7TVExternalEmoteProvider external = S7TVEmoteProviderFromIdentifier(identifier);
+        S7TVEmoteProviderID provider = (S7TVEmoteProviderID)external;
+        if (provider < S7TVEmoteProviderIDSevenTV || provider > S7TVEmoteProviderIDFFZ ||
+            ![catalog.providerEnabled[@(provider)] boolValue] ||
+            [result containsObject:@(provider)]) continue;
+        [result addObject:@(provider)];
+    }
+    for (NSInteger provider = S7TVEmoteProviderIDSevenTV;
+         provider <= S7TVEmoteProviderIDFFZ; provider++) {
+        if ([catalog.providerEnabled[@(provider)] boolValue] &&
+            ![result containsObject:@(provider)])
+            [result addObject:@(provider)];
+    }
+    return result.copy;
+}
+
+- (void)_s7tv_persistLastPickerLocation {
+    NSString *location = nil;
+    NSString *subcategory = nil;
+    NSNumber *selectionKey = nil;
+    if (self.pickerActiveTab == S7TVPickerTabFavorites) {
+        location = @"favorites";
+    } else if (self.pickerActiveTab == S7TVPickerTabAll) {
+        subcategory = self.pickerSubcategoryByProvider[@(-1)] ?: @"channel";
+        location = [NSString stringWithFormat:@"all:%@", subcategory];
+    } else if ([self _s7tv_pickerTabIsProvider:self.pickerActiveTab]) {
+        S7TVEmoteProviderID provider = [self _s7tv_providerForPickerTab:self.pickerActiveTab];
+        selectionKey = @(provider);
+        subcategory = self.pickerSubcategoryByProvider[selectionKey] ?: @"channel";
+        location = [NSString stringWithFormat:@"%@:%@",
+                    S7TVEmoteProviderKey(provider), subcategory];
+    }
+    if (location.length)
+        [S7TVEmoteProviderSettings setLastPickerLocation:location];
+}
+
+- (BOOL)_s7tv_applyConfiguredPickerOpeningLocation {
+    NSString *mode = [S7TVEmoteProviderSettings pickerOpeningMode];
+    if (!mode.length) return NO;
+    self.pickerOpeningLocationExplicit = YES;
+    if ([mode isEqualToString:S7TVEmotePickerOpeningModeFavorites]) {
+        self.pickerActiveTab = S7TVPickerTabFavorites;
+        return YES;
+    }
+    if ([mode isEqualToString:S7TVEmotePickerOpeningModeSevenTVChannel] ||
+        [mode isEqualToString:S7TVEmotePickerOpeningModeBTTVChannel] ||
+        [mode isEqualToString:S7TVEmotePickerOpeningModeFFZChannel]) {
+        if ([S7TVEmoteProviderSettings mixedPickerEnabled]) {
+            // A provider-specific opening choice has no visible button in
+            // aggregate mode. Preserve its Channel intent by opening the
+            // corresponding virtual All tab instead of falling back to
+            // Favorites or a hidden provider.
+            self.pickerActiveTab = S7TVPickerTabAll;
+            self.pickerSubcategoryByProvider[@(-1)] = @"channel";
+            return YES;
+        }
+        NSInteger tab = [mode hasPrefix:@"7tv"] ? S7TVPickerTabSevenTV
+            : ([mode hasPrefix:@"bttv"] ? S7TVPickerTabBTTV : S7TVPickerTabFFZ);
+        self.pickerActiveTab = tab;
+        S7TVEmoteProviderID provider = [self _s7tv_providerForPickerTab:tab];
+        self.pickerSubcategoryByProvider[@(provider)] = @"channel";
+        return YES;
+    }
+    if ([mode isEqualToString:S7TVEmotePickerOpeningModeLastUsed]) {
+        NSString *location = [S7TVEmoteProviderSettings lastPickerLocation];
+        if ([location isEqualToString:@"favorites"]) {
+            self.pickerActiveTab = S7TVPickerTabFavorites;
+            return YES;
+        }
+        NSArray<NSString *> *parts = [location componentsSeparatedByString:@":"];
+        if (parts.count >= 2) {
+            NSString *providerKey = parts[0].lowercaseString;
+            NSString *subcategory = [parts[1].lowercaseString isEqualToString:@"global"]
+                ? @"global" : @"channel";
+            if ([providerKey isEqualToString:@"all"]) {
+                self.pickerActiveTab = S7TVPickerTabAll;
+                self.pickerSubcategoryByProvider[@(-1)] = subcategory;
+                return YES;
+            }
+            S7TVEmoteProviderID provider =
+                (S7TVEmoteProviderID)S7TVEmoteProviderFromIdentifier(providerKey);
+            if (provider >= S7TVEmoteProviderIDSevenTV && provider <= S7TVEmoteProviderIDFFZ) {
+                if ([S7TVEmoteProviderSettings mixedPickerEnabled]) {
+                    self.pickerActiveTab = S7TVPickerTabAll;
+                    self.pickerSubcategoryByProvider[@(-1)] = subcategory;
+                    return YES;
+                }
+                self.pickerActiveTab = provider == S7TVEmoteProviderIDSevenTV
+                    ? S7TVPickerTabSevenTV
+                    : (provider == S7TVEmoteProviderIDBTTV ? S7TVPickerTabBTTV : S7TVPickerTabFFZ);
+                self.pickerSubcategoryByProvider[@(provider)] = subcategory;
+                return YES;
+            }
+        }
+        // « Dernier menu » sans historique reprend les favoris si présents,
+        // puis laisse la sélection initiale choisir le provider prioritaire.
+        self.pickerOpeningLocationExplicit = NO;
+        return NO;
+    }
+    self.pickerOpeningLocationExplicit = NO;
+    return NO;
+}
+
+- (NSString *)_s7tv_displaySectionKey:(S7TVPickerDisplaySection *)section {
+    NSInteger provider = section.provider;
+    return [NSString stringWithFormat:@"%ld:%@", (long)provider,
+            section.identifier ?: @""];
+}
+
+- (BOOL)_s7tv_sectionIsChannel:(S7TVPickerDisplaySection *)section {
+    if (!section || [section.identifier isEqualToString:@"provider-state"]) return NO;
+    // BTTV shared emotes and provider sets are still channel-scoped in the
+    // picker. Keeping them in this bucket prevents the desktop catalogue from
+    // silently disappearing behind an unexposed "Shared"/"Set" category.
+    if (section.kind == S7TVEmoteSectionKindChannel ||
+        section.kind == S7TVEmoteSectionKindShared) return YES;
+    if (section.kind == S7TVEmoteSectionKindSet &&
+        ![section.identifier.lowercaseString hasPrefix:@"global-set:"]) return YES;
+    NSString *title = section.title.lowercaseString ?: @"";
+    NSString *identifier = section.identifier.lowercaseString ?: @"";
+    return [title containsString:@"channel"] || [identifier containsString:@"channel"];
+}
+
+- (BOOL)_s7tv_sectionIsGlobal:(S7TVPickerDisplaySection *)section {
+    if (!section || [section.identifier isEqualToString:@"provider-state"]) return NO;
+    if (section.kind == S7TVEmoteSectionKindGlobal) return YES;
+    NSString *title = section.title.lowercaseString ?: @"";
+    NSString *identifier = section.identifier.lowercaseString ?: @"";
+    return [title containsString:@"global"] || [identifier containsString:@"global"];
+}
+
+- (void)_s7tv_updateSubcategoryCapsule {
+    UIView *capsule = self.pickerSubcategoryCapsuleView;
+    UIButton *channelButton = self.pickerSubcategoryChannelBtn;
+    UIButton *globalButton = self.pickerSubcategoryGlobalBtn;
+    if (!capsule || !channelButton || !globalButton) return;
+
+    BOOL providerTab = [self _s7tv_pickerTabIsProvider:self.pickerActiveTab];
+    BOOL allTab = self.pickerActiveTab == S7TVPickerTabAll;
+    BOOL visible = (providerTab || allTab) && !self.pickerSizesPanelVisible;
+    capsule.hidden = !visible;
+    if (!visible) return;
+
+    NSNumber *selectionKey = allTab ? @(-1) :
+        @([self _s7tv_providerForPickerTab:self.pickerActiveTab]);
+    BOOL hasChannel = NO;
+    BOOL hasGlobal = NO;
+    NSArray<NSNumber *> *providers = allTab
+        ? [self _s7tv_providerIDsInPriorityOrder]
+        : @[selectionKey];
+    for (NSNumber *providerNumber in providers) {
+        for (S7TVPickerDisplaySection *section in
+             self.pickerProviderSections[providerNumber] ?: @[]) {
+            BOOL usable = section.items.count > 0 || !section.loaded ||
+                section.loading || section.errorMessage.length;
+            if (!usable) continue;
+            hasChannel |= [self _s7tv_sectionIsChannel:section];
+            hasGlobal |= [self _s7tv_sectionIsGlobal:section];
+        }
+    }
+
+    // Keep the Channel capsule visible even when the current broadcaster has
+    // no channel emotes. The avatar identifies the active channel and must not
+    // disappear merely because its section is empty; only the action itself is
+    // disabled until a channel section becomes available.
+    channelButton.hidden = NO;
+    channelButton.enabled = hasChannel;
+    globalButton.hidden = !hasGlobal;
+    globalButton.enabled = hasGlobal;
+
+    NSString *selected = self.pickerSubcategoryByProvider[selectionKey];
+    // Older builds persisted a dynamic section ID (for example `set:abc`).
+    // Normalize it to the stable two-value state used by the aggregate view.
+    BOOL selectedIsChannel = [selected isEqualToString:@"channel"] ||
+        (selected.length && ![selected isEqualToString:@"global"] && hasChannel &&
+         ![selected.lowercaseString containsString:@"global"]);
+    BOOL selectedIsGlobal = [selected isEqualToString:@"global"] ||
+        (selected.length && [selected.lowercaseString containsString:@"global"] && hasGlobal);
+    selectedIsChannel &= hasChannel;
+    selectedIsGlobal &= hasGlobal;
+    if (!selectedIsChannel && !selectedIsGlobal) {
+        // Channel is the default when it contains emotes; otherwise Global.
+        // A loading Channel placeholder must not hide a Global section that is
+        // already available during the first opening.
+        BOOL channelHasItems = NO;
+        BOOL globalHasItems = NO;
+        for (NSNumber *providerNumber in providers) {
+            for (S7TVPickerDisplaySection *section in
+                 self.pickerProviderSections[providerNumber] ?: @[]) {
+                if ([self _s7tv_sectionIsChannel:section] && section.items.count) channelHasItems = YES;
+                if ([self _s7tv_sectionIsGlobal:section] && section.items.count) globalHasItems = YES;
+            }
+        }
+        selected = channelHasItems ? @"channel" :
+            (globalHasItems ? @"global" : (hasChannel ? @"channel" : @"global"));
+        if (selected.length) self.pickerSubcategoryByProvider[selectionKey] = selected;
+        selectedIsChannel = [selected isEqualToString:@"channel"] && hasChannel;
+        selectedIsGlobal = [selected isEqualToString:@"global"] && hasGlobal;
+    }
+
+    UIColor *accent = s7tv_pickerAccentColor();
+    UIColor *inactive = [UIColor colorWithWhite:1.0 alpha:0.58];
+    channelButton.backgroundColor = selectedIsChannel ? accent : UIColor.clearColor;
+    globalButton.backgroundColor = selectedIsGlobal ? accent : UIColor.clearColor;
+    channelButton.tintColor = selectedIsChannel ? UIColor.whiteColor : inactive;
+    globalButton.tintColor = selectedIsGlobal ? UIColor.whiteColor : inactive;
+    channelButton.alpha = hasChannel ? (selectedIsChannel ? 1.0 : 0.55) : 0.25;
+    globalButton.alpha = hasGlobal ? (selectedIsGlobal ? 1.0 : 0.55) : 0.25;
+
+    // Le bouton Global reprend le logo du provider actif. Pour l'agrégat «
+    // Tous », une petite mappemonde indique que plusieurs sources sont mêlées.
+    UIImage *providerLogo = nil;
+    if (!allTab) {
+        for (UIButton *providerButton in self.pickerTabButtons) {
+            if (providerButton.tag == self.pickerActiveTab) {
+                providerLogo = [providerButton imageForState:UIControlStateNormal];
+                break;
+            }
+        }
+    }
+    if (!providerLogo) {
+        UIImageSymbolConfiguration *globalCfg = [UIImageSymbolConfiguration
+            configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
+        providerLogo = [UIImage systemImageNamed:@"globe" withConfiguration:globalCfg];
+    }
+    [globalButton setImage:[providerLogo imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal]
+                  forState:UIControlStateNormal];
+    globalButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
+
+    // L'avatar représente la chaîne, pas le provider : il reste donc visible
+    // quand on passe de 7TV à BTTV ou FFZ.
+    [self _s7tv_refreshChannelAvatarIfNeeded];
+}
+
+- (void)_pickerSubcategoryTapped:(UIButton *)sender {
+    BOOL providerTab = [self _s7tv_pickerTabIsProvider:self.pickerActiveTab];
+    BOOL allTab = self.pickerActiveTab == S7TVPickerTabAll;
+    if ((!providerTab && !allTab) || sender.hidden || !sender.enabled) return;
+    BOOL wantChannel = sender == self.pickerSubcategoryChannelBtn;
+    NSNumber *selectionKey = allTab ? @(-1) :
+        @([self _s7tv_providerForPickerTab:self.pickerActiveTab]);
+    self.pickerSubcategoryByProvider[selectionKey] = wantChannel ? @"channel" : @"global";
+    [self _s7tv_persistLastPickerLocation];
+    [self _s7tv_updateSubcategoryCapsule];
+    NSString *query = self.emoteSearchField.text ?: @"";
+    [self _updatePickerArraysForSearch:query];
+    [self _s7tv_deactivateVisiblePickerAnimations];
+    [self.emoteCollectionView reloadData];
+    [self.emoteCollectionView.collectionViewLayout invalidateLayout];
+    [self.emoteCollectionView setContentOffset:CGPointZero animated:NO];
+}
+
+- (void)_s7tv_rebuildCatalogDisplaySectionsForQueryLegacy:(NSString *)query {
+    NSString *trimmed = [query stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *lower = trimmed.lowercaseString;
+
+    // Searching temporarily expands matching sections. Preserve the user's
+    // explicit open/collapsed choices and restore them when the query is
+    // cleared, instead of leaving every section expanded after a search.
+    BOOL hasQuery = lower.length > 0;
+    if (hasQuery && !self.pickerCatalogSearchActive) {
+        self.pickerCollapseStateBeforeSearch = self.pickerCollapsedSections.copy ?: @{};
+        self.pickerCatalogSearchActive = YES;
+    } else if (!hasQuery && self.pickerCatalogSearchActive) {
+        self.pickerCollapsedSections =
+            [self.pickerCollapseStateBeforeSearch mutableCopy] ?: [NSMutableDictionary dictionary];
+        self.pickerCollapseStateBeforeSearch = nil;
+        self.pickerCatalogSearchActive = NO;
+    }
+
+    NSMutableArray<S7TVPickerDisplaySection *> *display = [NSMutableArray array];
+
+    if (self.pickerActiveTab == S7TVPickerTabFavorites) {
+        if (self.pickerCatalogFavorites.count) {
+            NSMutableArray *items = [NSMutableArray array];
+            for (SevenTVEmote *item in self.pickerCatalogFavorites) {
+                S7TVEmoteDescriptor *descriptor = [item isKindOfClass:[S7TVPickerCatalogEmote class]]
+                    ? [(S7TVPickerCatalogEmote *)item descriptor] : nil;
+                BOOL matches = !lower.length || [item.emoteName.lowercaseString containsString:lower];
+                if (!matches && descriptor) {
+                    for (NSString *alias in descriptor.aliases) {
+                        if ([alias.lowercaseString containsString:lower]) { matches = YES; break; }
+                    }
+                }
+                if (matches) [items addObject:item];
+            }
+            // A query may filter every favorite out. Do not leave an empty
+            // collapsible header behind; an empty-state header is only useful
+            // for a provider that is still loading or failed, not for a
+            // successfully filtered Favorites tab.
+            if (items.count) {
+                S7TVPickerDisplaySection *favorites = [S7TVPickerDisplaySection new];
+                favorites.provider = S7TVEmoteProviderIDSevenTV;
+                favorites.kind = S7TVEmoteSectionKindFavorites;
+                favorites.identifier = @"favorites";
+                favorites.title = @"Favorites";
+                favorites.items = items.copy;
+                favorites.loaded = YES;
+                [display addObject:favorites];
+            }
+        }
+    } else {
+        S7TVEmoteProviderID provider = [self _s7tv_providerForPickerTab:self.pickerActiveTab];
+        NSArray<S7TVPickerDisplaySection *> *source = self.pickerProviderSections[@(provider)];
+        S7TVEmoteProviderSnapshot *snapshot = [[S7TVEmoteCatalog sharedCatalog]
+            snapshotForProvider:provider];
+
+        // Before a provider has produced its first section, expose a compact
+        // state header instead of an empty grid. This removes the old “scroll
+        // to make it load” behaviour and gives errors an explicit retry path.
+        if (!source.count && (snapshot.state == S7TVEmoteProviderStateLoading ||
+                              snapshot.state == S7TVEmoteProviderStateLoaded ||
+                              snapshot.state == S7TVEmoteProviderStateError)) {
+            S7TVPickerDisplaySection *stateSection = [S7TVPickerDisplaySection new];
+            stateSection.provider = provider;
+            stateSection.kind = S7TVEmoteSectionKindSet;
+            stateSection.identifier = @"provider-state";
+            stateSection.title = S7TVEmoteProviderName(provider);
+            stateSection.items = @[];
+            stateSection.loaded = snapshot.state == S7TVEmoteProviderStateLoaded;
+            stateSection.loading = snapshot.state == S7TVEmoteProviderStateLoading;
+            stateSection.empty = snapshot.state == S7TVEmoteProviderStateLoaded;
+            stateSection.errorMessage = snapshot.errorMessage;
+            [display addObject:stateSection];
+        }
+
+        for (S7TVPickerDisplaySection *original in source) {
+            NSMutableArray *items = [NSMutableArray array];
+            for (SevenTVEmote *item in original.items) {
+                S7TVEmoteDescriptor *descriptor = [item isKindOfClass:[S7TVPickerCatalogEmote class]]
+                    ? [(S7TVPickerCatalogEmote *)item descriptor] : nil;
+                BOOL matches = !lower.length || [item.emoteName.lowercaseString containsString:lower];
+                if (!matches && descriptor) {
+                    for (NSString *alias in descriptor.aliases) {
+                        if ([alias.lowercaseString containsString:lower]) { matches = YES; break; }
+                    }
+                }
+                if (matches) [items addObject:item];
+            }
+            // A loaded section with no search result is hidden; a loading or
+            // failed section remains as a visible header for feedback/retry.
+            // An undispatched optional set is a real, expandable section even
+            // though it has no emotes yet. Only hide a section after a
+            // successful empty response; placeholders must stay visible so
+            // the user can expand them to trigger their request.
+            if (!items.count && original.loaded && !original.loading && !original.errorMessage.length) continue;
+            S7TVPickerDisplaySection *current = [S7TVPickerDisplaySection new];
+            current.provider = original.provider;
+            current.kind = original.kind;
+            current.identifier = original.identifier;
+            current.title = original.title;
+            current.items = items.copy;
+            current.loaded = original.loaded;
+            current.loading = original.loading;
+            current.empty = original.empty;
+            current.errorMessage = original.errorMessage;
+            [display addObject:current];
+        }
+    }
+
+    // Preserve explicit collapse choices. New sections default to one open
+    // section (or all matching sections during a search) and the remainder
+    // collapsed, mirroring the desktop picker without hiding their headers.
+    BOOL openedOne = NO;
+    for (S7TVPickerDisplaySection *section in display) {
+        NSString *key = [self _s7tv_displaySectionKey:section];
+        BOOL canDisplayContent = section.items.count > 0 ||
+            section.loading || section.errorMessage.length ||
+            section.kind == S7TVEmoteSectionKindSet;
+        if (lower.length) {
+            self.pickerCollapsedSections[key] = @NO;
+        } else if (!self.pickerCollapsedSections[key]) {
+            BOOL shouldCollapse = openedOne && canDisplayContent;
+            self.pickerCollapsedSections[key] = @(shouldCollapse);
+        }
+        if (canDisplayContent && ![self.pickerCollapsedSections[key] boolValue])
+            openedOne = YES;
+    }
+
+    self.pickerDisplaySections = display.copy;
+    self.pickerUsesCatalogSections = display.count > 0;
+    // The active provider can switch between a sectioned catalog and the
+    // legacy flat fallback.  Keep the flow layout in sync immediately; if
+    // this is left to picker creation/reload only, switching tabs can leave a
+    // stale 30pt header (or hide real section headers with a zero height).
+    UICollectionViewFlowLayout *flowLayout =
+        (UICollectionViewFlowLayout *)self.emoteCollectionView.collectionViewLayout;
+    if (flowLayout) {
+        flowLayout.headerReferenceSize = CGSizeZero;
+    }
+    // Keep the legacy flat array synchronized with the sections that are
+    // actually open. It is still used by the anchor/search compatibility code,
+    // while the collection data source reads the section arrays directly.
+    NSMutableArray<SevenTVEmote *> *visibleItems = [NSMutableArray array];
+    for (S7TVPickerDisplaySection *section in display) {
+        NSString *key = [self _s7tv_displaySectionKey:section];
+        if (![self.pickerCollapsedSections[key] boolValue])
+            [visibleItems addObjectsFromArray:section.items ?: @[]];
+    }
+    self.emotePickerEmotes = visibleItems.copy;
+}
+
+// Version utilisée par la présentation actuelle : une seule catégorie
+// Channel/Global est rendue à la fois. Les sections natives Shared et Set sont
+// volontairement fusionnées dans leur portée (Channel ou Global), ce qui
+// garantit que le picker affiche tout ce que les providers ont fourni.
+- (void)_s7tv_rebuildCatalogDisplaySectionsForQuery:(NSString *)query {
+    NSString *trimmed = [query stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *lower = trimmed.lowercaseString;
+    NSMutableArray<S7TVPickerDisplaySection *> *display = [NSMutableArray array];
+
+    if (self.pickerActiveTab == S7TVPickerTabFavorites) {
+        NSMutableArray<SevenTVEmote *> *items = [NSMutableArray array];
+        for (SevenTVEmote *item in self.pickerCatalogFavorites ?: @[]) {
+            S7TVEmoteDescriptor *descriptor = [item isKindOfClass:[S7TVPickerCatalogEmote class]]
+                ? [(S7TVPickerCatalogEmote *)item descriptor] : nil;
+            BOOL matches = !lower.length || [item.emoteName.lowercaseString containsString:lower];
+            if (!matches && descriptor) {
+                for (NSString *alias in descriptor.aliases) {
+                    if ([alias.lowercaseString containsString:lower]) { matches = YES; break; }
+                }
+            }
+            if (matches) [items addObject:item];
+        }
+        [items sortUsingComparator:S7TVPickerEmoteSizeComparator];
+        if (items.count) {
+            S7TVPickerDisplaySection *favorites = [S7TVPickerDisplaySection new];
+            favorites.provider = S7TVEmoteProviderIDSevenTV;
+            favorites.kind = S7TVEmoteSectionKindFavorites;
+            favorites.identifier = @"favorites";
+            favorites.title = @"Favorites";
+            favorites.items = items.copy;
+            favorites.loaded = YES;
+            [display addObject:favorites];
+        }
+    } else {
+        BOOL allTab = self.pickerActiveTab == S7TVPickerTabAll;
+        S7TVEmoteProviderID provider = allTab
+            ? S7TVEmoteProviderIDSevenTV
+            : [self _s7tv_providerForPickerTab:self.pickerActiveTab];
+        NSNumber *selectionKey = allTab ? @(-1) : @(provider);
+        NSArray<NSNumber *> *providers = allTab
+            ? [self _s7tv_providerIDsInPriorityOrder]
+            : @[@(provider)];
+        NSMutableArray<SevenTVEmote *> *channelItems = [NSMutableArray array];
+        NSMutableArray<SevenTVEmote *> *globalItems = [NSMutableArray array];
+        NSMutableSet<NSString *> *seenChannel = [NSMutableSet set];
+        NSMutableSet<NSString *> *seenGlobal = [NSMutableSet set];
+        BOOL channelLoading = NO, globalLoading = NO;
+        BOOL channelError = NO, globalError = NO;
+        NSString *channelErrorMessage = nil, *globalErrorMessage = nil;
+        BOOL anyProviderLoading = NO, anyProviderError = NO;
+        NSString *anyProviderErrorMessage = nil;
+
+        BOOL (^matchesQuery)(SevenTVEmote *) = ^BOOL(SevenTVEmote *item) {
+            if (!lower.length) return YES;
+            S7TVEmoteDescriptor *descriptor = [item isKindOfClass:[S7TVPickerCatalogEmote class]]
+                ? [(S7TVPickerCatalogEmote *)item descriptor] : nil;
+            if ([item.emoteName.lowercaseString containsString:lower]) return YES;
+            for (NSString *alias in descriptor.aliases)
+                if ([alias.lowercaseString containsString:lower]) return YES;
+            return NO;
+        };
+
+        for (NSNumber *providerNumber in providers) {
+            NSArray<S7TVPickerDisplaySection *> *source =
+                self.pickerProviderSections[providerNumber] ?: @[];
+            for (S7TVPickerDisplaySection *original in source) {
+                BOOL isChannel = [self _s7tv_sectionIsChannel:original];
+                BOOL isGlobal = [self _s7tv_sectionIsGlobal:original];
+                if (!isChannel && !isGlobal) {
+                    if (original.loading) anyProviderLoading = YES;
+                    if (original.errorMessage.length) {
+                        anyProviderError = YES;
+                        if (!anyProviderErrorMessage.length) anyProviderErrorMessage = original.errorMessage;
+                    }
+                    continue;
+                }
+                BOOL pending = !original.loaded || original.loading;
+                if (isChannel) {
+                    channelLoading |= pending;
+                    if (original.errorMessage.length) {
+                        channelError = YES;
+                        if (!channelErrorMessage.length) channelErrorMessage = original.errorMessage;
+                    }
+                } else {
+                    globalLoading |= pending;
+                    if (original.errorMessage.length) {
+                        globalError = YES;
+                        if (!globalErrorMessage.length) globalErrorMessage = original.errorMessage;
+                    }
+                }
+                NSMutableArray *target = isChannel ? channelItems : globalItems;
+                NSMutableSet *seen = isChannel ? seenChannel : seenGlobal;
+                for (SevenTVEmote *item in original.items ?: @[]) {
+                    if (!matchesQuery(item)) continue;
+                    NSString *key = S7TVPickerStableEmoteKey(item);
+                    if (!key.length || [seen containsObject:key]) continue;
+                    [seen addObject:key];
+                    [target addObject:item];
+                }
+            }
+        }
+
+        // Each virtual Channel/Global section is the union of all enabled
+        // providers. Sort only after the union so BTTV/FFZ/7TV entries are
+        // interleaved by the same dimensions-first order as the old picker,
+        // instead of appearing as three provider-sized blocks.
+        [channelItems sortUsingComparator:S7TVPickerMixedEmoteSizeComparator];
+        [globalItems sortUsingComparator:S7TVPickerMixedEmoteSizeComparator];
+
+        BOOL (^addCategory)(BOOL, NSArray<SevenTVEmote *> *, BOOL, BOOL, NSString *, NSString *) =
+            ^BOOL(BOOL isChannel, NSArray<SevenTVEmote *> *items, BOOL loading,
+                  BOOL hasError, NSString *errorMessage, NSString *identifier) {
+            if (!items.count && !loading && !hasError) return NO;
+            S7TVPickerDisplaySection *section = [S7TVPickerDisplaySection new];
+            section.provider = provider;
+            section.kind = isChannel ? S7TVEmoteSectionKindChannel : S7TVEmoteSectionKindGlobal;
+            section.identifier = identifier;
+            section.title = isChannel ? @"Channel Emotes" : @"Global Emotes";
+            section.items = items ?: @[];
+            section.loaded = !loading;
+            section.loading = loading;
+            section.empty = !items.count && !hasError && !loading;
+            section.errorMessage = errorMessage;
+            [display addObject:section];
+            return YES;
+        };
+        BOOL hasChannelCategory = addCategory(YES, channelItems, channelLoading,
+            channelError, channelErrorMessage, allTab ? @"all-channel" : @"channel");
+        BOOL hasGlobalCategory = addCategory(NO, globalItems, globalLoading,
+            globalError, globalErrorMessage, allTab ? @"all-global" : @"global");
+
+        // Une seule catégorie reste ouverte. Par défaut Channel est choisie
+        // si elle contient des emotes, sinon Global ; un choix utilisateur est
+        // conservé par provider (ou par l'agrégat pour « Tous »).
+        NSString *selectedID = [self.pickerSubcategoryByProvider[selectionKey] lowercaseString];
+        BOOL wantsChannel = [selectedID isEqualToString:@"channel"] ||
+            (selectedID.length && ![selectedID containsString:@"global"] && hasChannelCategory);
+        BOOL wantsGlobal = [selectedID isEqualToString:@"global"] ||
+            ([selectedID containsString:@"global"] && hasGlobalCategory);
+        S7TVPickerDisplaySection *selected = nil;
+        S7TVPickerDisplaySection *channelSection = display.firstObject;
+        S7TVPickerDisplaySection *globalSection = display.count > 1 ? display[1] :
+            (hasGlobalCategory ? display.firstObject : nil);
+        if (wantsChannel && hasChannelCategory) selected = channelSection;
+        if (wantsGlobal && hasGlobalCategory) selected = globalSection;
+        if (!selected && !lower.length) {
+            if (channelItems.count) selected = hasChannelCategory ? channelSection : nil;
+            if (!selected && globalItems.count) selected = hasGlobalCategory ? globalSection : nil;
+            if (!selected && hasChannelCategory) selected = channelSection;
+            if (!selected && hasGlobalCategory) selected = globalSection;
+        }
+        if (!selected && lower.length) {
+            if (channelItems.count && hasChannelCategory) selected = channelSection;
+            else if (globalItems.count && hasGlobalCategory) selected = globalSection;
+        }
+        if (selected) {
+            if (!lower.length)
+                self.pickerSubcategoryByProvider[selectionKey] =
+                    [selected.identifier hasSuffix:@"global"] ? @"global" : @"channel";
+            // The two virtual sections are ordered Channel then Global. Keep
+            // only the selected one visible, as in the original picker.
+            [display removeAllObjects];
+            [display addObject:selected];
+        } else if (anyProviderLoading || anyProviderError || !providers.count) {
+            S7TVPickerDisplaySection *state = [S7TVPickerDisplaySection new];
+            state.provider = provider;
+            state.kind = S7TVEmoteSectionKindSet;
+            state.identifier = allTab ? @"all-provider-state" : @"provider-state";
+            state.title = allTab ? @"All providers" : S7TVEmoteProviderName(provider);
+            state.items = @[];
+            state.loading = anyProviderLoading;
+            state.loaded = !anyProviderLoading;
+            state.empty = !anyProviderLoading && !anyProviderError;
+            state.errorMessage = anyProviderErrorMessage;
+            [display addObject:state];
+        }
+    }
+
+    self.pickerDisplaySections = display.copy;
+    self.pickerUsesCatalogSections = display.count > 0;
+    [self.pickerCollapsedSections removeAllObjects];
+    for (S7TVPickerDisplaySection *section in display)
+        self.pickerCollapsedSections[[self _s7tv_displaySectionKey:section]] = @NO;
+
+    UICollectionViewFlowLayout *flowLayout =
+        (UICollectionViewFlowLayout *)self.emoteCollectionView.collectionViewLayout;
+    if (flowLayout) flowLayout.headerReferenceSize = CGSizeZero;
+
+    self.emotePickerEmotes = display.count ? display.firstObject.items : @[];
+    [self _s7tv_updateSubcategoryCapsule];
+}
+
 - (void)_updatePickerArraysForSearch:(NSString *)query autoSelectTab:(BOOL)autoSelectTab {
     NSString *q = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     NSString *lower = q.lowercaseString;
 
-    NSMutableArray<SevenTVEmote *> *favs    = [NSMutableArray array];
-    NSMutableArray<SevenTVEmote *> *channel = [NSMutableArray array];
-    NSMutableArray<SevenTVEmote *> *global  = [NSMutableArray array];
-    // Anti-doublon Favoris : une chaîne peut ajouter une emote globale à son
-    // propre emote-set sous un nom différent (alias/renommage) — le
-    // dédoublonnage channel/global en amont (par NOM) ne fusionne alors pas
-    // les deux objets, qui partagent pourtant le même emoteID 7TV. Comme le
-    // favori est stocké par ID, les deux passeraient isEmoteFavorited: et
-    // l'emote apparaîtrait 2x dans l'onglet Favoris. On ne garde donc que la
-    // première occurrence de chaque ID favori.
-    NSMutableSet<NSString *> *seenFavoriteIDs = [NSMutableSet set];
-
-    // Snapshot des dicts pour distinguer channel vs global
-    __block NSDictionary *channelDict;
-    dispatch_sync([SevenTVManager sharedManager].emoteQueue, ^{
-        channelDict = [SevenTVManager sharedManager].channelEmotes ?: @{};
-    });
-
-    for (SevenTVEmote *e in self.emotePickerAllEmotes) {
-        BOOL matches = (q.length == 0) || [e.emoteName.lowercaseString containsString:lower];
-        if (!matches) continue;
-        // Non-exclusif : une emote favorite reste dans son onglet 7TV normal
-        // (channel/globales) avec l'étoile affichée — elle apparaît aussi
-        // dans l'onglet Favoris. C'est l'onglet actif qui choisit quel array
-        // afficher, pas une appartenance à une section unique comme avant.
-        if ([[SevenTVManager sharedManager] isEmoteFavorited:e.emoteID]
-            && e.emoteID.length > 0
-            && ![seenFavoriteIDs containsObject:e.emoteID]) {
-            [seenFavoriteIDs addObject:e.emoteID];
-            [favs addObject:e];
-        }
-        if (channelDict[e.emoteName] != nil) {
-            [channel addObject:e];
+    // The provider-aware catalogue is the only source of picker data.  Keep
+    // this path active even while every provider is still loading: the
+    // catalogue publishes explicit loading/error sections, so opening the
+    // picker never falls back to a stale 7TV-only dictionary.
+    {
+        NSMutableArray *providerItems = [NSMutableArray array];
+        if (self.pickerActiveTab == S7TVPickerTabFavorites) {
+            [providerItems addObjectsFromArray:self.pickerCatalogFavorites ?: @[]];
+        } else if (self.pickerActiveTab == S7TVPickerTabAll) {
+            // The aggregate list is already dimension/name ordered by its
+            // mixed comparator.  Do not re-group it by the collision priority;
+            // every `(provider,id)` entry remains visible in this tab.
+            [providerItems addObjectsFromArray:[self _s7tv_currentTabEmotes]];
         } else {
-            [global addObject:e];
+            NSInteger provider = self.pickerActiveTab == S7TVPickerTabSevenTV
+                ? S7TVEmoteProviderIDSevenTV
+                : (self.pickerActiveTab == S7TVPickerTabBTTV
+                   ? S7TVEmoteProviderIDBTTV : S7TVEmoteProviderIDFFZ);
+            [providerItems addObjectsFromArray:self.pickerProviderEmotes[@(provider)] ?: @[]];
         }
-    }
-
-    // ── Tri par pertinence pendant une recherche ────────────────────────────
-    // 1. Nom exact  2. Nom qui commence par la recherche  3. Nom qui la
-    // contient (le reste) — sortedArrayUsingComparator: utilise un tri
-    // stable, donc à l'intérieur d'un même rang on garde l'ordre d'origine
-    // (taille/alpha) comme départage.
-    if (q.length > 0) {
-        NSComparator relevance = ^NSComparisonResult(SevenTVEmote *a, SevenTVEmote *b) {
-            NSInteger ra = [self _s7tv_relevanceRankForEmoteName:a.emoteName query:lower];
-            NSInteger rb = [self _s7tv_relevanceRankForEmoteName:b.emoteName query:lower];
-            if (ra < rb) return NSOrderedAscending;
-            if (ra > rb) return NSOrderedDescending;
-            return NSOrderedSame;
-        };
-        favs    = [[favs    sortedArrayUsingComparator:relevance] mutableCopy];
-        channel = [[channel sortedArrayUsingComparator:relevance] mutableCopy];
-        global  = [[global  sortedArrayUsingComparator:relevance] mutableCopy];
-    }
-
-    self.emotePickerFavoriteEmotes = [favs copy];
-    self.emotePickerChannelEmotes  = [channel copy];
-    self.emotePickerGlobalEmotes   = [global copy];
-    // Maintenir emotePickerOtherEmotes pour compatibilité
-    self.emotePickerOtherEmotes    = self.emotePickerChannelEmotes;
-
-    // ── Bascule automatique Favoris → Channel → Globales pendant la recherche ──
-    // On mémorise l'onglet d'avant recherche pour le restaurer dès que le
-    // champ redevient vide (point 3).
-    if (q.length > 0 && !self.pickerIsSearching) {
-        self.pickerIsSearching = YES;
-        self.pickerPreSearchTab = self.pickerActiveTab;
-    } else if (q.length == 0 && self.pickerIsSearching) {
-        self.pickerIsSearching = NO;
-        self.pickerActiveTab = self.pickerPreSearchTab;
-    }
-    // ── Auto-sélection du meilleur onglet — UNIQUEMENT quand la recherche
-    // vient de démarrer (1ère lettre tapée), jamais quand l'utilisateur a
-    // manuellement changé d'onglet pendant qu'une recherche est déjà en
-    // cours. Sans ce garde-fou, _pickerTabTapped: qui appelle cette méthode
-    // juste après avoir choisi l'onglet voyait son choix immédiatement
-    // écrasé ci-dessous → impossible de changer de catégorie pendant une
-    // recherche (ex: rester bloqué sur Channel alors que le meilleur
-    // résultat est dans Global).
-    if (q.length > 0 && autoSelectTab) {
-        // Le choix de l'onglet doit se baser sur la QUALITÉ du meilleur match
-        // de chaque groupe (rang 0=exact, 1=commence par, 2=contient), pas
-        // juste sur "y a-t-il au moins un résultat". Sans ça, une simple
-        // correspondance faible dans Channel (ex: "quelqueChoseEZ", rang 2)
-        // gagnait à tort contre une correspondance exacte dans Global
-        // (ex: "EZ", rang 0) — d'où le blocage sur Channel avec des
-        // résultats hors-sujet pendant qu'un meilleur match existait ailleurs.
-        // Les 3 arrays sont déjà triés par pertinence juste au-dessus, donc
-        // leur firstObject est déjà le meilleur match de chaque groupe.
-        NSInteger favsRank    = favs.count    > 0 ? [self _s7tv_relevanceRankForEmoteName:favs.firstObject.emoteName    query:lower] : NSIntegerMax;
-        NSInteger channelRank = channel.count > 0 ? [self _s7tv_relevanceRankForEmoteName:channel.firstObject.emoteName query:lower] : NSIntegerMax;
-        NSInteger globalRank  = global.count  > 0 ? [self _s7tv_relevanceRankForEmoteName:global.firstObject.emoteName  query:lower] : NSIntegerMax;
-
-        // Priorité Favoris > Channel > Global à qualité de match égale
-        // (ex-aequo) — sinon c'est le meilleur rang qui gagne.
-        if (favs.count > 0 && favsRank <= channelRank && favsRank <= globalRank) {
-            self.pickerActiveTab = S7TVPickerTabFavorites;
-        } else if (channel.count > 0 && channelRank <= globalRank) {
-            self.pickerActiveTab = S7TVPickerTabChannel;
-        } else if (global.count > 0) {
-            self.pickerActiveTab = S7TVPickerTabGlobal;
+        NSMutableArray *filtered = [NSMutableArray array];
+        for (SevenTVEmote *item in providerItems) {
+            S7TVEmoteDescriptor *descriptor = [item isKindOfClass:[S7TVPickerCatalogEmote class]]
+                ? [(S7TVPickerCatalogEmote *)item descriptor] : nil;
+            BOOL matches = !q.length || [item.emoteName.lowercaseString containsString:lower];
+            if (!matches && descriptor) {
+                for (NSString *alias in descriptor.aliases) {
+                    if ([alias.lowercaseString containsString:lower]) { matches = YES; break; }
+                }
+            }
+            if (matches)
+                [filtered addObject:item];
         }
-        // Sinon : aucun résultat nulle part, on ne change pas d'onglet (la
-        // grille affichera simplement 0 résultat pour l'onglet courant).
+        if (q.length > 0) {
+            [filtered sortUsingComparator:^NSComparisonResult(SevenTVEmote *a, SevenTVEmote *b) {
+                NSInteger ra = [self _s7tv_relevanceRankForEmoteName:a.emoteName query:lower];
+                NSInteger rb = [self _s7tv_relevanceRankForEmoteName:b.emoteName query:lower];
+                return ra == rb ? NSOrderedSame : (ra < rb ? NSOrderedAscending : NSOrderedDescending);
+            }];
+        }
+        if (self.pickerActiveTab == S7TVPickerTabFavorites)
+            self.emotePickerFavoriteEmotes = filtered;
+        else {
+            self.emotePickerChannelEmotes = filtered;
+            self.emotePickerGlobalEmotes = filtered;
+        }
+        self.emotePickerOtherEmotes = filtered;
+        [self _s7tv_rebuildCatalogDisplaySectionsForQuery:q];
+        [self _s7tv_updateTabButtonHighlight];
+        return;
     }
-
-    // Array réellement affiché dans la grille = celui de l'onglet actif
-    self.emotePickerEmotes = [self _s7tv_currentTabEmotes];
-
-    // Synchroniser la capsule d'onglets avec le nouvel état (peut avoir
-    // changé automatiquement ci-dessus).
-    [self _s7tv_updateTabButtonHighlight];
-
 }
 
 // Rang de pertinence d'un nom d'emote pour une requête (déjà en minuscules,
@@ -1937,8 +3250,21 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     SevenTVEmote *emote = [self _emoteForIndexPath:ip];
     if (!emote) return;
 
-    BOOL isFav = [[SevenTVManager sharedManager] isEmoteFavorited:emote.emoteID];
-    [[SevenTVManager sharedManager] setEmote:emote.emoteID favorited:!isFav];
+    S7TVEmoteDescriptor *descriptor = [emote isKindOfClass:[S7TVPickerCatalogEmote class]]
+        ? [(S7TVPickerCatalogEmote *)emote descriptor] : nil;
+    BOOL isFav = descriptor
+        ? [[S7TVEmoteCatalog sharedCatalog] isEmoteFavorited:descriptor]
+        : [[SevenTVManager sharedManager] isEmoteFavorited:emote.emoteID];
+    if (descriptor && descriptor.provider == S7TVEmoteProviderIDSevenTV) {
+        // Keep the legacy manager's in-memory 7TV set in sync as well as the
+        // provider-qualified catalogue.  The existing Favorites settings
+        // screen still reads that manager snapshot until it is migrated.
+        [[SevenTVManager sharedManager] setEmote:descriptor.emoteID favorited:!isFav];
+    } else if (descriptor) {
+        [[S7TVEmoteCatalog sharedCatalog] setEmote:descriptor favorited:!isFav];
+    } else {
+        [[SevenTVManager sharedManager] setEmote:emote.emoteID favorited:!isFav];
+    }
     if (isFav) {
         [[SevenTVManager sharedManager] log:@"💔 Favori retiré : %@", emote.emoteName];
     } else {
@@ -1959,6 +3285,14 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
 // favoris/channel/globales empilées, l'onglet actif choisit l'array affiché.
 
 - (SevenTVEmote *)_emoteForIndexPath:(NSIndexPath *)ip {
+    if (self.pickerUsesCatalogSections) {
+        if (ip.section < 0 || ip.section >= (NSInteger)self.pickerDisplaySections.count) return nil;
+        S7TVPickerDisplaySection *section = self.pickerDisplaySections[(NSUInteger)ip.section];
+        NSString *key = [self _s7tv_displaySectionKey:section];
+        if ([self.pickerCollapsedSections[key] boolValue]) return nil;
+        if (ip.item < 0 || ip.item >= (NSInteger)section.items.count) return nil;
+        return section.items[(NSUInteger)ip.item];
+    }
     if (ip.section != 0) return nil;
     if ((NSUInteger)ip.item < self.emotePickerEmotes.count)
         return self.emotePickerEmotes[(NSUInteger)ip.item];
@@ -2104,12 +3438,13 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     // vide se retrouverait sinon sous la paire tailles/réglages quand elle
     // passe à gauche dans le panneau des tailles.
     self.pickerTabCapsuleView.hidden = show;
+    self.pickerSubcategoryCapsuleView.hidden = show;
     for (UIButton *btn in self.pickerTabButtons) btn.hidden = show;
     self.pickerSizesToggleBtn.tintColor = [UIColor colorWithWhite:0.55 alpha:1.0];
     // L'émoticône reprend l'icône de retour historique du picker : la capsule
     // garde ainsi le même langage visuel dans les deux pages.
     UIImageSymbolConfiguration *backCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
     [self.pickerSizesToggleBtn setImage:
         [UIImage systemImageNamed:(show ? @"face.smiling" : @"textformat.size")
                 withConfiguration:backCfg]
@@ -2162,11 +3497,126 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
 // ── UICollectionViewDataSource ─────────────────────────────────────────────
 
 - (NSInteger)numberOfSectionsInCollectionView:(UICollectionView *)cv {
-    return 1; // Section unique — l'onglet actif détermine l'array affiché (voir _s7tv_currentTabEmotes)
+    if (self.pickerUsesCatalogSections) return (NSInteger)self.pickerDisplaySections.count;
+    return 1; // Compatibilité avec le catalogue legacy aplati.
 }
 
 - (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
+    if (self.pickerUsesCatalogSections) {
+        if (section < 0 || section >= (NSInteger)self.pickerDisplaySections.count) return 0;
+        S7TVPickerDisplaySection *display = self.pickerDisplaySections[(NSUInteger)section];
+        NSString *key = [self _s7tv_displaySectionKey:display];
+        return [self.pickerCollapsedSections[key] boolValue] ? 0 : (NSInteger)display.items.count;
+    }
     return (NSInteger)self.emotePickerEmotes.count;
+}
+
+- (UICollectionReusableView *)collectionView:(UICollectionView *)collectionView
+           viewForSupplementaryElementOfKind:(NSString *)kind
+                                 atIndexPath:(NSIndexPath *)indexPath {
+    if (collectionView != self.emoteCollectionView ||
+        ![kind isEqualToString:UICollectionElementKindSectionHeader] ||
+        !self.pickerUsesCatalogSections ||
+        indexPath.section >= (NSInteger)self.pickerDisplaySections.count) {
+        return [UICollectionReusableView new];
+    }
+    S7TVPickerSectionHeaderView *header =
+        (S7TVPickerSectionHeaderView *)[collectionView
+            dequeueReusableSupplementaryViewOfKind:kind
+                               withReuseIdentifier:@"S7TVPickerSectionHeader"
+                                      forIndexPath:indexPath];
+    S7TVPickerDisplaySection *section = self.pickerDisplaySections[(NSUInteger)indexPath.section];
+    NSString *sectionKey = [self _s7tv_displaySectionKey:section];
+    BOOL collapsed = [self.pickerCollapsedSections[sectionKey] boolValue];
+    UIColor *textColor = [UIColor colorWithWhite:1.0 alpha:0.88];
+    UIColor *subColor = [UIColor colorWithWhite:1.0 alpha:0.52];
+    header.titleLabel.text = section.title ?: @"Emotes";
+    header.titleLabel.textColor = textColor;
+    header.countLabel.text = section.items.count ? [NSString stringWithFormat:@"%lu",
+        (unsigned long)section.items.count] : @"—";
+    header.countLabel.textColor = subColor;
+    header.stateLabel.hidden = section.loaded && !section.loading && !section.empty &&
+        !section.errorMessage.length;
+    header.stateLabel.text = section.loading ? @"Loading…"
+        : (section.errorMessage.length ? @"Unavailable"
+           : (section.loaded ? @"No emotes" : @"Tap to load"));
+    header.stateLabel.textColor = section.loading || section.empty || !section.loaded
+        ? [UIColor colorWithWhite:1.0 alpha:0.45] : [UIColor systemOrangeColor];
+    header.retryButton.hidden = !section.errorMessage.length;
+    header.backgroundColor = S7TVOLEDModeEnabled()
+        ? [UIColor colorWithWhite:1.0 alpha:0.035]
+        : [UIColor colorWithWhite:1.0 alpha:0.055];
+    UIImageSymbolConfiguration *chevronConfig = [UIImageSymbolConfiguration
+        configurationWithPointSize:10.0 weight:UIImageSymbolWeightSemibold];
+    [header.toggleButton setImage:[UIImage systemImageNamed:(collapsed
+        ? @"chevron.right" : @"chevron.down") withConfiguration:chevronConfig]
+                          forState:UIControlStateNormal];
+    header.toggleButton.tintColor = subColor;
+    header.toggleButton.tag = indexPath.section;
+    header.retryButton.tag = indexPath.section;
+    [header.toggleButton removeTarget:self action:@selector(_pickerSectionHeaderTapped:)
+                     forControlEvents:UIControlEventTouchUpInside];
+    [header.toggleButton addTarget:self action:@selector(_pickerSectionHeaderTapped:)
+                  forControlEvents:UIControlEventTouchUpInside];
+    [header.retryButton removeTarget:self action:@selector(_pickerSectionRetryTapped:)
+                     forControlEvents:UIControlEventTouchUpInside];
+    [header.retryButton addTarget:self action:@selector(_pickerSectionRetryTapped:)
+                  forControlEvents:UIControlEventTouchUpInside];
+    header.toggleButton.accessibilityLabel = [NSString stringWithFormat:@"%@, %@",
+        section.title ?: @"Emotes", collapsed ? @"Expand" : @"Collapse"];
+    return header;
+}
+
+- (void)_pickerSectionHeaderTapped:(UIButton *)sender {
+    NSInteger index = sender.tag;
+    if (index < 0 || index >= (NSInteger)self.pickerDisplaySections.count) return;
+    S7TVPickerDisplaySection *section = self.pickerDisplaySections[(NSUInteger)index];
+    NSString *key = [self _s7tv_displaySectionKey:section];
+    BOOL willExpand = [self.pickerCollapsedSections[key] boolValue];
+    self.pickerCollapsedSections[key] = @(!willExpand);
+    if (willExpand && section.provider == S7TVEmoteProviderIDSevenTV &&
+        section.kind == S7TVEmoteSectionKindSet &&
+        ![section.identifier isEqualToString:@"provider-state"] &&
+        !section.items.count &&
+        !section.loaded &&
+        !section.loading && !section.errorMessage.length) {
+        BOOL global = [section.identifier hasPrefix:@"global-set:"];
+        NSString *channelID = global ? nil : [SevenTVManager sharedManager].currentChannelTwitchID;
+        NSString *prefix = global ? @"global-set:" : @"set:";
+        NSString *setID = [section.identifier hasPrefix:prefix]
+            ? [section.identifier substringFromIndex:prefix.length] : nil;
+        [[S7TVEmoteCatalog sharedCatalog] loadSevenTVEmoteSetWithID:setID
+                                                               global:global
+                                                              channel:channelID];
+    }
+    [self _s7tv_rebuildCatalogDisplaySectionsForQuery:self.emoteSearchField.text ?: @""];
+    [self _s7tv_deactivateVisiblePickerAnimations];
+    [self.emoteCollectionView reloadData];
+    [self.emoteCollectionView.collectionViewLayout invalidateLayout];
+}
+
+- (void)_pickerSectionRetryTapped:(UIButton *)sender {
+    NSInteger index = sender.tag;
+    if (index < 0 || index >= (NSInteger)self.pickerDisplaySections.count) return;
+    S7TVPickerDisplaySection *section = self.pickerDisplaySections[(NSUInteger)index];
+    if (section.provider == S7TVEmoteProviderIDSevenTV &&
+        section.kind == S7TVEmoteSectionKindSet &&
+        ![section.identifier isEqualToString:@"provider-state"]) {
+        BOOL global = [section.identifier hasPrefix:@"global-set:"];
+        NSString *channelID = global ? nil : [SevenTVManager sharedManager].currentChannelTwitchID;
+        NSString *prefix = global ? @"global-set:" : @"set:";
+        NSString *setID = [section.identifier hasPrefix:prefix]
+            ? [section.identifier substringFromIndex:prefix.length] : nil;
+        [[S7TVEmoteCatalog sharedCatalog] loadSevenTVEmoteSetWithID:setID
+                                                               global:global
+                                                              channel:channelID];
+        return;
+    }
+    NSString *channelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    [catalog loadProvider:section.provider global:YES channel:nil completion:nil];
+    if (channelID.length)
+        [catalog loadProvider:section.provider global:NO channel:channelID completion:nil];
 }
 
 // ── Taille variable par emote ─────────────────────────────────────────────
@@ -2232,6 +3682,8 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     cell.currentEmoteKey = nil;
     cell.emoteImageView.image = nil;
     cell.favoriteStarView.hidden = YES;
+    cell.providerBadgeLabel.hidden = YES;
+    cell.providerBadgeLabel.text = nil;
 
     SevenTVEmote *emote = [self _emoteForIndexPath:indexPath];
     if (!emote) return cell;
@@ -2241,8 +3693,22 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     // Basée sur l'appartenance réelle aux favoris (et non plus sur la
     // section) puisqu'une emote favorite reste visible dans son onglet 7TV
     // normal (channel/globales) en plus de l'onglet Favoris.
-    BOOL isFavorite = [[SevenTVManager sharedManager] isEmoteFavorited:emote.emoteID];
+    S7TVEmoteDescriptor *descriptor = [emote isKindOfClass:[S7TVPickerCatalogEmote class]]
+        ? [(S7TVPickerCatalogEmote *)emote descriptor] : nil;
+    BOOL isFavorite = descriptor
+        ? [self.pickerFavoriteKeySet containsObject:
+              S7TVEmoteFavoriteKey(descriptor.provider, descriptor.emoteID)]
+        : [[SevenTVManager sharedManager] isEmoteFavorited:emote.emoteID];
     cell.favoriteStarView.hidden = !isFavorite;
+    cell.accessibilityLabel = emote.emoteName ?: @"Emote";
+    if (descriptor && (self.pickerActiveTab == S7TVPickerTabFavorites ||
+                       self.pickerActiveTab == S7TVPickerTabAll)) {
+        cell.providerBadgeLabel.text = descriptor.providerIdentifier.uppercaseString;
+        cell.providerBadgeLabel.hidden = NO;
+        cell.accessibilityLabel = [NSString stringWithFormat:@"%@, %@, %@",
+            descriptor.name, descriptor.providerName ?: descriptor.providerIdentifier,
+            descriptor.sectionTitle ?: @"Emotes"];
+    }
 
     // Le réglage s'applique à tout le picker, pas seulement aux favoris —
     // sauf si la sous-option "Animations uniquement pour les favoris" est
@@ -2601,7 +4067,13 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
     else if (textField) currentText = textField.text ?: @"";
 
     NSString *prefix  = (currentText.length > 0 && ![currentText hasSuffix:@" "]) ? @" " : @"";
-    NSString *toAppend = [NSString stringWithFormat:@"%@%@ ", prefix, emote.emoteName];
+    NSString *emoteText = emote.emoteName ?: @"";
+    NSString *stableKey = S7TVPickerStableEmoteKey(emote);
+    NSString *favoriteComposition = stableKey.length
+        ? [[S7TVEmoteCatalog sharedCatalog]
+            favoriteCompositionTextForEmoteKey:stableKey] : nil;
+    if (favoriteComposition.length) emoteText = favoriteComposition;
+    NSString *toAppend = [NSString stringWithFormat:@"%@%@ ", prefix, emoteText];
 
     // ── Étape 4: insertion ─────────────────────────────────────────────────
     // insertText: seul ne suffit pas : le UITextView de Twitch est un
@@ -2633,7 +4105,7 @@ static NSString *s7tv_emoteSetKey(NSDictionary *global, NSDictionary *channel,
         if ([textView respondsToSelector:@selector(paste:)]) {
             [textView paste:nil];
             inserted = YES;
-            [[SevenTVManager sharedManager] log:@"✅ paste: emote → «%@»", emote.emoteName];
+            [[SevenTVManager sharedManager] log:@"✅ paste: emote → «%@»", emoteText];
         } else {
             // Ultime fallback
             [textView insertText:toAppend];

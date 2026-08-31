@@ -1,11 +1,9 @@
 /*
  * 7tv-emote-provider.h
  *
- * Architecture "fournisseur d'emotes" générique (Phase 2 du plan
- * chat-twitch-custom) : une interface commune, implémentée aujourd'hui par
- * un fournisseur 7TV, pour ne pas fermer la porte à BTTV/FFZ plus tard sans
- * rouvrir le tokenizer. Aucun développement BTTV/FFZ prévu maintenant —
- * c'est uniquement un choix d'architecture.
+ * Architecture "fournisseur d'emotes" générique : 7TV, BTTV et FFZ partagent
+ * le même contrat afin que le tokenizer, le renderer et les previews restent
+ * indépendants de l'API qui a fourni une emote.
  */
 
 #import <Foundation/Foundation.h>
@@ -28,8 +26,17 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL isAnimated;
 
 // URL CDN de l'image à télécharger, résolution déjà appliquée par le
-// fournisseur (voir SevenTVChatAppearanceConfig.emote7TVResolution).
+// fournisseur (voir SevenTVChatAppearanceConfig.emoteImageResolution).
 @property (nonatomic, readonly) NSURL *imageURL;
+
+// Optional provider metadata.  They are optional deliberately: badges and
+// legacy Twitch adapters also conform to this protocol and must not be
+// forced to manufacture provider information.  Chat/picker code checks these
+// selectors before reading them.
+@optional
+@property (nonatomic, copy, readonly) NSString *providerIdentifier;
+@property (nonatomic, copy, readonly) NSString *providerName;
+@property (nonatomic, readonly) BOOL zeroWidth;
 
 @end
 
@@ -48,16 +55,22 @@ NS_ASSUME_NONNULL_BEGIN
 // sans que le tokenizer ait à connaître la distinction lui-même.
 - (NSInteger)tokenType;
 
+// Optional stable provider identifier used to order collision resolution.
+// Existing third-party implementations that do not expose it remain valid
+// and are kept after configured providers.
+@optional
+@property (nonatomic, readonly) NSInteger providerID;
+
 @end
 
 
-// Fournisseur concret 7TV — s'appuie sur SevenTVManager (déjà source de
-// vérité pour les emotes globales/channel) sans dupliquer sa logique de
-// cache/chargement, juste un adaptateur vers l'interface générique ci-dessus.
+// Fournisseur concret 7TV — s'appuie sur SevenTVManager et le catalogue
+// provider-aware sans dupliquer leur logique de cache/chargement.
 @interface S7TVSevenTVEmoteProvider : NSObject <S7TVEmoteProvider>
 @end
 
-// Registre partagé et immuable des fournisseurs essayés par le tokenizer.
+// Registre partagé des fournisseurs essayés par le tokenizer, dans l'ordre de
+// priorité configuré par l'utilisateur.
 // Centralisé ici pour que le live, l'historique et les Channel Points utilisent
 // exactement les mêmes instances sans dépendre de 7tv-core-runtime-hooks.m.
 FOUNDATION_EXPORT NSArray<id<S7TVEmoteProvider>> *s7tv_chatEmoteProviders(void);

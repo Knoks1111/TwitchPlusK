@@ -1,9 +1,11 @@
 #import "Adblock/7tv-adblock-settings.h"
+#import "Adblock/Proxy/7tv-adblock-proxy.h"
 
 NSString *const S7TVAdblockEnabledKey            = @"s7tv_adblock_enabled";
 NSString *const S7TVAdblockProxyEnabledKey       = @"s7tv_adblock_proxy_enabled";
 NSString *const S7TVAdblockCustomProxyEnabledKey = @"s7tv_adblock_custom_proxy_enabled";
 NSString *const S7TVAdblockCustomProxyKey        = @"s7tv_adblock_custom_proxy";
+NSString *const S7TVAdblockDefaultProxyKey       = @"s7tv_adblock_default_proxy";
 NSString *const S7TVAdblockHideAdFreeButtonKey  = @"s7tv_adblock_hide_go_ad_free";
 NSString *const S7TVAdblockMethodKey             = @"s7tv_adblock_method";
 NSString *const S7TVAdblockRuntimeStateDidChangeNotification =
@@ -13,6 +15,11 @@ static NSUserDefaults *S7TVAdblockDefaults(void) {
     return NSUserDefaults.standardUserDefaults;
 }
 
+// The original built-in endpoint is kept as the first choice for existing
+// installations. Its value is intentionally decoded only when needed, just
+// as it was before the selectable default endpoints were added.
+static NSString *S7TVAdblockBuiltinProxyAddress(void);
+
 void S7TVAdblockRegisterDefaults(void) {
     // Toggle maître : OFF par défaut (décision validée). Aucune migration :
     // les anciens utilisateurs qui reposaient sur l'ancien default implicite
@@ -21,6 +28,7 @@ void S7TVAdblockRegisterDefaults(void) {
         S7TVAdblockEnabledKey: @NO,
         S7TVAdblockProxyEnabledKey: @YES,
         S7TVAdblockCustomProxyEnabledKey: @NO,
+        S7TVAdblockDefaultProxyKey: S7TVAdblockBuiltinProxyAddress(),
         // Même valeur par défaut que TwitchAdBlock v0.1.13.
         S7TVAdblockHideAdFreeButtonKey: @YES,
     }];
@@ -171,10 +179,12 @@ void S7TVAdblockSetEnabledForNextLaunch(BOOL enabled) {
 
 void S7TVAdblockSetProxyEnabled(BOOL enabled) {
     [S7TVAdblockDefaults() setBool:enabled forKey:S7TVAdblockProxyEnabledKey];
+    S7TVAdblockInvalidateProxyDetectionCache();
 }
 
 void S7TVAdblockSetCustomProxyEnabled(BOOL enabled) {
     [S7TVAdblockDefaults() setBool:enabled forKey:S7TVAdblockCustomProxyEnabledKey];
+    S7TVAdblockInvalidateProxyDetectionCache();
 }
 
 void S7TVAdblockSetHideAdFreeButtonEnabled(BOOL enabled) {
@@ -187,6 +197,7 @@ void S7TVAdblockSetCustomProxyAddress(NSString *address) {
                        NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (clean.length) [S7TVAdblockDefaults() setObject:clean forKey:S7TVAdblockCustomProxyKey];
     else [S7TVAdblockDefaults() removeObjectForKey:S7TVAdblockCustomProxyKey];
+    S7TVAdblockInvalidateProxyDetectionCache();
 }
 
 void S7TVAdblockSetCustomProxyAddresses(NSArray<NSString *> *addresses) {
@@ -201,7 +212,7 @@ void S7TVAdblockSetCustomProxyAddresses(NSArray<NSString *> *addresses) {
 
 // Exact XOR-obfuscated default proxy shipped by TwitchAdBlock v0.1.13.
 // Keeping the bytes unchanged avoids inventing or substituting infrastructure.
-NSString *S7TVAdblockDefaultProxyAddress(void) {
+static NSString *S7TVAdblockBuiltinProxyAddress(void) {
     static const uint8_t key = 0xA5;
     static const uint8_t bytes[] = {
         0xf2, 0xd1, 0xe8, 0xe1, 0xee, 0xc3, 0x9f, 0x90, 0xf4, 0x95,
@@ -219,6 +230,36 @@ NSString *S7TVAdblockDefaultProxyAddress(void) {
         cached = [NSString stringWithUTF8String:decoded];
     });
     return cached;
+}
+
+NSArray<NSString *> *S7TVAdblockDefaultProxyAddresses(void) {
+    return @[S7TVAdblockBuiltinProxyAddress(),
+             @"https://eu.luminous.dev",
+             @"https://eu2.luminous.dev"];
+}
+
+NSString *S7TVAdblockDefaultProxyAddress(void) {
+    NSString *selected = [S7TVAdblockDefaults() stringForKey:S7TVAdblockDefaultProxyKey];
+    for (NSString *address in S7TVAdblockDefaultProxyAddresses()) {
+        if ([address isEqualToString:selected]) return address;
+    }
+    return S7TVAdblockBuiltinProxyAddress();
+}
+
+void S7TVAdblockSetDefaultProxyAddress(NSString *address) {
+    NSString *clean = [address stringByTrimmingCharactersInSet:
+                       NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    BOOL isSupported = NO;
+    for (NSString *candidate in S7TVAdblockDefaultProxyAddresses()) {
+        if ([candidate isEqualToString:clean]) {
+            isSupported = YES;
+            break;
+        }
+    }
+    if (!isSupported) return;
+    [S7TVAdblockDefaults() setObject:clean forKey:S7TVAdblockDefaultProxyKey];
+    [S7TVAdblockDefaults() synchronize];
+    S7TVAdblockInvalidateProxyDetectionCache();
 }
 
 NSString *S7TVAdblockEffectiveProxyAddress(void) {

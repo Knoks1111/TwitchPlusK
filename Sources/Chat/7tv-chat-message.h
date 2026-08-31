@@ -136,6 +136,21 @@ typedef NS_ENUM(NSInteger, S7TVChatTokenType) {
 // type saura résoudre en image".
 @property (nonatomic, copy, nullable) NSString *providerEmoteID;
 
+// Stable provider identity, kept separately from the emote ID so that two
+// providers exposing the same ID/name never collide in previews or favorites.
+// Legacy 7TV tokens may leave this nil; the renderer then treats them as 7TV.
+@property (nonatomic, copy, nullable) NSString *providerIdentifier;
+@property (nonatomic, copy, nullable) NSString *providerName;
+
+// 7TV Zero-Width metadata.  A zero-width token grouped after a base emote is
+// marked isOverlayLayer and rendered as part of that base attachment.  When
+// no base exists, it remains a normal-width token (the provider flag is kept
+// intact for metadata and a later token cannot use it as an anchor).
+@property (nonatomic, assign) BOOL zeroWidth;
+@property (nonatomic, assign) BOOL isOverlayLayer;
+@property (nonatomic, assign) BOOL isSuppressedByOverlay;
+@property (nonatomic, copy) NSArray<S7TVChatToken *> *overlayTokens;
+
 // Couleur du pseudo mentionné/cité, résolue via
 // SevenTVChatUserColorRegistry au moment de la tokenisation (voir
 // 7tv-chat-tokenizer.m) — nil si ce pseudo n'a jamais été vu dans le

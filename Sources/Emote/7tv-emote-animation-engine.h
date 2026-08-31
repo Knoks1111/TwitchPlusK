@@ -116,4 +116,20 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+// TextKit attachment used for a base emote followed by one or more
+// Zero-Width layers.  Each layer keeps its own animation key; the attachment
+// composes their current frames at draw time so animations remain independent
+// while the base still defines the attachment's width.
+@interface S7TVAnimatedCompositeEmoteAttachment : NSTextAttachment
+
+// One entry per visual layer (base first).  Use an empty string for a static
+// layer; dynamic keys are looked up in SevenTVEmoteAnimationEngine.
+@property (nonatomic, copy) NSArray<NSString *> *layerAnimationKeys;
+
+// Same order/count as layerAnimationKeys.  These are the already-decoded
+// images used while a dynamic layer has not produced its first frame yet.
+@property (nonatomic, copy) NSArray<UIImage *> *layerFallbackImages;
+
+@end
+
 NS_ASSUME_NONNULL_END

@@ -24,6 +24,7 @@
 #import "Core/7tv-core-manager.h"
 #import "Localization/7tv-localization-manager.h"
 #import "Chat/7tv-chat-tokenizer.h"
+#import "Emote/7tv-emote-provider.h"
 #import "UI/7tv-oled-mode.h"
 
 // Les overlays Fil/Réponse ne passent pas par la palette native. Ils restent
@@ -981,7 +982,11 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
                                        authorUserID:@""
                                   authorDisplayName:anyMessage.replyParentUsername
                                             rawText:anyMessage.replyParentBodyPreview ?: @""];
-    fallback.tokens = [SevenTVChatTokenizer tokenizeText:fallback.rawText providers:@[]];
+    // The synthetic root uses the exact same provider registry as live chat.
+    // This keeps provider emotes and Zero-Width layers visible even when the
+    // original root message has already left the main store.
+    fallback.tokens = [SevenTVChatTokenizer tokenizeText:fallback.rawText
+                                               providers:s7tv_chatEmoteProviders()];
     return fallback;
 }
 
@@ -1500,6 +1505,52 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
         if (!strongSelf || !window || strongSelf.containerView.hidden) return;
         [strongSelf s7tv_layoutPanelContentInWindow:window];
     }];
+}
+
+- (void)retokenizeVisibleMessagesWithCompletion:(void (^)(void))completion {
+    // Root/reply messages normally share instances with the main store, so a
+    // main-store retokenisation updates them automatically. The synthetic
+    // root (when the original message was purged) and the standalone reply
+    // preview have their own read-only stores, however; include all three
+    // stores explicitly so provider priority/resolution changes cannot leave
+    // stale tokens in a visible auxiliary view.
+    NSMutableArray<S7TVChatMessageStore *> *stores = [NSMutableArray arrayWithCapacity:3];
+    if (self.rootStore) [stores addObject:self.rootStore];
+    if (self.repliesStore) [stores addObject:self.repliesStore];
+    if (self.replyTargetMessageStore) [stores addObject:self.replyTargetMessageStore];
+
+    if (!stores.count) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        return;
+    }
+
+    NSArray<id<S7TVEmoteProvider>> *providers = s7tv_chatEmoteProviders();
+    dispatch_group_t group = dispatch_group_create();
+    for (S7TVChatMessageStore *store in stores) {
+        dispatch_group_enter(group);
+        [store retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
+            return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
+                                      twitchEmotesTag:message.twitchEmotesTag ?: @""
+                                            providers:providers];
+        } completion:^{
+            dispatch_group_leave(group);
+        }];
+    }
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        // The standalone reply target is not part of the thread reload path.
+        // Refresh its one-message view explicitly when it is currently shown;
+        // its height callback will re-measure the overlay after the new token
+        // snapshot has been applied.
+        if (self.replyTargetMessageView &&
+            self.replyTargetMessageStore.allMessages.count > 0 &&
+            !self.replyTargetMessageView.hidden) {
+            [self.replyTargetMessageView reloadMessagesWithCompletion:^{
+                if (completion) completion();
+            }];
+        } else if (completion) {
+            completion();
+        }
+    });
 }
 
 - (void)refreshMessageIfNeededWithID:(NSString *)messageID

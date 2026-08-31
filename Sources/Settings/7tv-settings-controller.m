@@ -16,7 +16,12 @@
 #import "Logs/7tv-logs-controller.h"
 #import "Network/7tv-network-emote-cache.h"
 #import "Emote/7tv-emote-image-cache.h"
+#import "Emote/7tv-emote-catalog.h"
+#import "Emote/7tv-provider-settings.h"
+#import "Picker/7tv-picker-resolved-emote.h"
 #import "UI/7tv-ui-logo.h"
+#import "UI/bttv-ui-logo.h"
+#import "UI/ffz-ui-logo.h"
 #import "Chat/7tv-chat-appearance-config.h"
 #import "Localization/7tv-localization-manager.h"
 #import "System/7tv-system-native-behavior-hooks.h"
@@ -86,8 +91,8 @@ static UIColor *S7TVSwitchIconColor(UIColor *onColor, BOOL isOn) {
 // "conditionnelles" (affichées seulement si leur parent est ON). Le même
 // tableau visible est recalculé par numberOfSections/cellForRow/didSelect,
 // ce qui garantit un mapping index affiché → ligne logique toujours cohérent.
-// Après bascule d'un parent, un simple reloadSections anime apparition et
-// disparition (comme pour les proxys).
+// Après bascule d'un parent, la section est recalculée sans animation pour
+// éviter que les titres de catégories ne se déplacent.
 
 // Construit la liste triée des indexes logiques visibles d'une section.
 //   fixed       : indexes logiques toujours visibles, ex: @[@0, @1]
@@ -103,11 +108,55 @@ static NSArray<NSNumber *> *S7TVVisibleRowIndexes(NSArray<NSNumber *> *fixed,
     }];
 }
 
+// Met à jour une cellule de réglage sans recréer l'en-tête de sa catégorie et
+// sans laisser UITableView ajuster le contentOffset pendant la fermeture d'un
+// action sheet. Les menus de choix ne changent que le sous-titre de leur ligne
+// ; recharger toute la section provoquait donc un « bump » visuel des textes.
+static void S7TVReloadCellWithoutJump(UITableView *tableView, UIView *anchor) {
+    if (!tableView || ![anchor isKindOfClass:UITableViewCell.class]) return;
+    NSIndexPath *indexPath = [tableView indexPathForCell:(UITableViewCell *)anchor];
+    if (!indexPath) return;
+
+    CGPoint contentOffset = tableView.contentOffset;
+    [UIView performWithoutAnimation:^{
+        [tableView reloadRowsAtIndexPaths:@[indexPath]
+                         withRowAnimation:UITableViewRowAnimationNone];
+        [tableView layoutIfNeeded];
+    }];
+    [tableView setContentOffset:contentOffset animated:NO];
+}
+
+// Recharge une section dont le nombre de lignes change (par exemple les
+// sous-options de Custom proxy) sans animation de UITableView. L'en-tête reste
+// à sa position et le défilement est restauré après le recalcul des hauteurs.
+static void S7TVReloadSectionWithoutJump(UITableView *tableView, NSInteger section) {
+    if (!tableView || section < 0 || section >= tableView.numberOfSections) return;
+    CGPoint contentOffset = tableView.contentOffset;
+    [UIView performWithoutAnimation:^{
+        [tableView reloadSections:[NSIndexSet indexSetWithIndex:section]
+                  withRowAnimation:UITableViewRowAnimationNone];
+        [tableView layoutIfNeeded];
+    }];
+    [tableView setContentOffset:contentOffset animated:NO];
+}
+
+// Certains choix modifient la structure de la table (par exemple la méthode
+// AdBlock ajoute ou retire une section). Même dans ce cas, désactiver les
+// animations implicites et restaurer le défilement évite le saut de l'en-tête.
+static void S7TVReloadDataWithoutJump(UITableView *tableView) {
+    if (!tableView) return;
+    CGPoint contentOffset = tableView.contentOffset;
+    [UIView performWithoutAnimation:^{
+        [tableView reloadData];
+        [tableView layoutIfNeeded];
+    }];
+    [tableView setContentOffset:contentOffset animated:NO];
+}
+
 // Recharge une seule section après bascule d'un parent (apparition/disparition
-// animée des sous-options, identique au reloadSections des proxys Adblock).
+// des sous-options sans déplacement du titre de catégorie).
 static void S7TVReloadSection(UITableView *tableView, NSInteger section) {
-    [tableView reloadSections:[NSIndexSet indexSetWithIndex:section]
-              withRowAnimation:UITableViewRowAnimationAutomatic];
+    S7TVReloadSectionWithoutJump(tableView, section);
 }
 
 @interface S7TVSettingsResolvedEmote : NSObject <S7TVResolvedEmote>
@@ -124,7 +173,7 @@ static void S7TVReloadSection(UITableView *tableView, NSInteger section) {
     emote.emoteID = emoteID;
     emote.nativeSize = CGSizeMake(32.0, 32.0);
     emote.isAnimated = NO; // Les réglages n'affichent que la première frame.
-    NSInteger resolution = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+    NSInteger resolution = [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution;
     resolution = MIN(4, MAX(1, resolution));
     emote.imageURL = [NSURL URLWithString:[NSString stringWithFormat:
         @"https://cdn.7tv.app/emote/%@/%ldx.webp", emoteID, (long)resolution]];
@@ -151,6 +200,101 @@ static void S7TVLoadSettingsEmoteImage(NSString *emoteID, UIImageView *imageView
     }];
 }
 
+// Favorite keys are provider-qualified (`7tv:<id>`, `bttv:<id>` or
+// `ffz:<id>`). Keep parsing strict here: a malformed value from an edited
+// export must never silently become a 7TV favorite.
+static BOOL S7TVSettingsParseFavoriteKey(NSString *key,
+                                         S7TVEmoteProviderID *provider,
+                                         NSString **emoteID) {
+    if (!key.length) return NO;
+    NSRange separator = [key rangeOfString:@":" options:0
+                                     range:NSMakeRange(0, key.length)];
+    if (separator.location == NSNotFound || separator.location == 0 ||
+        separator.location >= key.length - 1) return NO;
+    NSString *prefix = [[key substringToIndex:separator.location] lowercaseString];
+    S7TVEmoteProviderID parsedProvider;
+    if ([prefix isEqualToString:@"7tv"]) parsedProvider = S7TVEmoteProviderIDSevenTV;
+    else if ([prefix isEqualToString:@"bttv"]) parsedProvider = S7TVEmoteProviderIDBTTV;
+    else if ([prefix isEqualToString:@"ffz"]) parsedProvider = S7TVEmoteProviderIDFFZ;
+    else return NO;
+    if (provider) *provider = parsedProvider;
+    if (emoteID) *emoteID = [key substringFromIndex:separator.location + 1];
+    return YES;
+}
+
+static NSString *S7TVSettingsCanonicalFavoriteKey(NSString *key) {
+    if (!key.length) return nil;
+    S7TVEmoteProviderID provider = S7TVEmoteProviderIDSevenTV;
+    NSString *emoteID = nil;
+    if (S7TVSettingsParseFavoriteKey(key, &provider, &emoteID))
+        return S7TVEmoteFavoriteKey(provider, emoteID);
+    // Settings imports from the legacy UI may still contain a bare 7TV ID.
+    // The catalogue normally canonicalizes these before they reach us, but
+    // keeping this fallback makes the list safe when an old export is opened
+    // while the catalogue is still warming up.
+    if (![key containsString:@":"])
+        return S7TVEmoteFavoriteKey(S7TVEmoteProviderIDSevenTV, key);
+    return nil;
+}
+
+// Adapter used only by the Settings list. It lets the shared image cache use
+// the exact provider CDN URL and resolution instead of assuming every
+// favorite is a 7TV ID.
+@interface S7TVSettingsCatalogResolvedEmote : NSObject <S7TVResolvedEmote>
+@property (nonatomic, strong) S7TVEmoteDescriptor *descriptor;
+@end
+
+@implementation S7TVSettingsCatalogResolvedEmote
+- (NSString *)emoteID {
+    return S7TVEmoteFavoriteKey(self.descriptor.provider, self.descriptor.emoteID);
+}
+- (CGSize)nativeSize { return self.descriptor.nativeSize; }
+- (BOOL)isAnimated { return self.descriptor.animated; }
+- (NSURL *)imageURL {
+    return [self.descriptor imageURLForResolution:
+        [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution];
+}
+@end
+
+static void S7TVLoadSettingsCatalogEmoteImage(S7TVEmoteDescriptor *descriptor,
+                                               UIImageView *imageView) {
+    if (!descriptor || !descriptor.emoteID.length || !imageView) return;
+    NSString *key = S7TVEmoteFavoriteKey(descriptor.provider, descriptor.emoteID);
+    imageView.accessibilityIdentifier = key;
+    imageView.image = nil;
+
+    S7TVSettingsCatalogResolvedEmote *resolved = [S7TVSettingsCatalogResolvedEmote new];
+    resolved.descriptor = descriptor;
+    UIImage *cached = [[SevenTVEmoteImageCache sharedCache]
+        cachedImageForResolvedEmote:resolved];
+    if (cached) {
+        imageView.image = cached;
+        return;
+    }
+    __weak UIImageView *weakImageView = imageView;
+    [[SevenTVEmoteImageCache sharedCache] imageForResolvedEmote:resolved
+        completion:^(UIImage *image) {
+        UIImageView *strongImageView = weakImageView;
+        if ([strongImageView.accessibilityIdentifier isEqualToString:key])
+            strongImageView.image = image;
+    }];
+}
+
+static S7TVEmoteDescriptor *S7TVSettingsDescriptorForFavoriteKey(NSString *key) {
+    S7TVEmoteProviderID provider;
+    NSString *emoteID = nil;
+    if (!S7TVSettingsParseFavoriteKey(key, &provider, &emoteID)) return nil;
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    for (S7TVEmoteDescriptor *descriptor in [catalog favoriteDescriptorsSnapshot]) {
+        if (descriptor.provider == provider &&
+            [descriptor.emoteID isEqualToString:emoteID]) return descriptor;
+    }
+    for (S7TVEmoteDescriptor *descriptor in [catalog allEmotesForProvider:provider]) {
+        if ([descriptor.emoteID isEqualToString:emoteID]) return descriptor;
+    }
+    return nil;
+}
+
 static UIView *S7TVFavoriteEmotePreview(NSArray<NSString *> *favoriteIDs) {
     UIView *preview = [[UIView alloc] init];
     preview.translatesAutoresizingMaskIntoConstraints = NO;
@@ -171,7 +315,17 @@ static UIView *S7TVFavoriteEmotePreview(NSArray<NSString *> *favoriteIDs) {
             [imageView.widthAnchor constraintEqualToConstant:26.0],
             [imageView.heightAnchor constraintEqualToConstant:26.0],
         ]];
-        S7TVLoadSettingsEmoteImage(favoriteIDs[index], imageView);
+        NSString *rawKey = favoriteIDs[index];
+        NSString *favoriteKey = S7TVSettingsCanonicalFavoriteKey(rawKey);
+        if (!favoriteKey.length) continue;
+        S7TVEmoteProviderID provider = S7TVEmoteProviderIDSevenTV;
+        NSString *emoteID = nil;
+        BOOL qualified = S7TVSettingsParseFavoriteKey(favoriteKey, &provider, &emoteID);
+        S7TVEmoteDescriptor *descriptor =
+            S7TVSettingsDescriptorForFavoriteKey(favoriteKey);
+        if (descriptor) S7TVLoadSettingsCatalogEmoteImage(descriptor, imageView);
+        else if (provider == S7TVEmoteProviderIDSevenTV || !qualified)
+            S7TVLoadSettingsEmoteImage(emoteID ?: rawKey, imageView);
     }
     return preview;
 }
@@ -419,67 +573,6 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
     return cell;
 }
 
-// Variante réservée aux indisponibilités temporaires : elle réutilise toute
-// la construction/layout de S7TVSwitchCell, désactive uniquement l'interrupteur
-// et ajoute le bouton d'alerte dans le même emplacement que le bouton « i ».
-// Le bouton reste donc interactif pour expliquer la suspension.
-static UITableViewCell *S7TVSwitchCellWithEnabledState(NSString *title,
-                                                         NSString *sfName,
-                                                         UIColor  *iconTint,
-                                                         BOOL      isOn,
-                                                         BOOL      switchEnabled,
-                                                         id        target,
-                                                         SEL       action,
-                                                         NSString *warningKey) {
-    UITableViewCell *cell = S7TVSwitchCell(title, sfName, iconTint, isOn,
-                                           target, action, nil);
-    UISwitch *sw = nil;
-    for (UIView *subview in cell.contentView.subviews) {
-        if ([subview isKindOfClass:UISwitch.class]) {
-            sw = (UISwitch *)subview;
-            break;
-        }
-    }
-    if (!sw) return cell;
-    sw.enabled = switchEnabled;
-
-    // Une suspension runtime doit être lisible sur toute la ligne, pas
-    // uniquement sur le contrôle UISwitch : l'icône et le libellé adoptent le
-    // même gris que les réglages OFF. Le bouton « ! » ajouté ensuite conserve
-    // volontairement sa couleur rouge et reste tappable.
-    if (!switchEnabled) {
-        for (UIView *subview in cell.contentView.subviews) {
-            if ([subview isKindOfClass:UIImageView.class]) {
-                ((UIImageView *)subview).tintColor = UIColor.systemGrayColor;
-            } else if ([subview isKindOfClass:UILabel.class]) {
-                ((UILabel *)subview).textColor = S7TVGray();
-            }
-        }
-    }
-
-    if (!warningKey.length) return cell;
-
-    UIButton *warningButton = [S7TVInfoTooltip warningButtonWithKey:warningKey];
-    warningButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [cell.contentView addSubview:warningButton];
-    UILabel *label = nil;
-    for (UIView *subview in cell.contentView.subviews) {
-        if ([subview isKindOfClass:UILabel.class]) {
-            label = (UILabel *)subview;
-            break;
-        }
-    }
-    [NSLayoutConstraint activateConstraints:@[
-        [warningButton.trailingAnchor constraintEqualToAnchor:sw.leadingAnchor constant:-6],
-        [warningButton.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
-    ]];
-    if (label) {
-        [label.trailingAnchor constraintLessThanOrEqualToAnchor:warningButton.leadingAnchor
-                                                         constant:-4].active = YES;
-    }
-    return cell;
-}
-
 // Header de section style Twitch : logo (optionnel) + texte gris uppercase
 // Identique visuellement au header "7TV SETTINGS" de la capture
 // infoKey (optionnel) : clé de description derrière un bouton "i" aligné à
@@ -579,7 +672,7 @@ static void S7TVStyleTableView(UITableView *tv) {
 // refléter la nouvelle palette.
 static void S7TVApplyOLEDStyle(UITableViewController *controller) {
     S7TVStyleTableView(controller.tableView);
-    [controller.tableView reloadData];
+    S7TVReloadDataWithoutJump(controller.tableView);
 }
 
 // Enregistre l'observateur de bascule OLED commun à tous les écrans de
@@ -616,6 +709,32 @@ static NSString *S7TVValueWithDefaultMark(NSString *value, BOOL isDefault) {
     if (!isDefault) return value;
     if ([value isEqualToString:L(@"launch_default")]) return value;
     return [value stringByAppendingString:L(@"common_default_suffix")];
+}
+
+typedef NS_ENUM(NSInteger, S7TVPickerAnimationsMode) {
+    S7TVPickerAnimationsModeDisabled = 0,
+    S7TVPickerAnimationsModeEnabled = 1,
+    S7TVPickerAnimationsModeFavoritesOnly = 2,
+};
+
+static S7TVPickerAnimationsMode S7TVCurrentPickerAnimationsMode(void) {
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    if (!manager.showPickerAnimations) return S7TVPickerAnimationsModeDisabled;
+    return manager.showPickerAnimationsFavoritesOnly
+        ? S7TVPickerAnimationsModeFavoritesOnly
+        : S7TVPickerAnimationsModeEnabled;
+}
+
+static NSString *S7TVPickerAnimationsModeTitle(S7TVPickerAnimationsMode mode) {
+    switch (mode) {
+        case S7TVPickerAnimationsModeDisabled:
+            return L(@"picker_animations_disabled");
+        case S7TVPickerAnimationsModeFavoritesOnly:
+            return L(@"picker_animations_favorites_only");
+        case S7TVPickerAnimationsModeEnabled:
+        default:
+            return L(@"picker_animations_enabled");
+    }
 }
 
 
@@ -923,7 +1042,12 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     }
 
     SevenTVManager *mgr = [SevenTVManager sharedManager];
-    NSUInteger total = mgr.globalEmotes.count + mgr.channelEmotes.count;
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    NSUInteger total = 0;
+    for (NSInteger provider = S7TVEmoteProviderIDSevenTV;
+         provider <= S7TVEmoteProviderIDFFZ; provider++) {
+        total += [catalog allEmotesForProvider:(S7TVEmoteProviderID)provider].count;
+    }
     NSString *channel = mgr.currentChannelName ?: L(@"stats_no_channel");
 
     UIView *container = [[UIView alloc] init];
@@ -1040,11 +1164,26 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 @interface SevenTVAdblockPageController () <UITextFieldDelegate>
 @property (nonatomic, assign) S7TVAdblockProxyStatus proxyStatus;
 @property (nonatomic, strong) NSMutableArray<NSString *> *proxies;
+// Incremented for each probe request so a slower callback from a previous
+// endpoint cannot overwrite the status of the currently selected endpoint.
+@property (nonatomic, assign) NSUInteger proxyStatusGeneration;
 @end
 
 static const NSInteger kS7TVProxyTextFieldTag = 0x7A01;
 static const NSInteger kS7TVProxyUpButtonTag  = 0x7A02;
 static const NSInteger kS7TVProxyDownButtonTag = 0x7A03;
+static const NSInteger kS7TVProxyDeleteButtonTag = 0x7A04;
+
+static NSString *S7TVAdblockDefaultProxyDisplayName(NSString *address) {
+    NSArray<NSString *> *addresses = S7TVAdblockDefaultProxyAddresses();
+    if (addresses.count > 0 && [address isEqualToString:addresses[0]])
+        return L(@"adblock_proxy_builtin");
+    if (addresses.count > 1 && [address isEqualToString:addresses[1]])
+        return L(@"adblock_proxy_eu");
+    if (addresses.count > 2 && [address isEqualToString:addresses[2]])
+        return L(@"adblock_proxy_eu2");
+    return address.length ? address : L(@"adblock_proxy_builtin");
+}
 
 // Rows logiques de la section Général.
 typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
@@ -1070,16 +1209,22 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     S7TVRegisterOLEDObserver(self);
     S7TVAdblockRegisterDefaults();
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
-    if (S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy &&
-        S7TVAdblockProxyIsEnabled()) {
-        [self refreshProxyStatus];
-    }
 }
 
 - (void)s7tv_oledModeDidChange {
     dispatch_async(dispatch_get_main_queue(), ^{
         S7TVApplyOLEDStyle(self);
     });
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // The functional probe runs only when entering the AdBlock screen (and
+    // after explicit configuration changes), never on a periodic timer.
+    if (S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy &&
+        S7TVAdblockProxyIsEnabled()) {
+        [self refreshProxyStatus];
+    }
 }
 
 - (void)dealloc {
@@ -1102,6 +1247,8 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     // information fixe : ce moteur n'utilise aucun proxy vidéo configurable.
     if ([self s7tv_localVaftSectionVisible]) return 1;
     if (![self s7tv_proxySectionVisible]) return 0;
+    // The first row is the default-proxy selector; custom mode then adds one
+    // editable row per configured address before the add/status rows.
     return S7TVAdblockCustomProxyIsEnabled() ? 4 + self.proxies.count : 3;
 }
 
@@ -1220,11 +1367,8 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
         return [[UITableViewCell alloc] init];
     }
 
-        BOOL proxyEnabled = S7TVAdblockProxyIsEnabled();
     if (indexPath.row == 0) {
-        return S7TVSwitchCell(L(@"adblock_video_proxy"),
-            @"network", UIColor.systemBlueColor, proxyEnabled,
-            self, @selector(toggleAdblockProxy:), nil);
+        return [self defaultProxyCell];
     }
     if (indexPath.row == 1) {
         return S7TVSwitchCell(L(@"adblock_custom_proxy"),
@@ -1244,12 +1388,17 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 1 && [self s7tv_localVaftSectionVisible]) return;
     if (indexPath.section == 1 && [self s7tv_proxySectionVisible] &&
+        indexPath.row == 0) {
+        [self presentDefaultProxyPickerFromCell:
+            [tableView cellForRowAtIndexPath:indexPath]];
+        return;
+    }
+    if (indexPath.section == 1 && [self s7tv_proxySectionVisible] &&
         S7TVAdblockProxyIsEnabled() && S7TVAdblockCustomProxyIsEnabled() &&
         indexPath.row == [self addProxyRowIndex]) {
         [self.proxies addObject:@""];
         [self saveProxies];
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
-                      withRowAnimation:UITableViewRowAnimationAutomatic];
+        S7TVReloadSectionWithoutJump(self.tableView, 1);
     }
     NSArray<NSNumber *> *visibleGeneral = [self s7tv_visibleGeneralRows];
     if (indexPath.section == 0 && indexPath.row < (NSInteger)visibleGeneral.count &&
@@ -1272,8 +1421,8 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     S7TVAdblockMethod configured = S7TVAdblockConfiguredMethod();
     NSArray *choices = @[
         @[L(@"adblock_method_value_disabled"), @(S7TVAdblockMethodDisabled)],
-        @[L(@"adblock_method_value_proxy"), @(S7TVAdblockMethodProxy)],
         @[L(@"adblock_method_value_local"), @(S7TVAdblockMethodLocalVaft)],
+        @[L(@"adblock_method_value_proxy"), @(S7TVAdblockMethodProxy)],
     ];
     for (NSArray *choice in choices) {
         S7TVAdblockMethod method = (S7TVAdblockMethod)[choice[1] integerValue];
@@ -1295,6 +1444,9 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 
 - (void)s7tv_applyConfiguredMethod:(S7TVAdblockMethod)method {
     S7TVAdblockSetConfiguredMethod(method);
+    // The method selector is now the master control for the proxy engine;
+    // selecting Proxy must also keep the legacy per-proxy flag enabled.
+    if (method == S7TVAdblockMethodProxy) S7TVAdblockSetProxyEnabled(YES);
     S7TVAdblockMethod active = S7TVAdblockActiveMethod();
     if (method == S7TVAdblockMethodDisabled) {
         // Désactiver doit couper immédiatement le moteur actuellement chargé.
@@ -1308,7 +1460,17 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
         S7TVAdblockSetEnabledForNextLaunch(YES);
     }
     // Le nombre de sections change avec la méthode (section Proxy vidéo).
-    [self.tableView reloadData];
+    S7TVReloadDataWithoutJump(self.tableView);
+
+    // Une sélection Proxy alors que ce moteur est déjà actif constitue une
+    // demande explicite de revalidation de son endpoint. Si un redémarrage
+    // est nécessaire, le contrôle sera effectué à la prochaine entrée dans
+    // cet écran, une fois le nouveau moteur réellement chargé.
+    if (method == S7TVAdblockMethodProxy && method == active &&
+        S7TVAdblockProxyIsEnabled()) {
+        self.proxyStatus = S7TVAdblockProxyStatusUnknown;
+        [self refreshProxyStatus];
+    }
 
     // Méthode configurée != méthode active → redémarrage Twitch requis,
     // en nommant explicitement la méthode choisie.
@@ -1342,10 +1504,9 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     S7TVAdblockSetProxyEnabled(sender.isOn);
     self.proxyStatus = S7TVAdblockProxyStatusUnknown;
     if ([self s7tv_proxySectionVisible]) {
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
-                      withRowAnimation:UITableViewRowAnimationFade];
+        S7TVReloadSectionWithoutJump(self.tableView, 1);
     } else {
-        [self.tableView reloadData];
+        S7TVReloadDataWithoutJump(self.tableView);
     }
     if (sender.isOn) [self refreshProxyStatus];
 }
@@ -1354,12 +1515,55 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     S7TVAdblockSetCustomProxyEnabled(sender.isOn);
     self.proxyStatus = S7TVAdblockProxyStatusUnknown;
     if ([self s7tv_proxySectionVisible]) {
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
-                      withRowAnimation:UITableViewRowAnimationFade];
+        S7TVReloadSectionWithoutJump(self.tableView, 1);
     } else {
-        [self.tableView reloadData];
+        S7TVReloadDataWithoutJump(self.tableView);
     }
     [self refreshProxyStatus];
+}
+
+- (UITableViewCell *)defaultProxyCell {
+    return S7TVNavCell(L(@"adblock_default_proxy"),
+                       S7TVAdblockDefaultProxyDisplayName(
+                           S7TVAdblockDefaultProxyAddress()),
+                       @"network", S7TVAccent(), nil);
+}
+
+- (void)presentDefaultProxyPickerFromCell:(UIView *)anchor {
+    NSArray<NSString *> *addresses = S7TVAdblockDefaultProxyAddresses();
+    NSString *current = S7TVAdblockDefaultProxyAddress();
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:L(@"adblock_default_proxy")
+                          message:L(@"adblock_default_proxy_footer")
+                   preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
+
+    __weak typeof(self) weakSelf = self;
+    for (NSString *address in addresses) {
+        NSString *title = S7TVAdblockDefaultProxyDisplayName(address);
+        if ([address isEqualToString:current])
+            title = [@"✓  " stringByAppendingString:title];
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                   style:UIAlertActionStyleDefault
+                                                 handler:^(UIAlertAction *action) {
+            (void)action;
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            S7TVAdblockSetDefaultProxyAddress(address);
+            self.proxyStatus = S7TVAdblockProxyStatusUnknown;
+            S7TVReloadCellWithoutJump(self.tableView, anchor);
+            [self refreshProxyStatus];
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                               style:UIAlertActionStyleCancel
+                                             handler:nil]];
+    if (anchor) {
+        sheet.popoverPresentationController.sourceView = anchor;
+        sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (UITableViewCell *)proxyStatusCell {
@@ -1391,7 +1595,46 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
             cell.detailTextLabel.textColor = UIColor.systemGrayColor;
             break;
     }
+
+    // Keep the manual probe in the status row so it is always next to the
+    // result. It uses the same authenticated /ping check as automatic probes.
+    UIButton *pingButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *pingSymbolConfiguration =
+        [UIImageSymbolConfiguration configurationWithPointSize:14.0
+                                                         weight:UIImageSymbolWeightSemibold];
+    [pingButton setImage:[UIImage systemImageNamed:@"arrow.clockwise"
+                                  withConfiguration:pingSymbolConfiguration]
+                  forState:UIControlStateNormal];
+    pingButton.titleLabel.font = [UIFont systemFontOfSize:13.0
+                                                     weight:UIFontWeightSemibold];
+    pingButton.tintColor = S7TVAccent();
+    pingButton.contentEdgeInsets = UIEdgeInsetsMake(4.0, 8.0, 4.0, 8.0);
+    // Give the accessory an explicit frame: some Twitch table-cell styles do
+    // not propagate UIButton's intrinsic size when it is used as an accessory,
+    // which could make the control effectively invisible.
+    pingButton.frame = CGRectMake(0.0, 0.0, 36.0, 32.0);
+    pingButton.accessibilityLabel = L(@"adblock_proxy_status_ping");
+    [pingButton addTarget:self action:@selector(manualProxyPing:)
+          forControlEvents:UIControlEventTouchUpInside];
+    BOOL canPing = S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy &&
+                   S7TVAdblockProxyIsEnabled();
+    pingButton.enabled = canPing &&
+                         self.proxyStatus != S7TVAdblockProxyStatusChecking;
+    cell.accessoryView = pingButton;
     return cell;
+}
+
+- (void)manualProxyPing:(UIButton *)sender {
+    (void)sender;
+    if (S7TVAdblockConfiguredMethod() != S7TVAdblockMethodProxy ||
+        !S7TVAdblockProxyIsEnabled() ||
+        self.proxyStatus == S7TVAdblockProxyStatusChecking) {
+        return;
+    }
+
+    // The in-flight Checking state disables the button until this asynchronous
+    // probe finishes; subsequent taps start a fresh probe immediately.
+    [self refreshProxyStatus];
 }
 
 - (UIButton *)proxyArrowButton:(NSString *)symbol tag:(NSInteger)tag action:(SEL)action {
@@ -1402,6 +1645,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
         configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
     [button setImage:[UIImage systemImageNamed:symbol withConfiguration:configuration]
             forState:UIControlStateNormal];
+    button.tintColor = S7TVAccent();
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     return button;
 }
@@ -1410,10 +1654,12 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"S7TVProxyRowCell"];
     UIButton *up = nil;
     UIButton *down = nil;
+    UIButton *deleteButton = nil;
     UITextField *field = nil;
     if (cell) {
         up = (UIButton *)[cell.contentView viewWithTag:kS7TVProxyUpButtonTag];
         down = (UIButton *)[cell.contentView viewWithTag:kS7TVProxyDownButtonTag];
+        deleteButton = (UIButton *)[cell.contentView viewWithTag:kS7TVProxyDeleteButtonTag];
         field = (UITextField *)[cell.contentView viewWithTag:kS7TVProxyTextFieldTag];
     } else {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
@@ -1423,6 +1669,10 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
                              action:@selector(proxyUpTapped:)];
         down = [self proxyArrowButton:@"chevron.down" tag:kS7TVProxyDownButtonTag
                                action:@selector(proxyDownTapped:)];
+        deleteButton = [self proxyArrowButton:@"xmark.circle.fill"
+                                          tag:kS7TVProxyDeleteButtonTag
+                                       action:@selector(proxyDeleteTapped:)];
+        deleteButton.accessibilityLabel = L(@"adblock_proxy_delete");
         field = [[UITextField alloc] init];
         field.tag = kS7TVProxyTextFieldTag;
         field.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1439,6 +1689,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
         forControlEvents:UIControlEventEditingChanged];
         [cell.contentView addSubview:up];
         [cell.contentView addSubview:down];
+        [cell.contentView addSubview:deleteButton];
         [cell.contentView addSubview:field];
         [NSLayoutConstraint activateConstraints:@[
             [up.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:12],
@@ -1450,7 +1701,11 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
             [down.widthAnchor constraintEqualToConstant:30],
             [down.heightAnchor constraintEqualToConstant:30],
             [field.leadingAnchor constraintEqualToAnchor:down.trailingAnchor constant:10],
-            [field.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+            [deleteButton.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12],
+            [deleteButton.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [deleteButton.widthAnchor constraintEqualToConstant:28],
+            [deleteButton.heightAnchor constraintEqualToConstant:30],
+            [field.trailingAnchor constraintEqualToAnchor:deleteButton.leadingAnchor constant:-6],
             [field.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
             [field.heightAnchor constraintEqualToConstant:40],
         ]];
@@ -1494,8 +1749,9 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     if (index <= 0) return;
     [self.proxies exchangeObjectAtIndex:index withObjectAtIndex:index - 1];
     [self saveProxies];
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
-                  withRowAnimation:UITableViewRowAnimationFade];
+    S7TVReloadSectionWithoutJump(self.tableView, 1);
+    self.proxyStatus = S7TVAdblockProxyStatusUnknown;
+    [self refreshProxyStatus];
 }
 
 - (void)proxyDownTapped:(UIButton *)button {
@@ -1505,13 +1761,32 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     if (index < 0 || index >= (NSInteger)self.proxies.count - 1) return;
     [self.proxies exchangeObjectAtIndex:index withObjectAtIndex:index + 1];
     [self saveProxies];
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
-                  withRowAnimation:UITableViewRowAnimationFade];
+    S7TVReloadSectionWithoutJump(self.tableView, 1);
+    self.proxyStatus = S7TVAdblockProxyStatusUnknown;
+    [self refreshProxyStatus];
+}
+
+- (void)removeProxyAtIndex:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)self.proxies.count) return;
+    [self.proxies removeObjectAtIndex:index];
+    [self saveProxies];
+    S7TVReloadSectionWithoutJump(self.tableView, 1);
+    self.proxyStatus = S7TVAdblockProxyStatusUnknown;
+    [self refreshProxyStatus];
+}
+
+- (void)proxyDeleteTapped:(UIButton *)button {
+    UITableViewCell *cell = [self cellForProxySubview:button];
+    NSIndexPath *path = cell ? [self.tableView indexPathForCell:cell] : nil;
+    if (!path) return;
+    NSInteger index = [self proxyIndexForRow:path.row];
+    [self removeProxyAtIndex:index];
 }
 
 - (void)proxyFieldChanged:(UITextField *)field {
     NSIndexPath *path = [self.tableView indexPathForCell:
         [self cellForProxySubview:field]];
+    if (!path) return;
     NSInteger index = [self proxyIndexForRow:path.row];
     if (index < 0 || index >= (NSInteger)self.proxies.count) return;
     self.proxies[index] = field.text ?: @"";
@@ -1527,16 +1802,12 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
      forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
     NSInteger index = [self proxyIndexForRow:indexPath.row];
-    if (index < 0 || index >= (NSInteger)self.proxies.count) return;
-    [self.proxies removeObjectAtIndex:index];
-    [self saveProxies];
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
-                  withRowAnimation:UITableViewRowAnimationAutomatic];
-    [self refreshProxyStatus];
+    [self removeProxyAtIndex:index];
 }
 
 - (void)refreshProxyStatus {
     if (![self s7tv_proxySectionVisible] || !S7TVAdblockProxyIsEnabled()) return;
+    NSUInteger generation = ++self.proxyStatusGeneration;
     NSString *address = nil;
     if (S7TVAdblockCustomProxyIsEnabled()) {
         for (NSString *proxy in self.proxies) {
@@ -1560,7 +1831,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     __weak typeof(self) weakSelf = self;
     S7TVAdblockCheckProxyStatus(address, ^(S7TVAdblockProxyStatus status) {
         __strong typeof(weakSelf) self = weakSelf;
-        if (!self) return;
+        if (!self || generation != self.proxyStatusGeneration) return;
         self.proxyStatus = status;
         [self reloadProxyStatusRow];
     });
@@ -1568,7 +1839,10 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 
 - (void)reloadProxyStatusRow {
     if (![self s7tv_proxySectionVisible] || !S7TVAdblockProxyIsEnabled()) return;
-    NSIndexPath *path = [NSIndexPath indexPathForRow:[self statusRowIndex] inSection:1];
+    NSInteger row = [self statusRowIndex];
+    if (self.tableView.numberOfSections <= 1 ||
+        row >= [self.tableView numberOfRowsInSection:1]) return;
+    NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:1];
     [self.tableView reloadRowsAtIndexPaths:@[path]
                           withRowAnimation:UITableViewRowAnimationNone];
 }
@@ -1581,6 +1855,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 - (void)textFieldDidEndEditing:(UITextField *)textField {
     NSIndexPath *path = [self.tableView indexPathForCell:
         [self cellForProxySubview:textField]];
+    if (!path) return;
     NSInteger index = [self proxyIndexForRow:path.row];
     if (index >= 0 && index < (NSInteger)self.proxies.count) {
         self.proxies[index] = textField.text ?: @"";
@@ -1601,19 +1876,200 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 // Affichage des emotes (animations + résolution CDN 7TV). Le kill switch du
 // renderer est désormais rangé dans Avancé : ce n'est pas un réglage visuel.
 // Organisation : section 0 = note d'introduction (où trouver les réglages du
-// chat custom), section 1 = Émotes, section 2 = Thème.
+// chat custom), section 1 = Thème, section 2 = Émotes.
 typedef NS_ENUM(NSInteger, S7TVAppearanceSection) {
     S7TVAppearanceSectionIntro = 0,
-    S7TVAppearanceSectionEmotes = 1,
-    S7TVAppearanceSectionTheme = 2,
+    S7TVAppearanceSectionTheme = 1,
+    S7TVAppearanceSectionEmotes = 2,
 };
 
 // Rows logiques de la section Émotes.
 typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
     S7TVAppearanceEmoteRowResolution = 0,
     S7TVAppearanceEmoteRowPickerAnimations = 1,
-    S7TVAppearanceEmoteRowPickerFavoritesOnly = 2,
+    S7TVAppearanceEmoteRowProviders = 2,
+    S7TVAppearanceEmoteRowProviderPriority = 3,
+    S7TVAppearanceEmoteRowPickerOpening = 4,
+    S7TVAppearanceEmoteRowMixedPicker = 5,
 };
+
+static NSString *S7TVPickerOpeningModeTitle(NSString *mode) {
+    if ([mode isEqualToString:S7TVEmotePickerOpeningModeSevenTVChannel]) return L(@"picker_opening_7tv_channel");
+    if ([mode isEqualToString:S7TVEmotePickerOpeningModeBTTVChannel]) return L(@"picker_opening_bttv_channel");
+    if ([mode isEqualToString:S7TVEmotePickerOpeningModeFFZChannel]) return L(@"picker_opening_ffz_channel");
+    if ([mode isEqualToString:S7TVEmotePickerOpeningModeLastUsed]) return L(@"picker_opening_last_used");
+    return L(@"picker_opening_favorites");
+}
+
+static NSArray<NSNumber *> *S7TVExternalProviderValues(void) {
+    return @[
+        @(S7TVExternalEmoteProvider7TV),
+        @(S7TVExternalEmoteProviderBTTV),
+        @(S7TVExternalEmoteProviderFFZ),
+    ];
+}
+
+static NSString *S7TVExternalProviderDisplayName(S7TVExternalEmoteProvider provider) {
+    switch (provider) {
+        case S7TVExternalEmoteProviderBTTV: return @"BetterTTV";
+        case S7TVExternalEmoteProviderFFZ: return @"FrankerFaceZ";
+        case S7TVExternalEmoteProvider7TV:
+        default: return @"7TV";
+    }
+}
+
+static UIImage *S7TVExternalProviderLogo(S7TVExternalEmoteProvider provider) {
+    NSString *base64 = nil;
+    switch (provider) {
+        case S7TVExternalEmoteProviderBTTV: base64 = kS7TVBTTVLogoBase64; break;
+        case S7TVExternalEmoteProviderFFZ: base64 = kS7TVFFZLogoBase64; break;
+        case S7TVExternalEmoteProvider7TV:
+        default: base64 = kS7TVLogoBase64; break;
+    }
+    if (!base64.length) return nil;
+    NSData *data = [[NSData alloc]
+        initWithBase64EncodedString:base64
+                             options:NSDataBase64DecodingIgnoreUnknownCharacters];
+    if (!data.length) return nil;
+    // UITableViewCell's built-in imageView uses the UIImage point size for
+    // layout. The bundled provider assets do not have the same pixel canvas:
+    // 7TV is a 76x56 mark while BTTV/FFZ are 384x384. Give each source its
+    // native Retina scale so all three logos occupy the same compact visual
+    // footprint instead of making the 7TV mark almost invisible.
+    CGFloat logicalScale = provider == S7TVExternalEmoteProvider7TV ? 3.5 : 16.0;
+    UIImage *image = [UIImage imageWithData:data scale:logicalScale];
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+}
+
+static NSString *S7TVEnabledExternalProviderSummary(void) {
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSNumber *value in S7TVExternalProviderValues()) {
+        S7TVExternalEmoteProvider provider = (S7TVExternalEmoteProvider)value.integerValue;
+        if ([S7TVEmoteProviderSettings isProviderEnabled:provider])
+            [names addObject:S7TVExternalProviderDisplayName(provider)];
+    }
+    return names.count > 0
+        ? [names componentsJoinedByString:@" · "]
+        : L(@"setting_emote_providers_none");
+}
+
+// Les trois providers restent indépendants, mais leur réglage est regroupé
+// dans une seule ligne. Cette page à coches évite trois interrupteurs côte à
+// côte tout en gardant une sélection explicite et facilement réversible.
+@interface S7TVProviderSelectionController : UITableViewController
+@property (nonatomic, copy, nullable) void (^onFinish)(void);
+@end
+
+@interface S7TVProviderSelectionController ()
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *enabledByProvider;
+@end
+
+@implementation S7TVProviderSelectionController
+
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) {
+        _enabledByProvider = [NSMutableDictionary dictionaryWithCapacity:3];
+        for (NSNumber *value in S7TVExternalProviderValues()) {
+            S7TVExternalEmoteProvider provider = (S7TVExternalEmoteProvider)value.integerValue;
+            _enabledByProvider[value] = @([S7TVEmoteProviderSettings isProviderEnabled:provider]);
+        }
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = L(@"setting_emote_providers");
+    S7TVStyleTableView(self.tableView);
+    // Reprendre l'accent violet des menus de choix TwitchPlusK pour les
+    // coches et les boutons de navigation (iOS utilise sinon le bleu système).
+    self.view.tintColor = S7TVAccent();
+    self.tableView.tintColor = S7TVAccent();
+    self.navigationController.navigationBar.tintColor = S7TVAccent();
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
+                             target:self
+                             action:@selector(s7tv_cancel)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                             target:self
+                             action:@selector(s7tv_finish)];
+    S7TVRegisterOLEDObserver(self);
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)s7tv_oledModeDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S7TVApplyOLEDStyle(self);
+    });
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    (void)tableView;
+    return 1;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    (void)tableView;
+    (void)section;
+    return S7TVExternalProviderValues().count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    (void)tableView;
+    NSArray<NSNumber *> *providers = S7TVExternalProviderValues();
+    if (indexPath.row >= (NSInteger)providers.count)
+        return [[UITableViewCell alloc] init];
+
+    NSNumber *value = providers[indexPath.row];
+    S7TVExternalEmoteProvider provider =
+        (S7TVExternalEmoteProvider)value.integerValue;
+    UITableViewCell *cell = [[UITableViewCell alloc]
+        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.backgroundColor = S7TVCellBg();
+    cell.textLabel.text = S7TVExternalProviderDisplayName(provider);
+    cell.textLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
+    cell.textLabel.textColor = UIColor.whiteColor;
+    cell.imageView.image = S7TVExternalProviderLogo(provider);
+    cell.accessoryType = [self.enabledByProvider[value] boolValue]
+        ? UITableViewCellAccessoryCheckmark
+        : UITableViewCellAccessoryNone;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSArray<NSNumber *> *providers = S7TVExternalProviderValues();
+    if (indexPath.row >= (NSInteger)providers.count) return;
+    NSNumber *value = providers[indexPath.row];
+    self.enabledByProvider[value] = @(![self.enabledByProvider[value] boolValue]);
+    [tableView reloadRowsAtIndexPaths:@[indexPath]
+                     withRowAnimation:UITableViewRowAnimationNone];
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+}
+
+- (void)s7tv_cancel {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)s7tv_finish {
+    for (NSNumber *value in S7TVExternalProviderValues()) {
+        S7TVExternalEmoteProvider provider =
+            (S7TVExternalEmoteProvider)value.integerValue;
+        BOOL oldValue = [S7TVEmoteProviderSettings isProviderEnabled:provider];
+        BOOL newValue = [self.enabledByProvider[value] boolValue];
+        if (oldValue != newValue)
+            [S7TVEmoteProviderSettings setProvider:provider enabled:newValue];
+    }
+    void (^finish)(void) = self.onFinish;
+    [self dismissViewControllerAnimated:YES completion:finish];
+}
+
+@end
 
 @implementation SevenTVAppearancePageController
 
@@ -1639,17 +2095,18 @@ typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-// Lignes visibles de la section Émotes : « Animations uniquement pour les
-// favoris » n'existe visuellement que si « Animations dans le picker » est ON
-// (mécanisme générique de sous-options dépendantes ; sa valeur reste stockée).
+// Lignes visibles de la section Émotes. Les trois modes d'animation sont
+// regroupés dans un seul menu de choix ; les anciennes préférences booléennes
+// restent utilisées en interne pour préserver les exports et la compatibilité.
 - (NSArray<NSNumber *> *)s7tv_visibleEmoteRows {
-    BOOL pickerOn = [SevenTVManager sharedManager].showPickerAnimations;
     return S7TVVisibleRowIndexes(@[
         @(S7TVAppearanceEmoteRowResolution),
         @(S7TVAppearanceEmoteRowPickerAnimations),
-    ], @{
-        @(S7TVAppearanceEmoteRowPickerFavoritesOnly): @(pickerOn),
-    });
+        @(S7TVAppearanceEmoteRowProviders),
+        @(S7TVAppearanceEmoteRowProviderPriority),
+        @(S7TVAppearanceEmoteRowPickerOpening),
+        @(S7TVAppearanceEmoteRowMixedPicker),
+    ], @{});
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
@@ -1712,17 +2169,34 @@ typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
         if (ip.row >= (NSInteger)visible.count) return [[UITableViewCell alloc] init];
         switch (visible[ip.row].integerValue) {
             case S7TVAppearanceEmoteRowPickerAnimations:
-                return S7TVSwitchCell(L(@"switch_animations_picker"),
-                            @"photo.stack",
-                            UIColor.systemIndigoColor,
-                            [SevenTVManager sharedManager].showPickerAnimations,
-                            self, @selector(togglePickerAnimations:), nil);
-            case S7TVAppearanceEmoteRowPickerFavoritesOnly:
-                return S7TVSwitchCell(L(@"switch_animations_favorites_only"),
-                            @"star.circle",
-                            UIColor.systemYellowColor,
-                            [SevenTVManager sharedManager].showPickerAnimationsFavoritesOnly,
-                            self, @selector(togglePickerAnimationsFavoritesOnly:), nil);
+                return S7TVNavCell(L(@"switch_animations_picker"),
+                    S7TVValueWithDefaultMark(
+                        S7TVPickerAnimationsModeTitle(
+                            S7TVCurrentPickerAnimationsMode()),
+                        S7TVCurrentPickerAnimationsMode() ==
+                            S7TVPickerAnimationsModeEnabled),
+                    @"photo.stack.fill", S7TVAccent(), nil);
+            case S7TVAppearanceEmoteRowPickerOpening: {
+                NSString *mode = [S7TVEmoteProviderSettings pickerOpeningMode];
+                return S7TVNavCell(L(@"setting_emote_picker_opening"),
+                    S7TVPickerOpeningModeTitle(mode),
+                    @"rectangle.portrait.and.arrow.forward", S7TVAccent(), nil);
+            }
+            case S7TVAppearanceEmoteRowMixedPicker:
+                return S7TVSwitchCell(L(@"setting_emote_picker_mixed"),
+                    @"square.stack.3d.up.fill", UIColor.systemPurpleColor,
+                    [S7TVEmoteProviderSettings mixedPickerEnabled],
+                    self, @selector(toggleMixedPicker:), nil);
+            case S7TVAppearanceEmoteRowProviders:
+                return S7TVNavCell(L(@"setting_emote_providers"),
+                    S7TVEnabledExternalProviderSummary(),
+                    @"person.3.fill", S7TVAccent(), nil);
+            case S7TVAppearanceEmoteRowProviderPriority: {
+                NSArray *priority = [S7TVEmoteProviderSettings providerPriority];
+                NSString *subtitle = [priority componentsJoinedByString:@" > "];
+                return S7TVNavCell(L(@"setting_emote_provider_priority"), subtitle,
+                    @"arrow.up.arrow.down.circle", S7TVAccent(), nil);
+            }
             case S7TVAppearanceEmoteRowResolution:
             default: {
                 // Menu de choix (action sheet) plutôt qu'un segmented : même
@@ -1730,7 +2204,7 @@ typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
                 // sous-titre (marquée "- Par défaut" quand c'est celle d'origine),
                 // le tap ouvre la liste des résolutions. La longue explication
                 // (cache vidé, impact mémoire) est derrière le bouton "i".
-                NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+                NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution;
                 current = MIN(4, MAX(1, current));
                 return S7TVNavCell(L(@"setting_emote_resolution"),
                     S7TVValueWithDefaultMark(
@@ -1756,8 +2230,27 @@ typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
     if (ip.section != S7TVAppearanceSectionEmotes) return;
     NSArray<NSNumber *> *visible = [self s7tv_visibleEmoteRows];
     if (ip.row >= (NSInteger)visible.count) return;
-    if (visible[ip.row].integerValue == S7TVAppearanceEmoteRowResolution) {
-        [self presentResolutionPickerFromCell:[tv cellForRowAtIndexPath:ip]];
+    UITableViewCell *anchor = [tv cellForRowAtIndexPath:ip];
+    if (visible[ip.row].integerValue == S7TVAppearanceEmoteRowPickerAnimations) {
+        [self presentPickerAnimationsPickerFromCell:anchor];
+    } else if (visible[ip.row].integerValue == S7TVAppearanceEmoteRowResolution) {
+        [self presentResolutionPickerFromCell:anchor];
+    } else if (visible[ip.row].integerValue == S7TVAppearanceEmoteRowProviders) {
+        S7TVProviderSelectionController *providers =
+            [[S7TVProviderSelectionController alloc] init];
+        __weak typeof(self) weakSelf = self;
+        providers.onFinish = ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            S7TVReloadCellWithoutJump(strongSelf.tableView, anchor);
+        };
+        UINavigationController *navigation = [[UINavigationController alloc]
+            initWithRootViewController:providers];
+        navigation.modalPresentationStyle = UIModalPresentationPageSheet;
+        [self presentViewController:navigation animated:YES completion:nil];
+    } else if (visible[ip.row].integerValue == S7TVAppearanceEmoteRowProviderPriority) {
+        [self presentProviderPriorityPickerFromCell:anchor];
+    } else if (visible[ip.row].integerValue == S7TVAppearanceEmoteRowPickerOpening) {
+        [self presentPickerOpeningPickerFromCell:anchor];
     }
 }
 
@@ -1776,14 +2269,137 @@ typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
                                            handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
-- (void)togglePickerAnimations:(UISwitch *)sw {
-    [SevenTVManager sharedManager].showPickerAnimations = sw.isOn;
-    // Apparition/disparition de « Animations uniquement pour les favoris »
-    // (sous-option dépendante — voir S7TVVisibleRowIndexes).
-    S7TVReloadSection(self.tableView, S7TVAppearanceSectionEmotes);
+
+- (void)presentPickerAnimationsPickerFromCell:(UIView *)anchor {
+    S7TVPickerAnimationsMode current = S7TVCurrentPickerAnimationsMode();
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:L(@"switch_animations_picker")
+                         message:L(@"picker_animations_message")
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
+
+    NSArray<NSNumber *> *modes = @[
+        @(S7TVPickerAnimationsModeDisabled),
+        @(S7TVPickerAnimationsModeEnabled),
+        @(S7TVPickerAnimationsModeFavoritesOnly),
+    ];
+    for (NSNumber *value in modes) {
+        S7TVPickerAnimationsMode mode =
+            (S7TVPickerAnimationsMode)value.integerValue;
+        NSString *title = S7TVValueWithDefaultMark(
+            S7TVPickerAnimationsModeTitle(mode),
+            mode == S7TVPickerAnimationsModeEnabled);
+        if (mode == current) title = [@"✓  " stringByAppendingString:title];
+        __weak typeof(self) weakSelf = self;
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            SevenTVManager *manager = [SevenTVManager sharedManager];
+            manager.showPickerAnimations =
+                mode != S7TVPickerAnimationsModeDisabled;
+            manager.showPickerAnimationsFavoritesOnly =
+                mode == S7TVPickerAnimationsModeFavoritesOnly;
+            S7TVReloadCellWithoutJump(weakSelf.tableView, anchor);
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    if (anchor) {
+        sheet.popoverPresentationController.sourceView = anchor;
+        sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
 }
-- (void)togglePickerAnimationsFavoritesOnly:(UISwitch *)sw {
-    [SevenTVManager sharedManager].showPickerAnimationsFavoritesOnly = sw.isOn;
+
+- (void)toggleMixedPicker:(UISwitch *)sw {
+    [S7TVEmoteProviderSettings setMixedPickerEnabled:sw.isOn];
+}
+
+- (void)presentPickerOpeningPickerFromCell:(UIView *)anchor {
+    NSString *current = [S7TVEmoteProviderSettings pickerOpeningMode];
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:L(@"setting_emote_picker_opening")
+                         message:L(@"setting_emote_picker_opening_message")
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
+    NSArray<NSArray<NSString *> *> *options = @[
+        @[S7TVEmotePickerOpeningModeFavorites, L(@"picker_opening_favorites")],
+        @[S7TVEmotePickerOpeningModeSevenTVChannel, L(@"picker_opening_7tv_channel")],
+        @[S7TVEmotePickerOpeningModeBTTVChannel, L(@"picker_opening_bttv_channel")],
+        @[S7TVEmotePickerOpeningModeFFZChannel, L(@"picker_opening_ffz_channel")],
+        @[S7TVEmotePickerOpeningModeLastUsed, L(@"picker_opening_last_used")],
+    ];
+    __weak typeof(self) weakSelf = self;
+    for (NSArray<NSString *> *option in options) {
+        NSString *mode = option[0];
+        NSString *title = [mode isEqualToString:current]
+            ? [NSString stringWithFormat:@"✓  %@", option[1]] : option[1];
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            [S7TVEmoteProviderSettings setPickerOpeningMode:mode];
+            S7TVReloadCellWithoutJump(weakSelf.tableView, anchor);
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel handler:nil]];
+    if (anchor) {
+        sheet.popoverPresentationController.sourceView = anchor;
+        sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentProviderPriorityPickerFromCell:(UIView *)anchor {
+    NSArray<NSString *> *current = [S7TVEmoteProviderSettings providerPriority];
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:L(@"setting_emote_provider_priority")
+                         message:L(@"setting_emote_provider_priority_message")
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
+    NSArray<NSString *> *labels = @[@"7TV", @"BetterTTV", @"FrankerFaceZ"];
+    // La priorité est éditée via trois presets explicites : cela reste
+    // utilisable avec VoiceOver et évite un contrôle drag fragile dans un
+    // écran de réglages injecté dans Twitch.
+    NSArray<NSArray<NSString *> *> *orders = @[
+        @[@"7tv", @"bttv", @"ffz"],
+        @[@"bttv", @"7tv", @"ffz"],
+        @[@"ffz", @"7tv", @"bttv"],
+        @[@"7tv", @"ffz", @"bttv"],
+        @[@"bttv", @"ffz", @"7tv"],
+        @[@"ffz", @"bttv", @"7tv"],
+    ];
+    for (NSUInteger index = 0; index < orders.count; index++) {
+        NSArray *order = orders[index];
+        NSString *title = @"";
+        // Afficher les vrais noms dans l'ordre proposé, sans dépendre d'une
+        // éventuelle traduction partielle des providers.
+        NSMutableArray *names = [NSMutableArray array];
+        for (NSString *identifier in order) {
+            S7TVExternalEmoteProvider p = S7TVEmoteProviderFromIdentifier(identifier);
+            [names addObject:labels[p]];
+        }
+        title = [names componentsJoinedByString:@" > "];
+        if ([order isEqualToArray:current]) title = [title stringByAppendingString:@" ✓"];
+        __weak typeof(self) weakSelf = self;
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
+            handler:^(UIAlertAction *action) {
+                (void)action;
+                [S7TVEmoteProviderSettings setProviderPriority:order];
+                S7TVReloadCellWithoutJump(weakSelf.tableView, anchor);
+            }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel handler:nil]];
+    if (anchor) {
+        sheet.popoverPresentationController.sourceView = anchor;
+        sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 // Menu de choix de la résolution des emotes (action sheet, même logique que
@@ -1795,7 +2411,7 @@ typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
                           message:nil
                    preferredStyle:UIAlertControllerStyleActionSheet];
     sheet.view.tintColor = S7TVAccent();
-    NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+        NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution;
     current = MIN(4, MAX(1, current));
     for (NSInteger resolution = 1; resolution <= 4; resolution++) {
         NSString *title = [NSString stringWithFormat:@"%ldx", (long)resolution];
@@ -1805,7 +2421,7 @@ typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
                                                   style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction *action) {
             (void)action;
-            [weakSelf s7tv_applyEmoteResolution:resolution];
+            [weakSelf s7tv_applyEmoteResolution:resolution anchor:anchor];
         }]];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
@@ -1816,17 +2432,20 @@ typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
-- (void)s7tv_applyEmoteResolution:(NSInteger)resolution {
+- (void)s7tv_applyEmoteResolution:(NSInteger)resolution anchor:(UIView *)anchor {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
-    if (resolution == cfg.emote7TVResolution) return;
+    if (resolution == cfg.emoteImageResolution) return;
 
     // Enregistrer d'abord : tout nouveau chargement créé pendant le refresh
     // utilisera immédiatement l'URL /Nx.webp choisie.
-    [cfg setValue:(CGFloat)resolution forSizeKey:@"emote7TVResolution"];
+    // Use the config's common size setter so the value is persisted, the
+    // legacy `emote7TVResolution` alias stays synchronized, and the shared
+    // appearance-change notification reaches the picker/chat immediately.
+    [cfg setValue:(CGFloat)resolution forSizeKey:@"emoteImageResolution"];
     __weak typeof(self) weakSelf = self;
     [[SevenTVManager sharedManager] clearAllCachesWithCompletion:^(NSUInteger clearedCount) {
         (void)clearedCount;
-        [weakSelf.tableView reloadData];
+        S7TVReloadCellWithoutJump(weakSelf.tableView, anchor);
     }];
 }
 
@@ -2043,21 +2662,14 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
                     @"play.circle.fill", [UIColor colorWithRed:0.30 green:0.75 blue:0.45 alpha:1.0],
                     s7tv_keepLiveFeedPlayingEnabled(), self, @selector(toggleKeepLiveFeedPlaying:), nil);
             case S7TVContentHomeRowAutoCollect:
-                {
-                    BOOL adblockActive = S7TVAdblockEnabledFast() &&
-                        S7TVAdblockActiveMethod() != S7TVAdblockMethodDisabled;
-                    NSString *warningKey = S7TVAutoClaimIsSuspendedByAdblock()
-                        ? @"auto_collect_adblock_suspended" : nil;
-                    return S7TVSwitchCellWithEnabledState(
-                        L(@"switch_auto_collect_title"),
-                        @"giftcard.fill",
-                        [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
-                        S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints),
-                        !adblockActive,
-                        self,
-                        @selector(toggleAutoCollect:),
-                        warningKey);
-                }
+                return S7TVSwitchCell(
+                    L(@"switch_auto_collect_title"),
+                    @"giftcard.fill",
+                    [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0],
+                    S7TVBoolDefaultYes(kTCLiveAutoCollectChannelPoints),
+                    self,
+                    @selector(toggleAutoCollect:),
+                    nil);
             case S7TVContentHomeRowLockButton: {
                 S7TVOrientationLockSetting setting = S7TVCurrentOrientationLockSetting();
                 return S7TVNavCell(L(@"switch_orientation_lock_button"),
@@ -2071,7 +2683,7 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
 
     // ── Section Favoris : une seule ligne « Mes favoris » (liste + compteur +
     //    import intégré via le bouton flèche) ──────────────────────────────
-    NSArray *favs = [[SevenTVManager sharedManager] favoriteEmoteIDsSnapshot];
+    NSArray *favs = [[S7TVEmoteCatalog sharedCatalog] favoriteKeysSnapshot];
 
     UITableViewCell *cell = [[UITableViewCell alloc]
         initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
@@ -2156,12 +2768,13 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
     }
     if (ip.section != S7TVContentSectionHome) return;
     NSInteger logicalRow = [self s7tv_visibleHomeRows][ip.row].integerValue;
+    UITableViewCell *anchor = [tv cellForRowAtIndexPath:ip];
     if (logicalRow == S7TVContentHomeRowLaunchScreen) {
-        [self presentLaunchDestinationPickerFromCell:[tv cellForRowAtIndexPath:ip]];
+        [self presentLaunchDestinationPickerFromCell:anchor];
         return;
     }
     if (logicalRow == S7TVContentHomeRowLockButton) {
-        [self presentOrientationLockSettingPickerFromCell:[tv cellForRowAtIndexPath:ip]];
+        [self presentOrientationLockSettingPickerFromCell:anchor];
     }
 }
 
@@ -2221,9 +2834,7 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
             s7tv_setAutoOrientationLockMode(mode);
             s7tv_setOrientationLockButtonEnabled(
                 setting != S7TVOrientationLockSettingDisabled);
-            [weakSelf.tableView reloadSections:
-                [NSIndexSet indexSetWithIndex:S7TVContentSectionHome]
-                         withRowAnimation:UITableViewRowAnimationNone];
+            S7TVReloadCellWithoutJump(weakSelf.tableView, anchor);
         }]];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
@@ -2254,9 +2865,7 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
                                                 handler:^(UIAlertAction *action) {
             (void)action;
             s7tv_setLaunchDestination(destination);
-            [weakSelf.tableView reloadSections:
-                [NSIndexSet indexSetWithIndex:S7TVContentSectionHome]
-                         withRowAnimation:UITableViewRowAnimationNone];
+            S7TVReloadCellWithoutJump(weakSelf.tableView, anchor);
         }]];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
@@ -2382,18 +2991,20 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: - SevenTVFavoritesListController
-// Liste de toutes les emotes en favoris (IDs 7TV + noms résolus).
+// Liste de toutes les emotes en favoris (clés provider + noms résolus).
 // ─────────────────────────────────────────────────────────────────────────────
 
 @interface SevenTVFavoritesListController ()
 - (void)s7tv_scheduleFavoriteNameCacheSave;
 - (void)s7tv_scheduleFavoriteNameRowsReload;
 - (void)s7tv_resolveMissingFavoriteNames;
+- (void)s7tv_catalogDidUpdate:(NSNotification *)notification;
 @end
 
 @implementation SevenTVFavoritesListController {
-    NSArray<NSString *> *_favIDs;      // IDs purs (sans préfixe)
-    NSDictionary<NSString *, NSString *> *_idToName; // emoteID → emoteName
+    NSArray<NSString *> *_favKeys;     // provider-qualified keys
+    NSDictionary<NSString *, S7TVEmoteDescriptor *> *_keyToDescriptor;
+    NSDictionary<NSString *, NSString *> *_idToName; // key/id → emoteName
     NSMutableDictionary<NSString *, NSString *> *_favoriteNameCache;
     NSMutableSet<NSString *> *_nameFetchesInFlight;
     NSURLSession *_favoriteNameSession;
@@ -2419,6 +3030,18 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     nameConfig.HTTPMaximumConnectionsPerHost = 4;
     nameConfig.timeoutIntervalForRequest = 15.0;
     _favoriteNameSession = [NSURLSession sessionWithConfiguration:nameConfig];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(s7tv_catalogDidUpdate:)
+                                                 name:S7TVProviderCatalogDidUpdateNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(s7tv_catalogDidUpdate:)
+                                                 name:S7TVFavoritesDidChangeNotification
+                                               object:nil];
+    [[S7TVEmoteCatalog sharedCatalog] loadGlobalProviders];
+    NSString *channelID = [SevenTVManager sharedManager].currentChannelTwitchID;
+    if (channelID.length)
+        [[S7TVEmoteCatalog sharedCatalog] loadChannelProvidersForTwitchID:channelID];
     [self reloadFavs];
 
     // Bouton Vider
@@ -2447,29 +3070,59 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [self reloadFavs];
 }
 
+- (void)s7tv_catalogDidUpdate:(NSNotification *)notification {
+    (void)notification;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.isViewLoaded) [self reloadFavs];
+    });
+}
+
 - (void)reloadFavs {
-    _favIDs = [[[SevenTVManager sharedManager] favoriteEmoteIDsSnapshot] copy];
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    _favKeys = [[catalog favoriteKeysSnapshot] copy];
 
     // Commencer par les noms persistés : un favori importé peut ne pas faire
     // partie des emotes globales ou de la chaîne actuellement ouverte.
-    SevenTVManager *mgr = [SevenTVManager sharedManager];
     NSMutableDictionary *map = [NSMutableDictionary dictionary];
-    for (NSString *emoteID in _favIDs) {
-        NSString *cachedName = _favoriteNameCache[emoteID];
-        if (cachedName.length) map[emoteID] = cachedName;
+    NSMutableDictionary *descriptorMap = [NSMutableDictionary dictionary];
+    for (NSInteger provider = S7TVEmoteProviderIDSevenTV;
+         provider <= S7TVEmoteProviderIDFFZ; provider++) {
+        for (S7TVEmoteDescriptor *descriptor in
+             [catalog allEmotesForProvider:(S7TVEmoteProviderID)provider]) {
+            NSString *key = S7TVEmoteFavoriteKey(descriptor.provider, descriptor.emoteID);
+            if (key.length) descriptorMap[key] = descriptor;
+        }
+    }
+    // Hydrate provider-aware metadata for favorites that belong to a
+    // different channel (or that are being viewed offline).  Without this
+    // merge BTTV/FFZ entries could remain as opaque IDs in Settings even
+    // though the picker still knows their persisted name and CDN URL.
+    for (S7TVEmoteDescriptor *descriptor in [catalog favoriteDescriptorsSnapshot]) {
+        NSString *key = S7TVEmoteFavoriteKey(descriptor.provider, descriptor.emoteID);
+        if (!key.length) continue;
+        descriptorMap[key] = descriptor;
+    }
+    for (NSString *rawFavoriteKey in _favKeys) {
+        NSString *favoriteKey = S7TVSettingsCanonicalFavoriteKey(rawFavoriteKey);
+        if (!favoriteKey.length) continue;
+        S7TVEmoteProviderID provider = S7TVEmoteProviderIDSevenTV;
+        NSString *emoteID = nil;
+        BOOL valid = S7TVSettingsParseFavoriteKey(favoriteKey, &provider, &emoteID);
+        if (!valid) continue;
+        NSString *qualifiedKey = S7TVEmoteFavoriteKey(provider, emoteID);
+        S7TVEmoteDescriptor *descriptor = descriptorMap[qualifiedKey];
+        if (descriptor) {
+            descriptorMap[qualifiedKey] = descriptor;
+            map[qualifiedKey] = descriptor.name;
+        }
+        if (valid && provider == S7TVEmoteProviderIDSevenTV) {
+            NSString *cachedName = _favoriteNameCache[emoteID] ?:
+                _favoriteNameCache[qualifiedKey] ?: _favoriteNameCache[rawFavoriteKey];
+            if (cachedName.length) map[qualifiedKey] = cachedName;
+        }
     }
 
-    // Les catalogues chargés localement restent prioritaires et évitent tout
-    // appel réseau pour leurs emotes.
-    void (^scan)(NSDictionary<NSString *, SevenTVEmote *> *) = ^(NSDictionary *dict) {
-        [dict enumerateKeysAndObjectsUsingBlock:^(NSString *name, SevenTVEmote *emote, BOOL *stop) {
-            if (emote.emoteID) map[emote.emoteID] = name;
-        }];
-    };
-    dispatch_sync(mgr.emoteQueue, ^{
-        scan(mgr.globalEmotes ?: @{});
-        scan(mgr.channelEmotes ?: @{});
-    });
+    _keyToDescriptor = descriptorMap.copy;
     _idToName = [map copy];
     [_favoriteNameCache addEntriesFromDictionary:map];
     [self s7tv_scheduleFavoriteNameCacheSave];
@@ -2507,16 +3160,22 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)s7tv_resolveMissingFavoriteNames {
-    for (NSString *emoteID in _favIDs) {
-        if (_idToName[emoteID].length || [_nameFetchesInFlight containsObject:emoteID]) continue;
-        [_nameFetchesInFlight addObject:emoteID];
+    for (NSString *rawFavoriteKey in _favKeys) {
+        NSString *favoriteKey = S7TVSettingsCanonicalFavoriteKey(rawFavoriteKey);
+        if (!favoriteKey.length) continue;
+        S7TVEmoteProviderID provider = S7TVEmoteProviderIDSevenTV;
+        NSString *emoteID = nil;
+        if (!S7TVSettingsParseFavoriteKey(favoriteKey, &provider, &emoteID) ||
+            provider != S7TVEmoteProviderIDSevenTV) continue;
+        if (_idToName[favoriteKey].length || [_nameFetchesInFlight containsObject:favoriteKey]) continue;
+        [_nameFetchesInFlight addObject:favoriteKey];
 
         NSString *escapedID = [emoteID stringByAddingPercentEncodingWithAllowedCharacters:
                                [NSCharacterSet URLPathAllowedCharacterSet]];
         NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@/emotes/%@",
                                           S7TV_API_BASE, escapedID ?: emoteID]];
         if (!url) {
-            [_nameFetchesInFlight removeObject:emoteID];
+            [_nameFetchesInFlight removeObject:favoriteKey];
             continue;
         }
 
@@ -2537,12 +3196,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             dispatch_async(dispatch_get_main_queue(), ^{
                 typeof(self) strongSelf = weakSelf;
                 if (!strongSelf) return;
-                [strongSelf->_nameFetchesInFlight removeObject:emoteID];
-                if (!resolvedName.length || ![strongSelf->_favIDs containsObject:emoteID]) return;
+                [strongSelf->_nameFetchesInFlight removeObject:favoriteKey];
+                if (!resolvedName.length || ![strongSelf->_favKeys containsObject:favoriteKey]) return;
 
                 strongSelf->_favoriteNameCache[emoteID] = resolvedName;
                 NSMutableDictionary *names = [strongSelf->_idToName mutableCopy] ?: [NSMutableDictionary dictionary];
-                names[emoteID] = resolvedName;
+                names[favoriteKey] = resolvedName;
                 strongSelf->_idToName = [names copy];
                 [strongSelf s7tv_scheduleFavoriteNameCacheSave];
                 [strongSelf s7tv_scheduleFavoriteNameRowsReload];
@@ -2556,7 +3215,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 1; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    return _favIDs.count == 0 ? 1 : (NSInteger)_favIDs.count;
+    return _favKeys.count == 0 ? 1 : (NSInteger)_favKeys.count;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
@@ -2564,8 +3223,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
-    NSString *title = _favIDs.count > 0
-        ? [NSString stringWithFormat:L(@"favorites_count_format"), (unsigned long)_favIDs.count]
+    NSString *title = _favKeys.count > 0
+        ? [NSString stringWithFormat:L(@"favorites_count_format"), (unsigned long)_favKeys.count]
         : L(@"section_favoris");
     return S7TVSectionHeader(title, NO, nil);
 }
@@ -2577,7 +3236,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 
     // Cas liste vide
-    if (_favIDs.count == 0) {
+    if (_favKeys.count == 0) {
         UITableViewCell *cell = [[UITableViewCell alloc]
             initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         cell.selectionStyle  = UITableViewCellSelectionStyleNone;
@@ -2589,8 +3248,20 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return cell;
     }
 
-    NSString *emoteID = _favIDs[ip.row];
-    NSString *name    = _idToName[emoteID];   // nil si emote pas chargée
+    NSString *favoriteKey = S7TVSettingsCanonicalFavoriteKey(_favKeys[ip.row]);
+    if (!favoriteKey.length) favoriteKey = @"7tv:unknown";
+    S7TVEmoteDescriptor *descriptor = _keyToDescriptor[favoriteKey];
+    S7TVEmoteProviderID provider = S7TVEmoteProviderIDSevenTV;
+    NSString *emoteID = nil;
+    BOOL validKey = S7TVSettingsParseFavoriteKey(favoriteKey, &provider, &emoteID);
+    if (!validKey) {
+        provider = S7TVEmoteProviderIDSevenTV;
+        emoteID = favoriteKey;
+        favoriteKey = S7TVEmoteFavoriteKey(S7TVEmoteProviderIDSevenTV, emoteID);
+        descriptor = _keyToDescriptor[favoriteKey];
+    }
+    NSString *name = descriptor.name ?: _idToName[favoriteKey];
+    NSString *providerName = descriptor.providerName ?: S7TVEmoteProviderName(provider);
 
     UITableViewCell *cell = [[UITableViewCell alloc]
         initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
@@ -2606,14 +3277,15 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     thumb.clipsToBounds = YES;
     [cell.contentView addSubview:thumb];
 
-    S7TVLoadSettingsEmoteImage(emoteID, thumb);
+    if (descriptor) S7TVLoadSettingsCatalogEmoteImage(descriptor, thumb);
+    else if (provider == S7TVEmoteProviderIDSevenTV) S7TVLoadSettingsEmoteImage(emoteID, thumb);
 
     // Labels
     UILabel *nameLbl = [[UILabel alloc] init];
-    nameLbl.text = name ?: L(@"favorite_emote_loading");
+    nameLbl.text = name.length ? name : providerName;
     nameLbl.font = [UIFont systemFontOfSize:15 weight:
-        name ? UIFontWeightRegular : UIFontWeightLight];
-    nameLbl.textColor = name ? [UIColor whiteColor] : S7TVGray();
+        name.length ? UIFontWeightRegular : UIFontWeightLight];
+    nameLbl.textColor = name.length ? [UIColor whiteColor] : S7TVGray();
     nameLbl.numberOfLines = 1;
     nameLbl.translatesAutoresizingMaskIntoConstraints = NO;
     [cell.contentView addSubview:nameLbl];
@@ -2623,7 +3295,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSString *shortID = emoteID.length > 14
         ? [NSString stringWithFormat:@"%@…", [emoteID substringToIndex:14]]
         : emoteID;
-    idLbl.text = shortID;
+    idLbl.text = [NSString stringWithFormat:@"%@ · %@", providerName, shortID ?: @"—"];
     idLbl.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
     idLbl.textColor = S7TVGray();
     idLbl.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2654,23 +3326,21 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 // Swipe-to-delete
 - (BOOL)tableView:(UITableView *)tv canEditRowAtIndexPath:(NSIndexPath *)ip {
-    return _favIDs.count > 0;
+    return _favKeys.count > 0;
 }
 
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tv
            editingStyleForRowAtIndexPath:(NSIndexPath *)ip {
-    return _favIDs.count > 0 ? UITableViewCellEditingStyleDelete : UITableViewCellEditingStyleNone;
+    return _favKeys.count > 0 ? UITableViewCellEditingStyleDelete : UITableViewCellEditingStyleNone;
 }
 
 - (void)tableView:(UITableView *)tv
 commitEditingStyle:(UITableViewCellEditingStyle)es
 forRowAtIndexPath:(NSIndexPath *)ip {
     if (es != UITableViewCellEditingStyleDelete) return;
-    NSString *removedID = _favIDs[ip.row];
-    SevenTVManager *manager = [SevenTVManager sharedManager];
-    NSMutableArray *cur = [[manager favoriteEmoteIDsSnapshot] mutableCopy];
-    [cur removeObject:removedID];
-    [manager replaceFavoriteEmoteIDs:cur];
+    NSString *removedKey = _favKeys[ip.row];
+    if (!S7TVSettingsParseFavoriteKey(removedKey, NULL, NULL)) return;
+    [[S7TVEmoteCatalog sharedCatalog] setFavoriteKey:removedKey favorited:NO];
     [self reloadFavs];
 }
 
@@ -2680,16 +3350,20 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 // Bouton Vider
 - (void)clearAllFavs {
-    if (_favIDs.count == 0) return;
+    if (_favKeys.count == 0) return;
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:L(@"alert_clear_favorites_title")
                          message:L(@"alert_clear_favorites_message")
         preferredStyle:UIAlertControllerStyleActionSheet];
     alert.message = [NSString stringWithFormat:L(@"alert_clear_favorites_message"),
-                     (unsigned long)_favIDs.count];
+                     (unsigned long)_favKeys.count];
     [alert addAction:[UIAlertAction actionWithTitle:L(@"common_empty_action")
         style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
-            [[SevenTVManager sharedManager] replaceFavoriteEmoteIDs:@[]];
+            S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+            for (NSString *favoriteKey in self->_favKeys) {
+                if (S7TVSettingsParseFavoriteKey(favoriteKey, NULL, NULL))
+                    [catalog setFavoriteKey:favoriteKey favorited:NO];
+            }
             [self reloadFavs];
         }]];
     [alert addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
@@ -2710,6 +3384,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 @interface S7TVHookDiagnosticsController : UITableViewController
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *items;
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *providerItems;
 @property (nonatomic, strong) S7TVAutoClaimDiagnosticsState *autoClaimState;
 @end
 
@@ -2723,6 +3398,13 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     [super viewDidLoad];
     self.title = L(@"diagnostics_title");
     S7TVStyleTableView(self.tableView);
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center addObserver:self
+               selector:@selector(s7tv_providerDiagnosticsDidUpdate:)
+                   name:S7TVProviderCatalogDidUpdateNotification object:nil];
+    [center addObserver:self
+               selector:@selector(s7tv_providerDiagnosticsDidUpdate:)
+                   name:S7TVEmoteProviderSettingsDidChangeNotification object:nil];
     [self reloadDiagnostics];
 
     // Même comportement que TwitchAdBlock si l'écran est présenté sans pile
@@ -2734,6 +3416,10 @@ forRowAtIndexPath:(NSIndexPath *)ip {
             initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                                  target:self action:@selector(closeDiagnostics)];
     }
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -2749,8 +3435,22 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 - (void)reloadDiagnostics {
     self.items = S7TVHookDiagnosticItems();
+    self.providerItems = S7TVEmoteProviderDiagnosticItems();
     self.autoClaimState = S7TVAutoClaimDiagnosticsCurrentState();
     if (self.isViewLoaded) [self.tableView reloadData];
+}
+
+- (void)s7tv_providerDiagnosticsDidUpdate:(NSNotification *)notification {
+    (void)notification;
+    if (!NSThread.isMainThread) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf s7tv_providerDiagnosticsDidUpdate:nil];
+        });
+        return;
+    }
+    if (!self.isViewLoaded || !self.view.window) return;
+    [self reloadDiagnostics];
 }
 
 - (NSArray<NSString *> *)s7tv_autoClaimDiagnosticTitles {
@@ -2776,9 +3476,6 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     switch (state.effectiveState) {
         case S7TVAutoClaimEffectiveStateActive:
             effectiveState = L(@"diagnostics_autoclaim_state_active");
-            break;
-        case S7TVAutoClaimEffectiveStateSuspendedByAdblock:
-            effectiveState = L(@"diagnostics_autoclaim_state_suspended");
             break;
         case S7TVAutoClaimEffectiveStateDisabledByUser:
         default:
@@ -2839,9 +3536,6 @@ forRowAtIndexPath:(NSIndexPath *)ip {
             case S7TVAutoClaimEffectiveStateActive:
                 valueColor = UIColor.systemGreenColor;
                 break;
-            case S7TVAutoClaimEffectiveStateSuspendedByAdblock:
-                valueColor = UIColor.systemOrangeColor;
-                break;
             case S7TVAutoClaimEffectiveStateDisabledByUser:
             default:
                 valueColor = UIColor.systemGrayColor;
@@ -2853,32 +3547,121 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 }
 
 - (NSArray<NSDictionary<NSString *, id> *> *)s7tv_itemsForGroup:(NSInteger)group {
-    if (group < 0 || group > 3 || group == 2) return @[];
-    NSInteger hookGroup = group < 2 ? group : group - 1;
+    // UI section 0 is reserved for the provider API rows and section 3 for
+    // Auto Claim; only the remaining sections map to hook groups.
+    if (group < 1 || group > 4 || group == 3) return @[];
+    NSInteger hookGroup = group <= 2 ? group - 1 : group - 2;
     NSPredicate *predicate = [NSPredicate predicateWithBlock:
         ^BOOL(NSDictionary<NSString *, id> *item, NSDictionary *bindings) {
             (void)bindings;
-            return [item[@"group"] integerValue] == hookGroup;
+            return item[@"group"] != nil &&
+                [item[@"group"] integerValue] == hookGroup;
         }];
     return [self.items filteredArrayUsingPredicate:predicate];
 }
 
+- (NSArray<NSDictionary<NSString *, id> *> *)s7tv_emoteProviderItems {
+    return self.providerItems ?: @[];
+}
+
 - (NSDictionary<NSString *, id> *)s7tv_itemAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0) {
+        NSArray *providerItems = [self s7tv_emoteProviderItems];
+        return indexPath.row < (NSInteger)providerItems.count
+            ? providerItems[indexPath.row] : nil;
+    }
     NSArray<NSDictionary<NSString *, id> *> *groupItems =
         [self s7tv_itemsForGroup:indexPath.section];
     return indexPath.row < (NSInteger)groupItems.count ? groupItems[indexPath.row] : nil;
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 4; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 5; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 2) return 7;
+    if (section == 0) return [self s7tv_emoteProviderItems].count;
+    if (section == 3) return 7;
     return [self s7tv_itemsForGroup:section].count;
+}
+
+- (UITableViewCell *)s7tv_emoteProviderDiagnosticCellForRow:(NSInteger)row
+                                                   tableView:(UITableView *)tableView {
+    static NSString *reuseIdentifier = @"S7TVEmoteProviderDiagnosticCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseIdentifier];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:reuseIdentifier];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    }
+
+    NSArray<NSDictionary<NSString *, id> *> *providerItems =
+        [self s7tv_emoteProviderItems];
+    if (row < 0 || row >= (NSInteger)providerItems.count) return cell;
+    NSDictionary<NSString *, id> *item = providerItems[row];
+    BOOL enabled = [item[@"enabled"] boolValue];
+    S7TVEmoteProviderState state =
+        (S7TVEmoteProviderState)[item[@"state"] integerValue];
+    NSUInteger count = [item[@"count"] unsignedIntegerValue];
+    NSString *status = nil;
+    UIColor *statusColor = UIColor.systemGrayColor;
+
+    if (!enabled) {
+        status = L(@"diagnostics_inactive");
+    } else {
+        switch (state) {
+            case S7TVEmoteProviderStateLoading:
+                status = L(@"diagnostics_api_loading");
+                statusColor = UIColor.systemOrangeColor;
+                break;
+            case S7TVEmoteProviderStateLoaded:
+                status = [NSString stringWithFormat:
+                    L(@"diagnostics_api_ok_count"), (long)count];
+                statusColor = UIColor.systemGreenColor;
+                break;
+            case S7TVEmoteProviderStateError: {
+                status = L(@"diagnostics_api_error");
+                NSString *detail = item[@"errorMessage"];
+                if (detail.length) {
+                    // Keep an API error useful without allowing a server
+                    // response to make the diagnostics row unbounded.
+                    if (detail.length > 96)
+                        detail = [[detail substringToIndex:96]
+                            stringByAppendingString:@"…"];
+                    status = [NSString stringWithFormat:@"%@ · %@",
+                              status, detail];
+                }
+                statusColor = UIColor.systemRedColor;
+                break;
+            }
+            case S7TVEmoteProviderStateIdle:
+            default:
+                status = L(@"diagnostics_api_not_loaded");
+                statusColor = UIColor.systemGrayColor;
+                break;
+        }
+    }
+
+    cell.backgroundColor = S7TVCellBg();
+    cell.textLabel.text = item[@"name"];
+    cell.textLabel.font = [UIFont systemFontOfSize:14.0
+                                             weight:UIFontWeightRegular];
+    cell.textLabel.textColor = UIColor.whiteColor;
+    cell.textLabel.numberOfLines = 1;
+    cell.detailTextLabel.text = status;
+    cell.detailTextLabel.font = [UIFont systemFontOfSize:13.0
+                                                   weight:UIFontWeightMedium];
+    cell.detailTextLabel.textColor = statusColor;
+    cell.detailTextLabel.numberOfLines = 0;
+    cell.accessibilityValue = status;
+    return cell;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 2) {
+    if (indexPath.section == 0) {
+        return [self s7tv_emoteProviderDiagnosticCellForRow:indexPath.row
+                                                   tableView:tableView];
+    }
+    if (indexPath.section == 3) {
         return [self s7tv_autoClaimDiagnosticCellForRow:indexPath.row
                                               tableView:tableView];
     }
@@ -2923,6 +3706,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     NSArray<NSString *> *keys = @[
+        @"diagnostics_group_emote_providers",
         @"diagnostics_group_proxy",
         @"diagnostics_group_vaft",
         @"diagnostics_autoclaim_group",
@@ -2932,10 +3716,10 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 2) return L(@"diagnostics_autoclaim_subtitle");
+    if (section == 3) return L(@"diagnostics_autoclaim_subtitle");
     // Le rappel de lecture n'est affiché qu'une seule fois, sous le dernier
     // groupe, pour conserver les trois sections immédiatement lisibles.
-    return section == 3 ? L(@"diagnostics_footer") : nil;
+    return section == 4 ? L(@"diagnostics_footer") : nil;
 }
 
 @end
@@ -2950,12 +3734,64 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 // (ex-"Recharger les emotes" de l'accueil) atterrit ici en premier.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Return every image URL currently known by the provider-aware catalogue.
+// The cache is shared by 7TV, BTTV and FFZ, while the old counter only indexed
+// 7TV IDs. Keeping the URL collection here lets the network layer inspect the
+// actual NSURLCache contents without duplicating provider parsing in Settings.
+static NSArray<NSURL *> *S7TVAdvancedKnownEmoteImageURLs(void) {
+    S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+
+    void (^appendDescriptor)(S7TVEmoteDescriptor *) = ^(S7TVEmoteDescriptor *descriptor) {
+        if (!descriptor) return;
+
+        // Inspect all available scales. One emote is counted once by the
+        // network helper even when several resolutions share the cache.
+        [descriptor.imageURLs enumerateKeysAndObjectsUsingBlock:
+            ^(NSNumber *scale, NSString *urlString, BOOL *stop) {
+                (void)scale;
+                NSURL *url = [NSURL URLWithString:urlString];
+                NSString *key = url.absoluteString;
+                if (!key.length || [seen containsObject:key]) return;
+                [seen addObject:key];
+                [urls addObject:url];
+            }];
+
+        // Offline favorites can contain a descriptor reconstructed from
+        // metadata with only its best URL available. Keep that fallback in
+        // the scan instead of silently dropping it from the count.
+        if (!descriptor.imageURLs.count) {
+            NSURL *url = [descriptor imageURLForResolution:
+                [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution];
+            NSString *key = url.absoluteString;
+            if (key.length && ![seen containsObject:key]) {
+                [seen addObject:key];
+                [urls addObject:url];
+            }
+        }
+    };
+
+    for (NSInteger provider = S7TVEmoteProviderIDSevenTV;
+         provider <= S7TVEmoteProviderIDFFZ; provider++) {
+        for (S7TVEmoteDescriptor *descriptor in
+             [catalog allEmotesForProvider:(S7TVEmoteProviderID)provider]) {
+            appendDescriptor(descriptor);
+        }
+    }
+    for (S7TVEmoteDescriptor *descriptor in [catalog favoriteDescriptorsSnapshot]) {
+        appendDescriptor(descriptor);
+    }
+    return urls.copy;
+}
+
 @interface SevenTVAdvancedPageController () <UIDocumentPickerDelegate>
 - (void)s7tv_exportSettingsFromAnchor:(UIView *)anchor;
 - (void)s7tv_importSettingsFromFile;
 - (void)s7tv_importSettingsAtURL:(NSURL *)url;
-- (void)s7tv_applyImportedSettings;
+- (void)s7tv_applyImportedSettingsWithLegacyFavorites:(BOOL)hasLegacyFavorites;
 - (void)s7tv_showSettingsTransferAlertWithTitle:(NSString *)title message:(NSString *)message;
+@property (nonatomic, assign) NSInteger displayedCachedEmoteCount;
 @end
 
 @implementation SevenTVAdvancedPageController
@@ -2968,6 +3804,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = L(@"title_avance");
+    self.displayedCachedEmoteCount = [SevenTVURLProtocol cachedEmoteCount];
     S7TVStyleTableView(self.tableView);
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(s7tv_cacheCountDidChange:)
@@ -2994,12 +3831,34 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    self.displayedCachedEmoteCount = [SevenTVURLProtocol cachedEmoteCount];
     [self.tableView reloadData];
-    [SevenTVURLProtocol refreshCachedEmoteCountWithCompletion:^(NSInteger count) {
-        if (self.view.window) {
+
+    // Use the same cache refresh entry point as the rest of the settings
+    // screen. It now reads the provider-aware index, so BTTV/FFZ entries are
+    // included instead of being treated as a separate cache implementation.
+    __weak typeof(self) weakSelf = self;
+    void (^applyCount)(NSInteger) = ^(NSInteger count) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.displayedCachedEmoteCount = count;
+        if (strongSelf.isViewLoaded && strongSelf.view.window) {
             NSIndexPath *cacheRow = [NSIndexPath indexPathForRow:0 inSection:0];
-            [self.tableView reloadRowsAtIndexPaths:@[cacheRow]
-                                  withRowAnimation:UITableViewRowAnimationNone];
+            [strongSelf.tableView reloadRowsAtIndexPaths:@[cacheRow]
+                                        withRowAnimation:UITableViewRowAnimationNone];
+        }
+    };
+    [SevenTVURLProtocol refreshCachedEmoteCountWithCompletion:^(NSInteger count) {
+        applyCount(count);
+
+        // A one-time catalogue scan backfills entries written by an older
+        // build before the provider-aware index existed. The network layer
+        // merges these discoveries with the canonical index; it never
+        // replaces an already-known identity with only the current channel.
+        NSArray<NSURL *> *knownImageURLs = S7TVAdvancedKnownEmoteImageURLs();
+        if (knownImageURLs.count) {
+            [SevenTVURLProtocol refreshCachedEmoteCountForImageURLs:knownImageURLs
+                                                          completion:applyCount];
         }
     }];
 }
@@ -3107,10 +3966,13 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
         [cell.contentView addSubview:lbl];
 
         UILabel *countLbl = [[UILabel alloc] init];
-        NSInteger resolution = [SevenTVChatAppearanceConfig sharedConfig].emote7TVResolution;
+        NSInteger resolution = [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution;
         resolution = MIN(4, MAX(1, resolution));
+        NSInteger cachedCount = self.displayedCachedEmoteCount >= 0
+            ? self.displayedCachedEmoteCount
+            : [SevenTVURLProtocol cachedEmoteCount];
         countLbl.text = [NSString stringWithFormat:L(@"cache_emote_count_format"),
-                         (long)[SevenTVURLProtocol cachedEmoteCount], (long)resolution];
+                         (long)cachedCount, (long)resolution];
         countLbl.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
         countLbl.textColor = S7TVGray();
         countLbl.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3422,6 +4284,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
     [mgr clearAllCachesWithCompletion:^(NSUInteger clearedCount) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
+        strongSelf.displayedCachedEmoteCount = 0;
         [strongSelf.tableView reloadData];
         UIAlertController *alert = [UIAlertController
             alertControllerWithTitle:L(@"alert_cache_cleared_title")
@@ -3490,6 +4353,23 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
 
+    // Capture the shape before importing.  The transfer helper intentionally
+    // exposes only a count, but the post-import migration must distinguish an
+    // old archive containing `s7tv_favorites` from a modern archive that has
+    // only provider-qualified `s7tv_favorites_v2`: replacing the legacy 7TV
+    // slice in the latter case would overwrite imported 7TV favorites with
+    // whatever happened to be on this device before the import.
+    BOOL hasLegacyFavorites = NO;
+    id archive = [NSPropertyListSerialization propertyListWithData:data
+                                                              options:NSPropertyListImmutable
+                                                               format:nil
+                                                                error:NULL];
+    if ([archive isKindOfClass:NSDictionary.class]) {
+        NSDictionary *values = archive[@"values"];
+        hasLegacyFavorites = [values isKindOfClass:NSDictionary.class] &&
+            values[@"s7tv_favorites"] != nil;
+    }
+
     NSUInteger importedCount = S7TVSettingsImportData(data, &error);
     if (importedCount == NSNotFound) {
         [self s7tv_showSettingsTransferAlertWithTitle:L(@"settings_import_failed_title")
@@ -3497,7 +4377,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
 
-    [self s7tv_applyImportedSettings];
+    [self s7tv_applyImportedSettingsWithLegacyFavorites:hasLegacyFavorites];
     [self.tableView reloadData];
     [self s7tv_showSettingsTransferAlertWithTitle:L(@"settings_import_success_title")
                                           message:[NSString stringWithFormat:
@@ -3505,11 +4385,30 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                                               (unsigned long)importedCount]];
 }
 
-- (void)s7tv_applyImportedSettings {
+- (void)s7tv_applyImportedSettingsWithLegacyFavorites:(BOOL)hasLegacyFavorites {
     // Les préférences générales vivent aussi en mémoire dans le singleton.
     // Cette méthode les relit sans repasser par les setters (qui réécrivent
     // immédiatement NSUserDefaults et risqueraient de modifier le backup).
     [[SevenTVManager sharedManager] reloadPreferencesFromDefaults];
+    // An older export can contain only the unqualified `s7tv_favorites`
+    // array, while this install may already have created `s7tv_favorites_v2`.
+    // Replace just the legacy 7TV slice after reloading the manager so the
+    // imported list is not silently ignored; BTTV/FFZ qualified favorites
+    // remain untouched.
+    if (hasLegacyFavorites) {
+        [[S7TVEmoteCatalog sharedCatalog]
+            replaceLegacySevenTVFavoriteIDs:
+                [SevenTVManager sharedManager].favoriteEmoteIDsSnapshot];
+    }
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:S7TVProviderCatalogDidUpdateNotification
+                      object:[S7TVEmoteCatalog sharedCatalog]
+                    userInfo:@{@"favorites": @YES}];
+    // Les préférences multi-provider sont exportées automatiquement (préfixe
+    // s7tv_) ; normaliser leur ordre et appliquer la migration v1 après import.
+    [S7TVEmoteProviderSettings migrateLegacySettings];
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:S7TVEmoteProviderSettingsDidChangeNotification object:nil];
 
     SevenTVChatAppearanceConfig *chatConfig = [SevenTVChatAppearanceConfig sharedConfig];
     [chatConfig reloadFromDefaults];

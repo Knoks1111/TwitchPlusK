@@ -9,7 +9,6 @@
 
 #import "System/7tv-system-autoclaim.h"
 #import "Core/7tv-core-manager.h"
-#import "Adblock/7tv-adblock-settings.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <stddef.h>
@@ -50,14 +49,6 @@ static BOOL s7tv_autoClaimEnabled(void) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     return [defaults objectForKey:kS7TVAutoClaimPreference] != nil
         ? [defaults boolForKey:kS7TVAutoClaimPreference] : YES;
-}
-
-// Le moteur actif est figé au lancement ; le snapshot du toggle maître peut
-// toutefois être désactivé à chaud. Cette lecture O(1) décrit uniquement
-// l'état réellement en vigueur, jamais la méthode simplement configurée.
-static BOOL s7tv_adblockIsActuallyActive(void) {
-    return S7TVAdblockEnabledFast() &&
-        S7TVAdblockActiveMethod() != S7TVAdblockMethodDisabled;
 }
 
 static BOOL s7tv_runtimeClassIsNamed(id object, NSString *name,
@@ -555,8 +546,7 @@ static UIViewController *s7tv_findActiveChannelChatViewController(void) {
 static __weak UIViewController *s_s7tvActiveAutoClaimController;
 static __weak S7TVAutoClaimWatcher *s_s7tvActiveAutoClaimWatcher;
 static BOOL s_s7tvAutoClaimRuntimeStateKnown = NO;
-static BOOL s_s7tvAutoClaimWasSuspendedByAdblock = NO;
-static BOOL s_s7tvAutoClaimWasAdblockActive = NO;
+static BOOL s_s7tvAutoClaimWasEnabled = NO;
 
 static void s7tv_removeWatcherAssociation(UIViewController *controller,
                                            S7TVAutoClaimWatcher *watcher) {
@@ -727,12 +717,6 @@ static void s7tv_stopActiveAutoClaimWatcherWithReason(NSString *reason) {
         [self logFailureOnceWithKey:@"setting-off"
                             message:@"watcher stopped because Auto Collect is OFF"];
         s7tv_stopActiveAutoClaimWatcherWithReason(@"setting OFF");
-        return;
-    }
-    if (s7tv_adblockIsActuallyActive()) {
-        [self logFailureOnceWithKey:@"adblock-suspended"
-                            message:@"watcher stopped because an AdBlock engine is active"];
-        s7tv_stopActiveAutoClaimWatcherWithReason(@"AdBlock active");
         return;
     }
     if (controller != s_s7tvActiveAutoClaimController) {
@@ -1016,10 +1000,6 @@ static void s7tv_startAutoClaimForController(UIViewController *controller) {
         s7tv_stopActiveAutoClaimWatcherWithReason(@"setting OFF");
         return;
     }
-    if (s7tv_adblockIsActuallyActive()) {
-        s7tv_stopActiveAutoClaimWatcherWithReason(@"AdBlock active");
-        return;
-    }
     if (!controller) {
         s7tv_autoClaimLog(@"watcher not started: no active ChannelChatViewController");
         s7tv_stopActiveAutoClaimWatcherWithReason(@"no active controller");
@@ -1060,9 +1040,9 @@ static void s7tv_startAutoClaimForController(UIViewController *controller) {
     [watcher start];
 }
 
-// Réconcilie l'unique watcher avec l'état runtime réel d'AdBlock. Cette
-// fonction est appelée uniquement sur la main queue, comme les timers et les
-// hooks de cycle de vie Auto Claim.
+// Réconcilie l'unique watcher avec la préférence Auto Claim. Cette fonction
+// est appelée uniquement sur la main queue, comme les timers et les hooks de
+// cycle de vie Auto Claim.
 static void s7tv_reconcileAutoClaimForRuntimeState(void) {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1072,34 +1052,20 @@ static void s7tv_reconcileAutoClaimForRuntimeState(void) {
     }
 
     BOOL enabled = s7tv_autoClaimEnabled();
-    BOOL adblockActive = s7tv_adblockIsActuallyActive();
-    BOOL suspended = enabled && adblockActive;
     BOOL wasKnown = s_s7tvAutoClaimRuntimeStateKnown;
-    BOOL wasSuspended = s_s7tvAutoClaimWasSuspendedByAdblock;
-    BOOL wasAdblockActive = s_s7tvAutoClaimWasAdblockActive;
+    BOOL wasEnabled = s_s7tvAutoClaimWasEnabled;
 
     s_s7tvAutoClaimRuntimeStateKnown = YES;
-    s_s7tvAutoClaimWasSuspendedByAdblock = suspended;
-    s_s7tvAutoClaimWasAdblockActive = adblockActive;
+    s_s7tvAutoClaimWasEnabled = enabled;
 
-    if (suspended) {
-        if (!wasKnown || !wasSuspended) {
-            s7tv_autoClaimLog(
-                @"Auto Claim suspended: AdBlock Proxy/VAFT is active — preference remains ON");
-        }
-        s7tv_stopActiveAutoClaimWatcherWithReason(@"AdBlock active");
-    } else if (enabled) {
-        if (wasKnown && wasSuspended) {
-            s7tv_autoClaimLog(
-                @"Auto Claim resumed: AdBlock is Disabled — preference remains ON");
-        }
+    if (enabled) {
         s7tv_startAutoClaimForController(
             s7tv_findActiveChannelChatViewController());
     } else {
         s7tv_stopActiveAutoClaimWatcherWithReason(@"setting OFF");
     }
 
-    if (!wasKnown || suspended != wasSuspended || adblockActive != wasAdblockActive) {
+    if (!wasKnown || enabled != wasEnabled) {
         [[NSNotificationCenter defaultCenter]
             postNotificationName:S7TVAutoClaimRuntimeStateDidChangeNotification
                           object:nil];
@@ -1210,12 +1176,10 @@ static void s7tv_installAutoClaimLifecycleHooks(void) {
 
 static id s_s7tvAutoClaimWillResignObserver;
 static id s_s7tvAutoClaimDidBecomeObserver;
-static id s_s7tvAutoClaimAdblockRuntimeObserver;
 
 static void s7tv_registerAutoClaimApplicationObservers(void) {
     if (s_s7tvAutoClaimWillResignObserver ||
-        s_s7tvAutoClaimDidBecomeObserver ||
-        s_s7tvAutoClaimAdblockRuntimeObserver) return;
+        s_s7tvAutoClaimDidBecomeObserver) return;
 
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     s_s7tvAutoClaimWillResignObserver =
@@ -1234,7 +1198,7 @@ static void s7tv_registerAutoClaimApplicationObservers(void) {
                         usingBlock:^(__unused NSNotification *note) {
         s7tv_autoClaimLog(@"application foreground");
         s7tv_installAutoClaimLifecycleHooks();
-        if (s7tv_autoClaimEnabled() && !s7tv_adblockIsActuallyActive()) {
+        if (s7tv_autoClaimEnabled()) {
             UIViewController *controller =
                 s7tv_findActiveChannelChatViewController();
             if (controller) {
@@ -1244,19 +1208,9 @@ static void s7tv_registerAutoClaimApplicationObservers(void) {
                     @"foreground: watcher not recreated — no active controller");
             }
             s7tv_startAutoClaimForController(controller);
-        } else if (s7tv_autoClaimEnabled()) {
-            s7tv_autoClaimLog(
-                @"foreground: watcher not recreated — AdBlock Proxy/VAFT is active");
         } else {
             s7tv_autoClaimLog(@"foreground: watcher not recreated because Auto Collect is OFF");
         }
-    }];
-    s_s7tvAutoClaimAdblockRuntimeObserver =
-        [center addObserverForName:S7TVAdblockRuntimeStateDidChangeNotification
-                            object:nil
-                             queue:[NSOperationQueue mainQueue]
-                        usingBlock:^(__unused NSNotification *note) {
-        s7tv_reconcileAutoClaimForRuntimeState();
     }];
 }
 
@@ -1282,16 +1236,11 @@ void S7TVAutoClaimSettingsDidChange(void) {
         s7tv_autoClaimLog(@"toggle Auto Collect: %@", enabled ? @"ON" : @"OFF");
         s7tv_setupAutoClaimOnMain();
         if (enabled) {
-            if (s7tv_adblockIsActuallyActive()) {
-                s7tv_autoClaimLog(
-                    @"toggle ON: watcher suspended — AdBlock Proxy/VAFT is active");
-            } else {
-                s7tv_autoClaimLog(
-                    @"toggle ON: %@",
-                    s_s7tvActiveAutoClaimWatcher
-                        ? @"watcher active immediately"
-                        : @"watcher not started — no active controller available");
-            }
+            s7tv_autoClaimLog(
+                @"toggle ON: %@",
+                s_s7tvActiveAutoClaimWatcher
+                    ? @"watcher active immediately"
+                    : @"watcher not started — no active controller available");
         } else {
             s7tv_autoClaimLog(@"toggle OFF: watcher stopped");
         }
@@ -1301,25 +1250,16 @@ void S7TVAutoClaimSettingsDidChange(void) {
             s7tv_autoClaimLog(@"toggle Auto Collect: %@", enabled ? @"ON" : @"OFF");
             s7tv_setupAutoClaimOnMain();
             if (enabled) {
-                if (s7tv_adblockIsActuallyActive()) {
-                    s7tv_autoClaimLog(
-                        @"toggle ON: watcher suspended — AdBlock Proxy/VAFT is active");
-                } else {
-                    s7tv_autoClaimLog(
-                        @"toggle ON: %@",
-                        s_s7tvActiveAutoClaimWatcher
-                            ? @"watcher active immediately"
-                            : @"watcher not started — no active controller available");
-                }
+                s7tv_autoClaimLog(
+                    @"toggle ON: %@",
+                    s_s7tvActiveAutoClaimWatcher
+                        ? @"watcher active immediately"
+                        : @"watcher not started — no active controller available");
             } else {
                 s7tv_autoClaimLog(@"toggle OFF: watcher stopped");
             }
         });
     }
-}
-
-BOOL S7TVAutoClaimIsSuspendedByAdblock(void) {
-    return s7tv_autoClaimEnabled() && s7tv_adblockIsActuallyActive();
 }
 
 static void s7tv_fillAutoClaimDiagnosticsDependencies(
@@ -1372,12 +1312,9 @@ S7TVAutoClaimDiagnosticsState *S7TVAutoClaimDiagnosticsCurrentState(void) {
     S7TVAutoClaimDiagnosticsState *state =
         [S7TVAutoClaimDiagnosticsState new];
     BOOL enabled = s7tv_autoClaimEnabled();
-    BOOL adblockActive = s7tv_adblockIsActuallyActive();
-    state.effectiveState = !enabled
-        ? S7TVAutoClaimEffectiveStateDisabledByUser
-        : (adblockActive
-            ? S7TVAutoClaimEffectiveStateSuspendedByAdblock
-            : S7TVAutoClaimEffectiveStateActive);
+    state.effectiveState = enabled
+        ? S7TVAutoClaimEffectiveStateActive
+        : S7TVAutoClaimEffectiveStateDisabledByUser;
 
     S7TVAutoClaimWatcher *watcher = s_s7tvActiveAutoClaimWatcher;
     state.watcherActive = watcher != nil && watcher.timer != nil &&

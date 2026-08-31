@@ -34,8 +34,10 @@ TwitchPlusK_FILES = \
     Sources/Chat/7tv-chat-reply-thread-panel.m \
     Sources/Chat/7tv-chat-tokenizer.m \
     Sources/Emote/7tv-emote-animation-engine.m \
+    Sources/Emote/7tv-emote-catalog.m \
     Sources/Emote/7tv-emote-image-cache.m \
     Sources/Emote/7tv-emote-provider.m \
+    Sources/Emote/7tv-provider-settings.m \
     Sources/Badge/7tv-badge-provider.m \
     Sources/Picker/7tv-picker-cell.m \
     Sources/Picker/7tv-picker-controller.m \

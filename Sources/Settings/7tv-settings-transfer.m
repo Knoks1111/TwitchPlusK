@@ -132,10 +132,43 @@ NSUInteger S7TVSettingsImportData(NSData *data, NSError **error) {
         }
     }
 
+    // Older exports predate the provider-aware switches and only contain the
+    // legacy `s7tv_enabled` flag (or a short-lived aggregate dictionary).
+    // Materialize those values in the imported payload itself, rather than
+    // relying on the one-time startup migration: the destination may already
+    // have v2 keys, and an explicit import must still carry the old user's
+    // choice to that installation.  A v2 value present in the archive always
+    // wins over its legacy counterpart.
+    NSMutableDictionary<NSString *, id> *valuesToImport = [values mutableCopy];
+    if (valuesToImport[@"s7tv_enabled"] != nil &&
+        valuesToImport[@"s7tv_emote_provider_enabled_7tv"] == nil) {
+        id value = valuesToImport[@"s7tv_enabled"];
+        if ([value respondsToSelector:@selector(boolValue)])
+            valuesToImport[@"s7tv_emote_provider_enabled_7tv"] = @([value boolValue]);
+    }
+    NSDictionary *aggregate = [valuesToImport[@"s7tv_emote_provider_enabled"]
+        isKindOfClass:NSDictionary.class] ? valuesToImport[@"s7tv_emote_provider_enabled"] : nil;
+    if (aggregate) {
+        NSDictionary<NSString *, NSString *> *providerKeys = @{
+            @"7tv": @"s7tv_emote_provider_enabled_7tv",
+            @"bttv": @"s7tv_emote_provider_enabled_bttv",
+            @"ffz": @"s7tv_emote_provider_enabled_ffz",
+        };
+        [providerKeys enumerateKeysAndObjectsUsingBlock:
+            ^(NSString *identifier, NSString *key, BOOL *stop) {
+            if (valuesToImport[key] != nil) return;
+            id value = aggregate[identifier] ?: aggregate[[NSString stringWithFormat:@"%lu",
+                (unsigned long)([identifier isEqualToString:@"7tv"] ? 0 :
+                    ([identifier isEqualToString:@"bttv"] ? 1 : 2))]];
+            if ([value respondsToSelector:@selector(boolValue)])
+                valuesToImport[key] = @([value boolValue]);
+        }];
+    }
+
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSUInteger importedCount = 0;
-    for (NSString *key in values) {
-        [defaults setObject:values[key] forKey:key];
+    for (NSString *key in valuesToImport) {
+        [defaults setObject:valuesToImport[key] forKey:key];
         importedCount++;
     }
     [defaults synchronize];

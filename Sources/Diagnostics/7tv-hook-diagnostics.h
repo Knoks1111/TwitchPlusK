@@ -26,4 +26,11 @@ void S7TVHookDiagnosticsRegisterKnownTargets(void);
 // frameworks and VAFT's dynamically-created classes are reflected.
 NSArray<NSDictionary<NSString *, id> *> *S7TVHookDiagnosticItems(void);
 
+// [{ @"name": NSString, @"provider": @(S7TVEmoteProviderID),
+//    @"enabled": @(BOOL), @"state": @(S7TVEmoteProviderState),
+//    @"count": @(NSUInteger), @"errorMessage": NSString/null }, ...].
+// Provider status is intentionally separate from hook diagnostics: loading
+// and API errors are not equivalent to a missing runtime hook target.
+NSArray<NSDictionary<NSString *, id> *> *S7TVEmoteProviderDiagnosticItems(void);
+
 NS_ASSUME_NONNULL_END

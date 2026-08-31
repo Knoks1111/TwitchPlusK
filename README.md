@@ -1,33 +1,27 @@
 # TwitchPlusK
 
-Enhanced Twitch app for iOS — 7TV emotes, auto-claim Channel Points, ad blocking, OLED mode, and more. Sideloaded, no jailbreak required.
+Enhanced Twitch app for iOS with a fully customizable chat, 7TV/BTTV/FFZ emotes, Channel Points Auto Claim, two AdBlock methods, OLED mode, and more.
 
 Available in <img src="https://flagcdn.com/gb.svg" width="20"> **ENGLISH** and <img src="https://flagcdn.com/fr.svg" width="20"> **FRENCH** from the Settings menu.
 
 ## What it does
 
-### Enhanced chat
+### Chat and emotes
 
-- **7TV emotes** with animated emotes and their original aspect ratios.
-- Fully **custom chat renderer** with configurable emote size, text size, spacing, and appearance.
-- Built-in **7TV emote picker**.
-- Support for Twitch badges, replies, deleted messages, Channel Point messages, and other Twitch chat events.
+- Provides a fully customizable chat renderer that supports Twitch's native chat features while adding extras such as first-time chatter highlighting and more.
+- Adds **7TV, BTTV, and FFZ emotes** to Twitch chat with a custom emote picker.
+- Supports favorites, animated emotes, Zero-Width emotes, replies, and threads.
 
 ### Ad blocking
 
-- Two AdBlock methods: **Proxy (default or custom)** and **Local (VAFT)**.
-- Blocks ads on **live streams and VODs** using the selected method.
-- Removes additional Twitch ad and promotional elements from the app.
+- Includes two different AdBlock methods:
+  - **Proxy** — uses a default or custom video proxy.
+  - **Local (VAFT)** — uses a local ad-blocking engine without a video proxy.
 
 ### App customization
 
-- **OLED Mode** for true black backgrounds in the dark theme.
-- **Choose your launch screen** — Following, Live, Clips, Browse, Activity, Profile, and more.
-- **Hide Twitch Stories** from Home.
-- **Keep Live Feed Playing** without Twitch forcing you to Watch or Follow.
-- **Export and import all TwitchPlusK settings.**
-- **Orientation Lock** directly from the Twitch player, with optional automatic locking.
-- **Automatically claims Channel Point bonuses** while watching streams.
+- Adds **OLED Mode**, launch screen controls, Stories hiding, Live Feed continuity, Orientation Lock, and more.
+- Includes settings export/import, automatic **Channel Points Auto Claim**, and more.
 
 ## Install
 
@@ -48,7 +42,7 @@ If you want to build from source instead of using the prebuilt release:
    - the `.dylib` artifact link from step 4
    - a direct download link to a Twitch IPA
 6. Once it finishes, the patched IPA is published directly to your fork's Releases page.
-
+7. Install it with SideStore or LiveContainer
 ## Legal
 
 Educational project. Using modified apps may violate Twitch's Terms of Service. Use at your own risk.

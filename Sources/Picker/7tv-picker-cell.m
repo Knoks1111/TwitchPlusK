@@ -39,6 +39,16 @@
         // légèrement au-dessus du coin de la cellule.
         [self addSubview:_favoriteStarView];
 
+        _providerBadgeLabel = [[UILabel alloc] init];
+        _providerBadgeLabel.font = [UIFont systemFontOfSize:7.0 weight:UIFontWeightBold];
+        _providerBadgeLabel.textAlignment = NSTextAlignmentCenter;
+        _providerBadgeLabel.textColor = UIColor.whiteColor;
+        _providerBadgeLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.72];
+        _providerBadgeLabel.layer.cornerRadius = 3.0;
+        _providerBadgeLabel.clipsToBounds = YES;
+        _providerBadgeLabel.hidden = YES;
+        [self addSubview:_providerBadgeLabel];
+
         self.clipsToBounds = NO; // le badge favori déborde légèrement du coin
         self.contentView.clipsToBounds = YES;
         self.contentView.layer.cornerRadius = 8;
@@ -68,6 +78,7 @@
     [super layoutSubviews];
     CGSize cs = self.bounds.size;
     self.favoriteStarView.frame = CGRectMake(cs.width - 9, -3, 12, 12);
+    self.providerBadgeLabel.frame = CGRectMake(2, cs.height - 12, 24, 10);
 }
 
 - (void)prepareForReuse {
@@ -79,6 +90,8 @@
     self.wantsAnimation = NO;
     self.emoteImageView.image = nil;
     self.favoriteStarView.hidden = YES;
+    self.providerBadgeLabel.hidden = YES;
+    self.providerBadgeLabel.text = nil;
     self.currentEmoteKey = nil;
     // Se retire de l'engine d'animation : sans ça, une cellule recyclée pour
     // une AUTRE emote continuerait de recevoir les redraws de l'ancienne

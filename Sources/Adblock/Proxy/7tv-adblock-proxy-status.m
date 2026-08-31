@@ -1,87 +1,117 @@
 #import "Adblock/Proxy/7tv-adblock-proxy-status.h"
 #import "Adblock/7tv-adblock-settings.h"
+#import "Adblock/Proxy/7tv-adblock-proxy.h"
 #import <os/log.h>
-#include <sys/socket.h>
-#include <sys/select.h>
-#include <netdb.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <stdio.h>
-#include <unistd.h>
 
-// Copie adaptée de twab_tcpConnectReachable (TwitchAdBlock v0.1.13).
-static BOOL S7TVAdblockTCPConnectReachable(NSString *host, int port, int timeoutSeconds) {
-    if (!host.length || port <= 0) return NO;
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    char portString[16];
-    snprintf(portString, sizeof(portString), "%d", port);
-    struct addrinfo *addresses = NULL;
-    if (getaddrinfo(host.UTF8String, portString, &hints, &addresses) != 0 || !addresses) {
-        return NO;
-    }
+typedef void (^S7TVAdblockProxyStatusCompletion)(S7TVAdblockProxyStatus status);
 
-    BOOL connected = NO;
-    for (struct addrinfo *address = addresses;
-         address && !connected;
-         address = address->ai_next) {
-        int socketDescriptor = socket(address->ai_family,
-                                      address->ai_socktype,
-                                      address->ai_protocol);
-        if (socketDescriptor < 0) continue;
-        int flags = fcntl(socketDescriptor, F_GETFL, 0);
-        fcntl(socketDescriptor, F_SETFL, flags | O_NONBLOCK);
+// The status screen is event-driven, but several UI updates can request the
+// same probe in quick succession (view appearance + table reload + a toggle).
+// Coalesce those requests so one network check fans out to every waiter.
+static dispatch_queue_t s7tv_proxyStatusQueue;
+static NSMutableDictionary<NSString *, NSMutableArray *> *s7tv_proxyStatusPending;
 
-        int result = connect(socketDescriptor, address->ai_addr, address->ai_addrlen);
-        if (result == 0) {
-            connected = YES;
-        } else if (errno == EINPROGRESS) {
-            fd_set writable;
-            FD_ZERO(&writable);
-            FD_SET(socketDescriptor, &writable);
-            struct timeval timeout = { timeoutSeconds, 0 };
-            int selected = select(socketDescriptor + 1, NULL, &writable, NULL, &timeout);
-            if (selected > 0) {
-                int error = 0;
-                socklen_t length = sizeof(error);
-                if (getsockopt(socketDescriptor, SOL_SOCKET, SO_ERROR,
-                               &error, &length) == 0 && error == 0) {
-                    connected = YES;
-                }
-            }
+static void S7TVAdblockInitializeProxyStatusState(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        s7tv_proxyStatusQueue = dispatch_queue_create(
+            "com.twitchplusk.adblock-proxy-status", DISPATCH_QUEUE_SERIAL);
+        s7tv_proxyStatusPending = [NSMutableDictionary dictionary];
+    });
+}
+
+static NSString *S7TVAdblockProxyStatusKey(NSURL *URL) {
+    // Include the complete normalized URL so changing credentials or a
+    // non-default endpoint cannot reuse a result from another configuration.
+    return URL.absoluteString ?: @"";
+}
+
+static void S7TVAdblockFinishProxyStatusProbe(
+    NSString *key, S7TVAdblockProxyStatus status) {
+    __block NSArray *callbacks = nil;
+    dispatch_sync(s7tv_proxyStatusQueue, ^{
+        callbacks = [s7tv_proxyStatusPending[key] copy] ?: @[];
+        [s7tv_proxyStatusPending removeObjectForKey:key];
+    });
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (S7TVAdblockProxyStatusCompletion callback in callbacks) {
+            if (callback) callback(status);
         }
-        close(socketDescriptor);
-    }
-    freeaddrinfo(addresses);
-    return connected;
+    });
 }
 
 void S7TVAdblockCheckProxyStatus(
     NSString *address,
-    void (^completion)(S7TVAdblockProxyStatus)) {
-    void (^reply)(S7TVAdblockProxyStatus) = ^(S7TVAdblockProxyStatus status) {
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(status); });
-    };
+    void (^completion)(S7TVAdblockProxyStatus status)) {
+    if (!completion) return;
+    S7TVAdblockInitializeProxyStatusState();
+
     if (!address.length) {
-        reply(S7TVAdblockProxyStatusOffline);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(S7TVAdblockProxyStatusOffline);
+        });
         return;
     }
+
     NSURL *URL = S7TVAdblockNormalizedProxyURL(address);
     if (!URL.host.length) {
-        os_log_error(OS_LOG_DEFAULT, "[7TV-Adblock] probe: unparseable proxy address");
-        reply(S7TVAdblockProxyStatusOffline);
+        os_log_error(OS_LOG_DEFAULT,
+                     "[7TV-Adblock] functional proxy probe: invalid address");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(S7TVAdblockProxyStatusOffline);
+        });
         return;
     }
-    NSString *host = URL.host;
-    int port = (URL.port ?: @8080).intValue;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSDate *start = NSDate.date;
-        BOOL reachable = S7TVAdblockTCPConnectReachable(host, port, 10);
-        NSTimeInterval elapsed = -[start timeIntervalSinceNow];
-        os_log(OS_LOG_DEFAULT,
-               "[7TV-Adblock] proxy probe %{public}@:%d reachable=%d in %.2fs",
-               host, port, reachable, elapsed);
-        reply(reachable ? S7TVAdblockProxyStatusOnline : S7TVAdblockProxyStatusOffline);
+
+    NSURL *pingURL = [URL URLByAppendingPathComponent:@"ping"];
+    NSString *key = S7TVAdblockProxyStatusKey(URL);
+    __block BOOL shouldStartProbe = NO;
+    dispatch_sync(s7tv_proxyStatusQueue, ^{
+        NSMutableArray *callbacks = s7tv_proxyStatusPending[key];
+        if (!callbacks) {
+            callbacks = [NSMutableArray array];
+            s7tv_proxyStatusPending[key] = callbacks;
+            shouldStartProbe = YES;
+        }
+        [callbacks addObject:[completion copy]];
     });
+    if (!shouldStartProbe) return;
+
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:pingURL];
+    request.HTTPMethod = @"GET";
+    request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    request.timeoutInterval = 4.0;
+    NSString *authorization = S7TVAdblockBasicAuthHeader(URL);
+    if (authorization) {
+        [request setValue:authorization forHTTPHeaderField:@"Authorization"];
+    }
+
+    NSURLSessionConfiguration *configuration =
+        [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    configuration.URLCredentialStorage = nil;
+    configuration.timeoutIntervalForRequest = 4.0;
+    configuration.timeoutIntervalForResource = 5.0;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration];
+    NSURLSessionDataTask *task = [session dataTaskWithRequest:request
+        completionHandler:^(__unused NSData *data,
+                            NSURLResponse *response,
+                            NSError *error) {
+        NSInteger statusCode = [response isKindOfClass:NSHTTPURLResponse.class]
+            ? ((NSHTTPURLResponse *)response).statusCode : -1;
+        BOOL functional = statusCode == 200;
+        os_log(OS_LOG_DEFAULT,
+               "[7TV-Adblock] functional proxy probe %{public}@:%d status=%ld errorCode=%ld",
+               URL.host ?: @"?", (URL.port ?: @8080).intValue,
+               (long)statusCode, (long)(error ? error.code : 0));
+        S7TVAdblockFinishProxyStatusProbe(
+            key, functional ? S7TVAdblockProxyStatusOnline
+                             : S7TVAdblockProxyStatusOffline);
+    }];
+
+    if (!task) {
+        S7TVAdblockFinishProxyStatusProbe(key, S7TVAdblockProxyStatusOffline);
+        return;
+    }
+    [task resume];
 }

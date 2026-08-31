@@ -71,6 +71,12 @@
 
 @implementation S7TVChatToken
 
+- (instancetype)init {
+    self = [super init];
+    if (self) _overlayTokens = @[];
+    return self;
+}
+
 + (instancetype)textToken:(NSString *)text {
     S7TVChatToken *t = [S7TVChatToken new];
     t.type = S7TVChatTokenTypeText;

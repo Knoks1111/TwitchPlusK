@@ -8,6 +8,16 @@
 
 static NSString *const S7TVAdblockProxyDispatchGuard = @"s7tv_adblock_proxy_dispatch";
 static char S7TVAdblockProxySessionAssociationKey;
+static NSMutableDictionary<NSString *, NSNumber *> *s7tv_proxyLuminousCache;
+static dispatch_semaphore_t s7tv_proxyLuminousCacheLock;
+
+static void S7TVAdblockInitializeProxyLuminousCache(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        s7tv_proxyLuminousCache = [NSMutableDictionary dictionary];
+        s7tv_proxyLuminousCacheLock = dispatch_semaphore_create(1);
+    });
+}
 
 @interface S7TVAdblockProxyAuthDelegate : NSObject <NSURLSessionDelegate, NSURLSessionTaskDelegate>
 @property (nonatomic, weak) id<NSURLSessionDelegate> inner;
@@ -55,7 +65,7 @@ BOOL S7TVAdblockIsAdHost(NSString *host) {
     static NSSet *exact;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        exact = [NSSet setWithObjects:@"edge.ads.twitch.tv", @"spade.twitch.tv",
+        exact = [NSSet setWithObjects:@"edge.ads.twitch.tv",
             @"secure-sts-prod.imrworldwide.com", nil];
     });
     if ([exact containsObject:host]) return YES;
@@ -128,23 +138,24 @@ NSString *S7TVAdblockBasicAuthHeader(NSURL *url) {
             [data base64EncodedStringWithOptions:0]];
 }
 
+void S7TVAdblockInvalidateProxyDetectionCache(void) {
+    S7TVAdblockInitializeProxyLuminousCache();
+    dispatch_semaphore_wait(s7tv_proxyLuminousCacheLock, DISPATCH_TIME_FOREVER);
+    [s7tv_proxyLuminousCache removeAllObjects];
+    dispatch_semaphore_signal(s7tv_proxyLuminousCacheLock);
+}
+
 static NSString *S7TVAdblockProxyCacheKey(NSURL *url) {
     return [NSString stringWithFormat:@"%@://%@:%@", url.scheme ?: @"http",
             url.host ?: @"?", url.port ?: @80];
 }
 
 static BOOL S7TVAdblockProxyIsLuminousV1(NSURL *proxyURL) {
-    static NSMutableDictionary<NSString *, NSNumber *> *cache;
-    static dispatch_semaphore_t lock;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        cache = [NSMutableDictionary dictionary];
-        lock = dispatch_semaphore_create(1);
-    });
+    S7TVAdblockInitializeProxyLuminousCache();
     NSString *key = S7TVAdblockProxyCacheKey(proxyURL);
-    dispatch_semaphore_wait(lock, DISPATCH_TIME_FOREVER);
-    NSNumber *known = cache[key];
-    dispatch_semaphore_signal(lock);
+    dispatch_semaphore_wait(s7tv_proxyLuminousCacheLock, DISPATCH_TIME_FOREVER);
+    NSNumber *known = s7tv_proxyLuminousCache[key];
+    dispatch_semaphore_signal(s7tv_proxyLuminousCacheLock);
     if (known) return known.boolValue;
 
     __block NSInteger statusCode = -1;
@@ -163,9 +174,9 @@ static BOOL S7TVAdblockProxyIsLuminousV1(NSURL *proxyURL) {
     dispatch_semaphore_wait(completed,
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3500 * NSEC_PER_MSEC)));
     BOOL luminous = statusCode == 200;
-    dispatch_semaphore_wait(lock, DISPATCH_TIME_FOREVER);
-    cache[key] = @(luminous);
-    dispatch_semaphore_signal(lock);
+    dispatch_semaphore_wait(s7tv_proxyLuminousCacheLock, DISPATCH_TIME_FOREVER);
+    s7tv_proxyLuminousCache[key] = @(luminous);
+    dispatch_semaphore_signal(s7tv_proxyLuminousCacheLock);
     os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] proxy %{public}@ luminous=%d",
            proxyURL.host ?: @"?", luminous);
     return luminous;

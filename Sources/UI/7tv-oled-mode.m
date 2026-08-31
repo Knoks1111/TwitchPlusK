@@ -184,6 +184,223 @@ static void s7tv_installOLEDPaletteHooks(void) {
         sizeof(kS7TVOLEDDarkThemeClassNames) / sizeof(kS7TVOLEDDarkThemeClassNames[0]));
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Clavier OLED
+//
+// Adaptation ciblée de la logique open source d'OledKeyboard (dayanch96) :
+// seuls les composants du clavier UIKit sont traités, et uniquement lorsque
+// le mode OLED de TwitchPlusK est actif. Le reste de l'interface et le clavier
+// en mode normal restent entièrement gérés par iOS.
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef struct {
+    Class targetClass;
+    SEL selector;
+    IMP original;
+} S7TVOLEDKeyboardHook;
+
+static const NSUInteger kS7TVOLEDMaxKeyboardHooks = 8;
+static S7TVOLEDKeyboardHook s7tv_oledKeyboardHooks[8];
+static NSUInteger s7tv_oledKeyboardHookCount = 0;
+
+static BOOL s7tv_oledKeyboardHookExists(Class targetClass, SEL selector) {
+    for (NSUInteger index = 0; index < s7tv_oledKeyboardHookCount; index++) {
+        S7TVOLEDKeyboardHook hook = s7tv_oledKeyboardHooks[index];
+        if (hook.targetClass == targetClass && hook.selector == selector) return YES;
+    }
+    return NO;
+}
+
+static BOOL s7tv_oledKeyboardSuperclassAlreadyHooked(Class targetClass, SEL selector) {
+    for (Class superclass = class_getSuperclass(targetClass); superclass != Nil;
+         superclass = class_getSuperclass(superclass)) {
+        if (s7tv_oledKeyboardHookExists(superclass, selector)) return YES;
+    }
+    return NO;
+}
+
+static const S7TVOLEDKeyboardHook *s7tv_oledKeyboardHookForReceiver(id receiver,
+                                                                    SEL selector) {
+    for (Class currentClass = object_getClass(receiver); currentClass != Nil;
+         currentClass = class_getSuperclass(currentClass)) {
+        for (NSUInteger index = 0; index < s7tv_oledKeyboardHookCount; index++) {
+            S7TVOLEDKeyboardHook *hook = &s7tv_oledKeyboardHooks[index];
+            if (hook->targetClass == currentClass && hook->selector == selector) {
+                return hook;
+            }
+        }
+    }
+    return NULL;
+}
+
+static BOOL s7tv_oledKeyboardViewIsDark(id view) {
+    if (!view) return NO;
+
+    // OledKeyboard first uses UIKit's private dark-mode query. This covers
+    // keyboard views whose nearest controller is not exposed as a normal
+    // UIViewController in the host app.
+    SEL mapkitDarkModeSelector = sel_registerName("_mapkit_isDarkModeEnabled");
+    if ([view respondsToSelector:mapkitDarkModeSelector]) {
+        return ((BOOL (*)(id, SEL))objc_msgSend)(view, mapkitDarkModeSelector);
+    }
+
+    id controller = nil;
+    SEL ancestorControllerSelector = sel_registerName("_viewControllerForAncestor");
+    if ([view respondsToSelector:ancestorControllerSelector]) {
+        controller = ((id (*)(id, SEL))objc_msgSend)(view, ancestorControllerSelector);
+    }
+
+    id traitsOwner = controller ?: view;
+    if (![traitsOwner respondsToSelector:@selector(traitCollection)]) return NO;
+    UITraitCollection *traits = ((id (*)(id, SEL))objc_msgSend)(
+        traitsOwner, @selector(traitCollection));
+    return traits.userInterfaceStyle == UIUserInterfaceStyleDark;
+}
+
+static BOOL s7tv_oledKeyboardShouldUseBlack(id view) {
+    return S7TVOLEDModeEnabled() && s7tv_oledKeyboardViewIsDark(view);
+}
+
+static void s7tv_applyOLEDKeyboardBackground(UIView *view) {
+    if (!view || !S7TVOLEDModeEnabled()) return;
+    view.backgroundColor = s7tv_oledKeyboardViewIsDark(view)
+        ? UIColor.blackColor
+        : UIColor.clearColor;
+}
+
+static void s7tv_installOLEDKeyboardHook(Class targetClass, SEL selector, IMP replacement) {
+    if (!targetClass || !selector || !replacement ||
+        s7tv_oledKeyboardHookCount >= kS7TVOLEDMaxKeyboardHooks ||
+        s7tv_oledKeyboardHookExists(targetClass, selector)) return;
+
+    Method declaredMethod = s7tv_oledMethodDeclaredOnClass(targetClass, selector);
+    // Si un sous-type hérite déjà du wrapper installé sur son parent, il n'y
+    // a rien à ajouter. Un override déclaré localement reste couvert.
+    if (!declaredMethod && s7tv_oledKeyboardSuperclassAlreadyHooked(targetClass, selector)) {
+        return;
+    }
+
+    Method inheritedOrDeclaredMethod = class_getInstanceMethod(targetClass, selector);
+    if (!inheritedOrDeclaredMethod) return;
+
+    IMP original = method_getImplementation(inheritedOrDeclaredMethod);
+    if (!original) return;
+
+    if (declaredMethod) {
+        method_setImplementation(declaredMethod, replacement);
+    } else if (!class_addMethod(targetClass, selector, replacement,
+                                method_getTypeEncoding(inheritedOrDeclaredMethod))) {
+        return;
+    }
+
+    s7tv_oledKeyboardHooks[s7tv_oledKeyboardHookCount++] = (S7TVOLEDKeyboardHook){
+        .targetClass = targetClass,
+        .selector = selector,
+        .original = original,
+    };
+}
+
+typedef void (*S7TVOLEDKeyboardVoidObjectIMP)(id, SEL, id);
+typedef void (*S7TVOLEDKeyboardVoidIMP)(id, SEL);
+typedef id (*S7TVOLEDKeyboardObjectIMP)(id, SEL);
+
+static void s7tv_oledKeyboardDisplayLayer(id self, SEL _cmd, id layer) {
+    const S7TVOLEDKeyboardHook *hook =
+        s7tv_oledKeyboardHookForReceiver(self, _cmd);
+    if (hook && hook->original) {
+        ((S7TVOLEDKeyboardVoidObjectIMP)hook->original)(self, _cmd, layer);
+    }
+    s7tv_applyOLEDKeyboardBackground((UIView *)self);
+}
+
+static id s7tv_oledKeyboardCurrentTextSuggestions(id self, SEL _cmd) {
+    const S7TVOLEDKeyboardHook *hook =
+        s7tv_oledKeyboardHookForReceiver(self, _cmd);
+
+    id keyboard = nil;
+    Class keyboardClass = objc_getClass("UIKeyboard");
+    SEL activeKeyboardSelector = sel_registerName("activeKeyboard");
+    if (keyboardClass && [keyboardClass respondsToSelector:activeKeyboardSelector]) {
+        keyboard = ((id (*)(id, SEL))objc_msgSend)(keyboardClass, activeKeyboardSelector);
+    }
+
+    if (S7TVOLEDModeEnabled()) {
+        BOOL dark = s7tv_oledKeyboardViewIsDark(keyboard ?: self);
+        UIView *predictionView = [(UIViewController *)self view];
+        predictionView.backgroundColor = dark ? UIColor.blackColor : UIColor.clearColor;
+        if (keyboard) {
+            [(UIView *)keyboard setBackgroundColor:
+                dark ? UIColor.blackColor : UIColor.clearColor];
+        }
+    }
+
+    if (!hook || !hook->original) return nil;
+    return ((S7TVOLEDKeyboardObjectIMP)hook->original)(self, _cmd);
+}
+
+static void s7tv_oledKeyboardDockLayoutSubviews(id self, SEL _cmd) {
+    const S7TVOLEDKeyboardHook *hook =
+        s7tv_oledKeyboardHookForReceiver(self, _cmd);
+    if (hook && hook->original) {
+        ((S7TVOLEDKeyboardVoidIMP)hook->original)(self, _cmd);
+    }
+    s7tv_applyOLEDKeyboardBackground((UIView *)self);
+}
+
+static void s7tv_oledKeyboardInputViewLayoutSubviews(id self, SEL _cmd) {
+    const S7TVOLEDKeyboardHook *hook =
+        s7tv_oledKeyboardHookForReceiver(self, _cmd);
+    if (hook && hook->original) {
+        ((S7TVOLEDKeyboardVoidIMP)hook->original)(self, _cmd);
+    }
+
+    Class emojiSearchClass = NSClassFromString(@"TUIEmojiSearchInputView");
+    Class autofillClass = NSClassFromString(@"_SFAutoFillInputView");
+    if ((emojiSearchClass && [self isKindOfClass:emojiSearchClass]) ||
+        (autofillClass && [self isKindOfClass:autofillClass])) {
+        s7tv_applyOLEDKeyboardBackground((UIView *)self);
+    }
+}
+
+static void s7tv_oledKeyboardVisualEffectLayoutSubviews(id self, SEL _cmd) {
+    const S7TVOLEDKeyboardHook *hook =
+        s7tv_oledKeyboardHookForReceiver(self, _cmd);
+    if (hook && hook->original) {
+        ((S7TVOLEDKeyboardVoidIMP)hook->original)(self, _cmd);
+    }
+
+    if (!s7tv_oledKeyboardShouldUseBlack(self)) return;
+
+    SEL setBackgroundEffectsSelector = sel_registerName("setBackgroundEffects:");
+    if ([self respondsToSelector:setBackgroundEffectsSelector]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(self, setBackgroundEffectsSelector, nil);
+    }
+    [(UIView *)self setBackgroundColor:UIColor.blackColor];
+}
+
+static void s7tv_installOLEDKeyboardHooks(void) {
+    Class keyboardClass = objc_getClass("UIKeyboard");
+    s7tv_installOLEDKeyboardHook(keyboardClass,
+        sel_registerName("displayLayer:"), (IMP)s7tv_oledKeyboardDisplayLayer);
+
+    Class predictionClass = objc_getClass("UIPredictionViewController");
+    s7tv_installOLEDKeyboardHook(predictionClass,
+        sel_registerName("_currentTextSuggestions"),
+        (IMP)s7tv_oledKeyboardCurrentTextSuggestions);
+
+    Class dockClass = objc_getClass("UIKeyboardDockView");
+    s7tv_installOLEDKeyboardHook(dockClass,
+        @selector(layoutSubviews), (IMP)s7tv_oledKeyboardDockLayoutSubviews);
+
+    Class inputViewClass = objc_getClass("UIInputView");
+    s7tv_installOLEDKeyboardHook(inputViewClass,
+        @selector(layoutSubviews), (IMP)s7tv_oledKeyboardInputViewLayoutSubviews);
+
+    Class visualEffectClass = objc_getClass("UIKBVisualEffectView");
+    s7tv_installOLEDKeyboardHook(visualEffectClass,
+        @selector(layoutSubviews), (IMP)s7tv_oledKeyboardVisualEffectLayoutSubviews);
+}
+
 static id s7tv_activeThemeManager(void) {
     if (s7tv_lastThemeManager) return s7tv_lastThemeManager;
 
@@ -254,11 +471,25 @@ void S7TVOLEDModeSetup(void) {
         // écran Twitch : les fonds du lancement et des catégories ne peuvent
         // donc pas conserver une couleur mise en cache avant le hook.
         s7tv_installOLEDPaletteHooks();
+        s7tv_installOLEDKeyboardHooks();
+
+        // Certaines classes du clavier sont chargées à la première
+        // présentation seulement. Réessayer à l'ouverture est idempotent et
+        // évite de dépendre d'un changement d'écran ou d'un scroll.
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIKeyboardWillShowNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *note) {
+            (void)note;
+            s7tv_installOLEDKeyboardHooks();
+        }];
 
         dispatch_async(dispatch_get_main_queue(), ^{
             // Le second passage est idempotent et couvre une éventuelle
             // classe Swift enregistrée juste après le constructeur.
             s7tv_installOLEDPaletteHooks();
+            s7tv_installOLEDKeyboardHooks();
             s7tv_activeThemeManager();
             if (S7TVOLEDModeEnabled()) s7tv_requestNativeThemeRefresh();
         });

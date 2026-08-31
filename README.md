@@ -4,6 +4,8 @@ Enhanced Twitch app for iOS with a fully customizable chat, 7TV/BTTV/FFZ emotes,
 
 Available in <img src="https://flagcdn.com/gb.svg" width="20"> **ENGLISH** and <img src="https://flagcdn.com/fr.svg" width="20"> **FRENCH** from the Settings menu.
 
+Full CHANGELOG : [CHANGELOG.md](https://github.com/Knoks1111/TwitchPlusK/blob/main/CHANGELOG.md)
+
 ## What it does
 
 ### Chat and emotes

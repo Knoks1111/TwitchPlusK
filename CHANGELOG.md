@@ -2,6 +2,64 @@
 
 This file keeps the cumulative release history of TwitchPlusK, with the newest release listed first.
 
+## [1.0.2] (Twitch 30.9) - 2026-08-31
+
+### New Features
+
+- Rebuilt the emote system around a unified 7TV, BTTV, and FFZ architecture.
+- Added BTTV and FrankerFaceZ emote support.
+- Added provider tabs with Channel and Global sections.
+- Added an optional mixed mode displaying all providers together.
+- Added 7TV Zero-Width emote compositions with multiple overlay layers.
+- Added provider-aware favorites for 7TV, BTTV, and FFZ.
+- Added configurable provider priority for duplicate emote names.
+- Added a shared emote resolution setting from 1X to 4X.
+- Added provider logos to the picker and emote previews.
+- Added independent 7TV, BTTV, and FFZ API diagnostics.
+- Added selectable default video proxies.
+- Added two additional default video proxies.
+- Added manual and automatic proxy status checks.
+- Completely rebuilt Channel Points Auto Claim from scratch.
+- Added Auto Claim status and checks to Diagnostics.
+- Added a restart notice when enabling or disabling OLED mode.
+
+### Changed
+
+- Native Twitch emotes remain prioritized over external providers.
+- Mixed mode now interleaves providers instead of grouping them separately.
+- Emotes are sorted consistently by size in every picker category.
+- Added picker opening options:
+  - Favorites
+  - 7TV Channel
+  - BTTV Channel
+  - FFZ Channel
+  - Last Used
+- Replaced animation toggles with a three-option selector:
+  - Disabled
+  - Enabled
+  - Favorites only
+- Auto Claim Channel Points now works with both Proxy and Local (VAFT) AdBlock modes. [@appletrapz](https://github.com/appletrapz).
+- Removed the previous behavior that disabled Auto Claim when AdBlock was enabled.
+- Improved provider-aware cache handling and legacy data migration.
+- Improved custom chat compatibility with emote sizing and rendering options.
+- Improved OLED mode support for chat, emote previews, threads, and replies.
+- Extended OLED Mode to the iOS keyboard for a true-black keyboard experience.
+
+### Fixes
+
+- Fixed emotes missing from the picker because they were shared between providers.
+- Fixed emotes failing to load on the first picker opening.
+- Fixed picker freezes during provider loading.
+- Fixed Zero-Width favorites saving only the first emote.
+- Fixed Zero-Width compositions not being reinserted correctly from favorites.
+- Fixed provider information missing from emote previews.
+- Fixed cache counts showing fewer cached emotes than actually stored.
+- Fixed stale proxy checks incorrectly reporting proxies as online.
+- Fixed custom proxy entries not being removable.
+- Fixed settings text and category headers jumping when changing options.
+- Improved rendering consistency across normal chat, replies, threads, and previews.
+- Added various fixes and improvements across the app.
+
 ## [1.0.1] (Twitch 30.9) - 2026-08-27
 
 ### New Features

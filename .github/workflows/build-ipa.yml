@@ -274,7 +274,7 @@ jobs:
           IPA_NAME="${{ env.IPA_NAME }}"
           TWITCH_VERSION="${{ env.TWITCH_VERSION }}"
           TITLE="TwitchPlusK — v${TWITCHPLUSK_VERSION} | Twitch — ${TWITCH_VERSION}"
-          CHANGELOG_URL="https://github.com/${{ github.repository }}/blob/${{ github.sha }}/CHANGELOG.md"
+          CHANGELOG_URL="https://github.com/Knoks1111/TwitchPlusK/blob/main/CHANGELOG.md"
 
           NOTES_FILE="release_notes.md"
           cat > "$NOTES_FILE" << NOTESEOF

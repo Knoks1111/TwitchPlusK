@@ -69,6 +69,7 @@ static UIColor *S7TVDefaultFirstMessageColor(void) {
 // ── Clés NSUserDefaults ──────────────────────────────────────────────────────
 static NSString *const kS7TVCfgEmote7TVSize           = @"s7tv_cfg_emote_7tv_size";
 static NSString *const kS7TVCfgEmoteTwitchSize         = @"s7tv_cfg_emote_twitch_size";
+static NSString *const kS7TVCfgGIFSize                 = @"s7tv_cfg_gif_size";
 static NSString *const kS7TVCfgBadgeSize               = @"s7tv_cfg_badge_size";
 static NSString *const kS7TVCfgUsernameFontSize        = @"s7tv_cfg_username_font_size";
 static NSString *const kS7TVCfgMessageFontSize         = @"s7tv_cfg_message_font_size";
@@ -95,6 +96,7 @@ static NSString *const kS7TVCfgDeletedOpacityMigrated   = @"s7tv_cfg_deleted_opa
 
 static const CGFloat kDefaultEmote7TVSize          = 28.0;
 static const CGFloat kDefaultEmoteTwitchSize        = 28.0; // TODO mesure réelle
+static const CGFloat kDefaultGIFSize                = 28.0;
 static const CGFloat kDefaultBadgeSize              = 17.0;
 static const CGFloat kDefaultUsernameFontSize       = 13.0;
 static const CGFloat kDefaultMessageFontSize        = 13.0;
@@ -139,6 +141,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
 - (void)s7tv_applyDefaults {
     _emote7TVSize           = kDefaultEmote7TVSize;
     _emoteTwitchSize        = kDefaultEmoteTwitchSize;
+    _gifSize                = kDefaultGIFSize;
     _badgeSize               = kDefaultBadgeSize;
     _usernameFontSize        = kDefaultUsernameFontSize;
     _messageFontSize         = kDefaultMessageFontSize;
@@ -171,6 +174,8 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
         _emote7TVSize = [prefs doubleForKey:kS7TVCfgEmote7TVSize];
     if ([prefs objectForKey:kS7TVCfgEmoteTwitchSize] != nil)
         _emoteTwitchSize = [prefs doubleForKey:kS7TVCfgEmoteTwitchSize];
+    if ([prefs objectForKey:kS7TVCfgGIFSize] != nil)
+        _gifSize = [prefs doubleForKey:kS7TVCfgGIFSize];
     if ([prefs objectForKey:kS7TVCfgBadgeSize] != nil)
         _badgeSize = [prefs doubleForKey:kS7TVCfgBadgeSize];
     if ([prefs objectForKey:kS7TVCfgUsernameFontSize] != nil)
@@ -266,10 +271,10 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     [prefs setBool:YES forKey:kS7TVCfgDeletedOpacityMigrated];
 
     [[SevenTVManager sharedManager]
-        log:@"🏗 Config chargée — emote7TV=%.1f emoteTwitch=%.1f badge=%.1f "
+        log:@"🏗 Config chargée — emote7TV=%.1f emoteTwitch=%.1f gif=%.1f badge=%.1f "
              @"pseudo=%.1f message=%.1f lineSpacing=%.1f pseudoMsgSpacing=%.1f "
              @"emoteOff=%.1f res=%ldx",
-        _emote7TVSize, _emoteTwitchSize, _badgeSize, _usernameFontSize,
+        _emote7TVSize, _emoteTwitchSize, _gifSize, _badgeSize, _usernameFontSize,
         _messageFontSize, _lineSpacing, _usernameMessageSpacing,
         _emoteVerticalOffset, (long)_emoteImageResolution];
 }
@@ -290,6 +295,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
     [prefs setDouble:self.emote7TVSize           forKey:kS7TVCfgEmote7TVSize];
     [prefs setDouble:self.emoteTwitchSize        forKey:kS7TVCfgEmoteTwitchSize];
+    [prefs setDouble:self.gifSize                forKey:kS7TVCfgGIFSize];
     [prefs setDouble:self.badgeSize              forKey:kS7TVCfgBadgeSize];
     [prefs setDouble:self.usernameFontSize       forKey:kS7TVCfgUsernameFontSize];
     [prefs setDouble:self.messageFontSize        forKey:kS7TVCfgMessageFontSize];
@@ -384,6 +390,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     return @{
         @"emote7TVSize":           @[@(kDefaultEmote7TVSize),          kS7TVCfgEmote7TVSize],
         @"emoteTwitchSize":        @[@(kDefaultEmoteTwitchSize),       kS7TVCfgEmoteTwitchSize],
+        @"gifSize":                @[@(kDefaultGIFSize),               kS7TVCfgGIFSize],
         @"badgeSize":              @[@(kDefaultBadgeSize),             kS7TVCfgBadgeSize],
         @"usernameFontSize":       @[@(kDefaultUsernameFontSize),      kS7TVCfgUsernameFontSize],
         @"messageFontSize":        @[@(kDefaultMessageFontSize),       kS7TVCfgMessageFontSize],

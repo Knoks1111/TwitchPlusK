@@ -30,6 +30,15 @@ NS_ASSUME_NONNULL_BEGIN
                           twitchEmotesTag:(nullable NSString *)emotesTag
                                 providers:(NSArray<id<S7TVEmoteProvider>> *)providers;
 
+// Variante complète des messages Twitch : `gifs=` est une liste de plages
+// `start-end|gifID|gifURL` fournie directement par Twitch. Les GIFs sont
+// insérés à leur position exacte et le texte couvert reste dans le token pour
+// servir de fallback si l'image ne peut pas être chargée.
++ (NSArray<S7TVChatToken *> *)tokenizeText:(NSString *)text
+                          twitchEmotesTag:(nullable NSString *)emotesTag
+                              twitchGIFsTag:(nullable NSString *)gifsTag
+                                providers:(NSArray<id<S7TVEmoteProvider>> *)providers;
+
 @end
 
 NS_ASSUME_NONNULL_END

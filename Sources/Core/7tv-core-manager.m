@@ -546,14 +546,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     [S7TVEmoteProviderSettings setProvider:S7TVExternalEmoteProvider7TV enabled:v];
 }
 - (void)setCurrentChannelTwitchID:(NSString *)channelID {
-    BOOL changed = !((_currentChannelTwitchID == channelID) ||
-                     [_currentChannelTwitchID isEqualToString:channelID]);
     _currentChannelTwitchID = [channelID copy];
-    if (changed && channelID.length) {
-        s7tv_activateChannelPointMetadataForChannelID(channelID, ^{
-            s7tv_reloadActiveChatCustomViewForConfiguration();
-        });
-    }
 }
 - (void)setShowAnimated:(BOOL)v           { _showAnimated          = v; [self savePreferences]; }
 - (void)setShowPickerAnimations:(BOOL)v   { _showPickerAnimations  = v; [self savePreferences]; }
@@ -1664,7 +1657,9 @@ static BOOL s7tv_currentChannelRoomStateConfirmed = NO;
         if ([self s7tv_handleIRCModerationEvent:ircLine]) continue;
 
         S7TVChatMessage *chatMessage = s7tv_parseChatMessage(ircLine, providers);
-        if (!chatMessage) continue;
+        if (!chatMessage) {
+            continue;
+        }
         if (chatMessage.channelPointRewardID.length) {
             // PubSub et IRC arrivent presque simultanément, parfois dans
             // l'ordre inverse. Seul le PRIVMSG de récompense attend 350 ms.

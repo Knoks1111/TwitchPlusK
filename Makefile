@@ -30,6 +30,7 @@ TwitchPlusK_FILES = \
     Sources/Logs/7tv-logs-controller.m \
     Sources/Chat/7tv-chat-appearance-config.m \
     Sources/Chat/7tv-chat-custom-view.m \
+    Sources/Chat/7tv-chat-viewer-card.m \
     Sources/Chat/7tv-chat-message.m \
     Sources/Chat/7tv-chat-reply-thread-panel.m \
     Sources/Chat/7tv-chat-tokenizer.m \

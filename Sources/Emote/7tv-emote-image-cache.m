@@ -28,6 +28,12 @@ static NSUInteger s7tv_framesMemoryCost(S7TVEmoteAnimatedFrames *frames) {
     return total;
 }
 
+static BOOL s7tv_isTwitchGIFEmote(id<S7TVResolvedEmote> emote) {
+    if (!emote || ![emote respondsToSelector:@selector(providerIdentifier)]) return NO;
+    NSString *identifier = [(id)emote providerIdentifier];
+    return [identifier caseInsensitiveCompare:@"twitch-gif"] == NSOrderedSame;
+}
+
 // The shared image cache is used by every external provider.  Validate both
 // the HTTP result and the payload before returning/storing it; otherwise a
 // cached 404/429 HTML or JSON response would be retried as an image forever.
@@ -82,6 +88,10 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 @interface SevenTVEmoteImageCache ()
 // Images déjà décodées — countLimit borne la mémoire (exigence transverse #3).
 @property (nonatomic, strong) NSCache<NSString *, UIImage *> *decodedCache;
+// Les GIFs Twitch ne doivent ni partager le budget des emotes ni être
+// persistés par le cache HTTP. Ce cache mémoire volontairement petit est
+// évincé par NSCache sous pression.
+@property (nonatomic, strong) NSCache<NSString *, UIImage *> *gifDecodedCache;
 // URL en cours de chargement → liste des callbacks en attente. Protégé par
 // syncQueue (accès concurrent depuis plusieurs cellules en scroll rapide).
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<S7TVImageCompletion> *> *pendingCallbacks;
@@ -90,6 +100,8 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 // limite ferait exploser la mémoire sur une chaîne avec beaucoup d'emotes
 // animées distinctes (voir exigence transverse #3).
 @property (nonatomic, strong) NSCache<NSString *, S7TVEmoteAnimatedFrames *> *animatedFramesCache;
+// Les boucles GIF sont beaucoup plus coûteuses qu'une emote animée classique.
+@property (nonatomic, strong) NSCache<NSString *, S7TVEmoteAnimatedFrames *> *gifAnimatedFramesCache;
 // Même dédoublonnage que pendingCallbacks, pour le décodage animé.
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<S7TVEmoteFrameRequest *> *> *pendingFrameCallbacks;
 @property (nonatomic, strong) NSMutableSet<NSString *> *pendingPreviewKeys;
@@ -106,6 +118,9 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 // n'attend jamais qu'un WebP complet soit décodé avant l'emote suivante.
 @property (nonatomic, strong) NSOperationQueue *animatedPreviewDecodeQueue;
 @property (nonatomic, strong) NSOperationQueue *animatedDecodeQueue;
+// Session éphémère : aucune réponse GIF ne rejoint NSURLCache (ni son disque,
+// ni le cache mémoire global partagé avec 7TV/BTTV/FFZ).
+@property (nonatomic, strong) NSURLSession *nonPersistentSession;
 @property (atomic, assign) NSUInteger cacheGeneration;
 - (nullable UIImage *)s7tv_decodeFirstFrameData:(NSData *)data;
 - (nullable S7TVEmoteAnimatedFrames *)s7tv_decodeAnimatedWebPData:(NSData *)data
@@ -114,7 +129,10 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
                                                    shouldContinue:(BOOL (^)(void))shouldContinue;
 - (BOOL)s7tv_hasActiveFrameRequestsForKey:(NSString *)key requiringPreview:(BOOL)requiringPreview;
 - (void)s7tv_publishPreviewFrames:(S7TVEmoteAnimatedFrames *)frames forKey:(NSString *)key;
-- (void)s7tv_schedulePreviewForKey:(NSString *)key url:(NSURL *)url generation:(NSUInteger)generation;
+- (void)s7tv_schedulePreviewForKey:(NSString *)key
+                               url:(NSURL *)url
+                        generation:(NSUInteger)generation
+                    isTwitchGIF:(BOOL)isTwitchGIF;
 @end
 
 @implementation SevenTVEmoteImageCache
@@ -134,10 +152,16 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
         _decodedCache = [[NSCache alloc] init];
         _decodedCache.countLimit = 200; // borne mémoire, voir exigence transverse #3
         _decodedCache.totalCostLimit = 24 * 1024 * 1024;
+        _gifDecodedCache = [[NSCache alloc] init];
+        _gifDecodedCache.countLimit = 8;
+        _gifDecodedCache.totalCostLimit = 8 * 1024 * 1024;
         _pendingCallbacks = [NSMutableDictionary dictionary];
         _animatedFramesCache = [[NSCache alloc] init];
         _animatedFramesCache.countLimit = 48; // plus bas que decodedCache — voir raison en @interface
         _animatedFramesCache.totalCostLimit = 48 * 1024 * 1024;
+        _gifAnimatedFramesCache = [[NSCache alloc] init];
+        _gifAnimatedFramesCache.countLimit = 4;
+        _gifAnimatedFramesCache.totalCostLimit = 16 * 1024 * 1024;
         _pendingFrameCallbacks = [NSMutableDictionary dictionary];
         _pendingPreviewKeys = [NSMutableSet set];
         _pendingDataCallbacks = [NSMutableDictionary dictionary];
@@ -160,6 +184,12 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
         _animatedDecodeQueue.name = @"tv.s7tv.emote-animation-decode";
         _animatedDecodeQueue.qualityOfService = NSQualityOfServiceUserInitiated;
         _animatedDecodeQueue.maxConcurrentOperationCount = 1;
+
+        NSURLSessionConfiguration *ephemeralConfiguration =
+            [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        ephemeralConfiguration.URLCache = nil;
+        ephemeralConfiguration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+        _nonPersistentSession = [NSURLSession sessionWithConfiguration:ephemeralConfiguration];
     }
     return self;
 }
@@ -167,7 +197,8 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 - (nullable UIImage *)cachedImageForResolvedEmote:(id<S7TVResolvedEmote>)emote {
     NSString *key = emote.imageURL.absoluteString;
     if (!key.length) return nil;
-    return [self.decodedCache objectForKey:key];
+    NSCache *cache = s7tv_isTwitchGIFEmote(emote) ? self.gifDecodedCache : self.decodedCache;
+    return [cache objectForKey:key];
 }
 
 - (void)imageForResolvedEmote:(id<S7TVResolvedEmote>)emote
@@ -178,7 +209,9 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
         return;
     }
 
-    UIImage *cached = [self.decodedCache objectForKey:key];
+    BOOL isTwitchGIF = s7tv_isTwitchGIFEmote(emote);
+    NSCache *decodedCache = isTwitchGIF ? self.gifDecodedCache : self.decodedCache;
+    UIImage *cached = [decodedCache objectForKey:key];
     if (cached) {
         dispatch_async(dispatch_get_main_queue(), ^{ completion(cached); });
         return;
@@ -194,7 +227,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
             return;
         }
         self.pendingCallbacks[key] = [NSMutableArray arrayWithObject:completion];
-        [self s7tv_loadAndDecodeForKey:key url:emote.imageURL];
+        [self s7tv_loadAndDecodeForKey:key url:emote.imageURL isTwitchGIF:isTwitchGIF];
     });
 }
 
@@ -203,7 +236,9 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 - (nullable S7TVEmoteAnimatedFrames *)cachedFramesForResolvedEmote:(id<S7TVResolvedEmote>)emote {
     NSString *key = emote.imageURL.absoluteString;
     if (!key.length) return nil;
-    return [self.animatedFramesCache objectForKey:key];
+    NSCache *cache = s7tv_isTwitchGIFEmote(emote)
+        ? self.gifAnimatedFramesCache : self.animatedFramesCache;
+    return [cache objectForKey:key];
 }
 
 - (S7TVEmoteFrameRequest *)framesForResolvedEmote:(id<S7TVResolvedEmote>)emote
@@ -228,7 +263,10 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
         return request;
     }
 
-    S7TVEmoteAnimatedFrames *cached = [self.animatedFramesCache objectForKey:key];
+    BOOL isTwitchGIF = s7tv_isTwitchGIFEmote(emote);
+    NSCache *animatedFramesCache = isTwitchGIF
+        ? self.gifAnimatedFramesCache : self.animatedFramesCache;
+    S7TVEmoteAnimatedFrames *cached = [animatedFramesCache objectForKey:key];
     if (cached) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!request.isCancelled && request.completion) request.completion(cached);
@@ -246,7 +284,8 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
             if (request.preview) {
                 [self s7tv_schedulePreviewForKey:key
                                              url:emote.imageURL
-                                      generation:self.cacheGeneration];
+                                      generation:self.cacheGeneration
+                                      isTwitchGIF:isTwitchGIF];
             }
             return;
         }
@@ -254,9 +293,12 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
         if (request.preview) {
             [self s7tv_schedulePreviewForKey:key
                                          url:emote.imageURL
-                                  generation:self.cacheGeneration];
+                                  generation:self.cacheGeneration
+                                  isTwitchGIF:isTwitchGIF];
         }
-        [self s7tv_loadAndDecodeFramesForKey:key url:emote.imageURL];
+        [self s7tv_loadAndDecodeFramesForKey:key
+                                        url:emote.imageURL
+                                isTwitchGIF:isTwitchGIF];
     });
     return request;
 }
@@ -312,10 +354,13 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 // même emote de lancer plusieurs previews. Ce chemin est indépendant du
 // décodage complet : si le chat avait demandé la clé avant l'ouverture du
 // picker, une cellule nouvellement visible obtient quand même sa preview.
-- (void)s7tv_schedulePreviewForKey:(NSString *)key url:(NSURL *)url generation:(NSUInteger)generation {
+- (void)s7tv_schedulePreviewForKey:(NSString *)key
+                               url:(NSURL *)url
+                        generation:(NSUInteger)generation
+                    isTwitchGIF:(BOOL)isTwitchGIF {
     if ([self.pendingPreviewKeys containsObject:key]) return;
     [self.pendingPreviewKeys addObject:key];
-    [self s7tv_fetchDataForURL:url completion:^(NSData * _Nullable data) {
+    [self s7tv_fetchDataForURL:url persistToDisk:!isTwitchGIF completion:^(NSData * _Nullable data) {
         [self.animatedPreviewDecodeQueue addOperationWithBlock:^{
             S7TVEmoteAnimatedFrames *previewFrames = nil;
             if (data && generation == self.cacheGeneration &&
@@ -327,6 +372,7 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
                     return generation == self.cacheGeneration &&
                         [self s7tv_hasActiveFrameRequestsForKey:key requiringPreview:YES];
                 }];
+                previewFrames.twitchGIF = isTwitchGIF;
             }
             if (previewFrames.images.count > 1 && generation == self.cacheGeneration) {
                 [self s7tv_publishPreviewFrames:previewFrames forKey:key];
@@ -342,9 +388,11 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 // chemin statique). Le renderer reçoit d'abord une boucle légère via sa file
 // de preview ; le décodage complet continue séparément sans bloquer les autres
 // cellules visibles.
-- (void)s7tv_loadAndDecodeFramesForKey:(NSString *)key url:(NSURL *)url {
+- (void)s7tv_loadAndDecodeFramesForKey:(NSString *)key
+                                   url:(NSURL *)url
+                           isTwitchGIF:(BOOL)isTwitchGIF {
     NSUInteger generation = self.cacheGeneration;
-    [self s7tv_fetchDataForURL:url completion:^(NSData * _Nullable data) {
+    [self s7tv_fetchDataForURL:url persistToDisk:!isTwitchGIF completion:^(NSData * _Nullable data) {
         [self.animatedDecodeQueue addOperationWithBlock:^{
             if (generation != self.cacheGeneration ||
                 ![self s7tv_hasActiveFrameRequestsForKey:key requiringPreview:NO]) return;
@@ -368,12 +416,16 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 
             if (generation != self.cacheGeneration) frames = nil;
             if (frames.images.count > 0) {
-                [self.animatedFramesCache setObject:frames
+                frames.twitchGIF = isTwitchGIF;
+                NSCache *animatedFramesCache = isTwitchGIF
+                    ? self.gifAnimatedFramesCache : self.animatedFramesCache;
+                [animatedFramesCache setObject:frames
                                              forKey:key
                                                cost:s7tv_framesMemoryCost(frames)];
                 UIImage *firstFrame = frames.images.firstObject;
-                if (![self.decodedCache objectForKey:key] && firstFrame) {
-                    [self.decodedCache setObject:firstFrame
+                NSCache *decodedCache = isTwitchGIF ? self.gifDecodedCache : self.decodedCache;
+                if (![decodedCache objectForKey:key] && firstFrame) {
+                    [decodedCache setObject:firstFrame
                                           forKey:key
                                             cost:s7tv_imageMemoryCost(firstFrame)];
                 }
@@ -423,7 +475,9 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
     [self.animatedPreviewDecodeQueue cancelAllOperations];
     [self.animatedDecodeQueue cancelAllOperations];
     [self.decodedCache removeAllObjects];
+    [self.gifDecodedCache removeAllObjects];
     [self.animatedFramesCache removeAllObjects];
+    [self.gifAnimatedFramesCache removeAllObjects];
 
     dispatch_sync(self.syncQueue, ^{
         NSMutableArray<S7TVImageCompletion> *imageCallbacks = [NSMutableArray array];
@@ -565,16 +619,19 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 // temps → timeout en cascade → aucune image ne se posait, glyphe par défaut
 // affichée à la place. C'était un vrai bug introduit par ce fichier, pas lié
 // au pipeline de prefetch existant de SevenTVManager.)
-- (void)s7tv_loadAndDecodeForKey:(NSString *)key url:(NSURL *)url {
+- (void)s7tv_loadAndDecodeForKey:(NSString *)key
+                             url:(NSURL *)url
+                     isTwitchGIF:(BOOL)isTwitchGIF {
     NSUInteger generation = self.cacheGeneration;
-    [self s7tv_fetchDataForURL:url completion:^(NSData * _Nullable data) {
+    [self s7tv_fetchDataForURL:url persistToDisk:!isTwitchGIF completion:^(NSData * _Nullable data) {
         [self.staticDecodeQueue addOperationWithBlock:^{
-            UIImage *image = [self.decodedCache objectForKey:key];
+            NSCache *decodedCache = isTwitchGIF ? self.gifDecodedCache : self.decodedCache;
+            UIImage *image = [decodedCache objectForKey:key];
             if (!image && data) image = [self s7tv_decodeFirstFrameData:data];
             if (generation != self.cacheGeneration) image = nil;
 
             if (image) {
-                [self.decodedCache setObject:image forKey:key cost:s7tv_imageMemoryCost(image)];
+                [decodedCache setObject:image forKey:key cost:s7tv_imageMemoryCost(image)];
             } else {
                 [[SevenTVManager sharedManager]
                     log:@"⚠️ Emote image introuvable/non décodable: %@", url.absoluteString];
@@ -613,21 +670,28 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
     return image;
 }
 
-- (void)s7tv_fetchDataForURL:(NSURL *)url completion:(void (^)(NSData * _Nullable data))completion {
+- (void)s7tv_fetchDataForURL:(NSURL *)url
+                persistToDisk:(BOOL)persistToDisk
+                   completion:(void (^)(NSData * _Nullable data))completion {
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
-    NSCachedURLResponse *cachedResponse =
-        [[SevenTVURLProtocol sharedEmoteCache] cachedResponseForRequest:req];
-    if (cachedResponse.data.length &&
-        s7tv_isValidImageResponse(cachedResponse.response, cachedResponse.data)) {
-        [SevenTVURLProtocol noteCachedEmoteImageURL:url];
-        completion(cachedResponse.data);
-        return;
-    }
-    if (cachedResponse) {
-        // Remove stale error bodies left by older builds before going to the
-        // network, so a later cache-only lookup cannot report a false hit.
-        [[SevenTVURLProtocol sharedEmoteCache] removeCachedResponseForRequest:req];
+    if (persistToDisk) {
+        req.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
+        NSCachedURLResponse *cachedResponse =
+            [[SevenTVURLProtocol sharedEmoteCache] cachedResponseForRequest:req];
+        if (cachedResponse.data.length &&
+            s7tv_isValidImageResponse(cachedResponse.response, cachedResponse.data)) {
+            [SevenTVURLProtocol noteCachedEmoteImageURL:url];
+            completion(cachedResponse.data);
+            return;
+        }
+        if (cachedResponse) {
+            // Remove stale error bodies left by older builds before going to the
+            // network, so a later cache-only lookup cannot report a false hit.
+            [[SevenTVURLProtocol sharedEmoteCache] removeCachedResponseForRequest:req];
+        }
+    } else {
+        req.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+        [req setValue:@"no-store" forHTTPHeaderField:@"Cache-Control"];
     }
 
     NSString *key = url.absoluteString;
@@ -651,16 +715,21 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
         NSMutableURLRequest *networkRequest = [req mutableCopy];
         networkRequest.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
 
-        NSURLSessionDataTask *task = [[NSURLSession sharedSession]
+        NSURLSession *session = persistToDisk
+            ? [NSURLSession sharedSession] : self.nonPersistentSession;
+        NSURLSessionDataTask *task = [session
             dataTaskWithRequest:networkRequest
           completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             if (generation != self.cacheGeneration) data = nil;
             if (data.length && response && !error &&
                 s7tv_isValidImageResponse(response, data)) {
-                NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
-                    initWithResponse:response data:data];
-                [[SevenTVURLProtocol sharedEmoteCache] storeCachedResponse:toCache forRequest:req];
-                [SevenTVURLProtocol noteCachedEmoteImageURL:url];
+                if (persistToDisk) {
+                    NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
+                        initWithResponse:response data:data];
+                    [[SevenTVURLProtocol sharedEmoteCache]
+                        storeCachedResponse:toCache forRequest:req];
+                    [SevenTVURLProtocol noteCachedEmoteImageURL:url];
+                }
             } else {
                 // Do not let callers decode an HTTP error or malformed body.
                 data = nil;

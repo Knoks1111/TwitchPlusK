@@ -42,18 +42,6 @@ FOUNDATION_EXPORT S7TVChatMessage * _Nullable s7tv_parseUSERNOTICE(
 FOUNDATION_EXPORT S7TVChatMessage * _Nullable s7tv_parseChatMessage(
     NSString *ircLine, NSArray<id<S7TVEmoteProvider>> *providers);
 
-FOUNDATION_EXPORT void s7tv_ingestAutomaticRewardsFromGQLData(
-    NSData *data, NSString * _Nullable requestChannelID,
-    BOOL requestChannelIDAmbiguous,
-    dispatch_block_t _Nullable refresh);
-// Réapplique l'icône de monnaie déjà capturée pour la chaîne qui vient de
-// devenir active. La réponse GQL peut précéder de peu le broadcaster ID.
-FOUNDATION_EXPORT void s7tv_activateChannelPointMetadataForChannelID(
-    NSString *channelID, dispatch_block_t _Nullable refresh);
-// Icône de monnaie Channel Points de la chaîne actuellement active. Le
-// renderer la relit à chaque construction afin que les messages déjà retenus
-// profitent aussi d'une métadonnée GQL arrivée après leur création.
-FOUNDATION_EXPORT NSURL * _Nullable s7tv_activeChannelPointCurrencyImageURL(void);
 // Primitives de conversion PubSub/IRC utilisées par le gestionnaire de
 // session pour fusionner une récompense et son éventuel PRIVMSG compagnon.
 FOUNDATION_EXPORT NSArray<S7TVChatMessage *> *
@@ -110,9 +98,9 @@ FOUNDATION_EXPORT BOOL s7tv_shouldSuppressChannelPointCompanion(
 // ============================================================
 //
 // Un message est découpé en tokens dans l'ordre d'affichage : texte brut,
-// emote (7TV ou Twitch native), mention (@pseudo), URL. Le tokenizer réel
-// arrive en Phase 2 (emotes) — ce fichier ne fait que définir la structure
-// qu'il alimentera, pour que le modèle n'ait pas à changer de forme plus tard.
+// emote (7TV ou Twitch native), GIF Twitch, mention (@pseudo), URL. Le
+// tokenizer conserve toujours le texte original comme fallback si un média
+// ne peut pas être chargé.
 
 typedef NS_ENUM(NSInteger, S7TVChatTokenType) {
     S7TVChatTokenTypeText = 0,
@@ -120,14 +108,15 @@ typedef NS_ENUM(NSInteger, S7TVChatTokenType) {
     S7TVChatTokenTypeEmoteTwitch,
     S7TVChatTokenTypeMention,
     S7TVChatTokenTypeURL,
+    S7TVChatTokenTypeGIF,
 };
 
 @interface S7TVChatToken : NSObject
 
 @property (nonatomic, assign) S7TVChatTokenType type;
 
-// Texte affiché tel quel pour .text/.mention/.url ; nom de l'emote
-// (fallback si l'image ne charge pas) pour .emote7TV/.emoteTwitch.
+// Texte affiché tel quel pour .text/.mention/.url ; nom de l'emote ou texte
+// original du GIF (fallback si l'image ne charge pas) pour les tokens média.
 @property (nonatomic, copy) NSString *text;
 
 // ID du provider (emoteID 7TV, ou ID emote Twitch) — nil si type == .text.
@@ -173,6 +162,9 @@ typedef NS_ENUM(NSInteger, S7TVChatTokenType) {
 + (instancetype)emoteToken:(NSString *)name
                    provider:(S7TVChatTokenType)providerType   // .emote7TV ou .emoteTwitch
                    emoteID:(NSString *)emoteID;
++ (instancetype)gifToken:(NSString *)caption
+                    gifID:(NSString *)gifID
+                      url:(NSURL *)url;
 
 @end
 
@@ -188,8 +180,8 @@ typedef NS_ENUM(NSInteger, S7TVChatMessageType) {
     S7TVChatMessageTypePoll,
     S7TVChatMessageTypePrediction,
     // Utilisation d'une récompense personnalisée de points de chaîne.
-    // Les données sont portées par channelPointRewardInfo et viennent du
-    // payload PubSub `reward-redeemed` — aucun titre/coût/type n'est codé ici.
+    // Les données textuelles sont portées par channelPointRewardInfo et
+    // viennent du payload PubSub `reward-redeemed` ou des tags IRC.
     S7TVChatMessageTypeChannelPointRedemption,
     // Lignes locales sans équivalent IRC, insérées à la jonction entre
     // l'historique récent et les nouveaux messages reçus en direct.
@@ -250,11 +242,10 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 //
 // Modèle volontairement générique : une récompense personnalisée peut être
 // renommée et reconfigurée librement par chaque streamer. Le chat conserve
-// donc exclusivement les champs livrés par Twitch dans `reward-redeemed`.
-// La conformité S7TVResolvedEmote permet de réutiliser directement le cache
-// d'images déjà éprouvé par les emotes et badges, sans second downloader.
+// uniquement les informations textuelles nécessaires au bandeau de
+// récompense. Le coût et les images ne sont volontairement pas gérés.
 
-@interface S7TVChannelPointRewardInfo : NSObject <S7TVResolvedEmote>
+@interface S7TVChannelPointRewardInfo : NSObject
 @property (nonatomic, copy) NSString *rewardID;
 @property (nonatomic, copy) NSString *title;
 // Récompenses automatiques Twitch uniquement : leur catalogue ne renvoie
@@ -262,12 +253,9 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // ce libellé local à chaque affichage pour suivre le changement FR/EN live.
 @property (nonatomic, copy, nullable) NSString *titleLocalizationKey;
 @property (nonatomic, copy, nullable) NSString *prompt;
-@property (nonatomic, assign) NSInteger cost;
-@property (nonatomic, copy) NSString *pricingType;
 @property (nonatomic, assign) BOOL isUserInputRequired;
 @property (nonatomic, copy, nullable) NSString *userInput;
 @property (nonatomic, strong, nullable) UIColor *accentColor;
-@property (nonatomic, strong) NSURL *imageURL;
 @end
 
 
@@ -305,6 +293,11 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // catalogue 7TV de la chaîne finit de charger, sans perdre les emotes Twitch.
 @property (nonatomic, copy) NSString *twitchEmotesTag;
 
+// Tag IRC `gifs=` conservé avec le message pour que les changements de
+// provider, de résolution ou d'apparence puissent retokeniser sans perdre
+// les GIFs déjà reçus. Twitch fournit directement l'ID et l'URL de chaque GIF.
+@property (nonatomic, copy) NSString *twitchGIFsTag;
+
 // Identifiants de badges (Phase 3), tels qu'extraits du tag IRC `badges=`
 // (ex: @[@"subscriber/3", @"moderator/1"]), dans l'ordre d'affichage envoyé
 // par Twitch. Volontairement PAS dans `tokens` — un badge est un attribut de
@@ -327,9 +320,7 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 @property (nonatomic, copy, nullable) NSString *systemPhrase;
 
 // Présent uniquement sur la ligne synthétique créée depuis
-// `reward-redeemed`. Le titre, le coût, l'image, la couleur et la saisie
-// éventuelle viennent tous de Twitch et restent indépendants du nom choisi
-// par le streamer.
+// `reward-redeemed`. Le titre et la saisie éventuelle viennent de Twitch.
 @property (nonatomic, strong, nullable) S7TVChannelPointRewardInfo *channelPointRewardInfo;
 
 // Tag IRC `custom-reward-id`. Il sert à associer/supprimer le PRIVMSG
@@ -519,11 +510,6 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // inverse est préférable à un index permanent supplémentaire.
 - (void)mergeChannelPointCompanionMessage:(S7TVChatMessage *)companion
                                 completion:(void (^ _Nullable)(NSString * _Nullable mergedMessageID))completion;
-
-// Applique tardivement l'icône de monnaie personnalisée aux cartes déjà dans
-// le transcript lorsque communityPointsSettings arrive après la rédemption.
-- (void)updateChannelPointCurrencyImageURL:(NSURL *)imageURL
-                                completion:(void (^ _Nullable)(void))completion;
 
 // --- Lecture (thread-safe) ---
 

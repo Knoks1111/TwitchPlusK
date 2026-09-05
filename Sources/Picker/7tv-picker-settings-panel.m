@@ -149,6 +149,7 @@ static const char kS7TVRowKeyTag = 0;
     return @[
         @[@"emote7TVSize",     L(@"title_emotes_7tv"),         @12, @56],
         @[@"emoteTwitchSize",  L(@"size_label_emote_twitch"),  @12, @56],
+        @[@"gifSize",          L(@"size_label_gif"),           @12, @96],
         @[@"badgeSize",        L(@"size_label_badges"),        @8,  @34],
         @[@"usernameFontSize", L(@"size_label_username"),      @8,  @28],
         @[@"messageFontSize",  L(@"size_label_message"),       @8,  @28],
@@ -1223,11 +1224,11 @@ static const char kS7TVRowKeyTag = 0;
 
 // Messages factices couvrant tous les réglages du panneau, dans un ordre
 // volontairement mélangé (pas juste "un de chaque type à la suite") pour se
-// rapprocher d'un vrai fil de chat : gift, normal (badge + emote 7TV + emote
-// Twitch native), sub avec commentaire (badge + emote 7TV dans le corps du
-// commentaire, pas seulement la bannière), normal, premier message, mention
-// de soi (highlights barre + fond configurables), prime avec commentaire,
-// puis messages supprimés replié et révélé.
+// rapprocher d'un vrai fil de chat : gift, GIF Twitch, normal (badge + emote
+// 7TV + emote Twitch native), sub avec commentaire (badge + emote 7TV dans le
+// corps du commentaire, pas seulement la bannière), normal, premier message,
+// mention de soi (highlights barre + fond configurables), prime avec
+// commentaire, puis messages supprimés replié et révélé.
 - (void)_populateFakeChatStore:(S7TVChatMessageStore *)store {
     NSDate *now = [NSDate date];
 
@@ -1245,6 +1246,24 @@ static const char kS7TVRowKeyTag = 0;
     gift.systemInfo = giftInfo;
     gift.systemPhrase = L(@"preview_gift_phrase");
     [store addMessage:gift];
+
+    // GIF Twitch reçu : il passe par le même token et le même renderer que
+    // les messages réels. L'URL est celle d'un GIF GIPHY public stable, le
+    // texte restant visible automatiquement tant que l'image n'est pas
+    // encore en cache.
+    NSString *gifCaption = L(@"preview_gif_text");
+    S7TVChatMessage *gifMessage = [[S7TVChatMessage alloc]
+        initWithMessageID:@"s7tv_preview_gif_message"
+                 timestamp:now
+              authorUserID:@"s7tv_preview_gif_user"
+         authorDisplayName:L(@"preview_gif_username")
+                   rawText:gifCaption];
+    gifMessage.authorColor = [UIColor colorWithRed:0.95 green:0.42 blue:0.62 alpha:1.0];
+    gifMessage.tokens = @[[S7TVChatToken gifToken:gifCaption
+                                             gifID:@"nqB7RzcmyWTjr03PA5"
+                                               url:[NSURL URLWithString:
+                                                   @"https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExZzZ6bHRxb2F3djFzd3ZvOTgxY3VuaDJnc3VrNmNtenBjYnU0NDhxcyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/nqB7RzcmyWTjr03PA5/giphy.gif"]]];
+    [store addMessage:gifMessage];
 
     S7TVChatMessage *normal = [[S7TVChatMessage alloc]
         initWithMessageID:@"s7tv_preview_normal"

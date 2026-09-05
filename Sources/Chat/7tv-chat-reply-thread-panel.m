@@ -233,6 +233,10 @@ static const CGFloat kS7TVReplyThreadBottomPadding = 8.0;
 // La ligne d'action reste compacte dans un thread. Dans le chat principal,
 // la hauteur intrinsèque du message complet est ajoutée dynamiquement.
 static const CGFloat kS7TVReplyTargetActionRowHeight = 30.0;
+static const NSUInteger kS7TVReplyThreadPortraitVisibleLineCount = 5;
+static const NSUInteger kS7TVReplyThreadLandscapeVisibleLineCount = 4;
+static const NSUInteger kS7TVReplyThreadPortraitMinimumReplyLineCount = 1;
+static const NSUInteger kS7TVReplyThreadLandscapeMinimumReplyLineCount = 2;
 
 // Les overlays de réponse vivent dans UIWindow pour rester au-dessus du
 // transcript, mais leur largeur doit suivre la colonne de chat Twitch. La
@@ -1162,11 +1166,16 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
                           + kS7TVReplyThreadBottomPadding + replyBarHeight;
     CGFloat availableContentHeight = MAX(inputTopY - chromeHeight, 0);
 
-    // Budget déterministe : cinq lignes rendues en portrait, trois en
-    // paysage. Une "ligne" suit la police et l'espacement réels du chat,
-    // jamais un pourcentage arbitraire de l'écran.
+    // Hauteur préférée différente selon l'orientation. Le message racine
+    // peut dépasser ce budget pour rester affiché en entier ; seules les
+    // réponses sont réduites à l'espace restant.
     BOOL isLandscape = window.bounds.size.width > window.bounds.size.height;
-    NSUInteger visibleLineCount = isLandscape ? 3 : 5;
+    NSUInteger visibleLineCount = isLandscape
+        ? kS7TVReplyThreadLandscapeVisibleLineCount
+        : kS7TVReplyThreadPortraitVisibleLineCount;
+    NSUInteger minimumReplyLineCount = isLandscape
+        ? kS7TVReplyThreadLandscapeMinimumReplyLineCount
+        : kS7TVReplyThreadPortraitMinimumReplyLineCount;
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
     CGFloat glyphLineHeight = [UIFont systemFontOfSize:cfg.messageFontSize].lineHeight;
     CGFloat renderedLineHeight = ceil(glyphLineHeight + MAX(cfg.lineSpacing, 0) + 8.0);
@@ -1194,12 +1203,14 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
     CGFloat allContentHeight = rootContentHeight + repliesContentHeight;
     CGFloat desiredContentHeight = MIN(allContentHeight, lineBudgetHeight);
     // Un message racine multiligne reste toujours entier. S'il consomme à
-    // lui seul le budget 5/3 lignes, on conserve aussi une ligne de réponses
-    // lorsqu'il en existe, puis on ne borne que par l'espace physique réel.
+    // lui seul le budget d'orientation, on conserve aussi une ou deux lignes
+    // de réponses lorsqu'il en existe, puis on ne borne que par l'espace réel.
     desiredContentHeight = MAX(desiredContentHeight, rootContentHeight);
     if (rootContentHeight > 0 && repliesContentHeight > 0) {
+        CGFloat minimumRepliesHeight = MIN(repliesContentHeight,
+            renderedLineHeight * minimumReplyLineCount);
         desiredContentHeight = MAX(desiredContentHeight,
-            rootContentHeight + MIN(repliesContentHeight, renderedLineHeight));
+            rootContentHeight + minimumRepliesHeight);
     }
     desiredContentHeight = MIN(desiredContentHeight, availableContentHeight);
 
@@ -1531,6 +1542,7 @@ static BOOL s7tv_sameMessageInstances(NSArray<S7TVChatMessage *> *left,
         [store retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
             return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
                                       twitchEmotesTag:message.twitchEmotesTag ?: @""
+                                          twitchGIFsTag:message.twitchGIFsTag ?: @""
                                             providers:providers];
         } completion:^{
             dispatch_group_leave(group);

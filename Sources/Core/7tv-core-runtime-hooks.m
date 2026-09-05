@@ -97,6 +97,7 @@ void s7tv_swizzle(Class targetClass,
 // naturel : parser le tag emotes= que Twitch envoie déjà tel quel côté
 // serveur, jamais lu pour l'instant).
 
+#if 0 // Legacy Channel Points GQL metadata capture removed.
 static void s7tv_collectChannelIDsFromGQLRequestObject(
     id object, NSMutableOrderedSet<NSString *> *channelIDs) {
     if ([object isKindOfClass:[NSDictionary class]]) {
@@ -162,6 +163,9 @@ static NSString * _Nullable s7tv_channelIDFromGQLRequest(
         ? [[SevenTVManager sharedManager].currentChannelTwitchID copy] : nil;
 }
 
+#endif
+
+/*
 static void s7tv_ingestChannelPointMetadata(NSData *data,
                                              NSString *requestChannelID,
                                              BOOL requestChannelIDAmbiguous) {
@@ -170,10 +174,10 @@ static void s7tv_ingestChannelPointMetadata(NSData *data,
         s7tv_reloadActiveChatCustomViewForConfiguration();
     });
 }
+*/
 
 // ────────────────────────────────────────────────────────────
 // MARK: - Routeur UIKit vers les modules UI
-// ────────────────────────────────────────────────────────────
 
 @interface UIView (S7TVChatInputHook)
 - (void)s7tv_didMoveToWindow;
@@ -202,8 +206,6 @@ static void s7tv_ingestChannelPointMetadata(NSData *data,
 // c'est donc également le dernier point fiable pour installer son swizzle si
 // le framework n'était pas encore chargé au constructeur du tweak.
 static BOOL s7tv_try_swizzle_apollo_gql(void);
-static char kS7TVGQLRequestChannelIDKey;
-static char kS7TVGQLRequestAmbiguousKey;
 
 static NSString *const kS7TVVAFTInternalHeader = @"X-TAS-Internal";
 
@@ -273,24 +275,8 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
     // À cet instant Apollo.URLSessionClient est forcément chargé si cette
     // requête vient d'Apollo. Le hook sera en place avant la première réponse.
     s7tv_try_swizzle_apollo_gql();
-    NSString *requestChannelID = nil;
-    BOOL requestChannelIDAmbiguous = NO;
-    if ([request.URL.host isEqualToString:@"gql.twitch.tv"]) {
-        if (request.HTTPBody) {
-            requestChannelID = s7tv_channelIDFromGQLRequest(
-                request, YES, &requestChannelIDAmbiguous);
-        }
-    }
     NSURLSessionDataTask *task = S7TVAdblockCreateConnectTaskIfNeeded(self, request);
     if (!task) task = [self s7tv_dataTaskWithRequest:request];
-    if (requestChannelID.length) {
-        objc_setAssociatedObject(task, &kS7TVGQLRequestChannelIDKey,
-                                 requestChannelID, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    }
-    if (requestChannelIDAmbiguous) {
-        objc_setAssociatedObject(task, &kS7TVGQLRequestAmbiguousKey,
-                                 @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
     return task;
 }
 - (NSURLSessionDataTask *)s7tv_dataTaskWithRequest:(NSURLRequest *)request
@@ -303,17 +289,12 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
     request = S7TVAdblockPrepareRequest(request, &blocked);
     if (blocked) return nil;
     if ([request.URL.host isEqualToString:@"gql.twitch.tv"] && completionHandler) {
-        BOOL requestChannelIDAmbiguous = NO;
-        NSString *requestChannelID = s7tv_channelIDFromGQLRequest(
-            request, YES, &requestChannelIDAmbiguous);
         void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
             ^(NSData *data, NSURLResponse *response, NSError *error) {
                 NSData *filteredData = data && !error
                     ? S7TVAdblockTransformResponseData(data, request) : data;
                 if (filteredData && !error) {
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:filteredData];
-                    s7tv_ingestChannelPointMetadata(
-                        filteredData, requestChannelID, requestChannelIDAmbiguous);
                 }
                 completionHandler(filteredData, response, error);
             };
@@ -338,7 +319,6 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
             ^(NSData *data, NSURLResponse *response, NSError *error) {
                 if (data && !error) {
                     [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
-                    s7tv_ingestChannelPointMetadata(data, nil, NO);
                 }
                 completionHandler(data, response, error);
             };
@@ -433,19 +413,6 @@ static char kS7TVApolloResponseBufferKey;
         NSString *host = task.currentRequest.URL.host ?: task.originalRequest.URL.host;
         if ([host isEqualToString:@"gql.twitch.tv"]) {
             [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:fullData];
-            NSString *requestChannelID = objc_getAssociatedObject(
-                task, &kS7TVGQLRequestChannelIDKey);
-            BOOL requestChannelIDAmbiguous = [objc_getAssociatedObject(
-                task, &kS7TVGQLRequestAmbiguousKey) boolValue];
-            if (!requestChannelID.length) {
-                BOOL completionAmbiguous = NO;
-                requestChannelID = s7tv_channelIDFromGQLRequest(
-                    task.currentRequest ?: task.originalRequest, NO,
-                    &completionAmbiguous);
-                requestChannelIDAmbiguous |= completionAmbiguous;
-            }
-            s7tv_ingestChannelPointMetadata(
-                fullData, requestChannelID, requestChannelIDAmbiguous);
         }
     }
 

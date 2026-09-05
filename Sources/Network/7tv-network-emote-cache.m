@@ -40,7 +40,7 @@ static NSURLCache *SevenTVGetSharedCache(void) {
     dispatch_once(&s_emoteCacheOnce, ^{
         s_emoteCache = [[NSURLCache alloc]
             initWithMemoryCapacity:  30 * 1024 * 1024   // 30 MB RAM
-                      diskCapacity: 200 * 1024 * 1024   // 200 MB disque
+                      diskCapacity: 500 * 1024 * 1024   // 500 MB disque
                           diskPath: @"s7tv_cdn_cache"];
     });
     return s_emoteCache;

@@ -71,6 +71,11 @@ void s7tv_setupChatCustomIntegration(void);
 
 @property (nonatomic, weak) id<SevenTVChatCustomViewDelegate> delegate;
 
+// Transcript natif remplacé par cette instance. La référence reste faible :
+// le transcript garde la vue custom via son association UIKit, tandis que la
+// custom ne prolonge jamais la durée de vie du transcript.
+@property (nonatomic, weak, nullable) UIView *s7tv_nativeTranscriptView;
+
 // YES par défaut (chat principal). Passer à NO pour un usage "panneau Fil"
 // (voir S7TVReplyThreadPanel) : à l'intérieur d'un fil déjà
 // filtré, réafficher "Répond à @X" sur chaque message est redondant — Twitch

@@ -50,6 +50,9 @@ typedef NS_ENUM(NSInteger, S7TVDeletedMessageRevealMode) {
 @property (nonatomic, assign) CGFloat emote7TVSize;        // hauteur cible emote 7TV
 // TODO mesure réelle — pas d'emote Twitch native isolée dans le screenshot dispo.
 @property (nonatomic, assign) CGFloat emoteTwitchSize;     // hauteur cible emote Twitch native
+// Même hauteur de référence que les emotes du chat, réglable séparément
+// lorsque les GIFs reçus par Twitch nécessitent un ajustement.
+@property (nonatomic, assign) CGFloat gifSize;             // hauteur cible GIF Twitch
 // Mesurée (screenshot 3x retina) — voir .m.
 @property (nonatomic, assign) CGFloat badgeSize;           // hauteur cible badge (sub/mod/VIP/custom)
 // Mesurée (screenshot 3x retina) — voir .m.

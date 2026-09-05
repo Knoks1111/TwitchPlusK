@@ -2,6 +2,25 @@
 
 This file keeps the cumulative release history of TwitchPlusK, with the newest release listed first.
 
+## [1.0.3] (Twitch 31.0.2) - 2026-09-05
+
+### New Features
+
+- Added native viewer cards to the custom chat: tap any username to open their Twitch profile card directly.
+- Added native Twitch GIF support in the custom chat.
+- Added a configurable GIF size option.
+- Added custom Twitch chat support for the other native chat overlay.
+- Reworked emote caching: emotes are now cached on demand instead of pre-caching every channel emote when joining a channel, reducing startup delays, network traffic, and unnecessary memory/disk usage.
+
+### Fixes
+
+- Fixed the fake chat preview opening unexpectedly or remaining visible after closing the picker.
+- Fixed chat messages sometimes appearing partially cut off.
+- Improved OLED support for SwiftUI-hosted screens and viewer cards, with instant black backgrounds.
+- Fixed thread layout so the main message stays fully visible and replies remain accessible in portrait and landscape mode.
+- Fixed 7TV PC favorites import compatibility with nested export formats and future format variations.
+- Improved moderation messages in the custom chat with French and English support.
+
 ## [1.0.2] (Twitch 30.9) - 2026-08-31
 
 ### New Features

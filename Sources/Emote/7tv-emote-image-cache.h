@@ -29,6 +29,10 @@ NS_ASSUME_NONNULL_BEGIN
 // Une preview est immédiatement affichable, mais ne doit jamais empêcher le
 // décodage de la boucle complète ni remplacer celle-ci si elle est déjà prête.
 @property (nonatomic, assign, getter=isPreview) BOOL preview;
+// Les GIFs Twitch n'utilisent pas le même budget mémoire que les emotes :
+// leurs frames sont conservées dans un petit cache dédié et ne sont jamais
+// persistées sur disque.
+@property (nonatomic, assign, getter=isTwitchGIF) BOOL twitchGIF;
 @end
 
 // Jeton d'une demande de frames liée à une vue. Le picker l'annule dès que

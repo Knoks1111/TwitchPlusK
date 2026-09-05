@@ -121,6 +121,54 @@ static void s7tv_copyResolvedMetadata(S7TVChatToken *token,
     return ranges;
 }
 
+// Twitch GIF Keyboard ajoute un tag `gifs=` sur le PRIVMSG. Chaque entrée est
+// `start-end|gifID|gifURL`; la virgule sépare plusieurs GIFs. Les URLs peuvent
+// contenir d'autres caractères, donc on ne découpe que les deux premiers `|`.
++ (NSArray<NSArray *> *)s7tv_twitchGIFRangesFromTag:(NSString *)tagValue {
+    NSMutableArray<NSArray *> *ranges = [NSMutableArray array];
+    if (!tagValue.length) return ranges;
+
+    for (NSString *gifBlock in [tagValue componentsSeparatedByString:@","]) {
+        NSRange firstPipe = [gifBlock rangeOfString:@"|"];
+        if (firstPipe.location == NSNotFound) continue;
+        NSRange secondPipeSearch = NSMakeRange(firstPipe.location + 1,
+                                                gifBlock.length - firstPipe.location - 1);
+        NSRange secondPipe = [gifBlock rangeOfString:@"|"
+                                              options:0
+                                                range:secondPipeSearch];
+        if (secondPipe.location == NSNotFound) continue;
+
+        NSString *position = [gifBlock substringToIndex:firstPipe.location];
+        NSRange dash = [position rangeOfString:@"-"];
+        if (dash.location == NSNotFound) continue;
+        NSString *startString = [position substringToIndex:dash.location];
+        NSString *endString = [position substringFromIndex:dash.location + 1];
+        if (!startString.length || !endString.length) continue;
+
+        NSInteger start = startString.integerValue;
+        NSInteger end = endString.integerValue;
+        if (start < 0 || end < start) continue;
+
+        NSString *gifID = [gifBlock substringWithRange:NSMakeRange(
+            firstPipe.location + 1,
+            secondPipe.location - firstPipe.location - 1)];
+        NSString *urlString = [gifBlock substringFromIndex:secondPipe.location + 1];
+        NSURL *url = [NSURL URLWithString:urlString];
+        if (!gifID.length || !url.absoluteString.length ||
+            !([url.scheme.lowercaseString isEqualToString:@"http"] ||
+              [url.scheme.lowercaseString isEqualToString:@"https"])) continue;
+
+        [ranges addObject:@[gifID, @(start), @(end), url]];
+    }
+
+    [ranges sortUsingComparator:^NSComparisonResult(NSArray *left, NSArray *right) {
+        NSComparisonResult result = [(NSNumber *)left[1] compare:(NSNumber *)right[1]];
+        if (result != NSOrderedSame) return result;
+        return [(NSNumber *)left[2] compare:(NSNumber *)right[2]];
+    }];
+    return ranges;
+}
+
 + (NSArray<S7TVChatToken *> *)tokenizeText:(NSString *)text
                                   providers:(NSArray<id<S7TVEmoteProvider>> *)providers {
     NSMutableArray<S7TVChatToken *> *tokens = [NSMutableArray array];
@@ -197,16 +245,62 @@ static void s7tv_copyResolvedMetadata(S7TVChatToken *token,
 }
 
 + (NSArray<S7TVChatToken *> *)tokenizeText:(NSString *)text
+                                  twitchEmotesTag:(NSString * _Nullable)emotesTag
+                                providers:(NSArray<id<S7TVEmoteProvider>> *)providers {
+    return [self tokenizeText:text
+             twitchEmotesTag:emotesTag
+                 twitchGIFsTag:nil
+                   providers:providers];
+}
+
++ (NSArray<S7TVChatToken *> *)tokenizeText:(NSString *)text
                           twitchEmotesTag:(NSString * _Nullable)emotesTag
+                              twitchGIFsTag:(NSString * _Nullable)gifsTag
                                 providers:(NSArray<id<S7TVEmoteProvider>> *)providers {
     NSArray<NSArray *> *ranges = [self s7tv_twitchEmoteRangesFromTag:emotesTag ?: @""];
-    if (ranges.count == 0) return [self tokenizeText:text providers:providers];
+    NSArray<NSArray *> *gifRanges = [self s7tv_twitchGIFRangesFromTag:gifsTag ?: @""];
+    if (ranges.count == 0 && gifRanges.count == 0)
+        return [self tokenizeText:text providers:providers];
+
+    // Un seul flux trié permet de conserver les positions IRC exactes sans
+    // dupliquer le pipeline de tokenisation des spans texte. Le type 0 est
+    // une emote native Twitch, le type 1 un GIF Twitch. En cas de position
+    // identique, l'emote native passe d'abord et garde sa priorité.
+    NSMutableArray<NSArray *> *mediaRanges = [NSMutableArray arrayWithCapacity:
+        ranges.count + gifRanges.count];
+    for (NSArray *range in ranges) {
+        [mediaRanges addObject:@[@0, range[1], range[2], range[0]]];
+    }
+    for (NSArray *range in gifRanges) {
+        NSInteger gifStart = [(NSNumber *)range[1] integerValue];
+        NSInteger gifEnd = [(NSNumber *)range[2] integerValue];
+        BOOL overlapsNative = NO;
+        for (NSArray *nativeRange in ranges) {
+            NSInteger nativeStart = [(NSNumber *)nativeRange[1] integerValue];
+            NSInteger nativeEnd = [(NSNumber *)nativeRange[2] integerValue];
+            if (gifStart <= nativeEnd && nativeStart <= gifEnd) {
+                overlapsNative = YES;
+                break;
+            }
+        }
+        if (!overlapsNative) {
+            [mediaRanges addObject:@[@1, range[1], range[2], range[0], range[3]]];
+        }
+    }
+    [mediaRanges sortUsingComparator:^NSComparisonResult(NSArray *left, NSArray *right) {
+        NSComparisonResult result = [(NSNumber *)left[1] compare:(NSNumber *)right[1]];
+        if (result != NSOrderedSame) return result;
+        result = [(NSNumber *)left[0] compare:(NSNumber *)right[0]];
+        if (result != NSOrderedSame) return result;
+        return [(NSNumber *)left[2] compare:(NSNumber *)right[2]];
+    }];
 
     NSMutableArray<S7TVChatToken *> *tokens = [NSMutableArray array];
     NSInteger cursor = 0;
 
-    for (NSArray *range in ranges) {
-        NSString *emoteID = range[0];
+    for (NSArray *range in mediaRanges) {
+        BOOL isGIF = [(NSNumber *)range[0] integerValue] == 1;
+        NSString *mediaID = range[3];
         NSInteger start = [(NSNumber *)range[1] integerValue];
         NSInteger end = [(NSNumber *)range[2] integerValue];
 
@@ -221,17 +315,25 @@ static void s7tv_copyResolvedMetadata(S7TVChatToken *token,
         }
 
         NSString *emoteText = [text substringWithRange:NSMakeRange(start, end - start + 1)];
-        id<S7TVResolvedEmote> resolved =
-            [S7TVTwitchNativeEmoteFactory resolvedEmoteForTwitchEmoteID:emoteID];
-        if (resolved) {
-            S7TVChatToken *token = [S7TVChatToken emoteToken:emoteText
-                                                     provider:S7TVChatTokenTypeEmoteTwitch
-                                                      emoteID:emoteID];
-            token.resolvedEmote = resolved;
-            s7tv_copyResolvedMetadata(token, resolved);
+        if (isGIF) {
+            NSURL *gifURL = range.count > 4 ? range[4] : nil;
+            S7TVChatToken *token = [S7TVChatToken gifToken:emoteText
+                                                     gifID:mediaID
+                                                       url:gifURL];
             [tokens addObject:token];
         } else {
-            [tokens addObject:[S7TVChatToken textToken:emoteText]];
+            id<S7TVResolvedEmote> resolved =
+                [S7TVTwitchNativeEmoteFactory resolvedEmoteForTwitchEmoteID:mediaID];
+            if (resolved) {
+                S7TVChatToken *token = [S7TVChatToken emoteToken:emoteText
+                                                         provider:S7TVChatTokenTypeEmoteTwitch
+                                                          emoteID:mediaID];
+                token.resolvedEmote = resolved;
+                s7tv_copyResolvedMetadata(token, resolved);
+                [tokens addObject:token];
+            } else {
+                [tokens addObject:[S7TVChatToken textToken:emoteText]];
+            }
         }
         cursor = end + 1;
     }

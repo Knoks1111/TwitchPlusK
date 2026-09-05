@@ -18,6 +18,12 @@
 static const NSInteger kS7TVDefaultMaxSimultaneousAnimations = 128;
 static const NSUInteger kS7TVMaxRegisteredFrameSets = 32;
 static const NSUInteger kS7TVMaxRegisteredFramesCost = 48 * 1024 * 1024;
+// Les GIFs Twitch sont souvent bien plus lourds que les emotes WebP. Ils ont
+// donc un budget indépendant afin qu'une série de GIFs ne puisse pas évincer
+// tout le cache animé des emotes, ni conserver plusieurs dizaines de boucles
+// complètes en mémoire.
+static const NSUInteger kS7TVMaxRegisteredTwitchGIFFrameSets = 4;
+static const NSUInteger kS7TVMaxRegisteredTwitchGIFFramesCost = 16 * 1024 * 1024;
 
 static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     NSUInteger total = 0;
@@ -106,6 +112,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *firstSeenAtByKey;  // CFTimeInterval, référence throttle
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastAccessByKey;   // LRU des frames inactives
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *frameCostByKey;    // octets décodés estimés
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *twitchGIFByKey;
 
 // Clé → observateurs actuellement affichés (weak — un observateur qui
 // disparaît sans appeler removeObserver: ne fuit pas indéfiniment).
@@ -139,6 +146,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
         _firstSeenAtByKey  = [NSMutableDictionary dictionary];
         _lastAccessByKey   = [NSMutableDictionary dictionary];
         _frameCostByKey    = [NSMutableDictionary dictionary];
+        _twitchGIFByKey    = [NSMutableDictionary dictionary];
         _observersByKey    = [NSMutableDictionary dictionary];
         _keysByObserver    = [NSMapTable weakToStrongObjectsMapTable];
         _redrawByObserver  = [NSMapTable weakToStrongObjectsMapTable];
@@ -171,6 +179,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     self.elapsedByKey[key]    = @0.0;
     self.lastAccessByKey[key] = @(CACurrentMediaTime());
     self.frameCostByKey[key]  = @(s7tv_engineFramesCost(frames));
+    self.twitchGIFByKey[key]  = @(frames.isTwitchGIF);
     // registerFrames: précède nécessairement addObserver:. Protéger cette clé
     // pendant le prune empêche qu'elle soit considérée comme inactive puis
     // évincée immédiatement lorsque le chat + le picker dépassent déjà la
@@ -292,6 +301,7 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
     [self.firstSeenAtByKey removeAllObjects];
     [self.lastAccessByKey removeAllObjects];
     [self.frameCostByKey removeAllObjects];
+    [self.twitchGIFByKey removeAllObjects];
     [self.observersByKey removeAllObjects];
     [self.keysByObserver removeAllObjects];
     [self.redrawByObserver removeAllObjects];
@@ -299,32 +309,78 @@ static NSUInteger s7tv_engineFramesCost(S7TVEmoteAnimatedFrames *frames) {
 
 // Le NSCache d'images est borné, mais framesByKey retenait auparavant une
 // seconde référence forte vers chaque animation jamais rencontrée. Après un
-// long scroll, cette table devenait donc un cache illimité. On garde un petit
-// LRU borné à la fois en nombre et à ~48 Mo, sans jamais évincer une clé
-// actuellement visible.
+// long scroll, cette table devenait donc un cache illimité. On garde un LRU
+// borné séparément pour les emotes et les GIFs Twitch, sans jamais évincer une
+// clé actuellement visible.
 - (void)s7tv_pruneInactiveFrameSetsPreservingKey:(NSString *)protectedKey {
-    NSUInteger totalCost = 0;
-    for (NSNumber *cost in self.frameCostByKey.allValues) totalCost += cost.unsignedIntegerValue;
-    while (self.framesByKey.count > kS7TVMaxRegisteredFrameSets ||
-           totalCost > kS7TVMaxRegisteredFramesCost) {
+    NSUInteger emoteCount = 0;
+    NSUInteger emoteCost = 0;
+    NSUInteger gifCount = 0;
+    NSUInteger gifCost = 0;
+    for (NSString *key in self.framesByKey) {
+        NSUInteger cost = self.frameCostByKey[key].unsignedIntegerValue;
+        if (self.twitchGIFByKey[key].boolValue) {
+            gifCount += 1;
+            gifCost += cost;
+        } else {
+            emoteCount += 1;
+            emoteCost += cost;
+        }
+    }
+
+    while (emoteCount > kS7TVMaxRegisteredFrameSets ||
+           emoteCost > kS7TVMaxRegisteredFramesCost ||
+           gifCount > kS7TVMaxRegisteredTwitchGIFFrameSets ||
+           gifCost > kS7TVMaxRegisteredTwitchGIFFramesCost) {
+        BOOL needGIF = gifCount > kS7TVMaxRegisteredTwitchGIFFrameSets ||
+                       gifCost > kS7TVMaxRegisteredTwitchGIFFramesCost;
+        BOOL needEmote = emoteCount > kS7TVMaxRegisteredFrameSets ||
+                         emoteCost > kS7TVMaxRegisteredFramesCost;
+        BOOL targetGIF = needGIF;
         NSString *oldestKey = nil;
         CFTimeInterval oldestAccess = DBL_MAX;
         for (NSString *candidate in self.framesByKey) {
             if ([candidate isEqualToString:protectedKey]) continue;
             if (self.observersByKey[candidate].count > 0) continue;
+            if (self.twitchGIFByKey[candidate].boolValue != targetGIF) continue;
             CFTimeInterval access = self.lastAccessByKey[candidate].doubleValue;
             if (!oldestKey || access < oldestAccess) {
                 oldestKey = candidate;
                 oldestAccess = access;
             }
         }
-        if (!oldestKey) break; // toutes les clés sont réellement visibles
-        totalCost -= MIN(totalCost, self.frameCostByKey[oldestKey].unsignedIntegerValue);
+
+        // Si le budget GIF est dépassé mais que tous les GIFs sont visibles,
+        // tenter quand même de réduire le budget emote s'il est lui aussi
+        // dépassé, plutôt que de bloquer le pruneur entier.
+        if (!oldestKey && needGIF && needEmote) {
+            targetGIF = NO;
+            for (NSString *candidate in self.framesByKey) {
+                if ([candidate isEqualToString:protectedKey]) continue;
+                if (self.observersByKey[candidate].count > 0) continue;
+                if (self.twitchGIFByKey[candidate].boolValue) continue;
+                CFTimeInterval access = self.lastAccessByKey[candidate].doubleValue;
+                if (!oldestKey || access < oldestAccess) {
+                    oldestKey = candidate;
+                    oldestAccess = access;
+                }
+            }
+        }
+        if (!oldestKey) break; // toutes les clés du budget concerné sont visibles
+        NSUInteger removedCost = self.frameCostByKey[oldestKey].unsignedIntegerValue;
+        if (targetGIF) {
+            gifCount = gifCount > 0 ? gifCount - 1 : 0;
+            gifCost -= MIN(gifCost, removedCost);
+        } else {
+            emoteCount = emoteCount > 0 ? emoteCount - 1 : 0;
+            emoteCost -= MIN(emoteCost, removedCost);
+        }
         [self.framesByKey removeObjectForKey:oldestKey];
         [self.frameIndexByKey removeObjectForKey:oldestKey];
         [self.elapsedByKey removeObjectForKey:oldestKey];
         [self.lastAccessByKey removeObjectForKey:oldestKey];
         [self.frameCostByKey removeObjectForKey:oldestKey];
+        [self.twitchGIFByKey removeObjectForKey:oldestKey];
     }
 }
 

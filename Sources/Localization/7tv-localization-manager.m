@@ -366,6 +366,7 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         // ── Panneau des tailles (picker) ──────────────────────────────────
         @"title_emotes_7tv":                @[@"Emotes 7TV", @"7TV emotes"],
         @"size_label_emote_twitch":         @[@"Emotes Twitch", @"Twitch Emotes"],
+        @"size_label_gif":                   @[@"GIFs Twitch", @"Twitch GIFs"],
         @"size_label_badges":               @[@"Badges", @"Badges"],
         @"size_label_username":             @[@"Texte pseudo", @"Username text"],
         @"size_label_message":              @[@"Texte message", @"Message text"],
@@ -375,6 +376,8 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"preview_7tv_prefix":              @[@"7TV: ", @"7tv: "],
         @"preview_username":                @[@"Pseudo", @"Username"],
         @"preview_greeting":                @[@"Salut !", @"Hi!"],
+        @"preview_gif_username":            @[@"GIFViewer", @"GIFViewer"],
+        @"preview_gif_text":                @[@"regardez ce GIF !", @"check out this GIF!"],
         @"sizes_preview_section_title":     @[@"Aperçu", @"Preview"],
         @"sizes_colors_section_title":      @[@"Couleurs des messages système", @"System message colors"],
         @"sizes_colors_toggle_label":       @[@"Fonds colorés", @"Colored backgrounds"],
@@ -455,14 +458,16 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
         // ── Chat custom (rendu live + faux chat de preview) ───────────────
         @"chat_deleted_message_placeholder": @[@"– Supprimé", @"– Deleted"],
-        // Détail optionnel injecté dans le placeholder replié.
-        @"chat_deleted_message_with_detail_format": @[@"– Supprimé · %@", @"– Deleted · %@"],
+        @"chat_moderated_message_placeholder": @[@"– Modéré", @"– Moderated"],
+        // Détail optionnel injecté dans le placeholder timeout/ban.
+        @"chat_moderation_message_with_detail_format": @[@"– %@", @"– %@"],
         @"chat_moderation_timeout":          @[@"Timeout", @"Timeout"],
         @"chat_moderation_timeout_format":   @[@"Timeout %@", @"Timeout %@"],
         @"chat_moderation_permanent_ban":    @[@"Ban permanent", @"Permanent ban"],
         @"chat_duration_seconds_format":     @[@"%lds", @"%lds"],
         @"chat_duration_minutes_format":     @[@"%ldm", @"%ldm"],
         @"chat_duration_hours_format":       @[@"%ldh", @"%ldh"],
+        @"chat_duration_days_format":        @[@"%ldj", @"%ldd"],
         @"chat_duration_week_one":           @[@"1 semaine", @"1 week"],
         @"chat_duration_weeks_format":       @[@"%ld semaines", @"%ld weeks"],
         // %@ 1 = pseudo répondu, %@ 2 = extrait du message parent (déjà

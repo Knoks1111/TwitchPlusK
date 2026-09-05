@@ -344,7 +344,10 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 // Un weak pointer devient nil dès que Twitch recycle la vue → insertion silencieuse.
 @property (nonatomic, weak)   UIView              *emotePickerTextField;
 // Référence forte au _TtC6Twitch...TextEntryView — reste firstResponder pendant le picker.
-@property (nonatomic, weak)   UITextView          *emotePickerTextEntryView;
+// UIKit peut libérer/recycler cette vue pendant la fermeture du clavier. La
+// conserver jusqu'au nettoyage permet de reconnaître correctement la
+// notification UITextViewTextDidEndEditing et de fermer l'aperçu flottant.
+@property (nonatomic, strong) UITextView          *emotePickerTextEntryView;
 @property (nonatomic, strong) UICollectionView    *emoteCollectionView;
 @property (nonatomic, strong) UITextField         *emoteSearchField;
 @property (nonatomic, strong) NSArray<SevenTVEmote *> *emotePickerEmotes;
@@ -394,9 +397,9 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 // Conteneur du faux chat (SevenTVPickerSizesPanel.fakeChatView), ajouté
 // directement à la key window — pas à emotePickerView — car ce dernier EST
 // l'inputView du clavier et ne peut pas héberger un aperçu positionné
-// librement par-dessus le vrai chat. weak : la key window (superview) le
-// retient, pas ce controller (même logique que emotePickerTextField).
-@property (nonatomic, weak) UIView *pickerFakeChatPreviewView;
+// librement par-dessus le vrai chat. Le controller le retient explicitement
+// pour pouvoir le retirer de la fenêtre à chaque fermeture.
+@property (nonatomic, strong) UIView *pickerFakeChatPreviewView;
 
 // ── Refonte tabbed + refonte visuelle du picker (style 7TV PC) ──────────
 // Onglet actif : Favoris / Tous / 7TV / BTTV / FFZ. « Tous » est un pseudo-
@@ -627,6 +630,10 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
     [[SevenTVEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
     self.pickerCatalogReloadPending = NO;
+    // Invalider les relayouts d'orientation déjà programmés. Sans cela, un
+    // callback UIKit peut réafficher le faux chat quelques millisecondes
+    // après la fermeture du picker.
+    self.pickerOrientationGeneration += 1;
     self.emotePickerTextEntryView = nil;
     self.emotePickerTextField = nil;
     self.emotePickerView.hidden = YES;
@@ -903,6 +910,16 @@ static const CGFloat kS7TVPickerGridDefaultH =
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf || generation != strongSelf.pickerOrientationGeneration ||
             !strongSelf.emotePickerView || strongSelf.emotePickerView.hidden) return;
+        // Le picker peut avoir perdu son inputView sans passer par
+        // _hideEmotePicker. Dans ce cas, ne jamais relancer un aperçu flottant
+        // orphelin simplement parce qu'une rotation vient d'être notifiée.
+        BOOL pickerAttachedAsInputView = strongSelf.emotePickerTextEntryView &&
+            strongSelf.emotePickerTextEntryView.window &&
+            strongSelf.emotePickerTextEntryView.inputView == strongSelf.emotePickerView;
+        BOOL pickerVisibleAsWindowFallback = !strongSelf.emotePickerTextEntryView &&
+            strongSelf.emotePickerView.window &&
+            strongSelf.emotePickerView.superview == strongSelf.emotePickerView.window;
+        if (!pickerAttachedAsInputView && !pickerVisibleAsWindowFallback) return;
         UIWindow *hostWindow = strongSelf.emotePickerTextField.window
             ?: strongSelf.emotePickerTextEntryView.window;
         CGFloat width = hostWindow.bounds.size.width;
@@ -1053,6 +1070,9 @@ static const CGFloat kS7TVPickerAvatarDiameter = 22.0;
 
 - (void)_hideEmotePicker {
     self.pickerSearchAlertActive = NO;
+    // Toute relayout différée (notamment après une rotation) devient obsolète
+    // dès que le picker est fermé.
+    self.pickerOrientationGeneration += 1;
     [self _s7tv_deactivateVisiblePickerAnimations];
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
@@ -1081,6 +1101,7 @@ static const CGFloat kS7TVPickerAvatarDiameter = 22.0;
 - (void)cleanupPickerForStreamClose {
     [[SevenTVManager sharedManager] log:@"🔒 cleanupPickerForStreamClose → nettoyage picker"];
     self.pickerSearchAlertActive = NO;
+    self.pickerOrientationGeneration += 1;
     [self _s7tv_deactivateVisiblePickerAnimations];
     [[SevenTVEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
     [[SevenTVEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
@@ -2246,6 +2267,17 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
     UIColor *inactiveTint = [UIColor colorWithWhite:0.55 alpha:1.0];
     for (UIButton *btn in self.pickerTabButtons) {
         BOOL isActive = (btn.tag == self.pickerActiveTab);
+        if (btn.tag == S7TVPickerTabFavorites) {
+            // Les favoris de la chaîne courante sont la seule source de
+            // contenu de cet onglet. Comme pour la capsule Channel vide, le
+            // bouton reste visible mais devient inactif et nettement grisé.
+            BOOL hasFavorites = self.pickerCatalogFavorites.count > 0 ||
+                self.emotePickerFavoriteEmotes.count > 0;
+            btn.enabled = hasFavorites;
+            btn.alpha = hasFavorites ? 1.0 : 0.25;
+            btn.tintColor = (hasFavorites && isActive) ? activeTint : inactiveTint;
+            continue;
+        }
         if ([self _s7tv_pickerTabIsProvider:btn.tag]) {
             NSInteger provider = btn.tag == S7TVPickerTabSevenTV
                 ? S7TVEmoteProviderIDSevenTV
@@ -3337,6 +3369,21 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
 // pour suivre l'orientation/la position courante de chatInputView plutôt que
 // figé à la première ouverture.
 - (void)_showFakeChatPreviewAboveInputView {
+    UIView *pickerView = self.emotePickerView;
+    BOOL pickerAttachedAsInputView = self.emotePickerTextEntryView &&
+        self.emotePickerTextEntryView.window &&
+        self.emotePickerTextEntryView.inputView == pickerView;
+    BOOL pickerVisibleAsWindowFallback = !self.emotePickerTextEntryView &&
+        pickerView.window && pickerView.superview == pickerView.window;
+    if (!self.pickerSizesPanelVisible || !pickerView || pickerView.hidden ||
+        (!pickerAttachedAsInputView && !pickerVisibleAsWindowFallback)) {
+        // Cette méthode peut être appelée par un relayout différé. Si le
+        // picker n'est plus réellement attaché, supprimer immédiatement le
+        // conteneur plutôt que de laisser un faux chat apparaître seul.
+        [self _hideFakeChatPreview];
+        return;
+    }
+
     UIView *inputRoot = self.emotePickerTextField;
     UIWindow *keyWindow = inputRoot.window;
     if (!keyWindow) {
@@ -3402,7 +3449,14 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
     SevenTVChatCustomView *chatView = self->_sizesPanel.fakeChatView;
     [chatView resetTransientTranscriptState];
     chatView.renderingSuspended = YES;
-    self.pickerFakeChatPreviewView.hidden = YES;
+    UIView *container = self.pickerFakeChatPreviewView;
+    container.hidden = YES;
+    // Le faux chat est ajouté directement à la key window. Le masquer ne
+    // suffit pas : UIKit peut conserver sa position/z-order et un callback
+    // différé peut le rendre visible à nouveau. Le retirer à chaque fermeture
+    // garantit qu'aucun overlay ne survive au picker.
+    [container removeFromSuperview];
+    self.pickerFakeChatPreviewView = nil;
 }
 
 // ── Slider taille des emotes ───────────────────────────────────────────────

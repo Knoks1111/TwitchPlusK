@@ -2534,6 +2534,80 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
     }
 }
 
+static NSString *const kS7TVPCFavoritesKey = @"ui.emote_menu.favorites";
+
+// Les exports 7TV PC ne sont pas toujours au même niveau selon la version.
+// Les chemins connus restent prioritaires, puis on cherche la clé sémantique
+// dans les dictionnaires imbriqués sans dépendre d'un numéro de format.
+static NSArray *S7TVFindPCFavoritesArray(id object, NSUInteger depth) {
+    if (depth > 24) return nil;
+
+    if ([object isKindOfClass:NSDictionary.class]) {
+        NSDictionary *dictionary = (NSDictionary *)object;
+        id directValue = dictionary[kS7TVPCFavoritesKey];
+        if ([directValue isKindOfClass:NSArray.class]) return directValue;
+
+        for (id value in dictionary.allValues) {
+            NSArray *candidate = S7TVFindPCFavoritesArray(value, depth + 1);
+            if (candidate) return candidate;
+        }
+    } else if ([object isKindOfClass:NSArray.class]) {
+        for (id value in (NSArray *)object) {
+            NSArray *candidate = S7TVFindPCFavoritesArray(value, depth + 1);
+            if (candidate) return candidate;
+        }
+    }
+    return nil;
+}
+
+static NSArray *S7TVPCFavoritesArrayFromJSON(id json) {
+    if ([json isKindOfClass:NSArray.class]) return json;
+    if (![json isKindOfClass:NSDictionary.class]) return nil;
+
+    NSDictionary *root = (NSDictionary *)json;
+
+    // Format actuel : { "scopes": { "global": { ... } } }.
+    NSDictionary *scopes = [root[@"scopes"] isKindOfClass:NSDictionary.class]
+        ? root[@"scopes"] : nil;
+    NSDictionary *global = [scopes[@"global"] isKindOfClass:NSDictionary.class]
+        ? scopes[@"global"] : nil;
+    id favorites = global[kS7TVPCFavoritesKey];
+    if ([favorites isKindOfClass:NSArray.class]) return favorites;
+
+    // Formats précédents connus.
+    NSDictionary *settings = [root[@"settings"] isKindOfClass:NSDictionary.class]
+        ? root[@"settings"] : nil;
+    favorites = settings[kS7TVPCFavoritesKey];
+    if ([favorites isKindOfClass:NSArray.class]) return favorites;
+
+    favorites = root[kS7TVPCFavoritesKey];
+    if ([favorites isKindOfClass:NSArray.class]) return favorites;
+
+    // Fallback borné pour une future évolution de l'imbrication.
+    return S7TVFindPCFavoritesArray(root, 0);
+}
+
+static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites) {
+    NSMutableOrderedSet<NSString *> *ids = [NSMutableOrderedSet orderedSet];
+    NSCharacterSet *whitespace = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+
+    for (id entry in rawFavorites) {
+        if (![entry isKindOfClass:NSString.class]) continue;
+        NSString *value = [(NSString *)entry stringByTrimmingCharactersInSet:whitespace];
+        NSRange separator = [value rangeOfString:@":"];
+        if (separator.location == NSNotFound || separator.location == 0 ||
+            separator.location == value.length - 1) continue;
+
+        NSString *provider = [value substringToIndex:separator.location];
+        if ([provider caseInsensitiveCompare:@"7TV"] != NSOrderedSame) continue;
+
+        NSString *emoteID = [value substringFromIndex:separator.location + 1];
+        emoteID = [emoteID stringByTrimmingCharactersInSet:whitespace];
+        if (emoteID.length) [ids addObject:emoteID];
+    }
+    return ids.array;
+}
+
 @interface SevenTVContentPageController () <UIDocumentPickerDelegate>
 - (void)presentLaunchDestinationPickerFromCell:(UIView *)anchor;
 - (void)presentOrientationLockSettingPickerFromCell:(UIView *)anchor;
@@ -2912,25 +2986,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
 
-    // L'export 7TV PC peut avoir deux structures :
-    //   - Tableau directement : [ "7TV:xxx", ... ]
-    //   - Dict racine avec "ui.emote_menu.favorites" (format v0 hypothétique)
-    //   - Dict racine avec "settings" → "ui.emote_menu.favorites" (format réel v1)
-    NSArray *rawFavs = nil;
-    if ([json isKindOfClass:[NSArray class]]) {
-        rawFavs = (NSArray *)json;
-    } else if ([json isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *dict = (NSDictionary *)json;
-        // Format réel : { "settings": { "ui.emote_menu.favorites": [...] } }
-        NSDictionary *settings = dict[@"settings"];
-        if ([settings isKindOfClass:[NSDictionary class]]) {
-            rawFavs = settings[@"ui.emote_menu.favorites"];
-        }
-        // Fallback : clé à la racine (format alternatif)
-        if (!rawFavs) {
-            rawFavs = dict[@"ui.emote_menu.favorites"];
-        }
-    }
+    NSArray *rawFavs = S7TVPCFavoritesArrayFromJSON(json);
 
     if (!rawFavs) {
         [self s7tv_showAlert:L(@"alert_unknown_format_title")
@@ -2938,15 +2994,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
 
-    // Filtrer les entrées "7TV:<id>" — ignorer "PLATFORM:..."
-    NSMutableArray<NSString *> *newIDs = [NSMutableArray array];
-    for (id entry in rawFavs) {
-        if (![entry isKindOfClass:[NSString class]]) continue;
-        NSString *s = (NSString *)entry;
-        if ([s hasPrefix:@"7TV:"]) {
-            [newIDs addObject:[s substringFromIndex:4]];
-        }
-    }
+    // Extraire uniquement les IDs 7TV et ignorer les entrées PLATFORM:.
+    NSArray<NSString *> *newIDs = S7TVSevenTVIDsFromPCFavorites(rawFavs);
 
     if (newIDs.count == 0) {
         [self s7tv_showAlert:L(@"alert_no_7tv_favorites_title")

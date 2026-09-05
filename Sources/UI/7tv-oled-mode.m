@@ -1,11 +1,7 @@
 /*
  * 7tv-oled-mode.m
  *
- * Architecture inspirée des tweaks OLED YouTube : remplacer les couleurs à
- * leur source, dans la palette de thème, puis ne traiter séparément que les
- * écrans qui contournent cette palette. Pour Twitch 30.6, le getter mobile
- * screenExtendedBackgroundColor complète les tokens de palette ; aucun hook
- * UIView global n'est nécessaire.
+ * Gestion du mode OLED et des fonds ciblés de Twitch.
  */
 
 #import "UI/7tv-oled-mode.h"
@@ -19,8 +15,7 @@
 NSString *const S7TVOLEDModePreferenceKey = @"s7tv_oled_mode";
 NSString *const S7TVOLEDModeDidChangeNotification = @"S7TVOLEDModeDidChange";
 
-// Nom publié par TwitchCoreUI/ThemeManager.swift. Les composants Twitch
-// réappliquent leur ThemeProtocol lorsqu'ils reçoivent cette notification.
+// Notification du gestionnaire de thème natif Twitch.
 static NSString *const kS7TVNativeThemeDidChangeNotification =
     @"ThemeManagerCurrentThemeDidChangeNotification";
 
@@ -39,26 +34,25 @@ static S7TVOLEDHook s7tv_oledHooks[32];
 static NSUInteger s7tv_oledHookCount = 0;
 static _Atomic(bool) s7tv_oledEnabled = false;
 static id s7tv_lastThemeManager = nil;
+static NSHashTable<UIViewController *> *s7tv_oledHostingControllers;
+static const char kS7TVOLEDHostingControllerState = 0;
+static IMP s7tv_originalViewWillAppear = NULL;
 
 static const char * const kS7TVOLEDDarkThemeClassNames[] = {
     "_TtC12TwitchCoreUI15CoreUIDarkTheme",
     "_TtC12TwitchCoreUI17DarkMobileUITheme",
 };
 
-// @selector(...) cannot be used in a C static initializer with the older
-// clang/Theos toolchain. Keep the names static, then resolve the selectors
-// once while installing the hooks.
+// Résoudre les sélecteurs au moment de l'installation.
 static const char * const kS7TVOLEDBackgroundSelectorNames[] = {
-    // Getter déclaré par DarkMobileUITheme pour Accueil, Suivis, Live et
-    // Clips. Il ne fait pas partie de la palette background... commune.
+    // Fond étendu de DarkMobileUITheme.
     "screenExtendedBackgroundColor",
-    // Fonds de page et de sections.
+    // Fonds principaux.
     "backgroundBaseColor",
     "backgroundBodyColor",
     "backgroundAltColor",
     "backgroundAlt2Color",
-    // Fonds des écrans et composants qui ne passent pas par les quatre
-    // tokens principaux : modales, menus, barres et surfaces du chat natif.
+    // Fonds secondaires, modaux et surfaces du chat.
     "backgroundFloatColor",
     "backgroundModalColor",
     "backgroundOverlayBaseColor",
@@ -90,9 +84,7 @@ static BOOL s7tv_oledSuperclassAlreadyHooked(Class targetClass, SEL selector) {
     return NO;
 }
 
-// class_getInstanceMethod: remonte aussi les superclasses. Pour ne jamais
-// changer une palette claire qui partagerait un parent avec un thème sombre,
-// il faut savoir si le thème cible déclare réellement ce sélecteur.
+// Vérifier si le sélecteur est déclaré localement.
 static Method s7tv_oledMethodDeclaredOnClass(Class targetClass, SEL selector) {
     unsigned int methodCount = 0;
     Method *methods = class_copyMethodList(targetClass, &methodCount);
@@ -124,8 +116,7 @@ static UIColor *s7tv_oledBackgroundColorGetter(id self, SEL _cmd) {
     const S7TVOLEDHook *hook = s7tv_oledHookForReceiver(self, _cmd);
     if (!hook || !hook->original) return nil;
 
-    // Les deux classes ciblées sont exclusivement les variantes sombres de
-    // TwitchCoreUI ; une seule lecture atomique suffit donc ici.
+    // Ces classes appartiennent au thème sombre de Twitch.
     if (S7TVOLEDModeEnabled()) return UIColor.blackColor;
     return hook->original(self, _cmd);
 }
@@ -135,8 +126,7 @@ static void s7tv_installOLEDHook(Class targetClass, SEL selector) {
         s7tv_oledHookExists(targetClass, selector)) return;
 
     Method declaredMethod = s7tv_oledMethodDeclaredOnClass(targetClass, selector);
-    // Si le sous-type n'a pas son propre getter, il hérite déjà du hook du
-    // parent. En revanche, un override doit toujours être couvert.
+    // Éviter de modifier un parent partagé avec le thème clair.
     if (!declaredMethod && s7tv_oledSuperclassAlreadyHooked(targetClass, selector)) return;
 
     Method inheritedOrDeclaredMethod = class_getInstanceMethod(targetClass, selector);
@@ -151,8 +141,7 @@ static void s7tv_installOLEDHook(Class targetClass, SEL selector) {
     } else if (!class_addMethod(targetClass, selector,
                                 (IMP)s7tv_oledBackgroundColorGetter,
                                 method_getTypeEncoding(inheritedOrDeclaredMethod))) {
-        // Sans override local sûr, ne jamais modifier une éventuelle classe
-        // parente partagée avec le thème clair.
+        // Ne pas modifier un parent partagé sans override local.
         return;
     }
 
@@ -184,14 +173,74 @@ static void s7tv_installOLEDPaletteHooks(void) {
         sizeof(kS7TVOLEDDarkThemeClassNames) / sizeof(kS7TVOLEDDarkThemeClassNames[0]));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Clavier OLED
+static BOOL s7tv_isUIHostingController(UIViewController *controller) {
+    for (Class cls = object_getClass(controller); cls; cls = class_getSuperclass(cls)) {
+        NSString *name = NSStringFromClass(cls);
+        if ([name rangeOfString:@"UIHostingController"].location != NSNotFound) return YES;
+    }
+    return NO;
+}
+
+static void s7tv_updateOLEDHostingController(UIViewController *controller) {
+    if (!s7tv_isUIHostingController(controller)) return;
+
+    [s7tv_oledHostingControllers addObject:controller];
+
+    NSDictionary *state = objc_getAssociatedObject(controller,
+                                                     &kS7TVOLEDHostingControllerState);
+    if (!S7TVOLEDModeEnabled()) {
+        if (!state) return;
+        controller.overrideUserInterfaceStyle = [state[@"style"] integerValue];
+        id backgroundColor = state[@"backgroundColor"];
+        controller.view.backgroundColor = [backgroundColor isKindOfClass:[NSNull class]]
+            ? nil : backgroundColor;
+        objc_setAssociatedObject(controller, &kS7TVOLEDHostingControllerState,
+                                 nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+
+    if (!state) {
+        objc_setAssociatedObject(controller, &kS7TVOLEDHostingControllerState,
+            @{ @"style": @(controller.overrideUserInterfaceStyle),
+               @"backgroundColor": controller.view.backgroundColor ?: [NSNull null] },
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    controller.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    controller.view.backgroundColor = UIColor.blackColor;
+}
+
+static void s7tv_updateOLEDHostingControllers(void) {
+    void (^update)(void) = ^{
+        for (UIViewController *controller in s7tv_oledHostingControllers.allObjects) {
+            s7tv_updateOLEDHostingController(controller);
+        }
+    };
+
+    if ([NSThread isMainThread]) update();
+    else dispatch_async(dispatch_get_main_queue(), update);
+}
+
+static void s7tv_oledViewWillAppear(id self, SEL _cmd, BOOL animated) {
+    if (s7tv_originalViewWillAppear) {
+        ((void (*)(id, SEL, BOOL))s7tv_originalViewWillAppear)(self, _cmd, animated);
+    }
+    if (S7TVOLEDModeEnabled() ||
+        objc_getAssociatedObject(self, &kS7TVOLEDHostingControllerState)) {
+        s7tv_updateOLEDHostingController((UIViewController *)self);
+    }
+}
+
+static void s7tv_installOLEDHostingControllerHook(void) {
+    if (s7tv_originalViewWillAppear) return;
+    Method method = class_getInstanceMethod([UIViewController class], @selector(viewWillAppear:));
+    if (!method) return;
+    s7tv_originalViewWillAppear = method_getImplementation(method);
+    method_setImplementation(method, (IMP)s7tv_oledViewWillAppear);
+}
+
+// Clavier OLED.
 //
-// Adaptation ciblée de la logique open source d'OledKeyboard (dayanch96) :
-// seuls les composants du clavier UIKit sont traités, et uniquement lorsque
-// le mode OLED de TwitchPlusK est actif. Le reste de l'interface et le clavier
-// en mode normal restent entièrement gérés par iOS.
-// ─────────────────────────────────────────────────────────────────────────────
+// Les vues du clavier sont traitées uniquement quand le mode OLED est actif.
 
 typedef struct {
     Class targetClass;
@@ -236,9 +285,7 @@ static const S7TVOLEDKeyboardHook *s7tv_oledKeyboardHookForReceiver(id receiver,
 static BOOL s7tv_oledKeyboardViewIsDark(id view) {
     if (!view) return NO;
 
-    // OledKeyboard first uses UIKit's private dark-mode query. This covers
-    // keyboard views whose nearest controller is not exposed as a normal
-    // UIViewController in the host app.
+    // Certaines vues clavier n'exposent pas un UIViewController classique.
     SEL mapkitDarkModeSelector = sel_registerName("_mapkit_isDarkModeEnabled");
     if ([view respondsToSelector:mapkitDarkModeSelector]) {
         return ((BOOL (*)(id, SEL))objc_msgSend)(view, mapkitDarkModeSelector);
@@ -274,8 +321,7 @@ static void s7tv_installOLEDKeyboardHook(Class targetClass, SEL selector, IMP re
         s7tv_oledKeyboardHookExists(targetClass, selector)) return;
 
     Method declaredMethod = s7tv_oledMethodDeclaredOnClass(targetClass, selector);
-    // Si un sous-type hérite déjà du wrapper installé sur son parent, il n'y
-    // a rien à ajouter. Un override déclaré localement reste couvert.
+    // Éviter les hooks dupliqués sur les sous-classes.
     if (!declaredMethod && s7tv_oledKeyboardSuperclassAlreadyHooked(targetClass, selector)) {
         return;
     }
@@ -414,15 +460,17 @@ static id s7tv_activeThemeManager(void) {
 }
 
 static void s7tv_requestNativeThemeRefresh(void) {
-    // Le switch est manipulé sur le main thread ; conserver explicitement ce
-    // contexte protège aussi les imports de préférences appelés hors UI.
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // Le changement de thème est envoyé sur le thread principal.
+    void (^refresh)(void) = ^{
         id themeManager = s7tv_activeThemeManager();
         if (!themeManager) return;
         [[NSNotificationCenter defaultCenter]
             postNotificationName:kS7TVNativeThemeDidChangeNotification
                           object:themeManager];
-    });
+    };
+
+    if ([NSThread isMainThread]) refresh();
+    else dispatch_async(dispatch_get_main_queue(), refresh);
 }
 
 void S7TVOLEDModeSetEnabled(BOOL enabled) {
@@ -431,6 +479,7 @@ void S7TVOLEDModeSetEnabled(BOOL enabled) {
     if (previous == enabled) return;
 
     atomic_store_explicit(&s7tv_oledEnabled, enabled, memory_order_relaxed);
+    s7tv_updateOLEDHostingControllers();
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     [defaults setBool:enabled forKey:S7TVOLEDModePreferenceKey];
     [defaults synchronize];
@@ -445,6 +494,7 @@ void S7TVOLEDModeReloadFromDefaults(void) {
     BOOL changed = S7TVOLEDModeEnabled() != enabled;
     atomic_store_explicit(&s7tv_oledEnabled, enabled, memory_order_relaxed);
     if (changed) {
+        s7tv_updateOLEDHostingControllers();
         [[NSNotificationCenter defaultCenter]
             postNotificationName:S7TVOLEDModeDidChangeNotification object:nil];
         s7tv_requestNativeThemeRefresh();
@@ -454,6 +504,7 @@ void S7TVOLEDModeReloadFromDefaults(void) {
 void S7TVOLEDModeSetup(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        s7tv_oledHostingControllers = [NSHashTable weakObjectsHashTable];
         atomic_store_explicit(&s7tv_oledEnabled,
                               [NSUserDefaults.standardUserDefaults
                                   boolForKey:S7TVOLEDModePreferenceKey],
@@ -467,15 +518,12 @@ void S7TVOLEDModeSetup(void) {
             if (note.object) s7tv_lastThemeManager = note.object;
         }];
 
-        // Exécuté dans le constructeur du tweak, avant la création du premier
-        // écran Twitch : les fonds du lancement et des catégories ne peuvent
-        // donc pas conserver une couleur mise en cache avant le hook.
+        // Installer les hooks avant la création des premiers écrans Twitch.
         s7tv_installOLEDPaletteHooks();
         s7tv_installOLEDKeyboardHooks();
+        s7tv_installOLEDHostingControllerHook();
 
-        // Certaines classes du clavier sont chargées à la première
-        // présentation seulement. Réessayer à l'ouverture est idempotent et
-        // évite de dépendre d'un changement d'écran ou d'un scroll.
+        // Réessayer lorsque les classes clavier sont chargées.
         [[NSNotificationCenter defaultCenter]
             addObserverForName:UIKeyboardWillShowNotification
                         object:nil
@@ -486,8 +534,7 @@ void S7TVOLEDModeSetup(void) {
         }];
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            // Le second passage est idempotent et couvre une éventuelle
-            // classe Swift enregistrée juste après le constructeur.
+            // Second passage pour les classes Swift chargées tardivement.
             s7tv_installOLEDPaletteHooks();
             s7tv_installOLEDKeyboardHooks();
             s7tv_activeThemeManager();

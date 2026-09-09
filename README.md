@@ -1,6 +1,8 @@
 # TwitchPlusK
 
-Enhanced Twitch app for iOS with a fully customizable chat, 7TV/BTTV/FFZ emotes, Channel Points Auto Claim, two AdBlock methods, OLED mode, and more.
+TwitchPlusK is a tweak for the official Twitch iOS app. It keeps the native app and adds a fully customizable chat, 7TV/BTTV/FFZ emotes, adblock, Channel Points Auto Claim, OLED mode and more.
+
+Prebuilt IPAs are available in [Releases](https://github.com/Knoks1111/TwitchPlusK/releases) and can be installed with SideStore or LiveContainer.
 
 Available in <img src="https://flagcdn.com/gb.svg" width="20"> **ENGLISH** and <img src="https://flagcdn.com/fr.svg" width="20"> **FRENCH** from the Settings menu.
 

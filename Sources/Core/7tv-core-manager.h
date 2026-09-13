@@ -139,6 +139,7 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // Dictionnaire: @{ "KEKW": SevenTVEmote*, "Pog": SevenTVEmote*, ... }
 @property (nonatomic, strong) NSDictionary<NSString *, SevenTVEmote *> *globalEmotes;
 @property (nonatomic, strong) NSDictionary<NSString *, SevenTVEmote *> *channelEmotes;
+// Contexte fourni par un resolver explicite. Aucun hook IRC/GQL ne le détecte.
 @property (nonatomic, strong) NSString *currentChannelName;
 @property (nonatomic, strong) NSString *currentChannelTwitchID;
 
@@ -156,10 +157,7 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 @property (nonatomic, strong, readonly) dispatch_queue_t emoteQueue;
 
 // --- Chat custom (Phase 1a+) ---
-// Store des messages du chat en cours. Réinitialisé automatiquement à
-// chaque changement de chaîne détecté (voir -handleIRCRoomState:) pour
-// éviter qu'un message de l'ancienne chaîne fuite
-// dans la nouvelle (exigence Phase 0).
+// Store des messages du chat en cours.
 @property (nonatomic, strong, readonly) S7TVChatMessageStore *chatMessageStore;
 
 // --- Initialisation ---
@@ -172,7 +170,7 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 
 // --- Chargement des emotes ---
 - (void)loadGlobalEmotes;
-- (void)loadEmotesForChannelName:(NSString *)channelName;
+// Appelé uniquement avec un ID déjà résolu par un module dédié.
 - (void)loadEmotesForChannelTwitchID:(NSString *)twitchUserID;
 
 // --- Token Twitch (intercepté depuis les requêtes GQL) ---
@@ -191,9 +189,6 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 // n'est appelé en interne que lorsque les deux proviennent du même contexte.
 - (void)s7tv_captureAuthorizationHeader:(NSString *)value context:(id)context;
 - (void)s7tv_captureClientIDHeader:(NSString *)value context:(id)context;
-
-// --- Extraction depuis réponses Twitch GQL ---
-- (void)extractAndLoadEmotesFromGQLResponse:(NSData *)responseData;
 
 // --- Favoris (IDs 7TV, persistés dans NSUserDefaults) ---
 // Utilisé par SevenTVEmotePickerController — la donnée reste dans le manager,
@@ -256,12 +251,9 @@ typedef NS_ENUM(NSInteger, S7TVLogCategory) {
 
 @end
 
-// Cycle de vie de l'historique récent du salon. Le hook WebSocket transmet
-// seulement les JOIN sortants ; le manager possède la génération, la requête
-// réseau et la remise à zéro atomique du store.
+// Historique récent, appelé explicitement par le futur resolver de chaîne.
 @interface SevenTVManager (RecentChatHistory)
 - (void)initializeRecentHistoryForChannel:(NSString *)channel force:(BOOL)force;
-- (void)handleOutgoingChatWebSocketMessage:(NSURLSessionWebSocketMessage *)message;
 @end
 
 @interface SevenTVManager (IRCSessionState)

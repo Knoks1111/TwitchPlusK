@@ -218,7 +218,7 @@ typedef NS_ENUM(NSInteger, S7TVChatModerationKind) {
 // réabonnement se distingue via cumulativeMonths <= 1 (pas de tag IRC dédié
 // pour "premier sub"). Périmètre actuel : sub/resub + gift communautaire
 // (submysterygift) — voir s7tv_parseUSERNOTICE dans 7tv-chat-message.m. Subgift
-// ciblé (1 destinataire nommé) hors périmètre pour l'instant.
+// ciblé (1 destinataire nommé) est rendu comme une variante du gift communautaire.
 typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
     S7TVSystemMessageKindSubOrResub = 0,
     S7TVSystemMessageKindCommunityGift,
@@ -233,6 +233,7 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 @property (nonatomic, assign) NSInteger massGiftCount;         // CommunityGift uniquement
 @property (nonatomic, assign) NSInteger senderTotalGiftCount;  // CommunityGift uniquement
 @property (nonatomic, copy, nullable) NSString *channelDisplayName; // CommunityGift uniquement
+@property (nonatomic, copy, nullable) NSString *giftRecipientDisplayName; // Subgift ciblé uniquement
 @end
 
 
@@ -306,6 +307,7 @@ typedef NS_ENUM(NSInteger, S7TVSystemMessageKind) {
 // moment du rendu, pas ici — ce modèle ne fait que porter la donnée brute.
 @property (nonatomic, copy, nullable) NSArray<NSString *> *badgeIdentifiers;
 
+// Chaîne de la rediffusion ayant fourni ces badges. Nil pour le chat live.
 // `source-room-id` des PRIVMSG/USERNOTICE du Shared Chat. Il est présent
 // également sur la chaîne d'origine (où il est égal à `room-id`) et absent
 // du chat normal. Le renderer l'utilise pour placer l'avatar de la chaîne

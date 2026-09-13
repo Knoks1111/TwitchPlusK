@@ -1226,9 +1226,9 @@ static const char kS7TVRowKeyTag = 0;
 // volontairement mélangé (pas juste "un de chaque type à la suite") pour se
 // rapprocher d'un vrai fil de chat : gift, GIF Twitch, normal (badge + emote
 // 7TV + emote Twitch native), sub avec commentaire (badge + emote 7TV dans le
-// corps du commentaire, pas seulement la bannière), normal, premier message,
-// mention de soi (highlights barre + fond configurables), prime avec
-// commentaire, puis messages supprimés replié et révélé.
+// corps du commentaire, pas seulement la bannière), premier message supprimé
+// replié, mention de soi supprimée révélée (highlights barre + fond
+// configurables), puis prime avec commentaire.
 - (void)_populateFakeChatStore:(S7TVChatMessageStore *)store {
     NSDate *now = [NSDate date];
 
@@ -1319,21 +1319,9 @@ static const char kS7TVRowKeyTag = 0;
     sub.tokens = subTokens;
     [store addMessage:sub];
 
-    // Normal #2 : badge différent (VIP), texte seul sans emote — variété de
-    // rendu (largeur de ligne, badge autre que modérateur).
-    S7TVChatMessage *normal2 = [[S7TVChatMessage alloc]
-        initWithMessageID:@"s7tv_preview_normal_2"
-                 timestamp:now
-              authorUserID:@"s7tv_preview_u6"
-         authorDisplayName:L(@"preview_username_3")
-                   rawText:L(@"preview_message_2")];
-    normal2.authorColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.25 alpha:1.0];
-    normal2.badgeIdentifiers = @[@"vip/1"];
-    [store addMessage:normal2];
-
-    // Premier message — vraie donnée du modèle (isFirstMessage), afin que le
-    // toggle, la couleur et le reset du picker puissent être vérifiés en
-    // direct sur exactement le même renderer que le chat réel.
+    // Premier message supprimé — le flag isFirstMessage reste porté par le
+    // même objet que l'état DeletedCollapsed, afin de vérifier que le
+    // highlight FIRST MESSAGE survit au placeholder de suppression.
     S7TVChatMessage *firstMessage = [[S7TVChatMessage alloc]
         initWithMessageID:@"s7tv_preview_first_message"
                  timestamp:now
@@ -1343,27 +1331,25 @@ static const char kS7TVRowKeyTag = 0;
     firstMessage.authorColor = [UIColor colorWithRed:0.72 green:0.38 blue:0.90 alpha:1.0];
     firstMessage.badgeIdentifiers = @[@"subscriber/3"];
     firstMessage.isFirstMessage = YES;
+    firstMessage.state = S7TVChatMessageStateDeletedCollapsed;
+    firstMessage.moderationKind = S7TVChatModerationKindTimeout;
+    firstMessage.moderationDurationSeconds = 10 * 60;
     [store addMessage:firstMessage];
 
-    // Mention de soi-même — montre le highlight (barre d'accent + fond
-    // teinté, voir SevenTVChatAppearanceConfig.selfMentionHighlightEnabled/
-    // selfMentionHighlightColor et 7tv-chat-custom-view.m,
-    // s7tv_configureCell:forMessage:...). mentionsCurrentViewer est set
-    // directement ici plutôt que déduit d'un vrai match de pseudo : le faux
-    // chat est volontairement déconnecté du viewer réellement connecté (voir
-    // le commentaire sur mentionsCurrentViewer dans 7tv-chat-message.h),
-    // donc le texte "@Toi" ci-dessous est purement cosmétique.
-    NSString *mentionTarget = L(@"preview_mention_target");
+    // Mention de soi-même supprimée et révélée — mentionsCurrentViewer reste
+    // porté par le même objet que l'état DeletedExpanded. Le renderer garde
+    // donc le highlight MENTIONS YOU et n'atténue que le corps supprimé.
     S7TVChatMessage *mention = [[S7TVChatMessage alloc]
         initWithMessageID:@"s7tv_preview_mention"
                  timestamp:now
               authorUserID:@"s7tv_preview_u7"
          authorDisplayName:L(@"preview_username_3")
-                   rawText:mentionTarget];
+                   rawText:L(@"preview_deleted_message")];
     mention.authorColor = [UIColor colorWithRed:0.55 green:0.85 blue:0.35 alpha:1.0];
     mention.badgeIdentifiers = @[@"moderator/1"];
     mention.mentionsCurrentViewer = YES;
-    mention.tokens = @[[S7TVChatToken mentionToken:mentionTarget color:nil]];
+    mention.state = S7TVChatMessageStateDeletedExpanded;
+    mention.moderationKind = S7TVChatModerationKindPermanentBan;
     [store addMessage:mention];
 
     // Prime avec commentaire attaché — même logique que le sub, badge/emote
@@ -1388,30 +1374,6 @@ static const char kS7TVRowKeyTag = 0;
     prime.tokens = primeTokens;
     [store addMessage:prime];
 
-    S7TVChatMessage *deleted = [[S7TVChatMessage alloc]
-        initWithMessageID:@"s7tv_preview_deleted"
-                 timestamp:now
-              authorUserID:@"s7tv_preview_u5"
-         authorDisplayName:L(@"preview_username")
-                   rawText:L(@"preview_deleted_message")];
-    deleted.state = S7TVChatMessageStateDeletedCollapsed;
-    deleted.moderationKind = S7TVChatModerationKindTimeout;
-    deleted.moderationDurationSeconds = 10 * 60;
-    [store addMessage:deleted];
-
-    // Deuxième exemple, déjà révélé, pour que le slider d'opacité
-    // montre son effet immédiatement sans rendre le faux chat interactif.
-    S7TVChatMessage *deletedExpanded = [[S7TVChatMessage alloc]
-        initWithMessageID:@"s7tv_preview_deleted_expanded"
-                 timestamp:now
-              authorUserID:@"s7tv_preview_u8"
-         authorDisplayName:L(@"preview_username_3")
-                   rawText:L(@"preview_deleted_message")];
-    deletedExpanded.authorColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.25 alpha:1.0];
-    deletedExpanded.badgeIdentifiers = @[@"vip/1"];
-    deletedExpanded.state = S7TVChatMessageStateDeletedExpanded;
-    deletedExpanded.moderationKind = S7TVChatModerationKindPermanentBan;
-    [store addMessage:deletedExpanded];
 }
 
 // Façade historique appelée par 7tv-picker-controller.m à chaque ouverture

@@ -2,6 +2,26 @@
 
 This file keeps the cumulative release history of TwitchPlusK, with the newest release listed first.
 
+## [1.0.4] (Twitch 31.0.2) - 2026-09-13
+
+### New Features
+
+- Added a delay button to show latency and reload the stream.
+- Added a movable Video Player Stats panel with key stream stats.
+- Added volume and brightness gestures to the video player, with configurable sides, sensitivity and dead zone.
+- Added fake brightness, allowing the screen to go below iOS minimum brightness down to -70%.
+- Added custom chat support for VODs.
+- Targeted subscription gifts are now supported in chat.
+- Improved the visual design of subscription messages.
+
+### Fixes
+
+- Reworked channel detection for reliable rapid channel switching.
+- Fixed player delay and stats buttons appearing on VODs.
+- Fix Chat preview now shows all messages.
+- Deleted messages keep their badges and visual effects.
+- Fixed various bugs and stability issues across the app.
+
 ## [1.0.3] (Twitch 31.0.2) - 2026-09-05
 
 ### New Features

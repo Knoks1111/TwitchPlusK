@@ -4,13 +4,13 @@
  * Module "100% autonome" qui modifie un comportement natif de Twitch
  * sans rapport avec le rendu 7TV (emotes/chat/badges) :
  *
- *  Verrou d'orientation — hijack du bouton Share du lecteur theater pour
- *     verrouiller l'orientation de l'écran (requestGeometryUpdate iOS 16+,
- *     fallback setStatusBarOrientation: sinon), avec toast de confirmation.
+ *  Verrou d'orientation — ajoute un bouton à côté du bouton Share du lecteur
+ *     theater pour verrouiller l'orientation de l'écran (requestGeometryUpdate
+ *     iOS 16+, fallback setStatusBarOrientation: sinon), avec toast de
+ *     confirmation.
  *
  * Fonctions exposées par ce fichier (déclarées dans 7tv-system-native-behavior-hooks.h) :
- *  - s7tv_isOrientationLocked() — lecture seule, pour l'icône du bouton Share
- *    au moment du hijack (avant même le premier lock)
+ *  - s7tv_isOrientationLocked() — lecture seule pour l'état du bouton ajouté
  *  - s7tv_swizzle_orientation_lock() — réactive l'observer d'auto-lock au
  *     lancement si nécessaire ; les swizzles s'installent au premier lock
  */
@@ -18,6 +18,7 @@
 #import "System/7tv-system-native-behavior-hooks.h"
 #import "Core/7tv-core-manager.h"
 #import "Localization/7tv-localization-manager.h"
+#import "System/7tv-system-player-gestures.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -27,7 +28,7 @@ static NSString *const kS7TVAutoOrientationLockMode =
     @"s7tv_auto_orientation_lock_mode";
 
 static const char kS7TVShareHijacked = 8;
-static const char kS7TVShareButtonSnapshot = 10;
+static char kS7TVOrientationLockButtonKey;
 
 @interface SevenTVManager (OrientationLock)
 - (void)s7tv_toggleOrientationLock:(UIButton *)sender;
@@ -35,71 +36,128 @@ static const char kS7TVShareButtonSnapshot = 10;
 
 static void s7tv_refreshOrientationObserver(void);
 static BOOL s7tv_hasOrientationLockButtonInActivePlayer(void);
-
-@interface S7TVShareActionRecord : NSObject
-@property (nonatomic, weak) id target;
-@property (nonatomic, assign) SEL action;
-@end
-@implementation S7TVShareActionRecord
-@end
-
-@interface S7TVShareButtonSnapshot : NSObject
-@property (nonatomic, copy) NSArray<S7TVShareActionRecord *> *actions;
-@property (nonatomic, copy) NSArray *images;
-@property (nonatomic, strong) UIColor *tintColor;
-@property (nonatomic, copy) NSString *accessibilityLabel;
-@property (nonatomic, copy) NSString *accessibilityIdentifier;
-@end
-@implementation S7TVShareButtonSnapshot
-@end
+static void s7tv_enumerateActiveViews(void (^visit)(UIView *view));
+static UIView *s7tv_activePlayerGeometryView(void);
 
 static NSArray<NSNumber *> *s7tv_orientationButtonStates(void) {
     return @[@(UIControlStateNormal), @(UIControlStateHighlighted),
              @(UIControlStateSelected), @(UIControlStateDisabled)];
 }
 
-static void s7tv_restoreNativeShareButton(UIButton *button) {
-    S7TVShareButtonSnapshot *snapshot =
-        objc_getAssociatedObject(button, &kS7TVShareButtonSnapshot);
-    if (!snapshot) return;
+static UIButton *s7tv_orientationLockButtonForControls(UIView *controls) {
+    if (!controls) return nil;
+
+    UIButton *associated = objc_getAssociatedObject(
+        controls, &kS7TVOrientationLockButtonKey);
+    if (associated && associated.superview) return associated;
+    if (associated) {
+        objc_setAssociatedObject(controls, &kS7TVOrientationLockButtonKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:controls];
+    while (pending.count > 0) {
+        UIView *candidate = pending.firstObject;
+        [pending removeObjectAtIndex:0];
+        if ([candidate isKindOfClass:UIButton.class] &&
+            [candidate.accessibilityIdentifier isEqualToString:@"s7tv_lock_button"]) {
+            return (UIButton *)candidate;
+        }
+        [pending addObjectsFromArray:candidate.subviews];
+    }
+    return nil;
+}
+
+static UIButton *s7tv_orientationShareButtonForControls(UIView *controls) {
+    if (!controls) return nil;
+
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:controls];
+    while (pending.count > 0) {
+        UIView *candidate = pending.firstObject;
+        [pending removeObjectAtIndex:0];
+        if ([candidate isKindOfClass:UIButton.class] &&
+            [candidate.accessibilityIdentifier isEqualToString:@"share_button"]) {
+            return (UIButton *)candidate;
+        }
+        [pending addObjectsFromArray:candidate.subviews];
+    }
+    return nil;
+}
+
+static void s7tv_registerOrientationButtonForHitTesting(UIView *controls,
+                                                         UIButton *button) {
+    if (!controls || !button || ![controls respondsToSelector:@selector(allButtons)]) {
+        return;
+    }
+
+    id allButtons = ((id (*)(id, SEL))objc_msgSend)(controls,
+                                                    @selector(allButtons));
+    if (![allButtons isKindOfClass:NSArray.class]) return;
+
+    NSMutableArray *updatedButtons = [allButtons mutableCopy];
+    if (![updatedButtons containsObject:button]) [updatedButtons addObject:button];
+    if ([controls respondsToSelector:@selector(setAllButtons:)]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(controls,
+                                              @selector(setAllButtons:),
+                                              updatedButtons);
+    }
+}
+
+static void s7tv_removeOrientationButtonFromHitTesting(UIView *controls,
+                                                        UIButton *button) {
+    if (!controls || !button || ![controls respondsToSelector:@selector(allButtons)]) {
+        return;
+    }
+
+    id allButtons = ((id (*)(id, SEL))objc_msgSend)(controls,
+                                                    @selector(allButtons));
+    if (![allButtons isKindOfClass:NSArray.class]) return;
+    NSMutableArray *updatedButtons = [allButtons mutableCopy];
+    [updatedButtons removeObject:button];
+    if ([controls respondsToSelector:@selector(setAllButtons:)]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(controls,
+                                              @selector(setAllButtons:),
+                                              updatedButtons);
+    }
+}
+
+static void s7tv_removeOrientationLockButton(UIView *controls) {
+    if (!controls) return;
+    UIButton *button = s7tv_orientationLockButtonForControls(controls);
+    if (!button) {
+        objc_setAssociatedObject(controls, &kS7TVShareHijacked, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
 
     [button removeTarget:[SevenTVManager sharedManager]
                   action:@selector(s7tv_toggleOrientationLock:)
         forControlEvents:UIControlEventTouchUpInside];
-    for (S7TVShareActionRecord *record in snapshot.actions) {
-        if (record.target && record.action) {
-            [button addTarget:record.target action:record.action
-               forControlEvents:UIControlEventTouchUpInside];
-        }
+    s7tv_removeOrientationButtonFromHitTesting(controls, button);
+    if ([button.superview isKindOfClass:UIStackView.class]) {
+        [(UIStackView *)button.superview removeArrangedSubview:button];
     }
-    NSArray<NSNumber *> *states = s7tv_orientationButtonStates();
-    for (NSUInteger index = 0; index < states.count; index++) {
-        id storedImage = index < snapshot.images.count ? snapshot.images[index] : NSNull.null;
-        [button setImage:(storedImage == NSNull.null ? nil : storedImage)
-                forState:states[index].unsignedIntegerValue];
-    }
-    button.tintColor = snapshot.tintColor;
-    button.accessibilityLabel = snapshot.accessibilityLabel;
-    button.accessibilityIdentifier = snapshot.accessibilityIdentifier ?: @"share_button";
-    objc_setAssociatedObject(button, &kS7TVShareButtonSnapshot, nil,
+    [button removeFromSuperview];
+    objc_setAssociatedObject(controls, &kS7TVOrientationLockButtonKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controls, &kS7TVShareHijacked, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
-    UIView *ancestor = button.superview;
-    while (ancestor &&
-           ![NSStringFromClass(ancestor.class)
+static UIView *s7tv_orientationControlsForButton(UIButton *button) {
+    UIView *candidate = button;
+    while (candidate &&
+           ![NSStringFromClass(candidate.class)
                isEqualToString:@"Twitch.TheaterPlayerControlsView"]) {
-        ancestor = ancestor.superview;
+        candidate = candidate.superview;
     }
-    if (ancestor) {
-        objc_setAssociatedObject(ancestor, &kS7TVShareHijacked, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    return candidate;
 }
 
 void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
     if (!s7tv_orientationLockButtonEnabled()) return;
     if (![NSStringFromClass(view.class) isEqualToString:@"Twitch.TheaterPlayerControlsView"] ||
-        !view.window || objc_getAssociatedObject(view, &kS7TVShareHijacked)) return;
+        !view.window || s7tv_orientationLockButtonForControls(view)) return;
 
     __weak UIView *weakView = view;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
@@ -108,81 +166,66 @@ void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
         if (!s7tv_orientationLockButtonEnabled() || !controls || !controls.window ||
             ![NSStringFromClass(controls.window.class)
                 isEqualToString:@"Twitch.PictureInPictureWindow"] ||
-            objc_getAssociatedObject(controls, &kS7TVShareHijacked)) return;
-        objc_setAssociatedObject(controls, &kS7TVShareHijacked, @YES,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            s7tv_orientationLockButtonForControls(controls)) return;
 
-        UIButton *shareButton = nil;
-        NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:controls];
-        while (views.count > 0) {
-            UIView *candidate = views.firstObject;
-            [views removeObjectAtIndex:0];
-            if ([candidate isKindOfClass:UIButton.class] &&
-                [candidate.accessibilityIdentifier isEqualToString:@"share_button"]) {
-                shareButton = (UIButton *)candidate;
-                break;
-            }
-            [views addObjectsFromArray:candidate.subviews];
-        }
+        UIButton *shareButton = s7tv_orientationShareButtonForControls(controls);
         if (!shareButton) {
             [[SevenTVManager sharedManager]
                 log:@"⚠️ share_button introuvable dans TheaterPlayerControlsView"];
             return;
         }
 
-        S7TVShareButtonSnapshot *snapshot = [S7TVShareButtonSnapshot new];
-        NSMutableArray<S7TVShareActionRecord *> *savedActions = [NSMutableArray array];
-        for (id target in shareButton.allTargets) {
-            for (NSString *actionName in [shareButton actionsForTarget:target
-                                                        forControlEvent:UIControlEventTouchUpInside]) {
-                S7TVShareActionRecord *record = [S7TVShareActionRecord new];
-                record.target = target;
-                record.action = NSSelectorFromString(actionName);
-                [savedActions addObject:record];
+        UIStackView *stack = nil;
+        if ([shareButton.superview isKindOfClass:UIStackView.class]) {
+            stack = (UIStackView *)shareButton.superview;
+        } else if ([controls respondsToSelector:@selector(topRightStackView)]) {
+            id candidate = ((id (*)(id, SEL))objc_msgSend)(
+                controls, @selector(topRightStackView));
+            if ([candidate isKindOfClass:UIStackView.class]) {
+                stack = candidate;
             }
         }
-        NSMutableArray *savedImages = [NSMutableArray array];
-        for (NSNumber *state in s7tv_orientationButtonStates()) {
-            UIImage *image = [shareButton imageForState:state.unsignedIntegerValue];
-            [savedImages addObject:image ?: NSNull.null];
-        }
-        snapshot.actions = savedActions;
-        snapshot.images = savedImages;
-        snapshot.tintColor = shareButton.tintColor;
-        snapshot.accessibilityLabel = shareButton.accessibilityLabel;
-        snapshot.accessibilityIdentifier = shareButton.accessibilityIdentifier;
-        objc_setAssociatedObject(shareButton, &kS7TVShareButtonSnapshot, snapshot,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-        for (id target in shareButton.allTargets) {
-            for (NSString *action in [shareButton actionsForTarget:target
-                                                   forControlEvent:UIControlEventTouchUpInside]) {
-                [shareButton removeTarget:target action:NSSelectorFromString(action)
-                         forControlEvents:UIControlEventTouchUpInside];
-                [[SevenTVManager sharedManager] log:@"🔌 Share: action retirée — %@->%@",
-                    NSStringFromClass([target class]), action];
-            }
+        if (!stack) {
+            [[SevenTVManager sharedManager]
+                log:@"⚠️ stack Share introuvable dans TheaterPlayerControlsView"];
+            return;
         }
 
-        UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration
-            configurationWithPointSize:20 weight:UIImageSymbolWeightMedium];
-        NSString *symbol = s7tv_isOrientationLocked()
-            ? @"lock.rotation" : @"lock.rotation.open";
-        UIImage *icon = [UIImage systemImageNamed:symbol withConfiguration:configuration];
-        for (NSNumber *state in s7tv_orientationButtonStates()) {
-            [shareButton setImage:icon forState:state.unsignedIntegerValue];
-        }
-        shareButton.tintColor = s7tv_isOrientationLocked()
+        UIButton *lockButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        lockButton.translatesAutoresizingMaskIntoConstraints = NO;
+        lockButton.accessibilityIdentifier = @"s7tv_lock_button";
+        lockButton.accessibilityLabel = s7tv_isOrientationLocked()
+            ? L(@"a11y_unlock_orientation") : L(@"a11y_lock_orientation");
+        lockButton.accessibilityTraits = UIAccessibilityTraitButton;
+        lockButton.tintColor = s7tv_isOrientationLocked()
             ? [UIColor colorWithRed:0.55 green:0.25 blue:0.95 alpha:1.0]
             : UIColor.whiteColor;
-        shareButton.accessibilityLabel = s7tv_isOrientationLocked()
-            ? L(@"a11y_unlock_orientation") : L(@"a11y_lock_orientation");
-        shareButton.accessibilityIdentifier = @"s7tv_lock_button";
-        [shareButton addTarget:[SevenTVManager sharedManager]
-                        action:@selector(s7tv_toggleOrientationLock:)
-              forControlEvents:UIControlEventTouchUpInside];
+        lockButton.contentEdgeInsets = UIEdgeInsetsMake(0.0, 2.0, 0.0, 2.0);
+        UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration
+            configurationWithPointSize:18 weight:UIImageSymbolWeightMedium];
+        UIImage *icon = [UIImage systemImageNamed:
+            (s7tv_isOrientationLocked() ? @"lock.rotation" : @"lock.rotation.open")
+            withConfiguration:configuration];
+        for (NSNumber *state in s7tv_orientationButtonStates()) {
+            [lockButton setImage:icon forState:state.unsignedIntegerValue];
+        }
+        [lockButton addTarget:[SevenTVManager sharedManager]
+                       action:@selector(s7tv_toggleOrientationLock:)
+             forControlEvents:UIControlEventTouchUpInside];
+
+        NSUInteger shareIndex = [stack.arrangedSubviews indexOfObject:shareButton];
+        if (shareIndex != NSNotFound) {
+            [stack insertArrangedSubview:lockButton atIndex:shareIndex + 1];
+        } else {
+            [stack addArrangedSubview:lockButton];
+        }
+        s7tv_registerOrientationButtonForHitTesting(controls, lockButton);
+        objc_setAssociatedObject(controls, &kS7TVOrientationLockButtonKey,
+                                 lockButton, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(controls, &kS7TVShareHijacked, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [[SevenTVManager sharedManager]
-            log:@"✅ Bouton Share hijacké → verrou orientation"];
+            log:@"✅ Bouton verrou orientation ajouté à côté de Share"];
         s7tv_refreshOrientationObserver();
     });
 }
@@ -360,98 +403,21 @@ static void s7tv_refreshOrientationObserver(void) {
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
-// Fenêtre dédiée au toast — niveau UIWindowLevelAlert pour passer au-dessus
-// du player Twitch qui tourne sur une fenêtre de niveau supérieur à Normal.
-static UIWindow *s_toastWindow = nil;
-
+// Pastille de confirmation réutilisant le rendu du HUD des gestes du player.
 static void s7tv_showOrientationToast(BOOL locked) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Trouver la UIWindowScene active
-        UIWindowScene *activeScene = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            if (scene.activationState == UISceneActivationStateForegroundActive) {
-                activeScene = (UIWindowScene *)scene;
-                break;
-            }
-        }
-        if (!activeScene) return;
+        UIView *geometryView = s7tv_activePlayerGeometryView();
+        if (!geometryView) return;
 
-        // Créer une fenêtre dédiée au niveau Alert — au-dessus du player Twitch
-        UIWindow *toastWindow = [[UIWindow alloc] initWithWindowScene:activeScene];
-        toastWindow.windowLevel = UIWindowLevelAlert;
-        toastWindow.backgroundColor = [UIColor clearColor];
-        toastWindow.userInteractionEnabled = NO;
-        // Rootvc minimal pour pouvoir addSubview
-        UIViewController *rootVC = [[UIViewController alloc] init];
-        rootVC.view.backgroundColor = [UIColor clearColor];
-        toastWindow.rootViewController = rootVC;
-        toastWindow.hidden = NO;
-        s_toastWindow = toastWindow; // retain
-
-        UIView *container = toastWindow.rootViewController.view;
-        CGFloat winW = toastWindow.bounds.size.width;
-        CGFloat winH = toastWindow.bounds.size.height;
-
-        NSString *symbol = locked ? @"lock.rotation"      : @"lock.rotation.open";
-        NSString *label  = locked ? L(@"lock_locked") : L(@"lock_unlocked");
-
-        UIView *toast = [[UIView alloc] init];
-        toast.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.62];
-        toast.layer.cornerRadius = 14;
-        toast.layer.masksToBounds = YES;
-        toast.alpha = 0;
-        toast.translatesAutoresizingMaskIntoConstraints = NO;
-        [container addSubview:toast];
-
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration
-            configurationWithPointSize:14 weight:UIImageSymbolWeightMedium];
-        UIImage *icon = [UIImage systemImageNamed:symbol withConfiguration:cfg];
-        UIImageView *iconView = [[UIImageView alloc] initWithImage:icon];
-        iconView.tintColor   = locked
+        NSString *symbol = locked ? @"lock.rotation" : @"lock.rotation.open";
+        NSString *label = locked ? L(@"lock_locked") : L(@"lock_unlocked");
+        UIColor *iconTint = locked
             ? [UIColor colorWithRed:0.55 green:0.25 blue:0.95 alpha:1.0]
-            : [UIColor colorWithRed:0.6  green:0.6  blue:0.65 alpha:1.0];
-        iconView.contentMode = UIViewContentModeScaleAspectFit;
-        iconView.translatesAutoresizingMaskIntoConstraints = NO;
-        [toast addSubview:iconView];
-
-        UILabel *lbl = [[UILabel alloc] init];
-        lbl.text      = label;
-        lbl.font      = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-        lbl.textColor = [UIColor whiteColor];
-        lbl.translatesAutoresizingMaskIntoConstraints = NO;
-        [toast addSubview:lbl];
-
-        [NSLayoutConstraint activateConstraints:@[
-            [iconView.leadingAnchor  constraintEqualToAnchor:toast.leadingAnchor  constant:12],
-            [iconView.centerYAnchor  constraintEqualToAnchor:toast.centerYAnchor],
-            [iconView.widthAnchor    constraintEqualToConstant:18],
-            [iconView.heightAnchor   constraintEqualToConstant:18],
-            [lbl.leadingAnchor       constraintEqualToAnchor:iconView.trailingAnchor constant:8],
-            [lbl.trailingAnchor      constraintEqualToAnchor:toast.trailingAnchor    constant:-12],
-            [lbl.centerYAnchor       constraintEqualToAnchor:toast.centerYAnchor],
-            [toast.heightAnchor      constraintEqualToConstant:38],
-            [toast.centerXAnchor     constraintEqualToAnchor:container.centerXAnchor],
-            [toast.bottomAnchor      constraintEqualToAnchor:container.bottomAnchor constant:-(winH * 0.12)],
-        ]];
-
-        [container layoutIfNeeded];
-
-        [UIView animateWithDuration:0.25 animations:^{ toast.alpha = 1.0; } completion:^(BOOL f) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [UIView animateWithDuration:0.3 animations:^{ toast.alpha = 0; }
-                                 completion:^(BOOL ff) {
-                    [toast removeFromSuperview];
-                    s_toastWindow.hidden = YES;
-                    s_toastWindow = nil; // libérer
-                }];
-            });
-        }];
+            : UIColor.whiteColor;
+        s7tv_showPlayerGestureOverlayWithTint(geometryView, label, symbol,
+                                              iconTint);
     });
 }
-
-// ── Hook principal : UIApplication.supportedInterfaceOrientationsForWindow: ──
 // C'est le check système qui prime sur toutes les overrides Twitch dans les VCs.
 @interface UIApplication (S7TVOrientationLock)
 - (UIInterfaceOrientationMask)s7tv_supportedInterfaceOrientationsForWindow:(UIWindow *)window;
@@ -522,6 +488,47 @@ static void s7tv_enumerateActiveViews(void (^visit)(UIView *view)) {
     }
 }
 
+static UIView *s7tv_activePlayerGeometryView(void) {
+    __block UIView *usableTheaterView = nil;
+    __block UIView *activeControlsView = nil;
+    __block UIView *fallbackTheaterView = nil;
+
+    s7tv_enumerateActiveViews(^(UIView *view) {
+        NSString *className = NSStringFromClass(view.class);
+        BOOL isTheaterView = [className isEqualToString:@"Twitch.TheaterView"];
+        BOOL isControlsView =
+            [className isEqualToString:@"Twitch.TheaterPlayerControlsView"];
+        if (!isTheaterView && !isControlsView) return;
+
+        UIWindow *window = view.window;
+        if (!window || window.hidden ||
+            ![NSStringFromClass(window.class)
+                isEqualToString:@"Twitch.PictureInPictureWindow"]) return;
+
+        if (isTheaterView && !fallbackTheaterView) {
+            fallbackTheaterView = view;
+        }
+
+        if (isControlsView && !activeControlsView) {
+            activeControlsView = view;
+        }
+
+        BOOL usable = CGRectGetWidth(view.bounds) > 1.0 &&
+            CGRectGetHeight(view.bounds) > 1.0;
+        if (!usable) return;
+        if (isTheaterView && !usableTheaterView) {
+            usableTheaterView = view;
+        }
+    });
+
+    // Utilise exactement la même vue de géométrie que le module de gestes :
+    // les contrôles quand ils ont leur vraie taille, puis le TheaterView ou
+    // son ancêtre utilisable pendant les transitions.
+    UIView *gestureGeometry =
+        s7tv_playerGestureGeometryViewForControls(activeControlsView);
+    return gestureGeometry ?: usableTheaterView ?: fallbackTheaterView;
+}
+
 static BOOL s7tv_hasOrientationLockButtonInActivePlayer(void) {
     __block BOOL found = NO;
     s7tv_enumerateActiveViews(^(UIView *view) {
@@ -539,7 +546,7 @@ static BOOL s7tv_hasOrientationLockButtonInActivePlayer(void) {
 
 static void s7tv_updateOrientationLockButtons(void) {
     UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:20 weight:UIImageSymbolWeightMedium];
+        configurationWithPointSize:18 weight:UIImageSymbolWeightMedium];
     NSString *sym = s_orientationLocked ? @"lock.rotation" : @"lock.rotation.open";
     UIImage *icon = [UIImage systemImageNamed:sym withConfiguration:cfg];
     UIColor *tint = s_orientationLocked
@@ -658,7 +665,10 @@ void s7tv_setOrientationLockButtonEnabled(BOOL enabled) {
                     [buttons addObject:(UIButton *)view];
                 }
             });
-            for (UIButton *button in buttons) s7tv_restoreNativeShareButton(button);
+            for (UIButton *button in buttons) {
+                s7tv_removeOrientationLockButton(
+                    s7tv_orientationControlsForButton(button));
+            }
             s_lastAutoLockCandidate = UIDeviceOrientationUnknown;
         } else {
             NSMutableArray<UIView *> *controlsViews = [NSMutableArray array];

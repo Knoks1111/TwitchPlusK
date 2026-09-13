@@ -13,6 +13,7 @@
 
 #import "Settings/7tv-settings-controller.h"
 #import "Core/7tv-core-manager.h"
+#import "Core/7tv-channel-resolver.h"
 #import "Logs/7tv-logs-controller.h"
 #import "Network/7tv-network-emote-cache.h"
 #import "Emote/7tv-emote-image-cache.h"
@@ -25,6 +26,8 @@
 #import "Chat/7tv-chat-appearance-config.h"
 #import "Localization/7tv-localization-manager.h"
 #import "System/7tv-system-native-behavior-hooks.h"
+#import "System/7tv-system-player-gestures.h"
+#import "System/7tv-system-player-reload.h"
 #import "System/7tv-system-autoclaim.h"
 #import "System/7tv-system-home-features.h"
 #import "Adblock/7tv-adblock-settings.h"
@@ -451,6 +454,55 @@ static UITableViewCell *S7TVNavCell(NSString *title,
     return cell;
 }
 
+// Cellule de choix avec la valeur directement à droite du titre.
+static UITableViewCell *S7TVRightValueNavCell(NSString *title,
+                                               NSString *value,
+                                               NSString *sfName,
+                                               UIColor *iconTint) {
+    UITableViewCell *cell = [[UITableViewCell alloc]
+        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.backgroundColor = S7TVCellBg();
+    cell.selectedBackgroundView = [[UIView alloc] init];
+    cell.selectedBackgroundView.backgroundColor =
+        [UIColor colorWithWhite:1.0 alpha:0.06];
+
+    UIImageView *icon = S7TVIcon(sfName, iconTint);
+    [cell.contentView addSubview:icon];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.text = title;
+    titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
+    titleLabel.textColor = UIColor.whiteColor;
+    titleLabel.numberOfLines = 1;
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:titleLabel];
+
+    UILabel *valueLabel = [[UILabel alloc] init];
+    valueLabel.text = value;
+    valueLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+    valueLabel.textColor = S7TVGray();
+    valueLabel.textAlignment = NSTextAlignmentRight;
+    valueLabel.numberOfLines = 1;
+    valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:valueLabel];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor
+                                            constant:16.0],
+        [icon.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor
+                                                   constant:14.0],
+        [titleLabel.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [valueLabel.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor
+                                                    constant:-8.0],
+        [valueLabel.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:valueLabel.leadingAnchor
+                                                              constant:-8.0],
+    ]];
+    return cell;
+}
+
 static char kS7TVSwitchOnColorKey;
 
 // Garde l'icône d'un interrupteur synchronisée avec son état réel : quand
@@ -570,6 +622,94 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
             [lbl.trailingAnchor constraintLessThanOrEqualToAnchor:sw.leadingAnchor constant:-12],
         ]];
     }
+    return cell;
+}
+
+static char kS7TVPlayerGestureSensitivityValueLabelKey;
+
+// Ligne de sensibilité : la valeur est modifiée par pas de 1 % avec un bouton
+// moins à gauche et un bouton plus à droite.
+static UITableViewCell *S7TVPlayerGestureSensitivityCell(CGFloat value,
+                                                          id target) {
+    UITableViewCell *cell = [[UITableViewCell alloc]
+        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.backgroundColor = S7TVCellBg();
+
+    UIImageView *icon = S7TVIcon(@"speedometer", S7TVAccent());
+    [cell.contentView addSubview:icon];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.text = L(@"player_gestures_sensitivity");
+    titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
+    titleLabel.textColor = UIColor.whiteColor;
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:titleLabel];
+
+    UIButton *minusButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIButton *plusButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *buttonConfig = [UIImageSymbolConfiguration
+        configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold];
+    [minusButton setImage:[UIImage systemImageNamed:@"minus"
+                                  withConfiguration:buttonConfig]
+                 forState:UIControlStateNormal];
+    [plusButton setImage:[UIImage systemImageNamed:@"plus"
+                                 withConfiguration:buttonConfig]
+                forState:UIControlStateNormal];
+    minusButton.tintColor = S7TVAccent();
+    plusButton.tintColor = S7TVAccent();
+    minusButton.accessibilityLabel = L(@"player_gestures_sensitivity_decrease");
+    plusButton.accessibilityLabel = L(@"player_gestures_sensitivity_increase");
+    minusButton.translatesAutoresizingMaskIntoConstraints = NO;
+    plusButton.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UILabel *valueLabel = [[UILabel alloc] init];
+    valueLabel.text = [NSString stringWithFormat:@"%.0f%%", value];
+    valueLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
+    valueLabel.textColor = S7TVGray();
+    valueLabel.textAlignment = NSTextAlignmentCenter;
+    valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:valueLabel];
+
+    objc_setAssociatedObject(minusButton,
+                             &kS7TVPlayerGestureSensitivityValueLabelKey,
+                             valueLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(plusButton,
+                             &kS7TVPlayerGestureSensitivityValueLabelKey,
+                             valueLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [minusButton addTarget:target
+                    action:@selector(playerGestureSensitivityDecrease:)
+          forControlEvents:UIControlEventTouchUpInside];
+    [plusButton addTarget:target
+                   action:@selector(playerGestureSensitivityIncrease:)
+         forControlEvents:UIControlEventTouchUpInside];
+    [cell.contentView addSubview:minusButton];
+    [cell.contentView addSubview:plusButton];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor
+                                            constant:16.0],
+        [icon.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor
+                                                   constant:14.0],
+        [titleLabel.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [plusButton.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor
+                                                    constant:-12.0],
+        [plusButton.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [plusButton.widthAnchor constraintEqualToConstant:30.0],
+        [plusButton.heightAnchor constraintEqualToConstant:34.0],
+        [valueLabel.trailingAnchor constraintEqualToAnchor:plusButton.leadingAnchor
+                                                    constant:0.0],
+        [valueLabel.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [valueLabel.widthAnchor constraintEqualToConstant:30.0],
+        [minusButton.trailingAnchor constraintEqualToAnchor:valueLabel.leadingAnchor
+                                                     constant:0.0],
+        [minusButton.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [minusButton.widthAnchor constraintEqualToConstant:30.0],
+        [minusButton.heightAnchor constraintEqualToConstant:34.0],
+        [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:minusButton.leadingAnchor
+                                                              constant:-8.0],
+    ]];
     return cell;
 }
 
@@ -926,6 +1066,10 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(s7tv_languageDidChange)
             name:S7TVLanguageDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(s7tv_channelDidChange:)
+            name:S7TVChannelResolverDidChangeNotification
+          object:[S7TVChannelResolver sharedResolver]];
     S7TVRegisterOLEDObserver(self);
 }
 
@@ -936,6 +1080,14 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 - (void)s7tv_languageDidChange {
     [self buildNavBar];
     [self.tableView reloadData];
+}
+
+- (void)s7tv_channelDidChange:(NSNotification *)notification {
+    (void)notification;
+    if (!self.isViewLoaded || !self.view.window) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.isViewLoaded && self.view.window) [self.tableView reloadData];
+    });
 }
 
 - (void)s7tv_oledModeDidChange {
@@ -1048,7 +1200,14 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
          provider <= S7TVEmoteProviderIDFFZ; provider++) {
         total += [catalog allEmotesForProvider:(S7TVEmoteProviderID)provider].count;
     }
-    NSString *channel = mgr.currentChannelName ?: L(@"stats_no_channel");
+    S7TVChannelContext *context = S7TVCurrentChannelContext();
+    NSString *channel = mgr.currentChannelName.length
+        ? mgr.currentChannelName
+        : (context.channelName.length ? context.channelName : context.displayName);
+    if (!channel.length && context.channelID != 0) {
+        channel = [NSString stringWithFormat:@"ID %u", context.channelID];
+    }
+    if (!channel.length) channel = L(@"stats_no_channel");
 
     UIView *container = [[UIView alloc] init];
     UILabel *lbl = [[UILabel alloc] init];
@@ -2464,6 +2623,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
 typedef NS_ENUM(NSInteger, S7TVContentSection) {
     S7TVContentSectionFavorites = 0,  // Mes favoris (liste + import intégré)
     S7TVContentSectionHome      = 1,  // Accueil/lecture + points + rotation
+    S7TVContentSectionPlayer    = 2,  // Lecteur et gestes
 };
 
 // Rows logiques de la section « Accueil et lecture » (rotation et récupération
@@ -2473,8 +2633,31 @@ typedef NS_ENUM(NSInteger, S7TVContentHomeRow) {
     S7TVContentHomeRowHideStories    = 1,
     S7TVContentHomeRowKeepLiveFeed   = 2,
     S7TVContentHomeRowAutoCollect    = 3,
-    S7TVContentHomeRowLockButton     = 4,
 };
+
+typedef NS_ENUM(NSInteger, S7TVContentPlayerRow) {
+    S7TVContentPlayerRowDelay = 0,
+    S7TVContentPlayerRowStats = 1,
+    S7TVContentPlayerRowLockButton = 2,
+    S7TVContentPlayerRowGestures = 3,
+    S7TVContentPlayerRowLeftSide = 4,
+    S7TVContentPlayerRowRightSide = 5,
+    S7TVContentPlayerRowSensitivity = 6,
+    S7TVContentPlayerRowDeadZone = 7,
+};
+
+static NSString *S7TVPlayerGestureAssignmentTitle(
+    S7TVPlayerGestureAssignment assignment) {
+    switch (assignment) {
+        case S7TVPlayerGestureAssignmentVolume:
+            return L(@"player_gestures_assignment_volume");
+        case S7TVPlayerGestureAssignmentBrightness:
+            return L(@"player_gestures_assignment_brightness");
+        case S7TVPlayerGestureAssignmentDisabled:
+        default:
+            return L(@"player_gestures_assignment_disabled");
+    }
+}
 
 // Valeurs présentées dans une seule ligne de réglage. « Manuel » et les
 // trois modes automatiques sont mappés sur les deux préférences historiques
@@ -2611,6 +2794,13 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
 @interface SevenTVContentPageController () <UIDocumentPickerDelegate>
 - (void)presentLaunchDestinationPickerFromCell:(UIView *)anchor;
 - (void)presentOrientationLockSettingPickerFromCell:(UIView *)anchor;
+- (void)presentPlayerGestureAssignmentPickerFromCell:(UIView *)anchor
+                                                side:(BOOL)leftSide;
+- (void)presentPlayerGestureDeadZonePickerFromCell:(UIView *)anchor;
+- (void)playerGestureSensitivityDecrease:(UIButton *)button;
+- (void)playerGestureSensitivityIncrease:(UIButton *)button;
+- (void)togglePlayerTools:(UISwitch *)sw;
+- (void)togglePlayerStats:(UISwitch *)sw;
 @end
 
 @implementation SevenTVContentPageController
@@ -2658,23 +2848,36 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
     [S7TVInfoTooltip dismiss];
 }
 
-// Lignes visibles de la section « Accueil et lecture ». Le bouton et ses
-// modes (désactivé, manuel ou automatique) sont réunis en une seule cellule.
+// Lignes visibles de la section « Accueil et lecture ».
 - (NSArray<NSNumber *> *)s7tv_visibleHomeRows {
     return S7TVVisibleRowIndexes(@[
         @(S7TVContentHomeRowLaunchScreen),
         @(S7TVContentHomeRowHideStories),
         @(S7TVContentHomeRowKeepLiveFeed),
         @(S7TVContentHomeRowAutoCollect),
-        @(S7TVContentHomeRowLockButton),
     ], @{});
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
+- (NSArray<NSNumber *> *)s7tv_visiblePlayerRows {
+    return S7TVVisibleRowIndexes(@[
+        @(S7TVContentPlayerRowDelay),
+        @(S7TVContentPlayerRowLockButton),
+        @(S7TVContentPlayerRowGestures),
+    ], @{
+        @(S7TVContentPlayerRowStats): @(s7tv_playerToolsEnabled()),
+        @(S7TVContentPlayerRowLeftSide): @(s7tv_playerGesturesEnabled()),
+        @(S7TVContentPlayerRowRightSide): @(s7tv_playerGesturesEnabled()),
+        @(S7TVContentPlayerRowSensitivity): @(s7tv_playerGesturesEnabled()),
+        @(S7TVContentPlayerRowDeadZone): @(s7tv_playerGesturesEnabled()),
+    });
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     if (s == S7TVContentSectionFavorites) return 1;
     if (s == S7TVContentSectionHome) return [self s7tv_visibleHomeRows].count;
+    if (s == S7TVContentSectionPlayer) return [self s7tv_visiblePlayerRows].count;
     return 0;
 }
 
@@ -2695,6 +2898,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
         // (ex-footers descriptifs affichés en permanence).
         case S7TVContentSectionHome:      return S7TVSectionHeader(L(@"section_home_playback"), NO,
                                               @"desc_home_playback_settings");
+        case S7TVContentSectionPlayer:    return S7TVSectionHeader(L(@"section_player_controls"), NO, nil);
         default: return [[UIView alloc] init];
     }
 }
@@ -2744,13 +2948,60 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
                     self,
                     @selector(toggleAutoCollect:),
                     nil);
-            case S7TVContentHomeRowLockButton: {
+        }
+        return [[UITableViewCell alloc] init];
+    }
+
+    if (ip.section == S7TVContentSectionPlayer) {
+        NSArray<NSNumber *> *visible = [self s7tv_visiblePlayerRows];
+        if (ip.row >= (NSInteger)visible.count) return [[UITableViewCell alloc] init];
+        switch (visible[ip.row].integerValue) {
+            case S7TVContentPlayerRowDelay:
+                return S7TVSwitchCell(L(@"player_tools_enable"),
+                    @"clock.arrow.circlepath", S7TVAccent(),
+                    s7tv_playerToolsEnabled(), self,
+                    @selector(togglePlayerTools:), @"desc_player_tools");
+            case S7TVContentPlayerRowStats:
+                return S7TVSwitchCell(L(@"player_stats_enable"),
+                    @"chart.bar.xaxis", S7TVAccent(),
+                    s7tv_playerStatsEnabled(), self,
+                    @selector(togglePlayerStats:), @"desc_player_stats");
+            case S7TVContentPlayerRowLockButton: {
                 S7TVOrientationLockSetting setting = S7TVCurrentOrientationLockSetting();
                 return S7TVNavCell(L(@"switch_orientation_lock_button"),
                     S7TVValueWithDefaultMark(S7TVOrientationLockSettingTitle(setting),
                         setting == S7TVOrientationLockSettingDisabled),
                     @"lock.rotation", S7TVAccent(), @"desc_orientation_lock_settings");
             }
+            case S7TVContentPlayerRowGestures:
+                return S7TVSwitchCell(L(@"player_gestures_enable"),
+                    @"arrow.up.and.down.circle.fill", S7TVAccent(),
+                    s7tv_playerGesturesEnabled(), self,
+                    @selector(togglePlayerGestures:), @"desc_player_gestures");
+            case S7TVContentPlayerRowLeftSide: {
+                S7TVPlayerGestureAssignment assignment =
+                    s7tv_playerGesturesLeftAssignment();
+                return S7TVRightValueNavCell(L(@"player_gestures_left_side"),
+                    S7TVPlayerGestureAssignmentTitle(assignment),
+                    @"arrow.left.circle.fill", S7TVAccent());
+            }
+            case S7TVContentPlayerRowRightSide: {
+                S7TVPlayerGestureAssignment assignment =
+                    s7tv_playerGesturesRightAssignment();
+                return S7TVRightValueNavCell(L(@"player_gestures_right_side"),
+                    S7TVPlayerGestureAssignmentTitle(assignment),
+                    @"arrow.right.circle.fill", S7TVAccent());
+            }
+            case S7TVContentPlayerRowSensitivity:
+                return S7TVPlayerGestureSensitivityCell(
+                    s7tv_playerGesturesSensitivity(), self);
+            case S7TVContentPlayerRowDeadZone:
+                return S7TVNavCell(L(@"player_gestures_dead_zone"),
+                    S7TVValueWithDefaultMark(
+                        [NSString stringWithFormat:@"%ld%%",
+                         (long)s7tv_playerGesturesDeadZone()],
+                        s7tv_playerGesturesDeadZone() == 20),
+                    @"circle", S7TVAccent(), nil);
         }
         return [[UITableViewCell alloc] init];
     }
@@ -2840,15 +3091,32 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
         [self.navigationController pushViewController:favsVC animated:YES];
         return;
     }
-    if (ip.section != S7TVContentSectionHome) return;
-    NSInteger logicalRow = [self s7tv_visibleHomeRows][ip.row].integerValue;
     UITableViewCell *anchor = [tv cellForRowAtIndexPath:ip];
-    if (logicalRow == S7TVContentHomeRowLaunchScreen) {
-        [self presentLaunchDestinationPickerFromCell:anchor];
+    if (ip.section == S7TVContentSectionPlayer) {
+        NSArray<NSNumber *> *visible = [self s7tv_visiblePlayerRows];
+        if (ip.row >= (NSInteger)visible.count) return;
+        NSInteger logicalRow = visible[ip.row].integerValue;
+        if (logicalRow == S7TVContentPlayerRowLockButton) {
+            [self presentOrientationLockSettingPickerFromCell:anchor];
+            return;
+        }
+        if (logicalRow == S7TVContentPlayerRowLeftSide) {
+            [self presentPlayerGestureAssignmentPickerFromCell:anchor side:YES];
+            return;
+        }
+        if (logicalRow == S7TVContentPlayerRowRightSide) {
+            [self presentPlayerGestureAssignmentPickerFromCell:anchor side:NO];
+            return;
+        }
+        if (logicalRow == S7TVContentPlayerRowDeadZone) {
+            [self presentPlayerGestureDeadZonePickerFromCell:anchor];
+        }
         return;
     }
-    if (logicalRow == S7TVContentHomeRowLockButton) {
-        [self presentOrientationLockSettingPickerFromCell:anchor];
+    if (ip.section != S7TVContentSectionHome) return;
+    NSInteger logicalRow = [self s7tv_visibleHomeRows][ip.row].integerValue;
+    if (logicalRow == S7TVContentHomeRowLaunchScreen) {
+        [self presentLaunchDestinationPickerFromCell:anchor];
     }
 }
 
@@ -2862,6 +3130,114 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
 - (void)toggleKeepLiveFeedPlaying:(UISwitch *)sw {
     s7tv_setKeepLiveFeedPlayingEnabled(sw.isOn);
 }
+
+- (void)togglePlayerGestures:(UISwitch *)sw {
+    s7tv_setPlayerGesturesEnabled(sw.isOn);
+    S7TVReloadSectionWithoutJump(self.tableView, S7TVContentSectionPlayer);
+}
+
+- (void)togglePlayerTools:(UISwitch *)sw {
+    s7tv_setPlayerToolsEnabled(sw.isOn);
+    S7TVReloadSectionWithoutJump(self.tableView, S7TVContentSectionPlayer);
+}
+
+- (void)togglePlayerStats:(UISwitch *)sw {
+    s7tv_setPlayerStatsEnabled(sw.isOn);
+}
+
+- (void)presentPlayerGestureAssignmentPickerFromCell:(UIView *)anchor
+                                                side:(BOOL)leftSide {
+    S7TVPlayerGestureAssignment current = leftSide
+        ? s7tv_playerGesturesLeftAssignment()
+        : s7tv_playerGesturesRightAssignment();
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:(leftSide
+            ? L(@"player_gestures_left_side")
+            : L(@"player_gestures_right_side"))
+                         message:nil
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
+
+    NSArray<NSNumber *> *assignments = @[
+        @(S7TVPlayerGestureAssignmentDisabled),
+        @(S7TVPlayerGestureAssignmentVolume),
+        @(S7TVPlayerGestureAssignmentBrightness),
+    ];
+    __weak typeof(self) weakSelf = self;
+    for (NSNumber *rawAssignment in assignments) {
+        S7TVPlayerGestureAssignment assignment =
+            (S7TVPlayerGestureAssignment)rawAssignment.integerValue;
+        NSString *title = S7TVPlayerGestureAssignmentTitle(assignment);
+        if (assignment == current) title = [@"✓  " stringByAppendingString:title];
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            if (leftSide) {
+                s7tv_setPlayerGesturesLeftAssignment(assignment);
+            } else {
+                s7tv_setPlayerGesturesRightAssignment(assignment);
+            }
+            S7TVReloadSectionWithoutJump(self.tableView,
+                                         S7TVContentSectionPlayer);
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    sheet.popoverPresentationController.sourceView = anchor;
+    sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)playerGestureSensitivityDecrease:(UIButton *)button {
+    CGFloat value = MAX(1.0, s7tv_playerGesturesSensitivity() - 1.0);
+    s7tv_setPlayerGesturesSensitivity(value);
+    UILabel *valueLabel = objc_getAssociatedObject(
+        button, &kS7TVPlayerGestureSensitivityValueLabelKey);
+    valueLabel.text = [NSString stringWithFormat:@"%.0f%%", value];
+}
+
+- (void)playerGestureSensitivityIncrease:(UIButton *)button {
+    CGFloat value = MIN(5.0, s7tv_playerGesturesSensitivity() + 1.0);
+    s7tv_setPlayerGesturesSensitivity(value);
+    UILabel *valueLabel = objc_getAssociatedObject(
+        button, &kS7TVPlayerGestureSensitivityValueLabelKey);
+    valueLabel.text = [NSString stringWithFormat:@"%.0f%%", value];
+}
+
+- (void)presentPlayerGestureDeadZonePickerFromCell:(UIView *)anchor {
+    NSInteger current = s7tv_playerGesturesDeadZone();
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:L(@"player_gestures_dead_zone")
+                         message:L(@"player_gestures_dead_zone_message")
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
+
+    for (NSInteger value = 0; value <= 100; value += 10) {
+        NSString *title = [NSString stringWithFormat:@"%ld%%", (long)value];
+        if (value == current) title = [@"✓  " stringByAppendingString:title];
+        __weak typeof(self) weakSelf = self;
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            s7tv_setPlayerGesturesDeadZone(value);
+            S7TVReloadCellWithoutJump(weakSelf.tableView, anchor);
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    sheet.popoverPresentationController.sourceView = anchor;
+    sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
 // Menu de choix du verrouillage (action sheet, même logique que le picker
 // « Écran au lancement ») : ✓ sur le mode courant, Annuler, puis application
 // immédiate et rechargement de la section pour rafraîchir le sous-titre.

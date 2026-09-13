@@ -24,8 +24,7 @@
  * badges changent rarement en cours de session et le fetch est un aller-
  * retour JSON léger, pas justifié de dupliquer toute l'infra de cache
  * fichier pour ça. Le fetch global se fait une fois au démarrage, le fetch
- * channel une fois par join (voir notification S7TVChannelJoined, déjà
- * postée par 7tv-core-runtime-hooks.m mais jamais consommée jusqu'ici).
+ * channel via un appel explicite après résolution de la chaîne.
  */
 
 #import <Foundation/Foundation.h>
@@ -64,11 +63,7 @@ extern NSString *const S7TVBadgesCatalogUpdatedNotification;
 
 + (instancetype)sharedProvider;
 
-// À appeler une fois au démarrage du tweak (voir 7tv-core-runtime-hooks.m, à côté de
-// [SevenTVManager setup]) : charge le catalogue global et s'abonne à
-// S7TVChannelJoined pour charger automatiquement le catalogue channel à
-// chaque changement de chaîne. Idempotent (dispatch_once interne via
-// sharedProvider) — sûr à appeler plusieurs fois.
+// À appeler une fois au démarrage du tweak : charge le catalogue global.
 + (void)setup;
 
 // Convertit directement le tag IRC `badges=` en identifiants ordonnés
@@ -91,8 +86,7 @@ extern NSString *const S7TVBadgesCatalogUpdatedNotification;
 // Alias historique conservé pour le renderer Shared Chat.
 - (nullable id<S7TVResolvedEmote>)resolvedSharedChatAvatarForChannelID:(NSString *)channelID;
 
-// Chargement explicite (aussi appelé automatiquement par +setup pour le
-// global, et par la notification S7TVChannelJoined pour le channel).
+// Chargement explicite des catalogues.
 - (void)loadGlobalBadges;
 - (void)loadBadgesForChannelID:(NSString *)channelID;
 
@@ -104,7 +98,7 @@ extern NSString *const S7TVBadgesCatalogUpdatedNotification;
 // coïncidait par hasard avec un identifiant envoyé par la nouvelle (cas
 // rare mais possible, ex: deux chaînes avec un même nom de set custom).
 // Même logique de reset immédiat que SevenTVManager.channelEmotes au
-// changement de chaîne — voir loadEmotesForChannelName:.
+// changement de chaîne.
 // N'affecte PAS globalBadges (commun à toute la plateforme, jamais lié à
 // une chaîne précise) ni lastLoadedChannelID (le prochain
 // loadBadgesForChannelID: pour la nouvelle chaîne doit toujours pouvoir

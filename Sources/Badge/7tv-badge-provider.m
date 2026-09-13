@@ -164,26 +164,7 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
 
 + (void)setup {
     SevenTVBadgeProvider *provider = [self sharedProvider];
-    [provider s7tv_startObservingChannelJoinsOnce];
     [provider loadGlobalBadges];
-}
-
-// dispatch_once séparé du singleton lui-même : +setup peut être appelé
-// plusieurs fois sans jamais s'abonner deux fois à la notification (ce qui
-// dupliquerait les fetchs channel à chaque join).
-- (void)s7tv_startObservingChannelJoinsOnce {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        [[NSNotificationCenter defaultCenter] addObserverForName:@"S7TVChannelJoined"
-                                                            object:nil
-                                                             queue:nil
-                                                        usingBlock:^(NSNotification *note) {
-            NSString *channelID = note.userInfo[@"channelID"];
-            if (channelID.length) {
-                [[SevenTVBadgeProvider sharedProvider] loadBadgesForChannelID:channelID];
-            }
-        }];
-    });
 }
 
 - (void)s7tv_scheduleBadgeRetryForScope:(NSString *)scope
@@ -378,8 +359,8 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
     NSString *scope = S7TVChannelBadgeRetryScope(channelID);
     NSDictionary<NSString *, NSString *> *credentials = [mgr s7tv_twitchCredentialsSnapshot];
     if (!credentials[@"Authorization"].length || !credentials[@"Client-ID"].length) {
-        // CRITIQUE : ne PAS marquer lastLoadedChannelID ici. S7TVChannelJoined
-        // arrive souvent avant que le token (capturé depuis les headers GQL)
+        // Ne pas marquer lastLoadedChannelID ici : le token (capturé depuis
+        // les headers GQL)
         // ne soit disponible — si on marquait la chaîne comme "chargée"
         // maintenant, le rattrapage fait par -[SevenTVManager saveTwitchToken:
         // clientID:] (qui rappelle loadBadgesForChannelID: dès que le token
@@ -492,7 +473,8 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
         // Une réponse arrivée après un changement rapide de chaîne ne doit
         // jamais remplacer le catalogue de la chaîne actuellement affichée.
         NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
-        if (currentChannelID.length && ![currentChannelID isEqualToString:channelID]) {
+        if (currentChannelID.length &&
+            ![currentChannelID isEqualToString:channelID]) {
             [[SevenTVManager sharedManager]
                 log:@"ℹ️ Réponse badges ignorée pour ancienne chaîne %@", channelID];
             [strongSelf s7tv_resetBadgeRetryForScope:scope generation:requestGeneration];

@@ -10,7 +10,7 @@
  * (hooks CoreText, displayLayer:, willDisplayCell BFS, NetworkImageRequester...)
  * a été retiré. Il est devenu inutile suite au passage prévu à un rendu de
  * chat maison qui connaît les dimensions des emotes dès la construction
- * (voir plan.txt). Le picker, les données 7TV, l'IRC et le GQL restent inchangés.
+ * (voir plan.txt). Le picker, les données 7TV et l'IRC restent inchangés.
  *
  * Note : la redirection CDN (SevenTVURLProtocol) et son enregistrement ont
  * aussi été retirés d'ici — ce mécanisme ne se déclenchait que via le tag
@@ -31,9 +31,12 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import "Core/7tv-core-manager.h"
+#import "Core/7tv-channel-resolver.h"
 #import "Settings/7tv-settings-controller.h"
 #import "Chat/7tv-chat-message.h"
 #import "Chat/7tv-chat-custom-view.h"
+#import "Chat/7tv-chat-integration.h"
+#import "Emote/7tv-emote-catalog.h"
 #import "Badge/7tv-badge-provider.h"
 #import "Picker/7tv-picker-controller.h"
 #import "System/7tv-system-native-behavior-hooks.h"
@@ -45,6 +48,8 @@
 #import "Adblock/7tv-adblock-settings.h"
 #import "Diagnostics/7tv-hook-diagnostics.h"
 #import "UI/7tv-oled-mode.h"
+#import "System/7tv-system-player-gestures.h"
+#import "System/7tv-system-player-reload.h"
 
 
 // ────────────────────────────────────────────────────────────
@@ -97,85 +102,6 @@ void s7tv_swizzle(Class targetClass,
 // naturel : parser le tag emotes= que Twitch envoie déjà tel quel côté
 // serveur, jamais lu pour l'instant).
 
-#if 0 // Legacy Channel Points GQL metadata capture removed.
-static void s7tv_collectChannelIDsFromGQLRequestObject(
-    id object, NSMutableOrderedSet<NSString *> *channelIDs) {
-    if ([object isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *dictionary = object;
-        static NSSet<NSString *> *channelIDKeys = nil;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            channelIDKeys = [NSSet setWithArray:@[
-                @"channelID", @"channelId", @"channel_id",
-                @"broadcasterID", @"broadcasterId",
-                @"broadcasterUserID", @"broadcaster_user_id"
-            ]];
-        });
-        for (NSString *key in channelIDKeys) {
-            id value = dictionary[key];
-            NSString *channelID = nil;
-            if ([value isKindOfClass:[NSString class]]) channelID = value;
-            else if ([value isKindOfClass:[NSNumber class]]) channelID = [value stringValue];
-            if (channelID.length) [channelIDs addObject:channelID];
-        }
-        for (id value in dictionary.allValues) {
-            if ([value isKindOfClass:[NSDictionary class]] ||
-                [value isKindOfClass:[NSArray class]]) {
-                s7tv_collectChannelIDsFromGQLRequestObject(value, channelIDs);
-            }
-        }
-    } else if ([object isKindOfClass:[NSArray class]]) {
-        for (id value in (NSArray *)object) {
-            s7tv_collectChannelIDsFromGQLRequestObject(value, channelIDs);
-        }
-    }
-}
-
-static NSString * _Nullable s7tv_channelIDFromGQLRequest(
-    NSURLRequest *request, BOOL mayCaptureCurrentChannel,
-    BOOL * _Nullable outAmbiguous) {
-    if (outAmbiguous) *outAmbiguous = NO;
-    NSData *body = request.HTTPBody;
-    if (!body.length) return nil;
-    id root = [NSJSONSerialization JSONObjectWithData:body options:0 error:nil];
-    if (!root) return nil;
-    NSMutableOrderedSet<NSString *> *channelIDs = [NSMutableOrderedSet orderedSet];
-    s7tv_collectChannelIDsFromGQLRequestObject(root, channelIDs);
-    if (channelIDs.count == 1) return channelIDs.firstObject;
-    if (channelIDs.count > 1) {
-        if (outAmbiguous) *outAmbiguous = YES;
-        return nil;
-    }
-    if (!mayCaptureCurrentChannel) return nil;
-
-    // Certaines opérations persistées ne mettent aucun ID fort dans
-    // variables. Capturer la chaîne au moment où LA REQUÊTE part reste sûr,
-    // contrairement à relire la chaîne courante plusieurs secondes plus tard
-    // dans le callback d'une réponse possiblement devenue obsolète.
-    NSString *rawBody = [[NSString alloc] initWithData:body
-                                               encoding:NSUTF8StringEncoding];
-    BOOL isChannelPointRequest =
-        [rawBody rangeOfString:@"channelpoint"
-                       options:NSCaseInsensitiveSearch].location != NSNotFound ||
-        [rawBody rangeOfString:@"communitypoint"
-                       options:NSCaseInsensitiveSearch].location != NSNotFound;
-    return isChannelPointRequest
-        ? [[SevenTVManager sharedManager].currentChannelTwitchID copy] : nil;
-}
-
-#endif
-
-/*
-static void s7tv_ingestChannelPointMetadata(NSData *data,
-                                             NSString *requestChannelID,
-                                             BOOL requestChannelIDAmbiguous) {
-    s7tv_ingestAutomaticRewardsFromGQLData(
-        data, requestChannelID, requestChannelIDAmbiguous, ^{
-        s7tv_reloadActiveChatCustomViewForConfiguration();
-    });
-}
-*/
-
 // ────────────────────────────────────────────────────────────
 // MARK: - Routeur UIKit vers les modules UI
 
@@ -188,6 +114,8 @@ static void s7tv_ingestChannelPointMetadata(NSData *data,
 - (void)s7tv_didMoveToWindow {
     [self s7tv_didMoveToWindow]; // appel original
 
+    s7tv_handlePlayerGesturesViewLifecycle(self);
+    s7tv_handlePlayerReloadViewLifecycle(self);
     s7tv_handleTheaterControlsViewLifecycle(self);
     s7tv_handleNativeChatViewLifecycle(self);
 
@@ -293,9 +221,6 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
             ^(NSData *data, NSURLResponse *response, NSError *error) {
                 NSData *filteredData = data && !error
                     ? S7TVAdblockTransformResponseData(data, request) : data;
-                if (filteredData && !error) {
-                    [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:filteredData];
-                }
                 completionHandler(filteredData, response, error);
             };
         return [self s7tv_dataTaskWithRequest:request completionHandler:wrapped];
@@ -313,16 +238,6 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
         (S7TVAdblockIsAdHost(url.host) || S7TVAdblockIsMasterPlaylistHost(url.host))) {
         return [self dataTaskWithRequest:[NSURLRequest requestWithURL:url]
                        completionHandler:completionHandler];
-    }
-    if ([url.host isEqualToString:@"gql.twitch.tv"] && completionHandler) {
-        void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
-            ^(NSData *data, NSURLResponse *response, NSError *error) {
-                if (data && !error) {
-                    [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:data];
-                }
-                completionHandler(data, response, error);
-            };
-        return [self s7tv_dataTaskWithURL:url completionHandler:wrapped];
     }
     return [self s7tv_dataTaskWithURL:url completionHandler:completionHandler];
 }
@@ -357,10 +272,7 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
 //   urlSession(_:task:didCompleteWithError:)           (signature réelle)
 //
 // Twitch embarque son propre framework Apollo (le client GraphQL open-source
-// standard), et Apollo-iOS pilote ses requêtes via l'API delegate. Les chunks
-// sont donc accumulés par tâche avant l'extraction des emotes/métadonnées.
-
-static char kS7TVApolloResponseBufferKey;
+// standard), et Apollo-iOS pilote ses requêtes via l'API delegate.
 
 @interface NSObject (SevenTVApolloDelegate)
 - (void)s7tv_apolloURLSession:(NSURLSession *)session
@@ -380,18 +292,6 @@ static char kS7TVApolloResponseBufferKey;
     NSURLRequest *request = dataTask.currentRequest ?: dataTask.originalRequest;
     NSData *filteredData = [host isEqualToString:@"gql.twitch.tv"]
         ? S7TVAdblockTransformResponseData(data, request) : data;
-    if ([host isEqualToString:@"gql.twitch.tv"]) {
-        @synchronized (dataTask) {
-            NSMutableData *buf = objc_getAssociatedObject(
-                dataTask, &kS7TVApolloResponseBufferKey);
-            if (!buf) {
-                buf = [NSMutableData data];
-                objc_setAssociatedObject(dataTask, &kS7TVApolloResponseBufferKey,
-                                         buf, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            [buf appendData:filteredData];
-        }
-    }
     // Appelle l'implémentation originale (échangée par le swizzle) —
     // indispensable pour qu'Apollo reçoive bien ses propres données.
     [self s7tv_apolloURLSession:session dataTask:dataTask didReceiveData:filteredData];
@@ -400,22 +300,6 @@ static char kS7TVApolloResponseBufferKey;
 - (void)s7tv_apolloURLSession:(NSURLSession *)session
                           task:(NSURLSessionTask *)task
           didCompleteWithError:(NSError *)error {
-    NSData *fullData = nil;
-    @synchronized (task) {
-        NSMutableData *buffer = objc_getAssociatedObject(
-            task, &kS7TVApolloResponseBufferKey);
-        fullData = [buffer copy];
-        objc_setAssociatedObject(task, &kS7TVApolloResponseBufferKey, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-
-    if (fullData.length > 0 && !error) {
-        NSString *host = task.currentRequest.URL.host ?: task.originalRequest.URL.host;
-        if ([host isEqualToString:@"gql.twitch.tv"]) {
-            [[SevenTVManager sharedManager] extractAndLoadEmotesFromGQLResponse:fullData];
-        }
-    }
-
     [self s7tv_apolloURLSession:session task:task didCompleteWithError:error];
 }
 
@@ -535,7 +419,6 @@ static void s7tv_swizzle_apollo_gql(void) {
 - (void)s7tv_sendMessage:(NSURLSessionWebSocketMessage *)message
        completionHandler:(void (^)(NSError *))completionHandler {
 
-    [[SevenTVManager sharedManager] handleOutgoingChatWebSocketMessage:message];
     [self s7tv_sendMessage:message completionHandler:completionHandler];
 }
 
@@ -721,6 +604,94 @@ static void s7tv_swizzle_websocket(void) {
 }
 
 // ────────────────────────────────────────────────────────────
+// MARK: - Contexte de chaîne partagé
+// ────────────────────────────────────────────────────────────
+
+static BOOL s_s7tvBoundChannelContext = NO;
+static NSUUID *s_s7tvBoundSessionID = nil;
+static NSUInteger s_s7tvBoundGeneration = 0;
+static NSString *s_s7tvBoundChannelName = nil;
+
+static void s7tv_applyResolvedChannelContext(S7TVChannelContext *context) {
+    // Une notification peut arriver après qu'un contexte plus récent a déjà
+    // été résolu. Ne jamais réappliquer cet ancien contexte au store/UI.
+    S7TVChannelContext *currentContext = S7TVCurrentChannelContext();
+    if (context) {
+        if (!S7TVChannelContextIsCurrent(context)) return;
+    } else if (currentContext) {
+        return;
+    }
+
+    SevenTVManager *manager = [SevenTVManager sharedManager];
+    NSString *channelID = context.channelID
+        ? [NSString stringWithFormat:@"%u", context.channelID] : nil;
+    NSString *channelName = context.channelName ?: context.displayName;
+
+    manager.currentChannelTwitchID = channelID;
+    manager.currentChannelName = channelName;
+
+    BOOL sameSession = s_s7tvBoundChannelContext && context &&
+        [s_s7tvBoundSessionID isEqual:context.sessionID] &&
+        s_s7tvBoundGeneration == context.generation;
+    BOOL sameChannelName = (!s_s7tvBoundChannelName.length && !channelName.length) ||
+        (s_s7tvBoundChannelName.length && channelName.length &&
+         [s_s7tvBoundChannelName caseInsensitiveCompare:channelName] == NSOrderedSame);
+    if (sameSession && sameChannelName) return;
+
+    // Le contexte peut d'abord arriver avec l'ID seul, puis être complété
+    // par la cible IRC. Dans ce cas, conserver le même contexte mais lancer
+    // l'historique dès que le nom devient disponible.
+    if (sameSession) {
+        s_s7tvBoundChannelName = [channelName copy];
+        if (context.mediaKind == S7TVChannelMediaKindLive && channelName.length) {
+            [manager initializeRecentHistoryForChannel:channelName force:YES];
+        }
+        return;
+    }
+
+    s_s7tvBoundChannelContext = context != nil;
+    s_s7tvBoundSessionID = context.sessionID;
+    s_s7tvBoundGeneration = context.generation;
+    s_s7tvBoundChannelName = [channelName copy];
+
+    [[SevenTVBadgeProvider sharedProvider] resetChannelBadges];
+    dispatch_barrier_async(manager.emoteQueue, ^{
+        manager.channelEmotes = @{};
+    });
+    BOOL isLiveContext = context.mediaKind == S7TVChannelMediaKindLive;
+    if (isLiveContext && channelName.length) {
+        // Cette méthode vide le store puis charge l'historique récent. Elle
+        // possède aussi son propre garde-fou de génération contre les
+        // réponses HTTP d'une ancienne chaîne.
+        [manager initializeRecentHistoryForChannel:channelName force:YES];
+    } else {
+        [manager.chatMessageStore replaceAllMessages:@[] completion:nil];
+    }
+
+    if (!channelID.length) {
+        [[S7TVEmoteCatalog sharedCatalog] clearActiveChannelScope];
+        return;
+    }
+    [manager loadEmotesForChannelTwitchID:channelID];
+    [[SevenTVBadgeProvider sharedProvider] loadBadgesForChannelID:channelID];
+}
+
+static void s7tv_setupChannelResolverBindings(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+        [center addObserverForName:S7TVChannelResolverDidChangeNotification
+                            object:[S7TVChannelResolver sharedResolver]
+                             queue:NSOperationQueue.mainQueue
+                        usingBlock:^(NSNotification *note) {
+            S7TVChannelContext *context = note.userInfo[@"context"];
+            s7tv_applyResolvedChannelContext(context);
+        }];
+        s7tv_applyResolvedChannelContext(S7TVCurrentChannelContext());
+    });
+}
+
+// ────────────────────────────────────────────────────────────
 // MARK: - Point d'entrée __attribute__((constructor))
 // ────────────────────────────────────────────────────────────
 
@@ -729,6 +700,13 @@ __attribute__((constructor))
 static void TwitchSevenTVInit(void) {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     [mgr log:@"🔌 Chargement TwitchSevenTV v2.0 (substrate-free)..."];
+
+    s7tv_setupChannelResolverBindings();
+    S7TVChannelResolverSetup();
+
+    // Gestes du lecteur.
+    s7tv_playerGesturesSetup();
+    s7tv_setupPlayerReloadRuntimeHooks();
 
     // Doit être installé avant toute création de vue Twitch, notamment le
     // premier écran et les en-têtes de catégories au lancement.
@@ -786,8 +764,7 @@ static void TwitchSevenTVInit(void) {
     // Setup sur le main thread
     dispatch_async(dispatch_get_main_queue(), ^{
         [[SevenTVManager sharedManager] setup];
-        // Catalogue global + abonnement à S7TVChannelJoined, postée par le
-        // gestionnaire de session IRC — voir 7tv-badge-provider.h.
+        // Catalogue global.
         [SevenTVBadgeProvider setup];
         [[SevenTVManager sharedManager] log:@"✅ SevenTVManager prêt"];
 

@@ -21,146 +21,11 @@
 #import "UI/bttv-ui-logo.h"
 #import "UI/ffz-ui-logo.h"
 #import "UI/7tv-oled-mode.h"
-#import <objc/runtime.h>
 #import <math.h>
 
-static const char kS7TVChatCustomInstalledView = 21;
-static __weak SevenTVChatCustomView *s_activeChatCustomView = nil;
-static __weak UIView *s_activeNativeChatView = nil;
-static NSMapTable<UIView *, SevenTVChatCustomView *> *s_chatCustomViewsByNative = nil;
-static BOOL s_chatReloadScheduled = NO;
 static NSString * const kS7TVChatViewerCardUsernameAttribute =
     @"S7TVChatViewerCardUsername";
 
-// ============================================================
-// MARK: - Intégration dans le transcript Twitch
-// ============================================================
-// MARK: - Intégration ciblée du chat custom
-// ============================================================
-static BOOL s7tv_isOwnChatImplementationClass(NSString *className) {
-    NSString *name = className.lowercaseString;
-    return [name containsString:@"seventv"] || [name hasPrefix:@"s7tv"];
-}
-
-
-static BOOL s7tv_isChatCustomViewActuallyVisible(UIView *view) {
-    if (!view || !view.window || view.hidden || view.alpha <= 0.01) return NO;
-
-    UIView *ancestor = view;
-    NSUInteger depth = 0;
-    while (ancestor && depth++ < 20) {
-        if (ancestor.hidden || ancestor.alpha <= 0.01) return NO;
-        ancestor = ancestor.superview;
-    }
-    return YES;
-}
-
-static NSMapTable<UIView *, SevenTVChatCustomView *> *s7tv_chatCustomViewRegistry(void) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        s_chatCustomViewsByNative = [NSMapTable weakToWeakObjectsMapTable];
-    });
-    return s_chatCustomViewsByNative;
-}
-
-static void s7tv_registerChatCustomView(UIView *nativeView,
-                                        SevenTVChatCustomView *customView) {
-    if (!nativeView || !customView) return;
-    customView.s7tv_nativeTranscriptView = nativeView;
-    [s7tv_chatCustomViewRegistry() setObject:customView forKey:nativeView];
-}
-
-static NSArray<SevenTVChatCustomView *> *s7tv_registeredChatCustomViews(void) {
-    if (!s_chatCustomViewsByNative) return @[];
-
-    NSMutableArray<SevenTVChatCustomView *> *views = [NSMutableArray array];
-    for (SevenTVChatCustomView *view in s_chatCustomViewsByNative.objectEnumerator) {
-        if (view) [views addObject:view];
-    }
-    return views;
-}
-
-static NSArray<SevenTVChatCustomView *> *s7tv_liveChatCustomViews(void) {
-    NSMutableArray<SevenTVChatCustomView *> *views = [NSMutableArray array];
-    for (SevenTVChatCustomView *view in s7tv_registeredChatCustomViews()) {
-        UIView *nativeView = view.s7tv_nativeTranscriptView;
-        if (!nativeView || !nativeView.window || !nativeView.superview ||
-            !view.window) continue;
-        [views addObject:view];
-    }
-    return views;
-}
-
-static SevenTVChatCustomView *s7tv_selectInteractionChatCustomView(void) {
-    NSArray<SevenTVChatCustomView *> *views = s7tv_liveChatCustomViews();
-    SevenTVChatCustomView *current = s_activeChatCustomView;
-
-    // Conserver la cible courante lorsqu'elle est effectivement visible.
-    // Pendant la construction SwiftUI, une autre instance peut être créée
-    // quelques millisecondes après la première et rester masquée.
-    if (current && [views containsObject:current] &&
-        s7tv_isChatCustomViewActuallyVisible(current)) {
-        s_activeNativeChatView = current.s7tv_nativeTranscriptView;
-        return current;
-    }
-
-    for (SevenTVChatCustomView *view in views) {
-        if (!s7tv_isChatCustomViewActuallyVisible(view)) continue;
-        s_activeChatCustomView = view;
-        s_activeNativeChatView = view.s7tv_nativeTranscriptView;
-        return view;
-    }
-
-    // Si UIKit est encore entre deux passes de layout, conserver une paire
-    // vivante comme repli. Le prochain passage resélectionnera la vue visible.
-    if (current && [views containsObject:current]) {
-        s_activeNativeChatView = current.s7tv_nativeTranscriptView;
-        return current;
-    }
-    SevenTVChatCustomView *fallback = views.firstObject;
-    if (fallback) {
-        s_activeChatCustomView = fallback;
-        s_activeNativeChatView = fallback.s7tv_nativeTranscriptView;
-    }
-    return fallback;
-}
-
-static NSArray<SevenTVChatCustomView *> *s7tv_viewsForChatUpdate(void) {
-    NSArray<SevenTVChatCustomView *> *views = s7tv_liveChatCustomViews();
-    if (views.count > 0) return views;
-
-    SevenTVChatCustomView *active = s7tv_selectInteractionChatCustomView();
-    return active ? @[active] : @[];
-}
-
-static void s7tv_refreshChatMessageInViews(NSString *messageID,
-                                           SevenTVChatCustomView *sourceView,
-                                           void (^completion)(void)) {
-    NSMutableArray<SevenTVChatCustomView *> *views =
-        [s7tv_viewsForChatUpdate() mutableCopy];
-    if (!views) views = [NSMutableArray array];
-    if (sourceView && ![views containsObject:sourceView]) {
-        [views insertObject:sourceView atIndex:0];
-    }
-    if (views.count == 0) {
-        if (completion) completion();
-        return;
-    }
-
-    __block NSUInteger remaining = views.count;
-    void (^finishOne)(void) = ^{
-        if (remaining > 0) remaining -= 1;
-        if (remaining == 0 && completion) completion();
-    };
-    for (SevenTVChatCustomView *view in views) {
-        [view refreshMessageWithID:messageID animated:YES completion:finishOne];
-    }
-}
-
-// Keep the preview's provider identity visible even when the emote name is
-// truncated (or when a Zero-Width composition lists several providers below
-// the image).  The picker already uses these embedded logos; reusing the same
-// assets here keeps the chat preview visually consistent with the picker.
 static UIImage *s7tv_previewProviderLogoForToken(S7TVChatToken *token) {
     if (!token) return nil;
 
@@ -183,393 +48,6 @@ static UIImage *s7tv_previewProviderLogoForToken(S7TVChatToken *token) {
                              options:NSDataBase64DecodingIgnoreUnknownCharacters];
     UIImage *image = data.length ? [UIImage imageWithData:data scale:3.0] : nil;
     return [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-}
-
-static UIView *s7tv_findVisibleChatInputViewInWindow(UIWindow *window) {
-    if (!window || window.hidden || window.alpha <= 0.01) return nil;
-    NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:window];
-    UIView *bestCandidate = nil;
-    CGFloat bestBottom = -CGFLOAT_MAX;
-    while (views.count > 0) {
-        UIView *view = views.firstObject;
-        [views removeObjectAtIndex:0];
-        if (view.hidden || view.alpha <= 0.01) continue;
-        if ([NSStringFromClass(view.class) isEqualToString:@"Twitch.ChatInputView"] &&
-            view.window == window && !CGRectIsEmpty(view.bounds)) {
-            CGRect frame = [view convertRect:view.bounds toView:window];
-            if (CGRectIntersectsRect(frame, window.bounds) && CGRectGetMaxY(frame) > bestBottom) {
-                bestCandidate = view;
-                bestBottom = CGRectGetMaxY(frame);
-            }
-        }
-        [views addObjectsFromArray:view.subviews];
-    }
-    return bestCandidate;
-}
-
-UIView *s7tv_findChatInputView(void) {
-    // Pendant une transition de chaîne, Twitch peut conserver brièvement une
-    // ancienne ChatInputView dans une autre fenêtre. La fenêtre du transcript
-    // réellement actif est la seule source fiable pour ancrer les bandeaux.
-    SevenTVChatCustomView *activeView = s7tv_selectInteractionChatCustomView();
-    UIWindow *activeWindow = activeView.window;
-    UIView *activeCandidate = s7tv_findVisibleChatInputViewInWindow(activeWindow);
-    if (activeCandidate) return activeCandidate;
-
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]] ||
-            scene.activationState != UISceneActivationStateForegroundActive) continue;
-        UIWindowScene *windowScene = (UIWindowScene *)scene;
-        for (UIWindow *window in windowScene.windows) {
-            if (window == activeWindow) continue;
-            UIView *candidate = s7tv_findVisibleChatInputViewInWindow(window);
-            if (candidate) return candidate;
-        }
-    }
-    return nil;
-}
-
-SevenTVChatCustomView *s7tv_activeChatCustomView(void) {
-    return s7tv_selectInteractionChatCustomView();
-}
-
-void s7tv_reloadActiveChatCustomView(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        for (SevenTVChatCustomView *view in s7tv_viewsForChatUpdate()) {
-            [view reloadMessages];
-        }
-        [[S7TVReplyThreadPanel sharedPanel] refreshIfNeeded];
-    });
-}
-
-void s7tv_reloadActiveChatCustomViewAnimated(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        for (SevenTVChatCustomView *view in s7tv_viewsForChatUpdate()) {
-            [view refreshVisibleMessageContentIfFrozen];
-            [view reloadMessagesAnimated:YES];
-        }
-        [[S7TVReplyThreadPanel sharedPanel] forceRefreshIfNeeded];
-    });
-}
-
-void s7tv_reloadActiveChatMessage(NSString *messageID) {
-    if (!messageID.length) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        for (SevenTVChatCustomView *view in s7tv_viewsForChatUpdate()) {
-            [view refreshMessageWithID:messageID animated:YES];
-        }
-        [[S7TVReplyThreadPanel sharedPanel]
-            refreshMessageIfNeededWithID:messageID excludingView:nil];
-    });
-}
-
-void s7tv_applyModerationStateToRetainedMessage(NSString *messageID,
-                                                S7TVChatMessageState state,
-                                                S7TVChatModerationKind moderationKind,
-                                                NSInteger durationSeconds) {
-    if (!messageID.length) return;
-    dispatch_block_t apply = ^{
-        for (SevenTVChatCustomView *view in s7tv_viewsForChatUpdate()) {
-            [view applyModerationState:state
-             toDisplayedMessageWithID:messageID
-                      moderationKind:moderationKind
-                     durationSeconds:durationSeconds];
-        }
-        [[S7TVReplyThreadPanel sharedPanel]
-            applyModerationState:state
-             toRetainedMessageWithID:messageID
-                      moderationKind:moderationKind
-                     durationSeconds:durationSeconds];
-    };
-    if (NSThread.isMainThread) apply();
-    else dispatch_async(dispatch_get_main_queue(), apply);
-}
-
-void s7tv_applyModerationToRetainedMessagesForUser(NSString *authorUserID,
-                                                    NSString *authorLogin,
-                                                    S7TVChatModerationKind moderationKind,
-                                                    NSInteger durationSeconds) {
-    if (!authorUserID.length && !authorLogin.length) return;
-    dispatch_block_t apply = ^{
-        for (SevenTVChatCustomView *view in s7tv_viewsForChatUpdate()) {
-            [view applyModerationToDisplayedMessagesForUserID:authorUserID
-                                                   authorLogin:authorLogin
-                                                moderationKind:moderationKind
-                                               durationSeconds:durationSeconds];
-        }
-        [[S7TVReplyThreadPanel sharedPanel]
-            applyModerationToRetainedMessagesForUserID:authorUserID
-                                           authorLogin:authorLogin
-                                        moderationKind:moderationKind
-                                       durationSeconds:durationSeconds];
-    };
-    if (NSThread.isMainThread) apply();
-    else dispatch_async(dispatch_get_main_queue(), apply);
-}
-
-void s7tv_applyModerationToAllRetainedMessages(void) {
-    dispatch_block_t apply = ^{
-        for (SevenTVChatCustomView *view in s7tv_viewsForChatUpdate()) {
-            [view applyModerationToAllDisplayedMessages];
-        }
-        [[S7TVReplyThreadPanel sharedPanel] applyModerationToAllRetainedMessages];
-    };
-    if (NSThread.isMainThread) apply();
-    else dispatch_async(dispatch_get_main_queue(), apply);
-}
-
-void s7tv_reloadActiveChatCustomViewForConfiguration(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        for (SevenTVChatCustomView *view in s7tv_viewsForChatUpdate()) {
-            [view refreshVisibleMessageContentIfFrozen];
-            [view reloadMessages];
-        }
-        [[S7TVReplyThreadPanel sharedPanel] forceRefreshIfNeeded];
-    });
-}
-
-void s7tv_scheduleChatCustomReload(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (s_chatReloadScheduled) return;
-        s_chatReloadScheduled = YES;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            s_chatReloadScheduled = NO;
-            s7tv_reloadActiveChatCustomView();
-        });
-    });
-}
-
-static BOOL s7tv_isNativeChatTranscriptView(UIView *view) {
-    if (!view) return NO;
-    NSString *className = NSStringFromClass(view.class);
-    NSString *lowerName = className.lowercaseString;
-    if (s7tv_isOwnChatImplementationClass(className)) return NO;
-    // SkylineLiveChat expose une sous-classe Swift manglée dont le nom se
-    // termine par SkylineChatTranscriptView. Exclure les wrappers SwiftUI :
-    // seul le transcript UIView/table doit être remplacé.
-    return [lowerName hasSuffix:@"chattranscriptview"];
-}
-
-static void s7tv_installChatCustomView(UIView *chatView) {
-    s_activeNativeChatView = chatView;
-    UIView *container = chatView.superview;
-    UIStackView *stack = [chatView.superview isKindOfClass:UIStackView.class]
-        ? (UIStackView *)chatView.superview : nil;
-    if (!container) return;
-
-    SevenTVChatCustomView *existing =
-        objc_getAssociatedObject(chatView, &kS7TVChatCustomInstalledView);
-    if (existing && existing.superview == container) {
-        s7tv_registerChatCustomView(chatView, existing);
-        chatView.hidden = YES;
-        existing.hidden = NO;
-        s_activeChatCustomView = existing;
-        [existing reloadMessages];
-        return;
-    }
-
-    chatView.hidden = YES;
-    SevenTVChatCustomView *customView = [[SevenTVChatCustomView alloc]
-        initWithStore:[SevenTVManager sharedManager].chatMessageStore];
-    customView.delegate = [S7TVReplyThreadPanel sharedPanel];
-    __weak SevenTVChatCustomView *weakCustomView = customView;
-    customView.onReplyTargetSelected = ^(NSString *messageID, NSString *username) {
-        SevenTVChatCustomView *sourceView = weakCustomView;
-        if (!sourceView) return;
-        [[S7TVReplyThreadPanel sharedPanel]
-            selectReplyTargetForMessageID:messageID
-                                 username:username
-                               sourceView:sourceView];
-    };
-
-    // SkylineLiveChat place le transcript dans un host SwiftUI/UIView
-    // classique, pas dans un UIStackView. On conserve alors exactement la
-    // géométrie du transcript natif avec des contraintes de bord à bord.
-    if (!stack) {
-        chatView.hidden = YES;
-        customView.translatesAutoresizingMaskIntoConstraints = NO;
-        [container insertSubview:customView aboveSubview:chatView];
-        [NSLayoutConstraint activateConstraints:@[
-            [customView.leadingAnchor constraintEqualToAnchor:chatView.leadingAnchor],
-            [customView.trailingAnchor constraintEqualToAnchor:chatView.trailingAnchor],
-            [customView.topAnchor constraintEqualToAnchor:chatView.topAnchor],
-            [customView.bottomAnchor constraintEqualToAnchor:chatView.bottomAnchor],
-        ]];
-        objc_setAssociatedObject(chatView, &kS7TVChatCustomInstalledView, customView,
-                                 OBJC_ASSOCIATION_RETAIN);
-        s7tv_registerChatCustomView(chatView, customView);
-        s_activeChatCustomView = customView;
-        [customView reloadMessages];
-        [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] SevenTVChatCustomView insérée dans le parent %@ (transcript natif caché)",
-            NSStringFromClass(container.class)];
-        return;
-    }
-
-    chatView.hidden = YES;
-    NSInteger index = [stack.arrangedSubviews indexOfObject:chatView];
-    if (index == NSNotFound) {
-        [[SevenTVManager sharedManager]
-            log:@"⚠️ ChatTranscriptView introuvable dans arrangedSubviews"];
-        return;
-    }
-    [stack insertArrangedSubview:customView atIndex:index];
-    objc_setAssociatedObject(chatView, &kS7TVChatCustomInstalledView, customView,
-                             OBJC_ASSOCIATION_RETAIN);
-    s7tv_registerChatCustomView(chatView, customView);
-    s_activeChatCustomView = customView;
-    [customView reloadMessages];
-    [[SevenTVManager sharedManager]
-        log:@"🏗 SevenTVChatCustomView insérée (index %ld du UIStackView, chat réel caché)",
-        (long)index];
-}
-
-void s7tv_applyChatCustomToggle(void) {
-    SevenTVManager *manager = [SevenTVManager sharedManager];
-    if (!manager.chatCustomTestEnabled) {
-        // Le réglage est global : tous les transcripts déjà rencontrés
-        // doivent retrouver leur vue native, y compris ceux qui étaient
-        // masqués au moment où le dernier transcript a été créé.
-        for (SevenTVChatCustomView *view in s7tv_registeredChatCustomViews()) {
-            UIView *nativeView = view.s7tv_nativeTranscriptView;
-            nativeView.hidden = NO;
-            view.hidden = YES;
-        }
-        s_activeChatCustomView = nil;
-        s_activeNativeChatView = nil;
-        return;
-    }
-
-    UIView *chatView = s_activeNativeChatView;
-    if (chatView && chatView.superview && chatView.window) {
-        s7tv_installChatCustomView(chatView);
-    }
-
-    // Après une désactivation/réactivation, didMoveToWindow n'est pas garanti
-    // pour chaque transcript déjà monté. Réinstalle donc les paires connues
-    // qui sont encore dans une hiérarchie vivante.
-    for (SevenTVChatCustomView *view in s7tv_registeredChatCustomViews()) {
-        UIView *nativeView = view.s7tv_nativeTranscriptView;
-        if (!nativeView || nativeView == chatView || !nativeView.window ||
-            !nativeView.superview) continue;
-        s7tv_installChatCustomView(nativeView);
-    }
-    s7tv_selectInteractionChatCustomView();
-}
-
-void s7tv_handleNativeChatViewLifecycle(UIView *view) {
-    if (!view) return;
-
-    if (!s7tv_isNativeChatTranscriptView(view) || !view.window || !view.superview) return;
-    s_activeNativeChatView = view;
-    s7tv_applyChatCustomToggle();
-}
-
-void s7tv_setupChatCustomIntegration(void) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        SevenTVManager *manager = [SevenTVManager sharedManager];
-        NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-
-        // Les tokens retiennent l'URL résolue au moment de leur création.
-        // Mémoriser la résolution courante permet de retokeniser uniquement
-        // lorsqu'elle change, sans refaire le travail pour chaque réglage de
-        // couleur/taille/espacement qui partage la notification d'apparence.
-        __block NSInteger lastEmoteResolution =
-            [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution;
-        [center addObserverForName:S7TVChatCustomToggleDidChangeNotification
-                           object:manager queue:NSOperationQueue.mainQueue
-                       usingBlock:^(__unused NSNotification *note) {
-            s7tv_applyChatCustomToggle();
-        }];
-        [center addObserverForName:S7TVEmoteCatalogDidUpdateNotification
-                           object:manager queue:NSOperationQueue.mainQueue
-                       usingBlock:^(__unused NSNotification *note) {
-            [manager.chatMessageStore
-                retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
-                    return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
-                                              twitchEmotesTag:message.twitchEmotesTag ?: @""
-                                                  twitchGIFsTag:message.twitchGIFsTag ?: @""
-                                                    providers:s7tv_chatEmoteProviders()];
-                } completion:^{
-                    [[S7TVReplyThreadPanel sharedPanel]
-                        retokenizeVisibleMessagesWithCompletion:^{
-                        s7tv_reloadActiveChatCustomViewForConfiguration();
-                    }];
-                }];
-        }];
-        // Le catalogue multi-provider publie une notification distincte de
-        // l'ancien cache 7TV. Retokeniser le store sur le main thread garantit
-        // que BTTV/FFZ et les alias deviennent visibles dès leur arrivée,
-        // sans attendre un changement d'onglet ou un scroll du picker.
-        [center addObserverForName:S7TVProviderCatalogDidUpdateNotification
-                           object:nil queue:NSOperationQueue.mainQueue
-                       usingBlock:^(__unused NSNotification *note) {
-            [manager.chatMessageStore
-                retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
-                    return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
-                                              twitchEmotesTag:message.twitchEmotesTag ?: @""
-                                                  twitchGIFsTag:message.twitchGIFsTag ?: @""
-                                                    providers:s7tv_chatEmoteProviders()];
-                } completion:^{
-                    [[S7TVReplyThreadPanel sharedPanel]
-                        retokenizeVisibleMessagesWithCompletion:^{
-                        s7tv_reloadActiveChatCustomViewForConfiguration();
-                    }];
-                }];
-        }];
-        // Provider switches, collision priority and the Zero-Width toggle all
-        // affect tokens that are already retained in the transcript. Rebuild
-        // them immediately so disabling a provider never leaves its old image
-        // visible and a priority change applies to existing messages too.
-        [center addObserverForName:S7TVEmoteProviderSettingsDidChangeNotification
-                           object:nil queue:NSOperationQueue.mainQueue
-                       usingBlock:^(__unused NSNotification *note) {
-            [manager.chatMessageStore
-                retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
-                    return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
-                                              twitchEmotesTag:message.twitchEmotesTag ?: @""
-                                                  twitchGIFsTag:message.twitchGIFsTag ?: @""
-                                                    providers:s7tv_chatEmoteProviders()];
-                } completion:^{
-                    [[S7TVReplyThreadPanel sharedPanel]
-                        retokenizeVisibleMessagesWithCompletion:^{
-                        s7tv_reloadActiveChatCustomViewForConfiguration();
-                    }];
-                }];
-        }];
-        [center addObserverForName:S7TVChatAppearanceConfigDidChangeNotification
-                           object:nil queue:NSOperationQueue.mainQueue
-                       usingBlock:^(__unused NSNotification *note) {
-            NSInteger currentResolution =
-                [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution;
-            BOOL resolutionChanged = currentResolution != lastEmoteResolution;
-            lastEmoteResolution = currentResolution;
-            if (!resolutionChanged) {
-                s7tv_reloadActiveChatCustomViewForConfiguration();
-                return;
-            }
-            [manager.chatMessageStore
-                retokenizeMessagesUsingBlock:^NSArray<S7TVChatToken *> *(S7TVChatMessage *message) {
-                    return [SevenTVChatTokenizer tokenizeText:message.rawText ?: @""
-                                              twitchEmotesTag:message.twitchEmotesTag ?: @""
-                                                  twitchGIFsTag:message.twitchGIFsTag ?: @""
-                                                    providers:s7tv_chatEmoteProviders()];
-                } completion:^{
-                    s7tv_reloadActiveChatCustomViewForConfiguration();
-                }];
-        }];
-        for (NSString *notificationName in @[
-            S7TVBadgesCatalogUpdatedNotification,
-            S7TVLanguageDidChangeNotification
-        ]) {
-            [center addObserverForName:notificationName object:nil queue:nil
-                            usingBlock:^(__unused NSNotification *note) {
-                s7tv_reloadActiveChatCustomViewForConfiguration();
-            }];
-        }
-    });
 }
 
 // Métadonnée privée posée uniquement sur le caractère d'attachement d'une
@@ -1214,19 +692,15 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
     return characterIndex < attributedText.length ? characterIndex : NSNotFound;
 }
 
-// Gère 2 choses sur le MÊME geste : ouvrir un lien tapé (comportement
-// existant), ET — nouveau — ouvrir le fil si le message est une réponse et
-// qu'aucun lien n'a été tapé à cet endroit précis. messageLabel est ancré
+// Gère 3 choses sur le MÊME geste : ouvrir un lien tapé (comportement
+// existant), ouvrir la fiche viewer du pseudo, ET — nouveau — ouvrir le fil
+// si le message est une réponse et qu'aucun lien/fiche n'a été tapé à cet
+// endroit précis. messageLabel est ancré
 // quasi bord à bord dans la cellule (leading/trailing/top/bottom constants
 // de quelques points), donc "taper le message" revient en pratique à taper
 // messageLabel — pas besoin d'un geste séparé sur contentView (qui, lui, ne
 // se déclenchait pas de façon fiable, retiré).
 - (void)s7tv_handleTap:(UITapGestureRecognizer *)gesture {
-    if (self.onDeletedMessageTap) {
-        self.onDeletedMessageTap();
-        return;
-    }
-
     NSAttributedString *attributedText = self.messageLabel.attributedText;
     CGPoint tapPoint = [gesture locationInView:self.messageLabel];
     NSUInteger charIndex = [self s7tv_characterIndexAtPointInMessageLabel:tapPoint
@@ -1249,6 +723,11 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
             self.onViewerCardTap();
             return;
         }
+    }
+
+    if (self.onDeletedMessageTap) {
+        self.onDeletedMessageTap();
+        return;
     }
 
     if (self.onReplyBannerTap) self.onReplyBannerTap();
@@ -2001,15 +1480,12 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
                  forMessage:(S7TVChatMessage *)msg
              attributedText:(NSAttributedString *)text {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
-    // Un contenu supprimé, même révélé volontairement, ne conserve pas les
-    // accents système/mention : l'atténuation doit rester le signal visuel
-    // prioritaire et ne pas être confondue avec un message encore actif.
-    if (msg.state == S7TVChatMessageStateNormal &&
-        msg.type == S7TVChatMessageTypeChannelPointRedemption &&
+    // La suppression modifie le texte affiché, pas les attributs de la
+    // cellule (accent, highlight, fiche viewer, etc.).
+    if (msg.type == S7TVChatMessageTypeChannelPointRedemption &&
         msg.channelPointRewardInfo) {
         [cell s7tv_configureChannelPointAccent];
-    } else if (msg.state == S7TVChatMessageStateNormal &&
-        msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
+    } else if (msg.type == S7TVChatMessageTypeSystem && msg.systemInfo) {
         UIColor *accentColor; NSString *iconName;
         switch (msg.systemInfo.kind) {
             case S7TVSystemMessageKindCommunityGift:
@@ -2030,16 +1506,14 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
         [cell s7tv_configureSystemAccentWithColor:accentColor iconName:iconName
                                  backgroundEnabled:cfg.systemMessageBackgroundsEnabled
                                 highlightBadgeText:nil];
-    } else if (msg.state == S7TVChatMessageStateNormal &&
-               msg.isFirstMessage && cfg.showFirstMessageBadge) {
+    } else if (msg.isFirstMessage && cfg.showFirstMessageBadge) {
         // Même composant que "TE MENTIONNE", seule la couleur et le texte
         // changent. FIRST MESSAGE gagne si les deux flags sont présents.
         [cell s7tv_configureSystemAccentWithColor:cfg.firstMessageHighlightColor
                                           iconName:nil
                                  backgroundEnabled:YES
                                highlightBadgeText:L(@"first_message_badge_label")];
-    } else if (msg.state == S7TVChatMessageStateNormal &&
-               msg.mentionsCurrentViewer && cfg.selfMentionHighlightEnabled) {
+    } else if (msg.mentionsCurrentViewer && cfg.selfMentionHighlightEnabled) {
         // Réutilise exactement le même mécanisme que les messages système
         // (barre d'accent + fond teinté à 12%) — voir
         // s7tv_configureSystemAccentWithColor:iconName:backgroundEnabled:highlightBadgeText:.
@@ -2070,8 +1544,7 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
     // en l'ajoutant au constant de la contrainte de bas de label, qu'il doit
     // être appliqué, puisque cette contrainte contribue directement à la
     // hauteur intrinsèque que UIKit va lire pour dimensionner la cellule.
-    BOOL isChannelPointCard = msg.state == S7TVChatMessageStateNormal &&
-        msg.type == S7TVChatMessageTypeChannelPointRedemption &&
+    BOOL isChannelPointCard = msg.type == S7TVChatMessageTypeChannelPointRedemption &&
         msg.channelPointRewardInfo != nil;
     CGFloat bottomPadding = isChannelPointCard ? 9.0 : 4.0;
     cell.messageLabelBottomConstraint.constant = -(bottomPadding + cfg.lineSpacing);
@@ -2127,8 +1600,7 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
     [self s7tv_configureCell:cell forMessage:msg attributedText:text];
 
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
-    BOOL isCollapsed = s7tv_shouldRenderDeletedCollapsed(msg, cfg);
-    BOOL isReply = self.showsReplyBanners && !isCollapsed && msg.replyParentUsername.length > 0;
+    BOOL isReply = self.showsReplyBanners && msg.replyParentUsername.length > 0;
     [cell s7tv_configureReplyBannerWithUsername:isReply ? msg.replyParentUsername : nil
                                      bodyPreview:isReply ? msg.replyParentBodyPreview : nil];
 
@@ -2146,7 +1618,7 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
     } : nil;
 
     BOOL isDeleted = s7tv_isDeletedMessage(msg);
-    NSString *viewerCardUsername = (!isDeleted && msg.authorDisplayName.length)
+    NSString *viewerCardUsername = msg.authorDisplayName.length
         ? [msg.authorDisplayName copy] : nil;
     __weak typeof(self) weakSelfForViewerCard = self;
     cell.onViewerCardTap = viewerCardUsername.length ? ^{
@@ -3359,9 +2831,66 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
     return result;
 }
 
+static void s7tv_boldNextSystemPhraseToken(NSMutableAttributedString *phrase,
+                                            NSString *token,
+                                            UIFont *boldFont,
+                                            NSUInteger *searchStart) {
+    if (!phrase.length || !token.length || !boldFont || !searchStart || *searchStart >= phrase.length) {
+        return;
+    }
+
+    NSRange searchRange = NSMakeRange(*searchStart, phrase.length - *searchStart);
+    NSRange tokenRange = [phrase.string rangeOfString:token options:0 range:searchRange];
+    if (tokenRange.location == NSNotFound) return;
+
+    [phrase addAttributes:@{NSFontAttributeName: boldFont,
+                            NSForegroundColorAttributeName: [UIColor whiteColor]}
+                     range:tokenRange];
+    *searchStart = NSMaxRange(tokenRange);
+}
+
+static void s7tv_boldNextSystemGiftCount(NSMutableAttributedString *phrase,
+                                          NSInteger count,
+                                          NSString *word,
+                                          UIFont *boldFont,
+                                          NSUInteger *searchStart) {
+    NSString *number = [NSString stringWithFormat:@"%ld", (long)count];
+    NSString *token = [NSString stringWithFormat:@"%@ %@", number, word ?: @""];
+    if (!word.length || !token.length) return;
+
+    if (!phrase.length || !boldFont || !searchStart || *searchStart >= phrase.length) return;
+    NSRange searchRange = NSMakeRange(*searchStart, phrase.length - *searchStart);
+    NSRange tokenRange = [phrase.string rangeOfString:token options:0 range:searchRange];
+    if (tokenRange.location == NSNotFound) return;
+
+    [phrase addAttributes:@{NSFontAttributeName: boldFont,
+                            NSForegroundColorAttributeName: [UIColor whiteColor]}
+                     range:NSMakeRange(tokenRange.location, number.length)];
+    *searchStart = NSMaxRange(tokenRange);
+}
+
+static NSString *s7tv_systemMonthOrdinalToken(NSInteger months) {
+    if ([S7TVLocalization shared].currentLanguage == S7TVLanguageEnglish) {
+        NSInteger mod100 = months % 100;
+        NSString *suffix;
+        if (mod100 >= 11 && mod100 <= 13) {
+            suffix = @"th";
+        } else {
+            switch (months % 10) {
+                case 1:  suffix = @"st"; break;
+                case 2:  suffix = @"nd"; break;
+                case 3:  suffix = @"rd"; break;
+                default: suffix = @"th"; break;
+            }
+        }
+        return [NSString stringWithFormat:@"%ld%@", (long)months, suffix];
+    }
+    return [NSString stringWithFormat:@"%lde", (long)months];
+}
+
 // Phase 3 — pseudo (couleur chat) + phrase système pré-construite par le
-// parser IRC (voir 7tv-chat-message.m). Le
-// renderer ne fait qu'afficher, aucune logique de formulation ici.
+// parser IRC (voir 7tv-chat-message.m). Le renderer ne fait qu'afficher,
+// avec les quelques portions de texte mises en gras par type d'événement.
 - (void)s7tv_appendSystemBannerForMessage:(S7TVChatMessage *)msg
                                       into:(NSMutableAttributedString *)result {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
@@ -3376,9 +2905,46 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
             attributes:@{NSFontAttributeName: nameFont,
                          NSForegroundColorAttributeName: nameColor,
                          kS7TVChatViewerCardUsernameAttribute: @YES}]];
-    [result appendAttributedString:[[NSAttributedString alloc]
+    NSMutableAttributedString *phrase = [[NSMutableAttributedString alloc]
         initWithString:[@" " stringByAppendingString:msg.systemPhrase ?: @""]
-            attributes:@{NSFontAttributeName: bodyFont, NSForegroundColorAttributeName: bodyColor}]];
+            attributes:@{NSFontAttributeName: bodyFont, NSForegroundColorAttributeName: bodyColor}];
+    UIFont *boldBodyFont = [UIFont boldSystemFontOfSize:cfg.messageFontSize];
+    NSUInteger searchStart = 0;
+    S7TVSystemMessageInfo *info = msg.systemInfo;
+    NSString *tierToken = ([S7TVLocalization shared].currentLanguage == S7TVLanguageEnglish)
+        ? [NSString stringWithFormat:@"Tier %ld", (long)info.tier]
+        : [NSString stringWithFormat:@"niveau %ld", (long)info.tier];
+
+    if (info.kind == S7TVSystemMessageKindCommunityGift) {
+        if (info.giftRecipientDisplayName.length) {
+            s7tv_boldNextSystemPhraseToken(phrase, tierToken, boldBodyFont, &searchStart);
+        } else {
+            NSString *giftWord = (info.massGiftCount == 1)
+                ? L(@"sysmsg_word_sub_singular") : L(@"sysmsg_word_sub_plural");
+            NSString *senderWord = (info.senderTotalGiftCount == 1)
+                ? L(@"sysmsg_word_sub_singular") : L(@"sysmsg_word_sub_plural");
+            s7tv_boldNextSystemGiftCount(phrase, info.massGiftCount, giftWord,
+                boldBodyFont, &searchStart);
+            s7tv_boldNextSystemPhraseToken(phrase, tierToken, boldBodyFont, &searchStart);
+            s7tv_boldNextSystemGiftCount(phrase, info.senderTotalGiftCount, senderWord,
+                boldBodyFont, &searchStart);
+        }
+    } else {
+        s7tv_boldNextSystemPhraseToken(phrase, info.isPrime ? @"Prime" : tierToken,
+            boldBodyFont, &searchStart);
+        if (info.cumulativeMonths > 1) {
+            s7tv_boldNextSystemPhraseToken(phrase,
+                s7tv_systemMonthOrdinalToken(info.cumulativeMonths), boldBodyFont,
+                &searchStart);
+        }
+        if (info.streakMonths > 0) {
+            s7tv_boldNextSystemPhraseToken(phrase,
+                [NSString stringWithFormat:@"%ld", (long)info.streakMonths],
+                boldBodyFont, &searchStart);
+        }
+    }
+
+    [result appendAttributedString:phrase];
 }
 
 // Ligne dédiée aux récompenses : titre fourni par Twitch, puis éventuelle
@@ -3474,7 +3040,8 @@ static void s7tv_applyDeletedBodyStyle(NSMutableAttributedString *result,
             msg.sharedChatSourceChannelID]);
     }
     for (NSString *badgeIdentifier in msg.badgeIdentifiers) {
-        id<S7TVResolvedEmote> badge = [badgeProvider resolvedBadgeForIdentifier:badgeIdentifier];
+        id<S7TVResolvedEmote> badge =
+            [badgeProvider resolvedBadgeForIdentifier:badgeIdentifier];
         appendBadge(badge);
     }
 

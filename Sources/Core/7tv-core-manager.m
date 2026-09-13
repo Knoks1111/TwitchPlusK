@@ -23,6 +23,7 @@
  */
 
 #import "Core/7tv-core-manager.h"
+#import "Core/7tv-channel-resolver.h"
 #import "Chat/7tv-chat-message.h"
 #import "Settings/7tv-settings-controller.h"
 #import "Network/7tv-network-emote-cache.h"
@@ -37,6 +38,7 @@
 #import "Emote/7tv-emote-catalog.h"
 #import "Emote/7tv-provider-settings.h"
 #import "Chat/7tv-chat-custom-view.h"
+#import "Chat/7tv-chat-integration.h"
 #import "Chat/7tv-chat-reply-thread-panel.h"
 #import <objc/runtime.h>
 
@@ -114,7 +116,6 @@ static SevenTVEmote *S7TVLegacyEmoteFromDescriptor(S7TVEmoteDescriptor *descript
 
 
 - (void)s7tv_notifyFavoritesChanged;
-- (void)s7tv_clearChannelEmotesAndNotify;
 - (void)s7tv_catalogDidUpdate:(NSNotification *)notification;
 - (void)s7tv_syncLegacyEmoteViews;
 
@@ -545,6 +546,12 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     // reads the common provider registry.
     [S7TVEmoteProviderSettings setProvider:S7TVExternalEmoteProvider7TV enabled:v];
 }
+- (NSString *)currentChannelName {
+    if (_currentChannelName.length) return _currentChannelName;
+
+    S7TVChannelContext *context = S7TVCurrentChannelContext();
+    return context.channelName.length ? context.channelName : context.displayName;
+}
 - (void)setCurrentChannelTwitchID:(NSString *)channelID {
     _currentChannelTwitchID = [channelID copy];
 }
@@ -611,85 +618,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
              global:YES
            channel:nil
          completion:nil];
-}
-
-
-// ============================================================
-// MARK: - Chargement des emotes d'un channel par nom
-// ============================================================
-
-- (void)s7tv_clearChannelEmotesAndNotify {
-    dispatch_barrier_async(self.emoteQueue, ^{
-        if (self.channelEmotes.count == 0) return;
-        self.channelEmotes = @{};
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:S7TVEmoteCatalogDidUpdateNotification object:self];
-        });
-    });
-}
-
-- (void)loadEmotesForChannelName:(NSString *)channelName {
-    if (!channelName.length) return;
-    BOOL shouldResetChannelCatalog = !self.currentChannelName.length ||
-        [self.currentChannelName caseInsensitiveCompare:channelName] != NSOrderedSame;
-    [self log:@"Channel rejoint: %@, recherche ID Twitch...", channelName];
-    self.currentChannelName = channelName;
-    if (shouldResetChannelCatalog) [self s7tv_clearChannelEmotesAndNotify];
-
-    // ── Fix cache: lookup immédiat du twitchID depuis le mapping sauvé ───────
-    // Première visite : pas de mapping → attend le ROOMSTATE (< 200ms).
-    // Visites suivantes : l'ID est connu → prefetch et cache démarre AVANT
-    // le ROOMSTATE, les emotes sont prêtes dès le 1er message du chat.
-    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    NSDictionary *channelIDMap = [prefs dictionaryForKey:@"s7tv_channel_id_map"];
-    NSString *cachedTwitchID = channelIDMap[channelName.lowercaseString];
-
-    if (cachedTwitchID.length > 0) {
-        [self log:@"⚡️ twitchID en cache pour %@: %@ → chargement immédiat",
-         channelName, cachedTwitchID];
-        // Vider les emotes du channel précédent AVANT de charger les nouvelles.
-        // Sans ce reset, un message ultra-rapide pourrait injecter une emote
-        // de l'ancien channel pendant les ~100ms avant que loadEmotesForChannelTwitchID:
-        // ne soit terminé.
-        // Même raisonnement pour les badges channel — voir
-        // SevenTVBadgeProvider.resetChannelBadges.
-        [[SevenTVBadgeProvider sharedProvider] resetChannelBadges];
-        self.currentChannelTwitchID = cachedTwitchID;
-        [self loadEmotesForChannelTwitchID:cachedTwitchID];
-        // Fix bug badges channel manquants : sans cet appel, le catalogue
-        // channel de SevenTVBadgeProvider ne se charge JAMAIS pour une
-        // chaîne déjà visitée. Raison : le ROOMSTATE qui arrive juste après
-        // trouvera roomID == currentChannelTwitchID (déjà fixé juste
-        // au-dessus) et ne postera donc PAS S7TVChannelJoined (voir
-        // -handleIRCRoomState: plus bas) — seul déclencheur dont
-        // dépendait jusqu'ici le chargement des badges channel. Contrairement
-        // au mapping channelID (persisté en NSUserDefaults), channelBadges
-        // est tenu uniquement en mémoire (voir 7tv-badge-provider.h) : il
-        // repart donc vide à chaque lancement du process, et sans cet appel
-        // symétrique à celui des emotes, restait vide toute la session pour
-        // toute chaîne déjà connue (c.-à-d. quasiment toujours, sauf la
-        // toute première visite jamais faite d'une chaîne). loadBadgesForChannelID:
-        // gère déjà ses propres garde-fous (token pas encore là, déjà
-        // chargé) donc cet appel est sûr même en redondance avec un futur
-        // ROOMSTATE.
-        [[SevenTVBadgeProvider sharedProvider] loadBadgesForChannelID:cachedTwitchID];
-        // Pas de dispatch_after nécessaire : le ROOMSTATE confirmera (ou corrigera)
-        // l'ID quelques ms plus tard via s7tv_handleRoomState.
-        return;
-    }
-
-    // Première visite : pas de mapping → attendre le ROOMSTATE.
-    // Timeout de sécurité à 5s au cas où le ROOMSTATE n'arriverait pas.
-    [self log:@"⏳ Pas de twitchID en cache pour %@, attente ROOMSTATE...", channelName];
-    NSString *fallbackChannelName = [channelName copy];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
-                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (!self.currentChannelName.length ||
-            [self.currentChannelName caseInsensitiveCompare:fallbackChannelName] != NSOrderedSame) return;
-        NSString *currentChannelID = [self.currentChannelTwitchID copy];
-        if (currentChannelID.length) [self loadEmotesForChannelTwitchID:currentChannelID];
-    });
 }
 
 
@@ -833,113 +761,6 @@ static NSString *S7TVNormalizedTwitchBearerToken(NSString *value) {
         postNotificationName:S7TVTwitchCredentialsDidUpdateNotification object:self];
     // Déclencher le chargement des badges maintenant qu'on a le token
     [[SevenTVBadgeProvider sharedProvider] loadGlobalBadges];
-    if (self.currentChannelTwitchID.length) {
-        [[SevenTVBadgeProvider sharedProvider] loadBadgesForChannelID:self.currentChannelTwitchID];
-    }
-}
-
-// ============================================================
-// MARK: - Extraction du broadcaster ID depuis les réponses GQL Twitch
-// ============================================================
-
-- (void)extractAndLoadEmotesFromGQLResponse:(NSData *)responseData {
-    if (!responseData) return;
-
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-        id json = [NSJSONSerialization JSONObjectWithData:responseData options:0 error:nil];
-        if (!json) return;
-
-        NSArray *responses = [json isKindOfClass:[NSArray class]] ? json : @[json];
-
-        for (NSDictionary *response in responses) {
-            if (![response isKindOfClass:[NSDictionary class]]) continue;
-
-            NSString *channelLogin = nil;
-            NSString *broadcasterID = [self findBroadcasterIDInObject:response
-                                                         channelLogin:&channelLogin];
-            if (!broadcasterID) continue;
-
-            // Ce hook voit toutes les réponses GQL de l'app. Une réponse
-            // générique contient très souvent data.user = le compte du viewer
-            // connecté, ce qui ne prouve absolument pas la chaîne affichée :
-            // accepter ce login écraserait currentChannelName et ferait
-            // rejeter tous les messages du chat ouvert (filtre PRIVMSG /
-            // USERNOTICE → currentChannelName). Le JOIN IRC
-            // (loadEmotesForChannelName:) est la source de vérité de la
-            // chaîne affichée ; GQL ne peut ensuite que confirmer le même
-            // login et fournir son broadcaster ID avant/avec le ROOMSTATE.
-            if (!channelLogin.length || !self.currentChannelName.length ||
-                [channelLogin caseInsensitiveCompare:self.currentChannelName] != NSOrderedSame) {
-                [self log:@"ℹ️ Réponse GQL ignorée (login %@ ≠ chaîne jointe %@)",
-                    channelLogin.length ? channelLogin : @"indéterminé",
-                    self.currentChannelName.length ? self.currentChannelName : @"aucune"];
-                continue;
-            }
-
-            if (channelLogin.length > 0) {
-                self.currentChannelName = channelLogin;
-                [self log:@"📡 Channel name extrait GQL: %@", channelLogin];
-            }
-
-            if (![broadcasterID isEqualToString:self.currentChannelTwitchID]) {
-                [self log:@"📡 Nouveau broadcaster ID via GQL: %@ (ancien: %@)",
-                 broadcasterID, self.currentChannelTwitchID ?: @"aucun"];
-
-                [self s7tv_clearChannelEmotesAndNotify];
-                // Même raisonnement pour les badges channel — voir
-                // SevenTVBadgeProvider.resetChannelBadges.
-                [[SevenTVBadgeProvider sharedProvider] resetChannelBadges];
-                self.currentChannelTwitchID = broadcasterID;
-                [self loadEmotesForChannelTwitchID:broadcasterID];
-                break;
-            }
-        }
-    });
-}
-
-- (NSString *)findBroadcasterIDInObject:(id)obj channelLogin:(NSString **)outLogin {
-    if ([obj isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *dict = obj;
-        NSArray *channelKeys = @[@"channel", @"broadcaster", @"user", @"streamer", @"owner"];
-
-        for (NSString *key in channelKeys) {
-            id value = dict[key];
-            if ([value isKindOfClass:[NSDictionary class]]) {
-                NSString *foundID = value[@"id"];
-                if ([self isTwitchUserID:foundID]) {
-                    if (outLogin) {
-                        id rawLogin = value[@"login"] ?: value[@"name"];
-                        if ([rawLogin isKindOfClass:[NSString class]] && [rawLogin length] > 0)
-                            *outLogin = rawLogin;
-                    }
-                    return foundID;
-                }
-            }
-        }
-
-        for (NSString *key in dict) {
-            if ([key.lowercaseString containsString:@"broadcast"] ||
-                [key.lowercaseString containsString:@"channel"]) {
-                NSString *result = [self findBroadcasterIDInObject:dict[key] channelLogin:outLogin];
-                if (result) return result;
-            }
-        }
-    }
-    if ([obj isKindOfClass:[NSArray class]]) {
-        for (id item in (NSArray *)obj) {
-            NSString *result = [self findBroadcasterIDInObject:item channelLogin:outLogin];
-            if (result) return result;
-        }
-    }
-    return nil;
-}
-
-- (BOOL)isTwitchUserID:(id)value {
-    if (![value isKindOfClass:[NSString class]]) return NO;
-    NSString *str = value;
-    if (str.length < 4 || str.length > 15) return NO;
-    return ([str rangeOfCharacterFromSet:
-             [[NSCharacterSet decimalDigitCharacterSet] invertedSet]].location == NSNotFound);
 }
 
 
@@ -1238,7 +1059,7 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
     if (has(@"Favori")) return S7TVLogCategoryFavorites;
 
     // 7. IRC / Channel
-    if (has(@"ROOMSTATE") || has(@"room-id") || has(@"broadcaster ID") ||
+    if (has(@"room-id") || has(@"broadcaster ID") ||
         has(@"GQL") || has(@"Mapping sauvé") || has(@"Rejoint le channel") ||
         has(@"Channel rejoint") || has(@"twitchID en cache") || has(@"twitchID") ||
         has(@"Pas de twitchID"))
@@ -1450,16 +1271,78 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 
 
 // ============================================================
-// MARK: - Session IRC (JOIN / ROOMSTATE / USERSTATE)
+// MARK: - Session IRC (USERSTATE / modération)
 // ============================================================
 
-// Passe à YES dès qu'un ROOMSTATE a confirmé le salon courant
-// (currentChannelName) auprès du serveur. Sert à distinguer le JOIN
-// technique du salon du viewer (Twitch joint #<login du compte connecté> à
-// la connexion du chat, indépendamment de la chaîne affichée) d'un vrai
-// changement de chaîne : tant que le salon courant n'est pas confirmé, ce
-// JOIN technique ne doit pas pouvoir prendre la main.
-static BOOL s7tv_currentChannelRoomStateConfirmed = NO;
+static NSString *s7tv_ircRoomID(NSString *ircLine) {
+    if (!ircLine.length || ![ircLine hasPrefix:@"@"]) return nil;
+    NSRange firstSpace = [ircLine rangeOfString:@" "];
+    if (firstSpace.location == NSNotFound) return nil;
+    NSDictionary<NSString *, NSString *> *tags = s7tv_parseIRCTags(
+        [ircLine substringWithRange:NSMakeRange(1, firstSpace.location - 1)]);
+    NSString *roomID = s7tv_tagValue(tags, @"room-id", @"");
+    return roomID.length ? roomID : nil;
+}
+
+static NSString *s7tv_ircTargetChannel(NSString *ircLine) {
+    if (!ircLine.length) return nil;
+    NSString *withoutTags = ircLine;
+    if ([withoutTags hasPrefix:@"@"]) {
+        NSRange firstSpace = [withoutTags rangeOfString:@" "];
+        if (firstSpace.location == NSNotFound) return nil;
+        withoutTags = [withoutTags substringFromIndex:firstSpace.location + 1];
+    }
+
+    NSArray<NSString *> *parts = [withoutTags
+        componentsSeparatedByCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSSet<NSString *> *commands = [NSSet setWithArray:@[
+        @"PRIVMSG", @"USERNOTICE", @"CLEARCHAT", @"CLEARMSG",
+        @"NOTICE"
+    ]];
+    for (NSUInteger index = 0; index + 1 < parts.count; index++) {
+        NSString *part = parts[index];
+        if (![commands containsObject:part]) continue;
+        NSString *target = parts[index + 1];
+        if (![target hasPrefix:@"#"] || target.length <= 1) return nil;
+        return [[target substringFromIndex:1] lowercaseString];
+    }
+    return nil;
+}
+
+static BOOL s7tv_acceptIncomingIRCLine(NSString *ircLine) {
+    S7TVChannelContext *context = S7TVCurrentChannelContext();
+    if (!context) {
+        // Sans contexte natif, ne jamais accepter un message de chat : son
+        // canal est inconnu et il pourrait provenir de l'ancienne connexion.
+        return [ircLine rangeOfString:@" PRIVMSG "].location == NSNotFound &&
+            [ircLine rangeOfString:@" USERNOTICE "].location == NSNotFound &&
+            [ircLine rangeOfString:@" CLEARCHAT "].location == NSNotFound &&
+            [ircLine rangeOfString:@" CLEARMSG "].location == NSNotFound;
+    }
+    // IRC is only a live source. Never let a delayed live packet contaminate
+    // a replay context.
+    if (context.mediaKind != S7TVChannelMediaKindLive) return NO;
+
+    NSString *expectedID = [NSString stringWithFormat:@"%u", context.channelID];
+    NSString *roomID = s7tv_ircRoomID(ircLine);
+    if (roomID.length) return [roomID isEqualToString:expectedID];
+
+    // Fallback for Twitch lines without room-id.
+    NSString *target = s7tv_ircTargetChannel(ircLine);
+    if (target.length && context.channelName.length) {
+        return [target caseInsensitiveCompare:context.channelName] == NSOrderedSame;
+    }
+    // Un paquet de chat sans room-id ni cible exploitable ne peut pas être
+    // attribué de façon fiable après un changement de chaîne.
+    if ([ircLine containsString:@" PRIVMSG "] ||
+        [ircLine containsString:@" USERNOTICE "] ||
+        [ircLine containsString:@" CLEARCHAT "] ||
+        [ircLine containsString:@" CLEARMSG "]) {
+        return NO;
+    }
+    return YES;
+}
 
 @implementation SevenTVManager (IRCSessionState)
 
@@ -1473,73 +1356,6 @@ static BOOL s7tv_currentChannelRoomStateConfirmed = NO;
     if (!displayName.length || [displayName isEqualToString:self.currentViewerDisplayName]) return;
     self.currentViewerDisplayName = displayName;
     [self log:@"👤 Pseudo viewer connecté détecté (USERSTATE): %@", displayName];
-}
-
-- (void)handleIRCRoomState:(NSString *)ircLine {
-    NSRange roomStateCommand = [ircLine rangeOfString:@" ROOMSTATE #"];
-    if (roomStateCommand.location != NSNotFound) {
-        NSUInteger channelStart = NSMaxRange(roomStateCommand);
-        NSRange tail = NSMakeRange(channelStart, ircLine.length - channelStart);
-        NSRange channelEnd = [ircLine rangeOfCharacterFromSet:
-            NSCharacterSet.whitespaceAndNewlineCharacterSet options:0 range:tail];
-        NSUInteger end = channelEnd.location == NSNotFound ? ircLine.length : channelEnd.location;
-        NSString *roomChannel = [ircLine substringWithRange:
-                                 NSMakeRange(channelStart, end - channelStart)];
-        if (roomChannel.length && self.currentChannelName.length &&
-            [roomChannel caseInsensitiveCompare:self.currentChannelName] != NSOrderedSame) {
-            // Garde changement de chaîne : rejette le ROOMSTATE d'une autre
-            // chaîne, SAUF si le salon courant n'est que le salon technique
-            // du viewer (JOIN #<login du compte> pris avant que
-            // GLOBALUSERSTATE ne soit traité) — le ROOMSTATE de la chaîne
-            // réellement ouverte doit alors reprendre la main.
-            if (!(self.currentViewerDisplayName.length &&
-                  [self.currentChannelName caseInsensitiveCompare:self.currentViewerDisplayName] == NSOrderedSame)) {
-                return;
-            }
-            self.currentChannelName = roomChannel;
-            [self log:@"📡 Chaîne courante corrigée par ROOMSTATE: %@", roomChannel];
-        }
-        // Le serveur confirme le salon courant — voir
-        // s7tv_currentChannelRoomStateConfirmed (JOIN technique du viewer).
-        s7tv_currentChannelRoomStateConfirmed = YES;
-    }
-
-    NSRange roomIDRange = [ircLine rangeOfString:@"room-id="];
-    if (roomIDRange.location == NSNotFound) return;
-    NSString *afterRoomID = [ircLine substringFromIndex:NSMaxRange(roomIDRange)];
-    NSMutableString *roomID = [NSMutableString string];
-    for (NSUInteger index = 0; index < afterRoomID.length; index++) {
-        unichar character = [afterRoomID characterAtIndex:index];
-        if (character == ';' || character == ' ' || character == '\r' || character == '\n') break;
-        [roomID appendFormat:@"%C", character];
-    }
-    if (!roomID.length) return;
-    [self log:@"📡 room-id extrait depuis ROOMSTATE: %@", roomID];
-
-    if (![roomID isEqualToString:self.currentChannelTwitchID]) {
-        [self log:@"📡 Nouveau broadcaster ID (ROOMSTATE): %@ (ancien: %@)",
-            roomID, self.currentChannelTwitchID ?: @"aucun"];
-        [self s7tv_clearChannelEmotesAndNotify];
-        self.currentChannelTwitchID = roomID;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[S7TVReplyThreadPanel sharedPanel] hide];
-        });
-
-        if (self.currentChannelName.length) {
-            NSUserDefaults *preferences = NSUserDefaults.standardUserDefaults;
-            NSMutableDictionary *map = [([preferences dictionaryForKey:@"s7tv_channel_id_map"]
-                                         ?: @{}) mutableCopy];
-            map[self.currentChannelName.lowercaseString] = roomID;
-            [preferences setObject:map.copy forKey:@"s7tv_channel_id_map"];
-            [preferences synchronize];
-            [self log:@"💾 Mapping sauvé: %@ → %@", self.currentChannelName, roomID];
-        }
-        [self loadEmotesForChannelTwitchID:roomID];
-        [NSNotificationCenter.defaultCenter
-            postNotificationName:@"S7TVChannelJoined" object:nil
-            userInfo:@{@"channelID": roomID}];
-    }
-    [self initializeRecentHistoryForChannel:self.currentChannelName force:NO];
 }
 
 - (BOOL)s7tv_handleIRCModerationEvent:(NSString *)ircLine {
@@ -1570,19 +1386,11 @@ static BOOL s7tv_currentChannelRoomStateConfirmed = NO;
 
     NSRange channelEnd = [afterCommand rangeOfCharacterFromSet:
                           NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSString *channelToken = channelEnd.location == NSNotFound
-        ? afterCommand : [afterCommand substringToIndex:channelEnd.location];
     NSString *trailing = channelEnd.location == NSNotFound
         ? @"" : [afterCommand substringFromIndex:channelEnd.location + 1];
     trailing = [trailing stringByTrimmingCharactersInSet:
                 NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if ([trailing hasPrefix:@":"]) trailing = [trailing substringFromIndex:1];
-    if ([channelToken hasPrefix:@"#"]) channelToken = [channelToken substringFromIndex:1];
-
-    if (channelToken.length && self.currentChannelName.length &&
-        [channelToken caseInsensitiveCompare:self.currentChannelName] != NSOrderedSame) {
-        return YES;
-    }
 
     S7TVChatMessageStore *store = self.chatMessageStore;
     if (isClearMessage) {
@@ -1637,13 +1445,18 @@ static BOOL s7tv_currentChannelRoomStateConfirmed = NO;
     if (!text.length) return;
     NSArray<id<S7TVEmoteProvider>> *providers = s7tv_chatEmoteProviders();
     BOOL addedMessage = NO;
+    S7TVChannelContext *context = S7TVCurrentChannelContext();
+    BOOL acceptsLiveData = !context ||
+        context.mediaKind == S7TVChannelMediaKindLive;
 
     // Les notifications PubSub sont des enveloppes JSON, pas des lignes IRC.
     // Le store déduplique les abonnements Twitch grâce à redemption.id.
-    for (S7TVChatMessage *rewardMessage in
-         s7tv_channelPointMessagesFromWebSocketText(text, providers)) {
-        [self.chatMessageStore addMessage:rewardMessage];
-        addedMessage = YES;
+    if (acceptsLiveData) {
+        for (S7TVChatMessage *rewardMessage in
+             s7tv_channelPointMessagesFromWebSocketText(text, providers)) {
+            [self.chatMessageStore addMessage:rewardMessage];
+            addedMessage = YES;
+        }
     }
 
     for (NSString *rawLine in [text componentsSeparatedByCharactersInSet:
@@ -1651,9 +1464,9 @@ static BOOL s7tv_currentChannelRoomStateConfirmed = NO;
         NSString *ircLine = [rawLine stringByTrimmingCharactersInSet:
                              NSCharacterSet.newlineCharacterSet];
         if (!ircLine.length) continue;
-        if ([ircLine containsString:@"ROOMSTATE"]) [self handleIRCRoomState:ircLine];
         // "USERSTATE" couvre aussi GLOBALUSERSTATE, qui se termine par ce mot.
         if ([ircLine containsString:@"USERSTATE"]) [self handleIRCUserState:ircLine];
+        if (!s7tv_acceptIncomingIRCLine(ircLine)) continue;
         if ([self s7tv_handleIRCModerationEvent:ircLine]) continue;
 
         S7TVChatMessage *chatMessage = s7tv_parseChatMessage(ircLine, providers);
@@ -1666,11 +1479,13 @@ static BOOL s7tv_currentChannelRoomStateConfirmed = NO;
             S7TVChatMessage *pendingCompanion = chatMessage;
             S7TVChatMessageStore *rewardStore = self.chatMessageStore;
             NSUInteger storeGeneration = rewardStore.generation;
+            S7TVChannelContext *messageContext = S7TVCurrentChannelContext();
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                            (int64_t)(0.35 * NSEC_PER_SEC)),
                            dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                 // Un JOIN intervenu entre-temps a reconstruit le store.
                 if (rewardStore.generation != storeGeneration) return;
+                if (messageContext && !S7TVChannelContextIsCurrent(messageContext)) return;
                 if (s7tv_shouldSuppressChannelPointCompanion(pendingCompanion)) {
                     [rewardStore mergeChannelPointCompanionMessage:pendingCompanion
                         completion:^(NSString *mergedID) {
@@ -1707,8 +1522,11 @@ static NSString *s7tv_recentHistoryInitializedChannel = nil;
 static BOOL s7tv_recentHistoryRequestIsCurrent(NSString *channel,
                                                 NSUInteger generation) {
     SevenTVManager *manager = [SevenTVManager sharedManager];
+    S7TVChannelContext *context = S7TVCurrentChannelContext();
     @synchronized (manager) {
         return generation == s7tv_recentHistoryGeneration && channel.length &&
+            context && context.mediaKind == S7TVChannelMediaKindLive &&
+            [channel caseInsensitiveCompare:context.channelName ?: @""] == NSOrderedSame &&
             [channel caseInsensitiveCompare:manager.currentChannelName ?: @""] == NSOrderedSame;
     }
 }
@@ -1776,7 +1594,7 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
                 [[SevenTVManager sharedManager]
                     log:@"🕘 %lu messages historiques chargés pour %@",
                     (unsigned long)history.count, channel];
-                s7tv_reloadActiveChatCustomView();
+                s7tv_scheduleChatCustomReload();
             }];
     }] resume];
 }
@@ -1803,7 +1621,7 @@ static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
     [manager.chatMessageStore replaceAllMessages:@[welcome, divider] completion:^{
         if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
         [manager log:@"🏗 Chat initialisé pour %@ (historique en cours)", channel];
-        s7tv_reloadActiveChatCustomView();
+        s7tv_scheduleChatCustomReload();
         s7tv_fetchRecentHistory(channel, generation);
     }];
 }
@@ -1821,77 +1639,6 @@ static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
         generation = ++s7tv_recentHistoryGeneration;
     }
     s7tv_beginRecentHistory(channel, generation);
-}
-
-- (NSArray<NSString *> *)joinedChannelsInOutgoingWebSocketMessage:
-    (NSURLSessionWebSocketMessage *)message {
-    NSString *payload = nil;
-    if (message.type == NSURLSessionWebSocketMessageTypeString) {
-        payload = message.string;
-    } else if (message.type == NSURLSessionWebSocketMessageTypeData) {
-        payload = [[NSString alloc] initWithData:message.data encoding:NSUTF8StringEncoding];
-    }
-    if (!payload.length) return @[];
-
-    NSMutableArray<NSString *> *channels = [NSMutableArray array];
-    for (NSString *rawLine in [payload componentsSeparatedByCharactersInSet:
-                               NSCharacterSet.newlineCharacterSet]) {
-        NSString *line = [rawLine stringByTrimmingCharactersInSet:
-                          NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (![line hasPrefix:@"JOIN #"]) continue;
-        NSString *tail = [line substringFromIndex:6];
-        NSRange end = [tail rangeOfCharacterFromSet:
-                       NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        NSString *channel = end.location == NSNotFound
-            ? tail : [tail substringToIndex:end.location];
-        channel = [channel stringByTrimmingCharactersInSet:
-                   NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (channel.length) [channels addObject:channel.lowercaseString];
-    }
-    return channels;
-}
-
-- (void)handleOutgoingChatWebSocketMessage:(NSURLSessionWebSocketMessage *)message {
-    for (NSString *channel in [self joinedChannelsInOutgoingWebSocketMessage:message]) {
-        NSString *previousChannel = [self.currentChannelName copy];
-        BOOL switchingChannel = previousChannel.length &&
-            [previousChannel caseInsensitiveCompare:channel] != NSOrderedSame;
-
-        // Twitch rejoint aussi le salon technique du compte connecté
-        // (JOIN #<login du viewer>) à la connexion du chat, indépendamment
-        // de la chaîne affichée. Si ce JOIN technique arrive pendant qu'une
-        // vraie chaîne occupe déjà la session et avant que son ROOMSTATE ne
-        // l'ait confirmée, il écrase currentChannelName : le ROOMSTATE et
-        // les PRIVMSG de la chaîne réellement ouverte sont alors rejetés
-        // (aucun message affiché, picker sur le mauvais channel). On ignore
-        // donc ce JOIN tant que le salon courant n'est pas confirmé. Une
-        // fois confirmé, un JOIN du viewer est au contraire un vrai
-        // changement vers sa propre chaîne et reste honoré.
-        if (self.currentViewerDisplayName.length &&
-            previousChannel.length &&
-            [channel caseInsensitiveCompare:self.currentViewerDisplayName] == NSOrderedSame &&
-            [previousChannel caseInsensitiveCompare:channel] != NSOrderedSame &&
-            !s7tv_currentChannelRoomStateConfirmed) {
-            [self log:@"ℹ️ JOIN technique du viewer ignoré (#%@, salon actif: %@)",
-                channel, previousChannel];
-            continue;
-        }
-
-        [self log:@"📺 Rejoint le channel: %@", channel];
-        // Met currentChannelName à jour avant le reset et avant que
-        // l'historique n'entre dans le parseur IRC.
-        [self loadEmotesForChannelName:channel];
-        // Le JOIN est la source de vérité de la transition : suppression des
-        // anciens messages immédiate, sans attendre ROOMSTATE.
-        [self initializeRecentHistoryForChannel:channel force:YES];
-
-        if (switchingChannel) {
-            // Nouveau salon : invalide la confirmation ROOMSTATE précédente
-            // — le JOIN technique du viewer ne doit pas prendre la main
-            // avant que le serveur n'ait confirmé ce nouveau salon.
-            s7tv_currentChannelRoomStateConfirmed = NO;
-        }
-    }
 }
 
 @end

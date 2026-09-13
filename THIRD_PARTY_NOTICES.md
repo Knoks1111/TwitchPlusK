@@ -1,62 +1,37 @@
 # Third-party notices
 
-## TwitchAdBlock VAFT for iOS (Local/VAFT engine)
+TwitchPlusK includes or adapts the components below. Their source, attribution and license are listed here.
 
-The `Sources/Adblock/Vaft/` engine (TwitchAdBlock.c, TASDiagnostics.c) is
-adapted from [TwitchAdBlock-VAFT-iOS](https://github.com/BananaOnGitHub/TwitchAdBlock-VAFT-iOS),
-port version 2.2.0 — a native iOS port of the VAFT strategy from
-[pixeltris/TwitchAdSolutions](https://github.com/pixeltris/TwitchAdSolutions)
-(VAFT v24, MIT License).
+## VAFT ad-blocking engine
 
-Copyright BananaOnGitHub (TwitchAdBlock-VAFT-iOS) — Apache License, Version 2.0.
-The upstream provenance and TwitchPlusK adaptations are documented below.
+Location: `Sources/Adblock/Vaft/` (`TwitchAdBlock.c/.h`, `TASDiagnostics.c/.h`).
 
-Licensed under the Apache License, Version 2.0 (the "License"); you may not
-use these files except in compliance with the License. You may obtain a copy
-of the License at http://www.apache.org/licenses/LICENSE-2.0. Unless required
-by applicable law or agreed to in writing, software distributed under the
-License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS
-OF ANY KIND, either express or implied.
+- Adapted from [TwitchAdBlock-VAFT-iOS](https://github.com/BananaOnGitHub/TwitchAdBlock-VAFT-iOS), version 2.2.0 (Apache-2.0).
+- Based on [TwitchAdSolutions](https://github.com/pixeltris/TwitchAdSolutions), VAFT solution 24 (MIT).
+- Upstream commit: `c51ef2fe8f667f9dc9216eb550924cf0d732ce27`.
+- Copied strategy SHA-256: `8ba15a99627c3d2a8fab3c3011b43d68ecb89eb40af549b0052d98449f02f591`.
+- Copyright: BananaOnGitHub (TwitchAdBlock-VAFT-iOS).
 
-### Upstream provenance and TwitchPlusK adaptations
+TwitchPlusK integration changes:
 
-- Upstream project: `BananaOnGitHub/TwitchAdBlock-VAFT-iOS` (Apache-2.0)
-- Port version: **2.2.0**
-- Strategy: VAFT solution 24 from `pixeltris/TwitchAdSolutions`
-- Upstream strategy commit: `c51ef2fe8f667f9dc9216eb550924cf0d732ce27`
-- SHA-256 of the copied upstream strategy script: `8ba15a99627c3d2a8fab3c3011b43d68ecb89eb40af549b0052d98449f02f591`
-- Imported files: `TwitchAdBlock.c/.h` (VAFT engine) and
-  `TASDiagnostics.c/.h` (sanitized diagnostics)
+- Calls `vaft_initialize()` from `S7TVAdblockInstallRuntimeHooks` instead of adding a second constructor.
+- Adds an O(1) master-toggle snapshot at the three VAFT entry points.
+- Installs Foundation hooks only when Local mode is active.
+- Replaces VAFT settings injection with `register_log_class()` and `PORT_LOADED`; settings live in TwitchPlusK Logs.
 
-TwitchPlusK adaptations are algorithmically neutral:
+The remaining VAFT code is unchanged: functions, structures, constants, operation order, retries, TTLs, rings, locking and snapshots.
 
-| ID | Upstream | TwitchPlusK | Reason |
-|----|----------|-------------|--------|
-| D1 | `__attribute__((constructor)) tas_initialize` | `vaft_initialize()` called by `S7TVAdblockInstallRuntimeHooks` when Local is active | One constructor; Proxy/Local exclusivity |
-| D2 | No master toggle | O(1) `S7TVAdblockEnabledFast` snapshot gates at the three VAFT entry points | TwitchPlusK master toggle without preference reads in hot paths |
-| D3 | Foundation hooks installed unconditionally | Installed only when Local is active | Proxy/Local exclusivity |
-| D5 | Full `tas_diagnostics_initialize` settings injection | `register_log_class()` plus `PORT_LOADED` log; controls live in TwitchPlusK Logs | Host settings page is used instead of a separate VAFT page |
+Licensed under the Apache License, Version 2.0. A copy is available at
+http://www.apache.org/licenses/LICENSE-2.0. Unless required by applicable law
+or agreed to in writing, software distributed under the License is provided on
+an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
 
-The remaining VAFT code is kept unchanged (functions, structures, constants,
-operation order, retries, TTLs, rings, locking and snapshots).
+## TwitchAdBlock integration
 
-## TwitchAdSolutions (VAFT strategy)
-
-The VAFT strategy implemented by the engine above originates from
-[pixeltris/TwitchAdSolutions](https://github.com/pixeltris/TwitchAdSolutions)
-(`vaft` solution 24, uBlock Origin script distribution), licensed under the
-MIT License.
-
-## TwitchAdBlock
-
-Parts of the ad-blocking, GraphQL filtering, HLS proxy, proxy authentication,
-external-playback bypass, AVFoundation resource-loading, Twitch Turbo upsell
-hiding, launch destination, Twitch Stories hiding, and Live-feed watch-limit code are derived from
-[TwitchAdBlock](https://github.com/gunnerkidBT/TwitchAdBlock), including work
-by level3tjg and gunnerkidBT.
-
-The Proxy implementation and its fishhook dependency are located in
-`Sources/Adblock/Proxy/`.
+Ad-blocking, GraphQL filtering, HLS proxy/authentication, playback bypass,
+AVFoundation loading, Turbo/Stories hiding, launch handling and Live-feed
+watch-limit code are derived from [TwitchAdBlock](https://github.com/gunnerkidBT/TwitchAdBlock),
+including work by level3tjg and gunnerkidBT. Source: `Sources/Adblock/Proxy/`.
 
 Copyright (c) 2025 level3tjg
 
@@ -80,8 +55,7 @@ SOFTWARE.
 
 ## fishhook
 
-TwitchAdBlock uses Facebook's fishhook library for its client-side Swift
-ad-controller interception. TwitchPlusK includes the same library unchanged.
+Facebook's fishhook is included unchanged as a TwitchAdBlock Proxy dependency.
 
 Copyright (c) 2013, Facebook, Inc. All rights reserved.
 

@@ -510,16 +510,6 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
         _pickerInitialProviderSelectionPending = NO;
         _pickerCatalogArraysDirty = YES;
         _pickerOpeningLocationExplicit = NO;
-        // Abonnement permanent à S7TVChannelJoined (postée par
-        // SevenTVManager lors du ROOMSTATE) — même logique que
-        // SevenTVBadgeProvider : ce controller n'est jamais désalloué en
-        // cours de vie de l'app (cleanupPickerForStreamClose masque juste la
-        // vue, ne détruit pas l'objet), donc pas de -dealloc pour se
-        // désabonner.
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                  selector:@selector(_s7tv_channelJoinedNotification:)
-                                                      name:@"S7TVChannelJoined"
-                                                    object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(_s7tv_emoteCatalogDidUpdate:)
                                                       name:S7TVEmoteCatalogDidUpdateNotification
@@ -810,39 +800,10 @@ static const CGFloat kS7TVPickerGridDefaultH =
     return [self _forceDecodedImage:img];
 }
 
-// ── Avatar de la chaîne (bouton "Chaîne" de la capsule sous-choix) ─────────
-//
-// Point d'entrée notif : S7TVChannelJoined n'est postée que pour un VRAI
-// changement de broadcaster ID (voir -handleIRCRoomState:), jamais pour un
-// simple re-join du même channel — pas de refetch inutile.
-- (void)_s7tv_channelJoinedNotification:(NSNotification *)note {
-    NSString *channelID = note.userInfo[@"channelID"];
-    if (!channelID.length) return;
-
-    self.pickerCatalogArraysDirty = YES;
-
-    // CRITIQUE : S7TVChannelJoined est postée depuis -handleIRCRoomState:
-    // pendant le traitement des messages IRC (WebSocket), donc HORS main
-    // thread. NSNotificationCenter exécute les observers de façon SYNCHRONE
-    // sur le thread qui poste — sans ce dispatch, tout ce qui suit (UIButton
-    // setImage:) s'exécute hors main thread : ça ne crashe pas forcément,
-    // mais ça ne se rend pas de façon fiable (c'était la cause du bug "l'avatar
-    // ne change pas au changement de chaîne").
-    dispatch_async(dispatch_get_main_queue(), ^{
-        // Le bouton n'existe que si le picker a déjà été construit une première fois.
-        if (!self.pickerSubcategoryChannelBtn) return;
-        // Ne jamais conserver l'image de l'ancienne chaîne pendant que le
-        // provider commun résout la nouvelle.
-        [self _s7tv_resetChannelButtonToPlaceholder];
-        [self _s7tv_refreshChannelAvatarIfNeeded];
-    });
-}
-
 // Appelé à CHAQUE ouverture du picker (voir -_buildAndShowEmotePickerForView:) :
 // applique l'avatar déjà en cache pour la chaîne courante, ou lance le fetch
 // sinon. C'est le filet de sécurité qui ne dépend pas du timing de la notif
-// S7TVChannelJoined — utile si la chaîne a changé pendant que le picker
-// était fermé (aucune autre occasion de revérifier dans ce cas).
+// — utile si la chaîne a changé pendant que le picker était fermé.
 - (void)_s7tv_refreshChannelAvatarIfNeeded {
     NSString *channelID = [SevenTVManager sharedManager].currentChannelTwitchID;
     if (!channelID.length) {
@@ -1625,7 +1586,7 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
     // Revérifie l'avatar de chaîne à CHAQUE ouverture (pas seulement à la
     // création du picker) : si la chaîne a changé pendant que le picker
     // était fermé, c'est le seul filet de sécurité qui ne dépend pas du
-    // timing de la notif S7TVChannelJoined. No-op si déjà à jour (cache hit).
+    // Aucun fetch supplémentaire si le catalogue est déjà à jour (cache hit).
     [self _s7tv_refreshChannelAvatarIfNeeded];
     // Repositionne toutes les zones (grille / pastilles flottantes / panneau
     // des tailles) — s'adapte à l'orientation courante et à l'onglet actif,
@@ -2073,6 +2034,20 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
                          sepColor:sepColor
                            accent:accent
                         cardColor:cardColor];
+
+    // La hauteur des cellules dépend des tailles configurées, notamment de
+    // cfg.gifSize. Le faux chat prévient après chaque passe de self-sizing
+    // (rechargement, image du GIF chargée, changement de slider) afin que son
+    // conteneur flottant suive immédiatement le contenu réel.
+    __weak typeof(self) previewWeakSelf = self;
+    self.sizesPanel.fakeChatView.onContentHeightChanged =
+        ^(__unused SevenTVChatCustomView *view) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(previewWeakSelf) strongSelf = previewWeakSelf;
+            if (!strongSelf || !strongSelf.pickerSizesPanelVisible) return;
+            [strongSelf _showFakeChatPreviewAboveInputView];
+        });
+    };
 
     // Point 3 — VRAIE CAUSE du bug "pas de bouton pour fermer/revenir" :
     // sizesPanel est un UIScrollView OPAQUE plein cadre ajouté APRÈS

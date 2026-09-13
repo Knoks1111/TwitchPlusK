@@ -1,4 +1,34 @@
-# TwitchPlusK
+<p align="center">
+  <img src="Assets/twitchplusk-icon.webp" width="110" alt="TwitchPlusK icon">
+</p>
+
+<h1 align="center">TwitchPlusK</h1>
+
+<p align="center">
+  A better Twitch experience for iOS.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/iOS-000000?style=for-the-badge&logo=apple&logoColor=white" alt="iOS">
+  <img src="https://img.shields.io/badge/Twitch-9146FF?style=for-the-badge&logo=twitch&logoColor=white" alt="Twitch">
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/-GPLv3-000000?style=for-the-badge&logo=gnu&logoColor=white" alt="GPLv3 License">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Knoks1111/TwitchPlusK/releases">Releases</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="LICENSE">License</a>
+</p>
+
+<p align="center">
+  <img src="Assets/01-live-chat-and-subscriptions.png" width="19%" alt="Live chat and subscriptions">
+  <img src="Assets/02-chat-and-emote-picker.png" width="19%" alt="Chat and emote picker">
+  <img src="Assets/03-chat-and-picker-customization.png" width="19%" alt="Chat and picker customization">
+  <img src="Assets/04-settings-overview.png" width="19%" alt="Settings overview">
+  <img src="Assets/05-player-and-playback-settings.png" width="19%" alt="Player and playback settings">
+</p>
 
 TwitchPlusK is a tweak for the official Twitch iOS app. It keeps the native app and adds a fully customizable chat, 7TV/BTTV/FFZ emotes, adblock, Channel Points Auto Claim, OLED mode and more.
 

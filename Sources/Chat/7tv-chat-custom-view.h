@@ -9,43 +9,17 @@
  *
  * Activation : gardée par le kill switch de Phase 0
  * (SevenTVManager.chatCustomTestEnabled). L'installation et le cycle de vie
- * du transcript sont gérés dans 7tv-chat-custom-view.m.
+ * du transcript sont gérés dans 7tv-chat-integration.m.
  */
 
 #import <UIKit/UIKit.h>
 #import "Chat/7tv-chat-message.h"
+#import "Chat/7tv-chat-integration.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @class SevenTVChatCustomView;
 
-// Intégration du composant dans la hiérarchie native Twitch. L'état de la
-// vue active et toute la logique de remplacement du transcript vivent avec
-// le renderer ; 7tv-core-runtime-hooks.m ne fait que transmettre didMoveToWindow.
-UIView * _Nullable s7tv_findChatInputView(void);
-SevenTVChatCustomView * _Nullable s7tv_activeChatCustomView(void);
-void s7tv_handleNativeChatViewLifecycle(UIView *view);
-void s7tv_applyChatCustomToggle(void);
-void s7tv_reloadActiveChatCustomView(void);
-void s7tv_reloadActiveChatCustomViewAnimated(void);
-// Invalidation rare de contenu déjà existant (catalogues, apparence, image
-// Channel Points) : force aussi le panneau Fil sans réintroduire ce coût dans
-// le batching normal des nouveaux messages.
-void s7tv_reloadActiveChatCustomViewForConfiguration(void);
-void s7tv_reloadActiveChatMessage(NSString *messageID);
-// Propage aussi une modération aux modèles encore retenus par un transcript
-// figé ou un panneau Fil, même s'ils ont déjà quitté le FIFO principal.
-void s7tv_applyModerationStateToRetainedMessage(NSString *messageID,
-                                                S7TVChatMessageState state,
-                                                S7TVChatModerationKind moderationKind,
-                                                NSInteger durationSeconds);
-void s7tv_applyModerationToRetainedMessagesForUser(NSString *authorUserID,
-                                                    NSString * _Nullable authorLogin,
-                                                    S7TVChatModerationKind moderationKind,
-                                                    NSInteger durationSeconds);
-void s7tv_applyModerationToAllRetainedMessages(void);
-void s7tv_scheduleChatCustomReload(void);
-void s7tv_setupChatCustomIntegration(void);
 
 // Notifie l'hôte (le vrai chat, PAS ce composant) quand l'utilisateur tape
 // sur un message qui répond à quelqu'un (bandeau OU message lui-même — voir

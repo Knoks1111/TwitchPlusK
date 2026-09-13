@@ -1901,6 +1901,49 @@ static NSDictionary *S7TVConnectionSetWithPayload(id connections) {
     });
 }
 
+- (void)clearActiveChannelScope {
+    dispatch_async(self.stateQueue, ^{
+        NSString *previousChannel = self.activeChannelID;
+        if (previousChannel.length) {
+            NSString *suffix = [NSString stringWithFormat:@":%@", previousChannel];
+            for (NSString *key in self.tasks.allKeys.copy) {
+                if (![key hasSuffix:suffix]) continue;
+                id task = self.tasks[key];
+                if ([task isKindOfClass:NSURLSessionDataTask.class]) {
+                    [(NSURLSessionDataTask *)task cancel];
+                }
+                [self.tasks removeObjectForKey:key];
+                self.requestGenerations[key] =
+                    @(self.requestGenerations[key].unsignedIntegerValue + 1);
+            }
+        }
+
+        self.activeChannelID = @"";
+        for (NSInteger provider = S7TVEmoteProviderIDSevenTV;
+             provider <= S7TVEmoteProviderIDFFZ; provider++) {
+            S7TVEmoteProviderSnapshot *oldSnapshot = self.snapshots[@(provider)];
+            NSMutableArray<S7TVEmoteSection *> *globalSections = [NSMutableArray array];
+            for (S7TVEmoteSection *section in oldSnapshot.sections) {
+                BOOL isGlobal = section.kind == S7TVEmoteSectionKindGlobal ||
+                    (section.kind == S7TVEmoteSectionKindSet &&
+                     [section.identifier hasPrefix:@"global-set:"]);
+                if (isGlobal) [globalSections addObject:section];
+            }
+
+            S7TVEmoteProviderSnapshot *snapshot = [S7TVEmoteProviderSnapshot new];
+            snapshot.provider = (S7TVEmoteProviderID)provider;
+            snapshot.state = globalSections.count
+                ? S7TVEmoteProviderStateLoaded : S7TVEmoteProviderStateIdle;
+            snapshot.channelID = @"";
+            snapshot.sections = globalSections.copy;
+            snapshot.errorMessage = nil;
+            self.snapshots[@(provider)] = snapshot;
+            [self invalidateDerivedCachesForProvider:(S7TVEmoteProviderID)provider];
+            [self postUpdateForProvider:(S7TVEmoteProviderID)provider];
+        }
+    });
+}
+
 - (void)loadSevenTVEmoteSetWithID:(NSString *)setID
                             global:(BOOL)global
                            channel:(nullable NSString *)twitchID {

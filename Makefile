@@ -24,12 +24,15 @@ TwitchPlusK_FILES = \
     Sources/Adblock/Vaft/TASDiagnostics.c \
     Sources/Core/7tv-core-runtime-hooks.m \
     Sources/Core/7tv-core-manager.m \
+    Sources/Core/7tv-channel-resolver.m \
     Sources/Network/7tv-network-emote-cache.m \
     Sources/Settings/7tv-settings-controller.m \
     Sources/Settings/7tv-settings-transfer.m \
     Sources/Logs/7tv-logs-controller.m \
     Sources/Chat/7tv-chat-appearance-config.m \
     Sources/Chat/7tv-chat-custom-view.m \
+    Sources/Chat/7tv-chat-integration.m \
+    Sources/Chat/7tv-chat-custom-vod.m \
     Sources/Chat/7tv-chat-viewer-card.m \
     Sources/Chat/7tv-chat-message.m \
     Sources/Chat/7tv-chat-reply-thread-panel.m \
@@ -47,6 +50,8 @@ TwitchPlusK_FILES = \
     Sources/Localization/7tv-localization-manager.m \
     Sources/System/7tv-system-home-features.m \
     Sources/System/7tv-system-native-behavior-hooks.m \
+    Sources/System/7tv-system-player-gestures.m \
+    Sources/System/7tv-system-player-reload.m \
     Sources/System/7tv-system-autoclaim.m \
     Sources/UI/7tv-info-tooltip.m \
     Sources/UI/7tv-oled-mode.m
@@ -65,7 +70,7 @@ TwitchPlusK_LDFLAGS = \
     -Wl,-w
 
 # ── Frameworks Apple ──
-TwitchPlusK_FRAMEWORKS = UIKit Foundation QuartzCore ImageIO AVFoundation
+TwitchPlusK_FRAMEWORKS = UIKit Foundation QuartzCore ImageIO AVFoundation MediaPlayer
 
 include $(THEOS_MAKE_PATH)/library.mk
 

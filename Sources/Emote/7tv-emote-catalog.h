@@ -126,6 +126,8 @@ FOUNDATION_EXPORT NSString *S7TVEmoteFavoriteKey(S7TVEmoteProviderID provider,
 // provider-local: one provider failing does not affect the other snapshots.
 - (void)loadGlobalProviders;
 - (void)loadChannelProvidersForTwitchID:(NSString *)twitchID;
+// Remove the active channel scope while keeping provider-global emotes.
+- (void)clearActiveChannelScope;
 // Loads one optional 7TV set on demand. The channel/user payload advertises
 // set IDs before their emotes are needed; the picker calls this when a set
 // section is expanded (or its retry button is pressed).

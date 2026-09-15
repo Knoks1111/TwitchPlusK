@@ -2,6 +2,19 @@
 
 This file keeps the cumulative release history of TwitchPlusK, with the newest release listed first.
 
+## [1.0.5] (Twitch 31.0.2) - 2026-09-15
+
+### New Features
+
+- Added a GitHub repository link to the settings.
+- Added a dedicated TwitchPlusK logo, replacing the 7TV logo in the tweak’s own UI.
+- Added in-app update notifications with a direct link to the latest release.
+
+### Fixes
+
+- Fixed orientation lock visual rotation visual bug and corrected the lock/unlock overlay position during rotation.
+- Fixed the keyboard and word suggestions being invisible in OLED mode on iOS 27.
+
 ## [1.0.4] (Twitch 31.0.2) - 2026-09-13
 
 ### New Features

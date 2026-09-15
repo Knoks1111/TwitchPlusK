@@ -179,7 +179,12 @@ static Class s7tv_playerGestureControlsClass(void) {
 @property (nonatomic, strong) S7TVPlayerGestureBrightnessIconView *brightnessIconView;
 @property (nonatomic, strong) UILabel *label;
 @property (nonatomic, strong) dispatch_source_t hideTimer;
+@property (nonatomic, weak) UIView *geometryView;
+@property (nonatomic, strong) NSArray<NSLayoutConstraint *> *positionConstraints;
+@property (nonatomic, assign) BOOL bottomAligned;
 - (void)s7tv_updateAppearance;
+- (void)attachToGeometryView:(UIView *)geometryView
+               bottomAligned:(BOOL)bottomAligned;
 - (void)showText:(NSString *)text
        iconName:(NSString *)iconName
  brightnessValue:(CGFloat)brightnessValue
@@ -272,6 +277,36 @@ static Class s7tv_playerGestureControlsClass(void) {
             [self s7tv_updateAppearance];
         });
     }
+}
+
+- (void)attachToGeometryView:(UIView *)geometryView
+               bottomAligned:(BOOL)bottomAligned {
+    if (!geometryView) return;
+    if (self.geometryView == geometryView &&
+        self.bottomAligned == bottomAligned &&
+        self.positionConstraints.count > 0) {
+        return;
+    }
+
+    [NSLayoutConstraint deactivateConstraints:self.positionConstraints];
+    self.translatesAutoresizingMaskIntoConstraints = NO;
+    self.geometryView = geometryView;
+    self.bottomAligned = bottomAligned;
+
+    NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:@[
+        [self.widthAnchor constraintEqualToConstant:156.0],
+        [self.heightAnchor constraintEqualToConstant:32.0],
+        [self.centerXAnchor constraintEqualToAnchor:geometryView.centerXAnchor],
+    ]];
+    if (bottomAligned) {
+        [constraints addObject:[self.bottomAnchor constraintEqualToAnchor:
+            geometryView.bottomAnchor constant:-8.0]];
+    } else {
+        [constraints addObject:[self.topAnchor constraintEqualToAnchor:
+            geometryView.topAnchor constant:8.0]];
+    }
+    self.positionConstraints = constraints;
+    [NSLayoutConstraint activateConstraints:constraints];
 }
 
 - (void)showText:(NSString *)text
@@ -640,27 +675,15 @@ static S7TVPlayerGestureOverlayView *s7tv_playerGesturePrepareOverlay(
         overlayHost, &kS7TVPlayerGestureOverlayKey);
     if (!overlay) {
         overlay = [[S7TVPlayerGestureOverlayView alloc] init];
-        overlay.translatesAutoresizingMaskIntoConstraints = YES;
         overlay.layer.zPosition = 1000.0;
         [overlayHost addSubview:overlay];
         objc_setAssociatedObject(overlayHost, &kS7TVPlayerGestureOverlayKey,
                                  overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else if (overlay.superview != overlayHost) {
+        [overlayHost addSubview:overlay];
     }
 
-    CGRect geometryRect = [geometryView convertRect:geometryView.bounds
-                                             toView:overlayHost];
-    CGFloat overlayWidth = 156.0;
-    CGFloat overlayHeight = 32.0;
-    CGFloat overlayX = CGRectGetMidX(geometryRect) - (overlayWidth * 0.5);
-    CGFloat overlayY = bottomAligned
-        ? CGRectGetMaxY(geometryRect) - overlayHeight - 8.0
-        : CGRectGetMinY(geometryRect) + 8.0;
-    if (!isfinite(overlayX) || !isfinite(overlayY)) return nil;
-    CGRect frame = CGRectMake(overlayX, overlayY,
-                              overlayWidth, overlayHeight);
-    if (!CGRectEqualToRect(overlay.frame, frame)) {
-        overlay.frame = frame;
-    }
+    [overlay attachToGeometryView:geometryView bottomAligned:bottomAligned];
     if (overlayHost.subviews.lastObject != overlay) {
         [overlayHost bringSubviewToFront:overlay];
     }

@@ -341,8 +341,8 @@ void S7TVHookDiagnosticsRegisterKnownTargets(void) {
             @[@"UIViewController"], @"supportedInterfaceOrientations", NO,
             S7TVHookDiagnosticGroupTwitchPlusK);
         S7TVHookDiagnosticRegister(
-            @"[TwitchPlusK] UIViewController -shouldAutorotate",
-            @[@"UIViewController"], @"shouldAutorotate", NO,
+            @"[TwitchPlusK] UIViewController -prefersInterfaceOrientationLocked",
+            @[@"UIViewController"], @"prefersInterfaceOrientationLocked", NO,
             S7TVHookDiagnosticGroupTwitchPlusK);
 
         S7TVHookDiagnosticRegister(

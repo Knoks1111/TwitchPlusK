@@ -1,9 +1,3 @@
-/*
- * FFZ
- * Monochrome provider mark bundled from the provider's official SVG.
- * The transparent PNG is embedded as Base64 so the picker has no runtime dependency.
- */
-
 #ifndef SevenTVFFZLogo_h
 #define SevenTVFFZLogo_h
 
@@ -71,5 +65,4 @@ static NSString * const kS7TVFFZLogoBase64 =
     @"qvp/9m1dRxzNeU9VD5FMYra6S14DNCw2k/aM5xFI3gWQdwraDRGxS4+vp7w2xznnnHPOOeecc8655v0W9EhUxuIIWrgAAAAA"
     @"SUVORK5CYII=";
 
-#endif /* SevenTVFFZLogo_h */
-
+#endif

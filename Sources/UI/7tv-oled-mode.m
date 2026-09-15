@@ -238,6 +238,10 @@ static void s7tv_installOLEDHostingControllerHook(void) {
     method_setImplementation(method, (IMP)s7tv_oledViewWillAppear);
 }
 
+static BOOL s7tv_isIOS27OrLater(void) {
+    return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27;
+}
+
 // Clavier OLED.
 //
 // Les vues du clavier sont traitées uniquement quand le mode OLED est actif.
@@ -425,6 +429,9 @@ static void s7tv_oledKeyboardVisualEffectLayoutSubviews(id self, SEL _cmd) {
 }
 
 static void s7tv_installOLEDKeyboardHooks(void) {
+    // iOS 27 changed the private keyboard hierarchy. Keep it fully native.
+    if (s7tv_isIOS27OrLater()) return;
+
     Class keyboardClass = objc_getClass("UIKeyboard");
     s7tv_installOLEDKeyboardHook(keyboardClass,
         sel_registerName("displayLayer:"), (IMP)s7tv_oledKeyboardDisplayLayer);

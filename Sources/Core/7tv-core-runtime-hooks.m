@@ -41,6 +41,7 @@
 #import "Picker/7tv-picker-controller.h"
 #import "System/7tv-system-native-behavior-hooks.h"
 #import "System/7tv-system-autoclaim.h"
+#import "System/7tv-system-update-checker.h"
 #import "System/7tv-system-home-features.h"
 #import "Adblock/Proxy/7tv-adblock-data.h"
 #import "Adblock/Proxy/7tv-adblock-proxy.h"
@@ -720,7 +721,7 @@ static void TwitchSevenTVInit(void) {
     S7TVAdblockInstallRuntimeHooks();
     s7tv_installHomeFeatureRuntimeHooks();
 
-    // Verrou d'orientation (bouton Share hijacké)
+    // Verrou d'orientation (bouton ajouté à côté de Share)
     s7tv_swizzle_orientation_lock();
 
     // Injection bouton dans ChatInputView
@@ -764,6 +765,7 @@ static void TwitchSevenTVInit(void) {
     // Setup sur le main thread
     dispatch_async(dispatch_get_main_queue(), ^{
         [[SevenTVManager sharedManager] setup];
+        S7TVUpdateCheckerSetup();
         // Catalogue global.
         [SevenTVBadgeProvider setup];
         [[SevenTVManager sharedManager] log:@"✅ SevenTVManager prêt"];

@@ -65,6 +65,11 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
 
 - (void)s7tv_buildTable {
     _table = @{
+        @"update_title": @[@"Mise à jour disponible", @"Update available"],
+        @"update_message": @[@"TwitchPlusK %@ est disponible.\nVersion installée : %@.\nConsultez la release pour l’installation.", @"TwitchPlusK %@ is available.\nInstalled version: %@.\nSee the release for installation instructions."],
+        @"update_open": @[@"Voir la mise à jour", @"View update"],
+        @"update_later": @[@"Plus tard", @"Later"],
+        @"update_ignore": @[@"Ignorer cette version", @"Skip this version"],
 
         // ── Générique / réutilisé partout ──────────────────────────────
         @"common_ok":                       @[@"OK", @"OK"],
@@ -247,7 +252,10 @@ static NSString *const kS7TVLanguageDefaultsKey = @"s7tv_language";
         @"section_options":                 @[@"Options", @"Options"],
         @"section_settings_backup":         @[@"Sauvegarde", @"Backup"],
         @"section_logs":                    @[@"Logs", @"Logs"],
-        @"section_langue":                  @[@"Langue", @"Language"],
+        @"section_langue":                  @[@"Langue et GitHub", @"Language & GitHub"],
+        @"settings_github_title":           @[@"GitHub repository", @"GitHub repository"],
+        @"settings_github_subtitle":        @[@"Ajoute une étoile, signale un bug ou propose une idée.",
+                                               @"Star, report bugs, or suggest improvements."],
 
         // ── Switchs de réglages ───────────────────────────────────────────
         @"switch_chat_custom":              @[@"Chat custom", @"Custom chat"],

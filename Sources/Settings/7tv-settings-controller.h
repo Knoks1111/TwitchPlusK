@@ -1,25 +1,21 @@
-/*
- * 7tv-settings-controller.h
- * Page d'accueil des paramètres 7TV.
- * Chaque section ouvre une nouvelle page (push) dans la navigation.
- */
+// TwitchPlusK settings pages and native Twitch integration.
 
 #import <UIKit/UIKit.h>
 
-// ─── Page principale ──────────────────────────────────────────────────────────
+FOUNDATION_EXPORT UIColor *S7TVAccent(void);
+
+// Main settings page.
 @interface SevenTVSettingsController : UITableViewController
 
-// YES quand le VC est présenté en modal (via le bouton flottant 7TV).
-// NO quand il est push depuis les paramètres Twitch natifs.
-// Contrôle l'affichage du bouton "Fermer" dans la nav bar.
+// YES when presented modally; controls the navigation-bar close button.
 @property (nonatomic, assign) BOOL openedAsModal;
 
-// Installe la section 7TV dans les paramètres Twitch natifs.
+// Installs the settings section in native Twitch settings.
 + (void)installTwitchSettingsIntegration;
 
 @end
 
-// ─── Sous-pages 7TV (architecture v3 — 4 catégories larges et évolutives) ─────
+// Settings pages.
 @interface SevenTVAppearancePageController : UITableViewController @end  // Apparence
 @interface SevenTVContentPageController    : UITableViewController @end  // Contenu
 @interface SevenTVAdblockPageController    : UITableViewController @end  // Adblock vidéo + proxy

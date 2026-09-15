@@ -24,6 +24,7 @@
 #import "Emote/7tv-emote-animation-engine.h"
 #import "Network/7tv-network-emote-cache.h"
 #import "UI/7tv-ui-logo.h"
+#import "UI/7tv-twitchplusk-logo.h"
 #import "UI/bttv-ui-logo.h"
 #import "UI/ffz-ui-logo.h"
 #import "UI/7tv-oled-mode.h"
@@ -251,14 +252,14 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
             }
 
             NSData *logoData = [[NSData alloc]
-                initWithBase64EncodedString:kS7TVLogoBase64
+                initWithBase64EncodedString:kS7TVTwitchPlusKLogoBase64
                                     options:NSDataBase64DecodingIgnoreUnknownCharacters];
-            UIImage *icon = [UIImage imageWithData:logoData scale:2.0];
+            UIImage *icon = [UIImage imageWithData:logoData scale:1.0];
             if (icon) {
                 CGFloat targetHeight = emoticonButton
                     ? MIN(emoticonButton.bounds.size.height,
-                          emoticonButton.bounds.size.width) * 0.75 : 22.0;
-                if (targetHeight < 14.0) targetHeight = 22.0;
+                          emoticonButton.bounds.size.width) * 0.60 : 18.0;
+                if (targetHeight < 12.0) targetHeight = 18.0;
                 CGFloat targetWidth = targetHeight *
                     (icon.size.width / MAX(icon.size.height, 1.0));
                 UIGraphicsBeginImageContextWithOptions(

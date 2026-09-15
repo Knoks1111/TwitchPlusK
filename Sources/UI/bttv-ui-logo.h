@@ -1,9 +1,3 @@
-/*
- * BTTV
- * Monochrome provider mark bundled from the provider's official SVG.
- * The transparent PNG is embedded as Base64 so the picker has no runtime dependency.
- */
-
 #ifndef SevenTVBTTVLogo_h
 #define SevenTVBTTVLogo_h
 
@@ -98,5 +92,4 @@ static NSString * const kS7TVBTTVLogoBase64 =
     @"AMklVrJ8uYj8SESy8uUTyXTqBkkBGsD6iU2IyCTJCQCLSH7Hyp3LUNnzRUOl0BNh+NY5d7svTCTGiv8HEH12r1AyOYYAAAAA"
     @"SUVORK5CYII=";
 
-#endif /* SevenTVBTTVLogo_h */
-
+#endif

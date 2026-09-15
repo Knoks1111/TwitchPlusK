@@ -1,15 +1,4 @@
-/*
- * 7tv-settings-controller.m
- *
- * Style : copie pixel-perfect du style Twitch natif (InsetGrouped).
- *   - Fond          : #0E0E10  (noir profond, identique à l'app Twitch)
- *   - Cellules      : #1F1F23  (gris foncé)
- *   - Angles        : UITableViewStyleInsetGrouped (natif iOS)
- *   - Header 7TV    : logo + "7TV SETTINGS" gris clair (comme les autres sections Twitch)
- *   - Séparateurs   : couleur Twitch #2A2A2E
- *   - Texte         : blanc / gris secondaire
- *   - Accent        : violet 7TV rgb(142, 69, 224)
- */
+// TwitchPlusK settings UI.
 
 #import "Settings/7tv-settings-controller.h"
 #import "Core/7tv-core-manager.h"
@@ -21,6 +10,7 @@
 #import "Emote/7tv-provider-settings.h"
 #import "Picker/7tv-picker-resolved-emote.h"
 #import "UI/7tv-ui-logo.h"
+#import "UI/7tv-twitchplusk-logo.h"
 #import "UI/bttv-ui-logo.h"
 #import "UI/ffz-ui-logo.h"
 #import "Chat/7tv-chat-appearance-config.h"
@@ -40,66 +30,48 @@
 #import <objc/runtime.h>
 #define kTCLiveAutoCollectChannelPoints @"TCDBGLiveAutoCollectChannelPoints"
 static NSString *const kS7TVFavoriteEmoteNamesKey = @"s7tv_favorite_emote_names";
+static NSString *const kS7TVGitHubURL = @"https://github.com/Knoks1111/TwitchPlusK";
+static NSString *const kS7TVGitHubAvatarURL = @"https://github.com/Knoks1111.png?size=96";
 
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Palette couleurs
-// ─────────────────────────────────────────────────────────────────────────────
 
-// Fond général de la tableView (noir profond Twitch). En mode OLED : noir pur.
+// Main background; OLED uses pure black.
 static UIColor *S7TVBg(void) {
     if (S7TVOLEDModeEnabled()) return UIColor.blackColor;
     return [UIColor colorWithRed:0.055 green:0.055 blue:0.063 alpha:1.0]; // #0E0E10
 }
 
-// Fond des cellules (gris foncé Twitch). En mode OLED : gris quasi noir pour
-// garder les cellules InsetGrouped discernables sur le fond noir pur.
+// Cell background; keep grouped cells visible in OLED mode.
 static UIColor *S7TVCellBg(void) {
     if (S7TVOLEDModeEnabled()) return [UIColor colorWithWhite:0.05 alpha:1.0];
     return [UIColor colorWithRed:0.122 green:0.122 blue:0.137 alpha:1.0]; // #1F1F23
 }
 
-// Séparateurs de table : #2A2A2E en mode normal, plus discrets en OLED.
+// Table separators.
 static UIColor *S7TVSeparatorColor(void) {
     if (S7TVOLEDModeEnabled()) return [UIColor colorWithWhite:0.12 alpha:1.0];
     return [UIColor colorWithRed:0.165 green:0.165 blue:0.180 alpha:1.0]; // #2A2A2E
 }
 
-// Violet 7TV / Twitch
-static UIColor *S7TVAccent(void) {
+// Accent violet.
+UIColor *S7TVAccent(void) {
     return [UIColor colorWithRed:0.557 green:0.271 blue:0.878 alpha:1.0]; // #8E45E0
 }
 
-// Gris secondaire (sous-titres, icônes)
+// Secondary gray.
 static UIColor *S7TVGray(void) {
     return [UIColor colorWithWhite:0.55 alpha:1.0];
 }
 
-// Couleur d'icône d'un réglage à interrupteur : gris système quand l'option
-// est désactivée, couleur propre à la fonction quand elle est activée.
-// Règle ON/OFF centralisée pour ne pas la recoder dans chaque cellule.
+// Synchronises switch-icon color with its state.
 static UIColor *S7TVSwitchIconColor(UIColor *onColor, BOOL isOn) {
     return isOn ? onColor : [UIColor systemGrayColor];
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Mécanisme générique de sous-options dépendantes (parent → enfants).
-// ─────────────────────────────────────────────────────────────────────────────
-// Même logique que la section Proxy de l'Adblock, généralisée à toutes les
-// pages : une sous-option dont l'option parente est désactivée DISPARAÎT
-// complètement de la table (jamais de grisage), sans que sa valeur stockée
-// dans NSUserDefaults ne soit modifiée. Le parent, lui, reste visible.
-//
-// Principe : chaque page décrit ses sections par des indexes LOGIQUES de
-// lignes — les lignes "fixes" (toujours affichées) et les lignes
-// "conditionnelles" (affichées seulement si leur parent est ON). Le même
-// tableau visible est recalculé par numberOfSections/cellForRow/didSelect,
-// ce qui garantit un mapping index affiché → ligne logique toujours cohérent.
-// Après bascule d'un parent, la section est recalculée sans animation pour
-// éviter que les titres de catégories ne se déplacent.
+// Builds visible rows from fixed and conditional logical indexes.
+// Hidden child rows keep their stored defaults and are removed without animation.
 
-// Construit la liste triée des indexes logiques visibles d'une section.
-//   fixed       : indexes logiques toujours visibles, ex: @[@0, @1]
-//   conditional : dictionnaire {index logique : parent ON ?}, ex: @{@2:@(on)}
+// fixed = always visible rows; conditional = parent-dependent rows.
 static NSArray<NSNumber *> *S7TVVisibleRowIndexes(NSArray<NSNumber *> *fixed,
                                                   NSDictionary<NSNumber *, NSNumber *> *conditional) {
     NSMutableArray<NSNumber *> *visible = [fixed mutableCopy];
@@ -111,10 +83,7 @@ static NSArray<NSNumber *> *S7TVVisibleRowIndexes(NSArray<NSNumber *> *fixed,
     }];
 }
 
-// Met à jour une cellule de réglage sans recréer l'en-tête de sa catégorie et
-// sans laisser UITableView ajuster le contentOffset pendant la fermeture d'un
-// action sheet. Les menus de choix ne changent que le sous-titre de leur ligne
-// ; recharger toute la section provoquait donc un « bump » visuel des textes.
+// Updates one row without rebuilding the header or shifting the table offset.
 static void S7TVReloadCellWithoutJump(UITableView *tableView, UIView *anchor) {
     if (!tableView || ![anchor isKindOfClass:UITableViewCell.class]) return;
     NSIndexPath *indexPath = [tableView indexPathForCell:(UITableViewCell *)anchor];
@@ -129,9 +98,7 @@ static void S7TVReloadCellWithoutJump(UITableView *tableView, UIView *anchor) {
     [tableView setContentOffset:contentOffset animated:NO];
 }
 
-// Recharge une section dont le nombre de lignes change (par exemple les
-// sous-options de Custom proxy) sans animation de UITableView. L'en-tête reste
-// à sa position et le défilement est restauré après le recalcul des hauteurs.
+// Reloads a variable-length section without animation or scroll jumps.
 static void S7TVReloadSectionWithoutJump(UITableView *tableView, NSInteger section) {
     if (!tableView || section < 0 || section >= tableView.numberOfSections) return;
     CGPoint contentOffset = tableView.contentOffset;
@@ -143,9 +110,7 @@ static void S7TVReloadSectionWithoutJump(UITableView *tableView, NSInteger secti
     [tableView setContentOffset:contentOffset animated:NO];
 }
 
-// Certains choix modifient la structure de la table (par exemple la méthode
-// AdBlock ajoute ou retire une section). Même dans ce cas, désactiver les
-// animations implicites et restaurer le défilement évite le saut de l'en-tête.
+// Reloads the table when a choice changes its section structure.
 static void S7TVReloadDataWithoutJump(UITableView *tableView) {
     if (!tableView) return;
     CGPoint contentOffset = tableView.contentOffset;
@@ -156,8 +121,7 @@ static void S7TVReloadDataWithoutJump(UITableView *tableView) {
     [tableView setContentOffset:contentOffset animated:NO];
 }
 
-// Recharge une seule section après bascule d'un parent (apparition/disparition
-// des sous-options sans déplacement du titre de catégorie).
+// Reloads one dependent section after a parent switch.
 static void S7TVReloadSection(UITableView *tableView, NSInteger section) {
     S7TVReloadSectionWithoutJump(tableView, section);
 }
@@ -203,9 +167,7 @@ static void S7TVLoadSettingsEmoteImage(NSString *emoteID, UIImageView *imageView
     }];
 }
 
-// Favorite keys are provider-qualified (`7tv:<id>`, `bttv:<id>` or
-// `ffz:<id>`). Keep parsing strict here: a malformed value from an edited
-// export must never silently become a 7TV favorite.
+// Favorite keys include their provider; reject malformed export values.
 static BOOL S7TVSettingsParseFavoriteKey(NSString *key,
                                          S7TVEmoteProviderID *provider,
                                          NSString **emoteID) {
@@ -231,18 +193,13 @@ static NSString *S7TVSettingsCanonicalFavoriteKey(NSString *key) {
     NSString *emoteID = nil;
     if (S7TVSettingsParseFavoriteKey(key, &provider, &emoteID))
         return S7TVEmoteFavoriteKey(provider, emoteID);
-    // Settings imports from the legacy UI may still contain a bare 7TV ID.
-    // The catalogue normally canonicalizes these before they reach us, but
-    // keeping this fallback makes the list safe when an old export is opened
-    // while the catalogue is still warming up.
+    // Accept legacy bare 7TV IDs during import.
     if (![key containsString:@":"])
         return S7TVEmoteFavoriteKey(S7TVEmoteProviderIDSevenTV, key);
     return nil;
 }
 
-// Adapter used only by the Settings list. It lets the shared image cache use
-// the exact provider CDN URL and resolution instead of assuming every
-// favorite is a 7TV ID.
+// Settings adapter for provider-specific CDN URLs and resolutions.
 @interface S7TVSettingsCatalogResolvedEmote : NSObject <S7TVResolvedEmote>
 @property (nonatomic, strong) S7TVEmoteDescriptor *descriptor;
 @end
@@ -334,11 +291,9 @@ static UIView *S7TVFavoriteEmotePreview(NSArray<NSString *> *favoriteIDs) {
 }
 
 
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Helpers UI
-// ─────────────────────────────────────────────────────────────────────────────
 
-// Icône SF Symbol 22×22 pts
+// SF Symbol icon view.
 static UIImageView *S7TVIcon(NSString *sfName, UIColor *tint) {
     UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration
         configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
@@ -354,10 +309,7 @@ static UIImageView *S7TVIcon(NSString *sfName, UIColor *tint) {
     return iv;
 }
 
-// Cellule standard avec icône + titre + (optionnel) sous-titre + chevron
-// Style taille police identique Twitch natif : titre 17pt Regular, sous-titre 12pt Regular gris
-// infoKey (optionnel) : clé de description affichée derrière un bouton "i"
-// placé avant le chevron — remplace les longues descriptions permanentes.
+// Standard settings cell with icon, title, optional subtitle and info button.
 static UITableViewCell *S7TVNavCell(NSString *title,
                                      NSString *subtitle,
                                      NSString *sfName,
@@ -376,7 +328,7 @@ static UITableViewCell *S7TVNavCell(NSString *title,
 
     UILabel *titleLbl = [[UILabel alloc] init];
     titleLbl.text = title;
-    // Twitch natif : 17pt Regular (même poids que les cellules Settings iOS)
+    // Match native Twitch settings typography.
     titleLbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
     titleLbl.textColor = [UIColor whiteColor];
     titleLbl.numberOfLines = 1;
@@ -385,8 +337,7 @@ static UITableViewCell *S7TVNavCell(NSString *title,
     UIButton *infoButton = infoKey.length > 0
         ? [S7TVInfoTooltip infoButtonWithKey:infoKey] : nil;
 
-    // Le contentView se termine avant le chevron natif : un bouton ancré au
-    // trailing du contentView ne chevauche donc jamais l'accessoire.
+    // Keep the info button inside contentView, before the accessory.
     if (infoButton) {
         infoButton.translatesAutoresizingMaskIntoConstraints = NO;
         [cell.contentView addSubview:infoButton];
@@ -399,13 +350,13 @@ static UITableViewCell *S7TVNavCell(NSString *title,
     if (subtitle.length > 0) {
         UILabel *subLbl = [[UILabel alloc] init];
         subLbl.text = subtitle;
-        // Sous-titre : 12pt Regular gris (identique Twitch)
+        // Subtitle styling.
         subLbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
         subLbl.textColor = S7TVGray();
         subLbl.numberOfLines = 1;
         subLbl.translatesAutoresizingMaskIntoConstraints = NO;
 
-        // Stack vertical centré dans la cellule
+        // Center the title/subtitle stack.
         UIStackView *stack = [[UIStackView alloc]
             initWithArrangedSubviews:@[titleLbl, subLbl]];
         stack.axis      = UILayoutConstraintAxisVertical;
@@ -419,7 +370,7 @@ static UITableViewCell *S7TVNavCell(NSString *title,
             [icon.centerYAnchor   constraintEqualToAnchor:cell.contentView.centerYAnchor],
             [stack.leadingAnchor  constraintEqualToAnchor:icon.trailingAnchor constant:14],
             [stack.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
-            // Assure que le stack ne déborde pas verticalement
+            // Keep the stack inside the cell.
             [stack.topAnchor      constraintGreaterThanOrEqualToAnchor:cell.contentView.topAnchor constant:8],
             [stack.bottomAnchor   constraintLessThanOrEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
         ]];
@@ -437,7 +388,7 @@ static UITableViewCell *S7TVNavCell(NSString *title,
         [NSLayoutConstraint activateConstraints:@[
             [icon.leadingAnchor     constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
             [icon.centerYAnchor     constraintEqualToAnchor:cell.contentView.centerYAnchor],
-            // CRITIQUE : top+bottom pour que le label ait une hauteur résolue
+            // Required vertical constraints resolve multi-line labels.
             [titleLbl.topAnchor      constraintEqualToAnchor:cell.contentView.topAnchor constant:10],
             [titleLbl.bottomAnchor   constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
         ]];
@@ -454,7 +405,89 @@ static UITableViewCell *S7TVNavCell(NSString *title,
     return cell;
 }
 
-// Cellule de choix avec la valeur directement à droite du titre.
+static void S7TVLoadGitHubAvatar(UIImageView *imageView) {
+    NSURL *url = [NSURL URLWithString:kS7TVGitHubAvatarURL];
+    __weak UIImageView *weakImageView = imageView;
+    [[[NSURLSession sharedSession] dataTaskWithURL:url
+                                 completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        UIImage *image = data.length ? [UIImage imageWithData:data] : nil;
+        if (!image) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIImageView *view = weakImageView;
+            if (view) view.image = image;
+        });
+    }] resume];
+}
+
+static UITableViewCell *S7TVGitHubRepositoryCell(void) {
+    UITableViewCell *cell = [[UITableViewCell alloc]
+        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.backgroundColor = S7TVCellBg();
+    cell.selectedBackgroundView = [[UIView alloc] init];
+    cell.selectedBackgroundView.backgroundColor =
+        [UIColor colorWithWhite:1.0 alpha:0.06];
+
+    UIImageSymbolConfiguration *starConfig = [UIImageSymbolConfiguration
+        configurationWithPointSize:17 weight:UIImageSymbolWeightMedium];
+    UIImageView *star = [[UIImageView alloc]
+        initWithImage:[UIImage systemImageNamed:@"star" withConfiguration:starConfig]];
+    star.tintColor = S7TVAccent();
+    star.frame = CGRectMake(0, 0, 22, 22);
+    cell.accessoryView = star;
+
+    UIView *avatarRing = [[UIView alloc] init];
+    avatarRing.translatesAutoresizingMaskIntoConstraints = NO;
+    avatarRing.layer.cornerRadius = 19;
+    avatarRing.layer.borderWidth = 2;
+    avatarRing.layer.borderColor = S7TVAccent().CGColor;
+    avatarRing.clipsToBounds = YES;
+
+    UIImageView *avatar = [[UIImageView alloc] init];
+    avatar.translatesAutoresizingMaskIntoConstraints = NO;
+    avatar.contentMode = UIViewContentModeScaleAspectFill;
+    avatar.layer.cornerRadius = 16;
+    avatar.clipsToBounds = YES;
+    [avatarRing addSubview:avatar];
+    [cell.contentView addSubview:avatarRing];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.text = L(@"settings_github_title");
+    title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
+    title.textColor = UIColor.whiteColor;
+
+    UILabel *subtitle = [[UILabel alloc] init];
+    subtitle.text = L(@"settings_github_subtitle");
+    subtitle.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+    subtitle.textColor = S7TVGray();
+    subtitle.numberOfLines = 0;
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, subtitle]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 2;
+    stack.alignment = UIStackViewAlignmentLeading;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:stack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [avatarRing.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:8],
+        [avatarRing.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [avatarRing.widthAnchor constraintEqualToConstant:38],
+        [avatarRing.heightAnchor constraintEqualToConstant:38],
+        [avatar.leadingAnchor constraintEqualToAnchor:avatarRing.leadingAnchor constant:3],
+        [avatar.trailingAnchor constraintEqualToAnchor:avatarRing.trailingAnchor constant:-3],
+        [avatar.topAnchor constraintEqualToAnchor:avatarRing.topAnchor constant:3],
+        [avatar.bottomAnchor constraintEqualToAnchor:avatarRing.bottomAnchor constant:-3],
+        [stack.leadingAnchor constraintEqualToAnchor:avatarRing.trailingAnchor constant:6],
+        [stack.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+        [stack.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [stack.topAnchor constraintGreaterThanOrEqualToAnchor:cell.contentView.topAnchor constant:8],
+        [stack.bottomAnchor constraintLessThanOrEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
+    ]];
+    S7TVLoadGitHubAvatar(avatar);
+    return cell;
+}
+
+// Choice cell with the current value on the right.
 static UITableViewCell *S7TVRightValueNavCell(NSString *title,
                                                NSString *value,
                                                NSString *sfName,
@@ -505,10 +538,7 @@ static UITableViewCell *S7TVRightValueNavCell(NSString *title,
 
 static char kS7TVSwitchOnColorKey;
 
-// Garde l'icône d'un interrupteur synchronisée avec son état réel : quand
-// l'utilisateur bascule le switch, l'icône passe immédiatement en gris (OFF)
-// ou en couleur (ON), sans attendre un reload de la table (la plupart des
-// handlers de bascule ne relancent pas la tableView).
+// Keeps a switch icon synchronized immediately after toggling.
 @interface S7TVSwitchIconUpdater : NSObject
 + (void)s7tv_switchValueChanged:(UISwitch *)sw;
 @end
@@ -535,10 +565,7 @@ static char kS7TVSwitchOnColorKey;
 }
 @end
 
-// Cellule avec UISwitch
-// Titre 17pt Regular (identique Twitch natif), switch violet 7TV
-// infoKey (optionnel) : clé de description derrière un bouton "i" placé
-// entre le label et le switch (remplace les footers descriptifs).
+// Cell with a UISwitch and optional info button.
 static UITableViewCell *S7TVSwitchCell(NSString *title,
                                         NSString *sfName,
                                         UIColor  *iconTint,
@@ -556,14 +583,10 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
 
     UILabel *lbl = [[UILabel alloc] init];
     lbl.text = title;
-    // 17pt Regular = taille standard iOS Settings / Twitch natif
+    // Match native settings typography.
     lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
     lbl.textColor = [UIColor whiteColor];
-    // 0 = illimité (pas de troncature) — un libellé trop long pour tenir sur
-    // une ligne passe à la ligne au lieu d'être coupé avec "…". La hauteur de
-    // la cellule doit être en UITableViewAutomaticDimension côté delegate
-    // pour que ça s'affiche correctement (voir heightForRowAtIndexPath des
-    // controllers qui utilisent cette cellule).
+    // Allow long titles to wrap; callers provide automatic row height.
     lbl.numberOfLines = 0;
     lbl.translatesAutoresizingMaskIntoConstraints = NO;
     [cell.contentView addSubview:lbl];
@@ -572,8 +595,7 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
     sw.on          = isOn;
     sw.onTintColor = S7TVAccent();
     [sw addTarget:target action:action forControlEvents:UIControlEventValueChanged];
-    // Icône synchronisée avec l'état réel du switch (gris quand OFF, couleur
-    // quand ON) — voir S7TVSwitchIconUpdater.
+    // Icon color follows the switch state.
     objc_setAssociatedObject(sw, &kS7TVSwitchOnColorKey, iconTint,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [sw addTarget:[S7TVSwitchIconUpdater class]
@@ -593,19 +615,11 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
         [icon.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
         [icon.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
 
-        // Switch d'abord : taille intrinsèque fixe (UISwitch ne se redimensionne
-        // jamais), positionné uniquement par son trailing + centerY. Aucune
-        // contrainte de leading dessus — sinon un texte long crée un conflit
-        // avec le trailing fixe (constraint requise vs requise), qu'AutoLayout
-        // résout de façon imprévisible : c'était la cause du switch poussé hors
-        // de la cellule (et donc non tappable).
+        // Fix the switch to the trailing edge; do not constrain its leading edge.
         [sw.trailingAnchor   constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
         [sw.centerYAnchor    constraintEqualToAnchor:cell.contentView.centerYAnchor],
 
-        // Label : borné par le switch via un <= (pas un >= côté switch) — se
-        // compresse et tronque proprement (numberOfLines=1 + "…") si le texte
-        // est trop long pour la largeur disponible, sans jamais pousser le
-        // switch ni entrer en conflit avec sa position fixe ci-dessus.
+        // Bound the label by the switch so long text cannot move the switch.
         [lbl.leadingAnchor   constraintEqualToAnchor:icon.trailingAnchor constant:14],
         [lbl.topAnchor       constraintEqualToAnchor:cell.contentView.topAnchor constant:13],
         [lbl.bottomAnchor    constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-13],
@@ -627,8 +641,7 @@ static UITableViewCell *S7TVSwitchCell(NSString *title,
 
 static char kS7TVPlayerGestureSensitivityValueLabelKey;
 
-// Ligne de sensibilité : la valeur est modifiée par pas de 1 % avec un bouton
-// moins à gauche et un bouton plus à droite.
+// Sensitivity row with minus/plus controls.
 static UITableViewCell *S7TVPlayerGestureSensitivityCell(CGFloat value,
                                                           id target) {
     UITableViewCell *cell = [[UITableViewCell alloc]
@@ -713,10 +726,7 @@ static UITableViewCell *S7TVPlayerGestureSensitivityCell(CGFloat value,
     return cell;
 }
 
-// Header de section style Twitch : logo (optionnel) + texte gris uppercase
-// Identique visuellement au header "7TV SETTINGS" de la capture
-// infoKey (optionnel) : clé de description derrière un bouton "i" aligné à
-// droite du header (pour les descriptions qui concernent toute la section).
+// Twitch-style section header with optional logo and info button.
 static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo, NSString *infoKey) {
     UIView *container = [[UIView alloc] init];
     container.backgroundColor = [UIColor clearColor];
@@ -736,11 +746,11 @@ static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo, NSString *infoK
     }
 
     if (withLogo) {
-        // Petit logo 7TV à gauche du texte, comme sur la capture
-        NSData *d = [[NSData alloc]
-            initWithBase64EncodedString:kS7TVLogoBase64
+        // TwitchPlusK logo.
+        NSData *logoData = [[NSData alloc]
+            initWithBase64EncodedString:kS7TVTwitchPlusKLogoBase64
                                 options:NSDataBase64DecodingIgnoreUnknownCharacters];
-        UIImage *logoImg = d ? [UIImage imageWithData:d scale:2.0] : nil;
+        UIImage *logoImg = [UIImage imageWithData:logoData scale:2.0];
 
         if (logoImg) {
             UIImageView *iv = [[UIImageView alloc] initWithImage:logoImg];
@@ -751,8 +761,8 @@ static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo, NSString *infoK
             [NSLayoutConstraint activateConstraints:@[
                 [iv.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor constant:16],
                 [iv.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor constant:-8],
-                [iv.widthAnchor    constraintEqualToConstant:22],
-                [iv.heightAnchor   constraintEqualToConstant:16],
+                [iv.widthAnchor    constraintEqualToConstant:18],
+                [iv.heightAnchor   constraintEqualToConstant:14],
 
                 [lbl.leadingAnchor constraintEqualToAnchor:iv.trailingAnchor constant:6],
                 [lbl.bottomAnchor  constraintEqualToAnchor:container.bottomAnchor constant:-8],
@@ -769,7 +779,7 @@ static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo, NSString *infoK
         }
     }
 
-    // Header texte seul (sans logo)
+    // Text-only header.
     [NSLayoutConstraint activateConstraints:@[
         [lbl.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor constant:16],
         [lbl.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor constant:-8],
@@ -788,46 +798,31 @@ static UIView *S7TVSectionHeader(NSString *title, BOOL withLogo, NSString *infoK
     return container;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Méthode utilitaire commune pour styleTableView
-// ─────────────────────────────────────────────────────────────────────────────
 
 static void S7TVStyleTableView(UITableView *tv) {
     tv.backgroundColor   = S7TVBg();
     tv.separatorColor    = S7TVSeparatorColor();
     tv.separatorInset    = UIEdgeInsetsMake(0, 52, 0, 0);
-    // Défaut : hauteur de ligne auto-calculée à partir du contenu (nécessaire
-    // pour que S7TVSwitchCell puisse s'étendre sur 2 lignes — voir son
-    // commentaire numberOfLines=0). Les controllers qui ont besoin d'une
-    // hauteur fixe pour une section donnée (ex: liste de favoris à 52pt)
-    // gardent la priorité via leur propre heightForRowAtIndexPath: — cette
-    // valeur n'est qu'un filet de sécurité pour l'estimation initiale.
+    // Default to content-driven row heights; controllers can override.
     tv.rowHeight         = UITableViewAutomaticDimension;
     tv.estimatedRowHeight = 60;
 }
 
-// Re-style + reload un écran de réglages quand le mode OLED bascule : les
-// couleurs S7TVBg()/S7TVCellBg()/S7TVSeparatorColor() sont OLED-aware, mais
-// la table (fond + séparateurs) et ses cellules doivent être re-rendues pour
-// refléter la nouvelle palette.
+// Re-style and reload settings screens after an OLED-mode change.
 static void S7TVApplyOLEDStyle(UITableViewController *controller) {
     S7TVStyleTableView(controller.tableView);
     S7TVReloadDataWithoutJump(controller.tableView);
 }
 
-// Enregistre l'observateur de bascule OLED commun à tous les écrans de
-// réglages 7TV (chaque controller fournit son propre -s7tv_oledModeDidChange).
+// Registers the shared OLED-mode observer for a settings controller.
 static void S7TVRegisterOLEDObserver(id observer) {
     [[NSNotificationCenter defaultCenter] addObserver:observer
         selector:@selector(s7tv_oledModeDidChange)
             name:S7TVOLEDModeDidChangeNotification object:nil];
 }
 
-// Helper NSUserDefaults
-// Variante avec défaut ON : utilisée pour les clés qui doivent démarrer
-// activées tant que l'utilisateur n'a jamais touché au switch (ex. Auto
-// Collect Channel Points). boolForKey: seul renverrait NO en l'absence de
-// la clé, ce qui ne correspond pas au comportement par défaut souhaité.
+// Reads a boolean preference with an explicit default value.
 static BOOL S7TVBoolDefaultYes(NSString *key) {
     NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
     return [prefs objectForKey:key] != nil ? [prefs boolForKey:key] : YES;
@@ -837,14 +832,10 @@ static void S7TVSetBool(NSString *key, BOOL val) {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-// Résolution d'emote d'origine (miroir de kDefaultEmote7TVResolution dans
-// 7tv-chat-appearance-config.m — valeur non exportée).
+// Mirrors the default emote resolution from the appearance config.
 static const NSInteger kS7TVDefaultEmoteResolution = 2;
 
-// Suffixe "- Par défaut" / "- Default" pour les sous-titres des réglages à
-// menu de choix : aide à reconnaître la valeur d'origine. Ignoré quand le
-// titre est déjà exactement le mot "Par défaut" (écran au lancement), où le
-// marqueur serait purement redondant.
+// Adds a default-value suffix to choice subtitles when useful.
 static NSString *S7TVValueWithDefaultMark(NSString *value, BOOL isDefault) {
     if (!isDefault) return value;
     if ([value isEqualToString:L(@"launch_default")]) return value;
@@ -878,9 +869,7 @@ static NSString *S7TVPickerAnimationsModeTitle(S7TVPickerAnimationsMode mode) {
 }
 
 
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - Intégration dans les paramètres Twitch natifs
-// ============================================================
 
 static NSInteger s7tv_settingsOriginalSection(NSInteger section) {
     return section - 1;
@@ -920,10 +909,7 @@ static UIView *s7tv_settingsHeaderView(id self, SEL cmd, UITableView *tableView,
         return implementation(self, original, tableView, s7tv_settingsOriginalSection(section));
     }
 
-    // Pas de header de section : le titre "TwitchPlusK Settings" de la
-    // cellule suffit (un header au-dessus doublait le nom). Le logo 7TV est
-    // directement dans la cellule pour identifier d'un coup d'œil les
-    // paramètres du tweak.
+    // The cell title and logo identify the tweak; no duplicate section header.
     return [UIView new];
 }
 
@@ -965,12 +951,12 @@ static UITableViewCell *s7tv_settingsCell(id self, SEL cmd, UITableView *tableVi
     }
     cell.textLabel.text = L(@"title_7tv_settings");
     cell.textLabel.numberOfLines = 0;
-    // Logo 7TV à gauche du titre : identifie immédiatement les paramètres
-    // du tweak dans la liste native.
+    // TwitchPlusK logo.
     NSData *logoData = [[NSData alloc]
-        initWithBase64EncodedString:kS7TVLogoBase64
+        initWithBase64EncodedString:kS7TVTwitchPlusKLogoBase64
                             options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    if (logoData) cell.imageView.image = [UIImage imageWithData:logoData scale:2.0];
+    UIImage *logo = [UIImage imageWithData:logoData scale:6.0];
+    if (logo) cell.imageView.image = logo;
     return cell;
 }
 
@@ -1006,12 +992,10 @@ static void s7tv_settingsExchangeMethod(Class target, SEL originalSelector,
     }
 }
 
-// ============================================================
 // MARK: - SevenTVSettingsController  (Hub principal)
-// ─────────────────────────────────────────────────────────────────────────────
 
 typedef NS_ENUM(NSInteger, S7TVHomeSection) {
-    S7TVHomeSectionMain     = 0,  // 4 catégories : Apparence / Contenu / Adblock / Avancé
+    S7TVHomeSectionMain     = 0,  // Apparence, Contenu, Adblock, Avancé
     S7TVHomeSectionLanguage = 1,
 };
 
@@ -1050,7 +1034,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 }
 
 - (instancetype)init {
-    // InsetGrouped = angles arrondis natifs iOS, identique aux paramètres Twitch
+    // Match native Twitch settings.
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     return self;
 }
@@ -1060,9 +1044,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     S7TVStyleTableView(self.tableView);
     [self buildNavBar];
 
-    // Rafraîchit immédiatement titres/headers/labels si la langue change
-    // pendant que cet écran est affiché (toggle juste en dessous, section
-    // Langue) — pas besoin de fermer/rouvrir l'écran pour voir l'effet.
+    // Refresh visible text when the language changes.
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(s7tv_languageDidChange)
             name:S7TVLanguageDidChangeNotification object:nil];
@@ -1097,11 +1079,11 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 }
 
 - (void)buildNavBar {
-    // Titre nav bar : logo 7TV + "TwitchPlusK"
-    NSData *d = [[NSData alloc]
-        initWithBase64EncodedString:kS7TVLogoBase64
+    // Navigation title and logo.
+    NSData *logoData = [[NSData alloc]
+        initWithBase64EncodedString:kS7TVTwitchPlusKLogoBase64
                             options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    UIImage *logo = d ? [UIImage imageWithData:d scale:2.0] : nil;
+    UIImage *logo = [UIImage imageWithData:logoData scale:2.0];
 
     if (logo) {
         UIView *tv = [[UIView alloc] init];
@@ -1120,13 +1102,13 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
         [NSLayoutConstraint activateConstraints:@[
             [iv.leadingAnchor  constraintEqualToAnchor:tv.leadingAnchor],
             [iv.centerYAnchor  constraintEqualToAnchor:tv.centerYAnchor],
-            [iv.widthAnchor    constraintEqualToConstant:28],
-            [iv.heightAnchor   constraintEqualToConstant:20],
+                [iv.widthAnchor    constraintEqualToConstant:24],
+                [iv.heightAnchor   constraintEqualToConstant:18],
             [lbl.leadingAnchor constraintEqualToAnchor:iv.trailingAnchor constant:6],
             [lbl.centerYAnchor constraintEqualToAnchor:tv.centerYAnchor],
             [lbl.trailingAnchor constraintEqualToAnchor:tv.trailingAnchor],
         ]];
-        CGFloat w = 28 + 6 + [badgeText sizeWithAttributes:@{
+        CGFloat w = 24 + 6 + [badgeText sizeWithAttributes:@{
             NSFontAttributeName: [UIFont systemFontOfSize:17 weight:UIFontWeightBold]
         }].width;
         tv.frame = CGRectMake(0, 0, w, 20);
@@ -1150,19 +1132,22 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     }];
 }
 
-// ── TableView ──
+// Table view.
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     switch (s) {
         case S7TVHomeSectionMain:     return 4; // Apparence / Contenu / Adblock / Avancé
-        case S7TVHomeSectionLanguage: return 1;
+        case S7TVHomeSectionLanguage: return 2;
         default: return 0;
     }
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == S7TVHomeSectionLanguage && ip.row == 1) {
+        return UITableViewAutomaticDimension;
+    }
     return 60;
 }
 
@@ -1182,10 +1167,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     return s == S7TVHomeSectionMain ? UITableViewAutomaticDimension : 8;
 }
 
-// Résumé en pied de la section principale (remplace l'ancien écran
-// "Statistiques" séparé — ce n'était que du contenu en lecture seule, pas
-// un réglage. Recalculé à chaque affichage de l'écran (viewWillAppear),
-// pas de rafraîchissement en continu.
+// Read-only summary shown at the bottom of the main settings page.
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
     if (s != S7TVHomeSectionMain) {
         UIView *v = [[UIView alloc] init];
@@ -1229,13 +1211,13 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // Rafraîchit le résumé (compteurs d'emotes) à chaque retour sur l'accueil.
+    // Refresh emote counters when returning to the main page.
     [self.tableView reloadData];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 
-    // Section Main : Apparence / Contenu / Adblock / Avancé
+    // Main sections: Appearance / Content / Adblock / Advanced.
     if (ip.section == S7TVHomeSectionMain) {
         NSString *sfName, *title, *subtitle;
         UIColor *iconTint;
@@ -1246,14 +1228,15 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
             case 3: sfName=@"wrench.and.screwdriver.fill"; title=L(@"title_avance");    subtitle=L(@"menu_avance_subtitle"); iconTint=UIColor.systemIndigoColor; break;
             default: return [[UITableViewCell alloc] init];
         }
-        // Sous-titres courts de navigation (résumés de catégories) : gardés
-        // volontairement visibles, ils aident à comprendre le menu.
+        // Keep concise category summaries visible.
         return S7TVNavCell(title, subtitle, sfName, iconTint, nil);
     }
 
-    // Section Langue — segmented control FR/EN, pas un simple switch : il y a
-    // deux valeurs possibles (pas juste ON/OFF), un segmented rend l'état
-    // actuel immédiatement lisible sans avoir à lire un libellé à côté.
+    // Language selection uses a FR/EN segmented control.
+    if (ip.section == S7TVHomeSectionLanguage && ip.row == 1) {
+        return S7TVGitHubRepositoryCell();
+    }
+
     if (ip.section == S7TVHomeSectionLanguage) {
         UITableViewCell *cell = [[UITableViewCell alloc]
             initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
@@ -1287,10 +1270,7 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     return [[UITableViewCell alloc] init];
 }
 
-// Bascule la langue globale de l'app — persistée immédiatement (voir
-// S7TVLocalization.setCurrentLanguage:) et notifiée à tous les écrans de
-// réglages actuellement ouverts via S7TVLanguageDidChangeNotification
-// (voir s7tv_languageDidChange ci-dessus). Pas de redémarrage nécessaire.
+// Persists the selected language and refreshes open settings screens.
 - (void)languageSegmentChanged:(UISegmentedControl *)seg {
     [S7TVLocalization shared].currentLanguage =
         (seg.selectedSegmentIndex == 1) ? S7TVLanguageEnglish : S7TVLanguageFrench;
@@ -1298,6 +1278,16 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
+
+    if (ip.section == S7TVHomeSectionLanguage && ip.row == 1) {
+        NSURL *url = [NSURL URLWithString:kS7TVGitHubURL];
+        if (url) {
+            [[UIApplication sharedApplication] openURL:url
+                                               options:@{}
+                                     completionHandler:nil];
+        }
+        return;
+    }
 
     UIViewController *dest = nil;
     if (ip.section == S7TVHomeSectionMain) {
@@ -1314,17 +1304,13 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 @end
 
 
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - SevenTVAdblockPageController
-// Réglages du moteur TwitchAdBlock importé : le moteur et le proxy restent
-// séparables, et l'adresse intégrée peut être remplacée sans toucher au code.
-// ─────────────────────────────────────────────────────────────────────────────
+// TwitchAdBlock method and proxy settings.
 
 @interface SevenTVAdblockPageController () <UITextFieldDelegate>
 @property (nonatomic, assign) S7TVAdblockProxyStatus proxyStatus;
 @property (nonatomic, strong) NSMutableArray<NSString *> *proxies;
-// Incremented for each probe request so a slower callback from a previous
-// endpoint cannot overwrite the status of the currently selected endpoint.
+// Ignores probe callbacks from an older request.
 @property (nonatomic, assign) NSUInteger proxyStatusGeneration;
 @end
 
@@ -1344,7 +1330,7 @@ static NSString *S7TVAdblockDefaultProxyDisplayName(NSString *address) {
     return address.length ? address : L(@"adblock_proxy_builtin");
 }
 
-// Rows logiques de la section Général.
+// General-section rows.
 typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     S7TVAdblockGeneralRowMethod = 0,
     S7TVAdblockGeneralRowHideTurbo = 1,
@@ -1378,8 +1364,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // The functional probe runs only when entering the AdBlock screen (and
-    // after explicit configuration changes), never on a periodic timer.
+    // Probe on entry or explicit changes; no periodic timer.
     if (S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy &&
         S7TVAdblockProxyIsEnabled()) {
         [self refreshProxyStatus];
@@ -1398,28 +1383,24 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) {
-        // La cellule AdBlock reste toujours visible : sa valeur choisit
-        // directement Désactivé, Proxy ou Local (VAFT).
+        // Method selector: Disabled, Proxy or Local (VAFT).
         return [self s7tv_visibleGeneralRows].count;
     }
-    // En Local (VAFT), la section reste présente mais ne contient qu'une
-    // information fixe : ce moteur n'utilise aucun proxy vidéo configurable.
+    // Local (VAFT) shows an informational row; it has no proxy settings.
     if ([self s7tv_localVaftSectionVisible]) return 1;
     if (![self s7tv_proxySectionVisible]) return 0;
-    // The first row is the default-proxy selector; custom mode then adds one
-    // editable row per configured address before the add/status rows.
+    // Custom mode adds one editable row per configured address.
     return S7TVAdblockCustomProxyIsEnabled() ? 4 + self.proxies.count : 3;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     if (section == 1 && [self s7tv_localVaftSectionVisible]) {
-        // La note Local remplace entièrement l'en-tête « Proxy vidéo » :
-        // aucun titre de section proxy ne doit rester visible.
+        // Local mode replaces the proxy header with an informational note.
         UIView *empty = [[UIView alloc] init];
         empty.backgroundColor = UIColor.clearColor;
         return empty;
     }
-    // Le footer descriptif du proxy vit désormais derrière le "i" du header.
+    // Proxy details are shown from the header info button.
     return S7TVSectionHeader(section == 0 ? L(@"section_general")
                                           : L(@"adblock_section_proxy"), NO,
                              section == 0 ? nil : @"adblock_proxy_privacy_footer");
@@ -1430,19 +1411,18 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     return 44.0;
 }
 
-// Rows visibles de Général : le sélecteur remplace l'ancien toggle maître.
+// Visible General rows; the method selector replaces the old master toggle.
 - (NSArray<NSNumber *> *)s7tv_visibleGeneralRows {
     return @[@(S7TVAdblockGeneralRowMethod),
              @(S7TVAdblockGeneralRowHideTurbo)];
 }
 
-// La section Proxy vidéo suit la méthode sélectionnée dans les réglages.
+// Proxy rows follow the selected method.
 - (BOOL)s7tv_proxySectionVisible {
     return S7TVAdblockConfiguredMethod() == S7TVAdblockMethodProxy;
 }
 
-// Local (VAFT) partage la même mécanique de section dépendante que le Proxy,
-// mais n'expose volontairement aucun réglage de proxy.
+// Local (VAFT) uses the dependent-section mechanism without proxy rows.
 - (BOOL)s7tv_localVaftSectionVisible {
     return S7TVAdblockConfiguredMethod() == S7TVAdblockMethodLocalVaft;
 }
@@ -1474,8 +1454,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
         }
         switch (visible[indexPath.row].integerValue) {
             case S7TVAdblockGeneralRowMethod: {
-                // Sélecteur de méthode : Disabled / Proxy / Local (VAFT).
-                // La méthode configurée s'applique au prochain démarrage.
+                // Configured method: Disabled / Proxy / Local (VAFT).
                 S7TVAdblockMethod configured = S7TVAdblockConfiguredMethod();
                 NSString *valueKey = configured == S7TVAdblockMethodLocalVaft
                     ? @"adblock_method_value_local"
@@ -1495,9 +1474,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     }
 
     if (indexPath.section == 1 && [self s7tv_localVaftSectionVisible]) {
-        // Même construction qu'une cellule descriptive existante de la page
-        // Apparence : texte blanc, multi-ligne et hauteur intrinsèque, sans
-        // nouveau composant ni scroll interne.
+        // Reuse a multi-line descriptive cell without an inner scroll view.
         UITableViewCell *cell = [[UITableViewCell alloc]
             initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -1519,9 +1496,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
         return cell;
     }
 
-    // La section 1 ne peut être Proxy qu'après les deux tests ci-dessus ; ce
-    // garde évite qu'une préférence devenue Local ne réaffiche une cellule
-    // proxy pendant une transition/reload de la table.
+    // Keep Proxy rows hidden while the configured method is not Proxy.
     if (indexPath.section != 1 || ![self s7tv_proxySectionVisible]) {
         return [[UITableViewCell alloc] init];
     }
@@ -1566,10 +1541,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     }
 }
 
-// Action sheet Proxy / Local (VAFT). La sélection modifie uniquement la
-// méthode CONFIGURÉE ; la méthode ACTIVE est figée au lancement du processus.
-// Si la configuration diffère de la méthode active, un message de redémarrage
-// nommant la méthode choisie est affiché immédiatement.
+// Method action sheet. Selection changes the configured method only.
 - (void)presentMethodActionSheetFromCell:(UITableViewCell *)anchor {
     UIAlertController *sheet = [UIAlertController
         alertControllerWithTitle:L(@"adblock_method_title")
@@ -1603,37 +1575,31 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 
 - (void)s7tv_applyConfiguredMethod:(S7TVAdblockMethod)method {
     S7TVAdblockSetConfiguredMethod(method);
-    // The method selector is now the master control for the proxy engine;
-    // selecting Proxy must also keep the legacy per-proxy flag enabled.
+    // Keep the legacy proxy flag synchronized when Proxy is selected.
     if (method == S7TVAdblockMethodProxy) S7TVAdblockSetProxyEnabled(YES);
     S7TVAdblockMethod active = S7TVAdblockActiveMethod();
     if (method == S7TVAdblockMethodDisabled) {
-        // Désactiver doit couper immédiatement le moteur actuellement chargé.
+        // Disable the currently loaded engine immediately.
         S7TVAdblockSetEnabled(NO);
     } else if (method == active) {
-        // Même moteur : le choix remplace l'ancien toggle maître et peut être
-        // appliqué sans redémarrage.
+        // The active method can be applied without a restart.
         S7TVAdblockSetEnabled(YES);
     } else {
-        // Autre moteur : ne pas modifier le snapshot courant avant le restart.
+        // Keep the active snapshot until restart when switching engines.
         S7TVAdblockSetEnabledForNextLaunch(YES);
     }
-    // Le nombre de sections change avec la méthode (section Proxy vidéo).
+    // The number of sections depends on the selected method.
     S7TVReloadDataWithoutJump(self.tableView);
 
-    // Une sélection Proxy alors que ce moteur est déjà actif constitue une
-    // demande explicite de revalidation de son endpoint. Si un redémarrage
-    // est nécessaire, le contrôle sera effectué à la prochaine entrée dans
-    // cet écran, une fois le nouveau moteur réellement chargé.
+    // Revalidate the endpoint when Proxy is already active.
     if (method == S7TVAdblockMethodProxy && method == active &&
         S7TVAdblockProxyIsEnabled()) {
         self.proxyStatus = S7TVAdblockProxyStatusUnknown;
         [self refreshProxyStatus];
     }
 
-    // Méthode configurée != méthode active → redémarrage Twitch requis,
-    // en nommant explicitement la méthode choisie.
-    if (method == active) return; // déjà active
+    // A configured/active mismatch requires a Twitch restart.
+    if (method == active) return;
 
     NSString *message;
     switch (method) {
@@ -1755,8 +1721,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
             break;
     }
 
-    // Keep the manual probe in the status row so it is always next to the
-    // result. It uses the same authenticated /ping check as automatic probes.
+    // Keep the manual probe next to its result and use the authenticated check.
     UIButton *pingButton = [UIButton buttonWithType:UIButtonTypeSystem];
     UIImageSymbolConfiguration *pingSymbolConfiguration =
         [UIImageSymbolConfiguration configurationWithPointSize:14.0
@@ -1768,9 +1733,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
                                                      weight:UIFontWeightSemibold];
     pingButton.tintColor = S7TVAccent();
     pingButton.contentEdgeInsets = UIEdgeInsetsMake(4.0, 8.0, 4.0, 8.0);
-    // Give the accessory an explicit frame: some Twitch table-cell styles do
-    // not propagate UIButton's intrinsic size when it is used as an accessory,
-    // which could make the control effectively invisible.
+    // Explicitly size the accessory for Twitch cell styles.
     pingButton.frame = CGRectMake(0.0, 0.0, 36.0, 32.0);
     pingButton.accessibilityLabel = L(@"adblock_proxy_status_ping");
     [pingButton addTarget:self action:@selector(manualProxyPing:)
@@ -1791,8 +1754,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
         return;
     }
 
-    // The in-flight Checking state disables the button until this asynchronous
-    // probe finishes; subsequent taps start a fresh probe immediately.
+    // Disable the button while the asynchronous probe is running.
     [self refreshProxyStatus];
 }
 
@@ -2028,14 +1990,8 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 @end
 
 
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - SevenTVAppearancePageController  (ex-SevenTVEmotesPageController)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Affichage des emotes (animations + résolution CDN 7TV). Le kill switch du
-// renderer est désormais rangé dans Avancé : ce n'est pas un réglage visuel.
-// Organisation : section 0 = note d'introduction (où trouver les réglages du
-// chat custom), section 1 = Thème, section 2 = Émotes.
+// Emote animation and CDN resolution settings.
 typedef NS_ENUM(NSInteger, S7TVAppearanceSection) {
     S7TVAppearanceSectionIntro = 0,
     S7TVAppearanceSectionTheme = 1,
@@ -2090,11 +2046,7 @@ static UIImage *S7TVExternalProviderLogo(S7TVExternalEmoteProvider provider) {
         initWithBase64EncodedString:base64
                              options:NSDataBase64DecodingIgnoreUnknownCharacters];
     if (!data.length) return nil;
-    // UITableViewCell's built-in imageView uses the UIImage point size for
-    // layout. The bundled provider assets do not have the same pixel canvas:
-    // 7TV is a 76x56 mark while BTTV/FFZ are 384x384. Give each source its
-    // native Retina scale so all three logos occupy the same compact visual
-    // footprint instead of making the 7TV mark almost invisible.
+    // Use each provider asset's native scale to normalize logo sizes.
     CGFloat logicalScale = provider == S7TVExternalEmoteProvider7TV ? 3.5 : 16.0;
     UIImage *image = [UIImage imageWithData:data scale:logicalScale];
     return [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
@@ -2112,9 +2064,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
         : L(@"setting_emote_providers_none");
 }
 
-// Les trois providers restent indépendants, mais leur réglage est regroupé
-// dans une seule ligne. Cette page à coches évite trois interrupteurs côte à
-// côte tout en gardant une sélection explicite et facilement réversible.
+// Group provider selection in one check-list while keeping providers independent.
 @interface S7TVProviderSelectionController : UITableViewController
 @property (nonatomic, copy, nullable) void (^onFinish)(void);
 @end
@@ -2141,8 +2091,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
     [super viewDidLoad];
     self.title = L(@"setting_emote_providers");
     S7TVStyleTableView(self.tableView);
-    // Reprendre l'accent violet des menus de choix TwitchPlusK pour les
-    // coches et les boutons de navigation (iOS utilise sinon le bleu système).
+    // Use the TwitchPlusK purple accent for checks and navigation.
     self.view.tintColor = S7TVAccent();
     self.tableView.tintColor = S7TVAccent();
     self.navigationController.navigationBar.tintColor = S7TVAccent();
@@ -2254,9 +2203,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-// Lignes visibles de la section Émotes. Les trois modes d'animation sont
-// regroupés dans un seul menu de choix ; les anciennes préférences booléennes
-// restent utilisées en interne pour préserver les exports et la compatibilité.
+// Visible emote rows; legacy animation preferences remain compatible.
 - (NSArray<NSNumber *> *)s7tv_visibleEmoteRows {
     return S7TVVisibleRowIndexes(@[
         @(S7TVAppearanceEmoteRowResolution),
@@ -2293,8 +2240,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
-    // L'explication "résolution élevée = plus net mais plus lourd" vit
-    // désormais derrière le bouton "i" de la ligne de résolution.
+    // Resolution details are shown from the row info button.
     UIView *v = [[UIView alloc] init];
     v.backgroundColor = [UIColor clearColor];
     return v;
@@ -2302,8 +2248,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     if (ip.section == S7TVAppearanceSectionIntro) {
-        // Note d'introduction : les réglages du chat custom vivent dans le
-        // panneau du picker (bouton « Aa »), pas dans cette page.
+        // Chat settings are available from the picker ("Aa").
         UITableViewCell *cell = [[UITableViewCell alloc]
             initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -2358,11 +2303,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
             }
             case S7TVAppearanceEmoteRowResolution:
             default: {
-                // Menu de choix (action sheet) plutôt qu'un segmented : même
-                // logique que "Écran au lancement" — la valeur courante sert de
-                // sous-titre (marquée "- Par défaut" quand c'est celle d'origine),
-                // le tap ouvre la liste des résolutions. La longue explication
-                // (cache vidé, impact mémoire) est derrière le bouton "i".
+                // Use the standard choice sheet; details are behind the info button.
                 NSInteger current = [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution;
                 current = MIN(4, MAX(1, current));
                 return S7TVNavCell(L(@"setting_emote_resolution"),
@@ -2521,9 +2462,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
                   preferredStyle:UIAlertControllerStyleActionSheet];
     sheet.view.tintColor = S7TVAccent();
     NSArray<NSString *> *labels = @[@"7TV", @"BetterTTV", @"FrankerFaceZ"];
-    // La priorité est éditée via trois presets explicites : cela reste
-    // utilisable avec VoiceOver et évite un contrôle drag fragile dans un
-    // écran de réglages injecté dans Twitch.
+    // Use explicit presets for VoiceOver compatibility.
     NSArray<NSArray<NSString *> *> *orders = @[
         @[@"7tv", @"bttv", @"ffz"],
         @[@"bttv", @"7tv", @"ffz"],
@@ -2535,8 +2474,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
     for (NSUInteger index = 0; index < orders.count; index++) {
         NSArray *order = orders[index];
         NSString *title = @"";
-        // Afficher les vrais noms dans l'ordre proposé, sans dépendre d'une
-        // éventuelle traduction partielle des providers.
+        // Keep provider names explicit and ordered.
         NSMutableArray *names = [NSMutableArray array];
         for (NSString *identifier in order) {
             S7TVExternalEmoteProvider p = S7TVEmoteProviderFromIdentifier(identifier);
@@ -2561,9 +2499,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
-// Menu de choix de la résolution des emotes (action sheet, même logique que
-// le picker "Écran au lancement" de la page Contenu) : ✓ sur la valeur
-// courante, Annuler, puis vidage du cache si la résolution change.
+// Emote-resolution choice sheet; clear the cache when the value changes.
 - (void)presentResolutionPickerFromCell:(UIView *)anchor {
     UIAlertController *sheet = [UIAlertController
         alertControllerWithTitle:L(@"setting_emote_resolution")
@@ -2595,11 +2531,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
     SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
     if (resolution == cfg.emoteImageResolution) return;
 
-    // Enregistrer d'abord : tout nouveau chargement créé pendant le refresh
-    // utilisera immédiatement l'URL /Nx.webp choisie.
-    // Use the config's common size setter so the value is persisted, the
-    // legacy `emote7TVResolution` alias stays synchronized, and the shared
-    // appearance-change notification reaches the picker/chat immediately.
+    // Persist through the shared setter so aliases and UI notifications stay in sync.
     [cfg setValue:(CGFloat)resolution forSizeKey:@"emoteImageResolution"];
     __weak typeof(self) weakSelf = self;
     [[SevenTVManager sharedManager] clearAllCachesWithCompletion:^(NSUInteger clearedCount) {
@@ -2612,22 +2544,16 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
 
 
 
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - SevenTVContentPageController  (ex-Statistiques + ex-Contrôle du stream)
-// Favoris (liste + import) et réglages liés au stream, regroupés sous
-// "Contenu" — l'ancien écran Statistiques n'affichait que du contenu en
-// lecture seule (déplacé en résumé sur l'accueil) ; Auto Collect Channel
-// Points, seul réglage de l'ancien écran "Contrôle du stream", rejoint ici.
-// ─────────────────────────────────────────────────────────────────────────────
+// Favorites, stream options and player settings.
 
 typedef NS_ENUM(NSInteger, S7TVContentSection) {
-    S7TVContentSectionFavorites = 0,  // Mes favoris (liste + import intégré)
-    S7TVContentSectionHome      = 1,  // Accueil/lecture + points + rotation
-    S7TVContentSectionPlayer    = 2,  // Lecteur et gestes
+    S7TVContentSectionFavorites = 0,  // Favorites and import
+    S7TVContentSectionHome      = 1,  // Home, points and rotation
+    S7TVContentSectionPlayer    = 2,  // Player and gestures
 };
 
-// Rows logiques de la section « Accueil et lecture » (rotation et récupération
-// auto des points y sont fusionnées).
+// Rows for the Home and Playback section.
 typedef NS_ENUM(NSInteger, S7TVContentHomeRow) {
     S7TVContentHomeRowLaunchScreen   = 0,
     S7TVContentHomeRowHideStories    = 1,
@@ -2659,9 +2585,7 @@ static NSString *S7TVPlayerGestureAssignmentTitle(
     }
 }
 
-// Valeurs présentées dans une seule ligne de réglage. « Manuel » et les
-// trois modes automatiques sont mappés sur les deux préférences historiques
-// (bouton activé + mode auto) afin de conserver le comportement runtime actuel.
+// Maps the four display modes to the two legacy runtime preferences.
 typedef NS_ENUM(NSInteger, S7TVOrientationLockSetting) {
     S7TVOrientationLockSettingDisabled = 0,
     S7TVOrientationLockSettingManual,
@@ -2719,9 +2643,7 @@ static NSString *S7TVOrientationLockSettingTitle(S7TVOrientationLockSetting sett
 
 static NSString *const kS7TVPCFavoritesKey = @"ui.emote_menu.favorites";
 
-// Les exports 7TV PC ne sont pas toujours au même niveau selon la version.
-// Les chemins connus restent prioritaires, puis on cherche la clé sémantique
-// dans les dictionnaires imbriqués sans dépendre d'un numéro de format.
+// Supports known 7TV PC export nesting without relying on a format number.
 static NSArray *S7TVFindPCFavoritesArray(id object, NSUInteger depth) {
     if (depth > 24) return nil;
 
@@ -2749,7 +2671,7 @@ static NSArray *S7TVPCFavoritesArrayFromJSON(id json) {
 
     NSDictionary *root = (NSDictionary *)json;
 
-    // Format actuel : { "scopes": { "global": { ... } } }.
+    // Current format: { "scopes": { "global": { ... } } }.
     NSDictionary *scopes = [root[@"scopes"] isKindOfClass:NSDictionary.class]
         ? root[@"scopes"] : nil;
     NSDictionary *global = [scopes[@"global"] isKindOfClass:NSDictionary.class]
@@ -2757,7 +2679,7 @@ static NSArray *S7TVPCFavoritesArrayFromJSON(id json) {
     id favorites = global[kS7TVPCFavoritesKey];
     if ([favorites isKindOfClass:NSArray.class]) return favorites;
 
-    // Formats précédents connus.
+    // Previous known formats.
     NSDictionary *settings = [root[@"settings"] isKindOfClass:NSDictionary.class]
         ? root[@"settings"] : nil;
     favorites = settings[kS7TVPCFavoritesKey];
@@ -2766,7 +2688,7 @@ static NSArray *S7TVPCFavoritesArrayFromJSON(id json) {
     favorites = root[kS7TVPCFavoritesKey];
     if ([favorites isKindOfClass:NSArray.class]) return favorites;
 
-    // Fallback borné pour une future évolution de l'imbrication.
+    // Bounded fallback for future nesting changes.
     return S7TVFindPCFavoritesArray(root, 0);
 }
 
@@ -2839,7 +2761,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // Rafraîchit le compteur de favoris à chaque retour sur cet écran.
+    // Refresh the favorite count when returning to this screen.
     [self.tableView reloadData];
 }
 
@@ -2848,7 +2770,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
     [S7TVInfoTooltip dismiss];
 }
 
-// Lignes visibles de la section « Accueil et lecture ».
+// Visible Home and Playback rows.
 - (NSArray<NSNumber *> *)s7tv_visibleHomeRows {
     return S7TVVisibleRowIndexes(@[
         @(S7TVContentHomeRowLaunchScreen),
@@ -2882,7 +2804,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
-    // Ligne favoris : titre + sous-titre d'export → hauteur standard.
+    // Favorites row: title and export subtitle.
     if (ip.section == S7TVContentSectionFavorites) return 60;
     return UITableViewAutomaticDimension;
 }
@@ -2894,8 +2816,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     switch (s) {
         case S7TVContentSectionFavorites: return S7TVSectionHeader(L(@"section_favoris"), NO, nil);
-        // Descriptions de section déplacées derrière le "i" du header
-        // (ex-footers descriptifs affichés en permanence).
+        // Section details are available from the header info button.
         case S7TVContentSectionHome:      return S7TVSectionHeader(L(@"section_home_playback"), NO,
                                               @"desc_home_playback_settings");
         case S7TVContentSectionPlayer:    return S7TVSectionHeader(L(@"section_player_controls"), NO, nil);
@@ -2908,8 +2829,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
 }
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
-    // Les descriptions de section (auto-collect, accueil/lecture, rotation)
-    // vivent désormais derrière les boutons "i" des headers/lignes.
+    // Section details are shown through header or row info buttons.
     UIView *v = [[UIView alloc] init];
     v.backgroundColor = [UIColor clearColor];
     return v;
@@ -2917,9 +2837,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 
-    // ── Section Accueil et lecture : écran de lancement, stories, fil Live,
-    //    points de chaîne et rotation (fusion des anciennes sections
-    //    Stream / Accueil / Rotation) ──────────────────────────────────────
+    // Home and Playback: launch screen, stories, live feed, points and rotation.
     if (ip.section == S7TVContentSectionHome) {
         NSArray<NSNumber *> *visible = [self s7tv_visibleHomeRows];
         if (ip.row >= (NSInteger)visible.count) return [[UITableViewCell alloc] init];
@@ -3006,8 +2924,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
         return [[UITableViewCell alloc] init];
     }
 
-    // ── Section Favoris : une seule ligne « Mes favoris » (liste + compteur +
-    //    import intégré via le bouton flèche) ──────────────────────────────
+    // Favorites section: list, count and integrated import.
     NSArray *favs = [[S7TVEmoteCatalog sharedCatalog] favoriteKeysSnapshot];
 
     UITableViewCell *cell = [[UITableViewCell alloc]
@@ -3048,8 +2965,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
     countLbl.textColor = [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0];
     countLbl.translatesAutoresizingMaskIntoConstraints = NO;
 
-    // Import intégré : ouvre le même sélecteur de fichier que l'ancienne
-    // ligne dédiée « Importer depuis PC ».
+    // Integrated import uses the existing file picker.
     UIButton *importBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     UIImageSymbolConfiguration *importCfg = [UIImageSymbolConfiguration
         configurationWithPointSize:15 weight:UIImageSymbolWeightMedium];
@@ -3238,9 +3154,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
-// Menu de choix du verrouillage (action sheet, même logique que le picker
-// « Écran au lancement ») : ✓ sur le mode courant, Annuler, puis application
-// immédiate et rechargement de la section pour rafraîchir le sous-titre.
+// Orientation-lock choice sheet; apply immediately and refresh the row.
 - (void)presentOrientationLockSettingPickerFromCell:(UIView *)anchor {
     UIAlertController *sheet = [UIAlertController
         alertControllerWithTitle:L(@"switch_orientation_lock_button")
@@ -3300,8 +3214,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
         alertControllerWithTitle:L(@"setting_launch_screen")
                           message:nil
                    preferredStyle:UIAlertControllerStyleActionSheet];
-    // Textes des actions en violet (accent des settings) au lieu du bleu
-    // système — s'applique à toutes les actions non-destructives du menu.
+    // Use the settings purple accent for non-destructive actions.
     sheet.view.tintColor = S7TVAccent();
     S7TVLaunchDestination current = s7tv_launchDestination();
     for (NSInteger raw = S7TVLaunchDestinationDefault;
@@ -3326,8 +3239,7 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
-// ── Import favoris depuis fichier JSON 7TV PC (inchangé, déplacé depuis
-// l'ancien SevenTVStatsPageController) ──────────────────────────────────────
+// Import favorites from a 7TV PC JSON export.
 
 - (void)importFavoritesFromFile {
 #pragma clang diagnostic push
@@ -3370,7 +3282,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
 
-    // Extraire uniquement les IDs 7TV et ignorer les entrées PLATFORM:.
+    // Keep 7TV IDs and ignore PLATFORM entries.
     NSArray<NSString *> *newIDs = S7TVSevenTVIDsFromPCFavorites(rawFavs);
 
     if (newIDs.count == 0) {
@@ -3414,10 +3326,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 
 
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - SevenTVFavoritesListController
-// Liste de toutes les emotes en favoris (clés provider + noms résolus).
-// ─────────────────────────────────────────────────────────────────────────────
+// Favorite emotes with provider-qualified keys and resolved names.
 
 @interface SevenTVFavoritesListController ()
 - (void)s7tv_scheduleFavoriteNameCacheSave;
@@ -3427,9 +3337,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 @end
 
 @implementation SevenTVFavoritesListController {
-    NSArray<NSString *> *_favKeys;     // provider-qualified keys
+    NSArray<NSString *> *_favKeys;     // Provider-qualified keys.
     NSDictionary<NSString *, S7TVEmoteDescriptor *> *_keyToDescriptor;
-    NSDictionary<NSString *, NSString *> *_idToName; // key/id → emoteName
+    NSDictionary<NSString *, NSString *> *_idToName; // Key/ID to name.
     NSMutableDictionary<NSString *, NSString *> *_favoriteNameCache;
     NSMutableSet<NSString *> *_nameFetchesInFlight;
     NSURLSession *_favoriteNameSession;
@@ -3469,7 +3379,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         [[S7TVEmoteCatalog sharedCatalog] loadChannelProvidersForTwitchID:channelID];
     [self reloadFavs];
 
-    // Bouton Vider
+    // Clear button.
     UIBarButtonItem *clear = [[UIBarButtonItem alloc]
         initWithTitle:L(@"common_empty_action")
                 style:UIBarButtonItemStylePlain
@@ -3506,8 +3416,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
     _favKeys = [[catalog favoriteKeysSnapshot] copy];
 
-    // Commencer par les noms persistés : un favori importé peut ne pas faire
-    // partie des emotes globales ou de la chaîne actuellement ouverte.
+    // Start with persisted names; imported favorites may be offline or channel-specific.
     NSMutableDictionary *map = [NSMutableDictionary dictionary];
     NSMutableDictionary *descriptorMap = [NSMutableDictionary dictionary];
     for (NSInteger provider = S7TVEmoteProviderIDSevenTV;
@@ -3518,10 +3427,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
             if (key.length) descriptorMap[key] = descriptor;
         }
     }
-    // Hydrate provider-aware metadata for favorites that belong to a
-    // different channel (or that are being viewed offline).  Without this
-    // merge BTTV/FFZ entries could remain as opaque IDs in Settings even
-    // though the picker still knows their persisted name and CDN URL.
+    // Merge provider metadata so offline or other-channel favorites keep their names and URLs.
     for (S7TVEmoteDescriptor *descriptor in [catalog favoriteDescriptorsSnapshot]) {
         NSString *key = S7TVEmoteFavoriteKey(descriptor.provider, descriptor.emoteID);
         if (!key.length) continue;
@@ -3635,7 +3541,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     }
 }
 
-// ── TableView ──
+// Table view.
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 1; }
 
@@ -3660,7 +3566,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 
-    // Cas liste vide
+    // Empty state.
     if (_favKeys.count == 0) {
         UITableViewCell *cell = [[UITableViewCell alloc]
             initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
@@ -3695,7 +3601,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     cell.selectedBackgroundView = [[UIView alloc] init];
     cell.selectedBackgroundView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.06];
 
-    // Image emote (chargée via URLCache si dispo)
+    // Emote image, using URLCache when available.
     UIImageView *thumb = [[UIImageView alloc] init];
     thumb.contentMode = UIViewContentModeScaleAspectFit;
     thumb.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3705,7 +3611,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (descriptor) S7TVLoadSettingsCatalogEmoteImage(descriptor, thumb);
     else if (provider == S7TVEmoteProviderIDSevenTV) S7TVLoadSettingsEmoteImage(emoteID, thumb);
 
-    // Labels
+    // Labels.
     UILabel *nameLbl = [[UILabel alloc] init];
     nameLbl.text = name.length ? name : providerName;
     nameLbl.font = [UIFont systemFontOfSize:15 weight:
@@ -3716,7 +3622,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [cell.contentView addSubview:nameLbl];
 
     UILabel *idLbl = [[UILabel alloc] init];
-    // Tronquer l'ID pour ne pas déborder
+    // Keep long IDs within the cell.
     NSString *shortID = emoteID.length > 14
         ? [NSString stringWithFormat:@"%@…", [emoteID substringToIndex:14]]
         : emoteID;
@@ -3733,7 +3639,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [cell.contentView addSubview:stack];
 
-    // Bouton supprimer (swipe to delete géré via editingStyle, mais on ajoute aussi un bouton trash)
+    // Delete button; swipe-to-delete is handled by editingStyle.
     [NSLayoutConstraint activateConstraints:@[
         [thumb.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
         [thumb.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
@@ -3749,7 +3655,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     return cell;
 }
 
-// Swipe-to-delete
+// Swipe-to-delete.
 - (BOOL)tableView:(UITableView *)tv canEditRowAtIndexPath:(NSIndexPath *)ip {
     return _favKeys.count > 0;
 }
@@ -3773,7 +3679,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
 }
 
-// Bouton Vider
+// Clear button.
 - (void)clearAllFavs {
     if (_favKeys.count == 0) return;
     UIAlertController *alert = [UIAlertController
@@ -3800,12 +3706,8 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 
 
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - S7TVHookDiagnosticsController
-// Reprise de TWABDiagnosticsVC (TwitchAdBlock) : les lignes indiquent si les
-// classes et selectors ciblés par les hooks se résolvent dans cette version
-// de Twitch, regroupés par moteur.
-// ─────────────────────────────────────────────────────────────────────────────
+// Reports whether targeted classes and selectors resolve in this Twitch build.
 
 @interface S7TVHookDiagnosticsController : UITableViewController
 @property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *items;
@@ -3832,8 +3734,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                    name:S7TVEmoteProviderSettingsDidChangeNotification object:nil];
     [self reloadDiagnostics];
 
-    // Même comportement que TwitchAdBlock si l'écran est présenté sans pile
-    // de navigation : le bouton Done ferme uniquement cet écran.
+    // If presented without navigation, Done closes this screen.
     BOOL presentedRoot = self.navigationController.viewControllers.firstObject == self &&
         self.navigationController.presentingViewController != nil;
     if (presentedRoot) {
@@ -3849,8 +3750,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // TwitchPlusK installe certains hooks après le chargement d'un framework ;
-    // relire le même registre ici reflète leur état réel au moment consulté.
+    // Read the shared hook registry after all runtime hooks are installed.
     [self reloadDiagnostics];
 }
 
@@ -3972,8 +3872,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 }
 
 - (NSArray<NSDictionary<NSString *, id> *> *)s7tv_itemsForGroup:(NSInteger)group {
-    // UI section 0 is reserved for the provider API rows and section 3 for
-    // Auto Claim; only the remaining sections map to hook groups.
+    // Sections 0 and 3 are reserved for provider API and Auto Claim rows.
     if (group < 1 || group > 4 || group == 3) return @[];
     NSInteger hookGroup = group <= 2 ? group - 1 : group - 2;
     NSPredicate *predicate = [NSPredicate predicateWithBlock:
@@ -4046,8 +3945,7 @@ forRowAtIndexPath:(NSIndexPath *)ip {
                 status = L(@"diagnostics_api_error");
                 NSString *detail = item[@"errorMessage"];
                 if (detail.length) {
-                    // Keep an API error useful without allowing a server
-                    // response to make the diagnostics row unbounded.
+                    // Keep API errors useful without unbounded row height.
                     if (detail.length > 96)
                         detail = [[detail substringToIndex:96]
                             stringByAppendingString:@"…"];
@@ -4142,27 +4040,17 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 3) return L(@"diagnostics_autoclaim_subtitle");
-    // Le rappel de lecture n'est affiché qu'une seule fois, sous le dernier
-    // groupe, pour conserver les trois sections immédiatement lisibles.
+    // Show the playback note once below the last group.
     return section == 4 ? L(@"diagnostics_footer") : nil;
 }
 
 @end
 
 
-// ─────────────────────────────────────────────────────────────────────────────
 // MARK: - SevenTVAdvancedPageController  (ex-SevenTVDebugPageController)
-// Diagnostic — reste un vrai menu utilisateur (projet open source, les logs
-// servent aussi à d'autres personnes pour remonter des bugs), pas un mode
-// caché type "tap x5". Le kill switch du chat custom vit dans Options afin
-// de rester disponible sans occuper la page Apparence. "Vider le cache"
-// (ex-"Recharger les emotes" de l'accueil) atterrit ici en premier.
-// ─────────────────────────────────────────────────────────────────────────────
+// Diagnostics, cache, options and settings transfer.
 
-// Return every image URL currently known by the provider-aware catalogue.
-// The cache is shared by 7TV, BTTV and FFZ, while the old counter only indexed
-// 7TV IDs. Keeping the URL collection here lets the network layer inspect the
-// actual NSURLCache contents without duplicating provider parsing in Settings.
+// Returns all image URLs known by the shared provider-aware catalogue.
 static NSArray<NSURL *> *S7TVAdvancedKnownEmoteImageURLs(void) {
     S7TVEmoteCatalog *catalog = [S7TVEmoteCatalog sharedCatalog];
     NSMutableArray<NSURL *> *urls = [NSMutableArray array];
@@ -4171,8 +4059,7 @@ static NSArray<NSURL *> *S7TVAdvancedKnownEmoteImageURLs(void) {
     void (^appendDescriptor)(S7TVEmoteDescriptor *) = ^(S7TVEmoteDescriptor *descriptor) {
         if (!descriptor) return;
 
-        // Inspect all available scales. One emote is counted once by the
-        // network helper even when several resolutions share the cache.
+        // Count each emote once across all cached scales.
         [descriptor.imageURLs enumerateKeysAndObjectsUsingBlock:
             ^(NSNumber *scale, NSString *urlString, BOOL *stop) {
                 (void)scale;
@@ -4183,9 +4070,7 @@ static NSArray<NSURL *> *S7TVAdvancedKnownEmoteImageURLs(void) {
                 [urls addObject:url];
             }];
 
-        // Offline favorites can contain a descriptor reconstructed from
-        // metadata with only its best URL available. Keep that fallback in
-        // the scan instead of silently dropping it from the count.
+        // Include offline favorites when only their best URL is available.
         if (!descriptor.imageURLs.count) {
             NSURL *url = [descriptor imageURLForResolution:
                 [SevenTVChatAppearanceConfig sharedConfig].emoteImageResolution];
@@ -4259,9 +4144,7 @@ static NSArray<NSURL *> *S7TVAdvancedKnownEmoteImageURLs(void) {
     self.displayedCachedEmoteCount = [SevenTVURLProtocol cachedEmoteCount];
     [self.tableView reloadData];
 
-    // Use the same cache refresh entry point as the rest of the settings
-    // screen. It now reads the provider-aware index, so BTTV/FFZ entries are
-    // included instead of being treated as a separate cache implementation.
+    // Use the shared provider-aware cache refresh path.
     __weak typeof(self) weakSelf = self;
     void (^applyCount)(NSInteger) = ^(NSInteger count) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -4276,10 +4159,7 @@ static NSArray<NSURL *> *S7TVAdvancedKnownEmoteImageURLs(void) {
     [SevenTVURLProtocol refreshCachedEmoteCountWithCompletion:^(NSInteger count) {
         applyCount(count);
 
-        // A one-time catalogue scan backfills entries written by an older
-        // build before the provider-aware index existed. The network layer
-        // merges these discoveries with the canonical index; it never
-        // replaces an already-known identity with only the current channel.
+        // Backfill older cache entries without replacing known identities.
         NSArray<NSURL *> *knownImageURLs = S7TVAdvancedKnownEmoteImageURLs();
         if (knownImageURLs.count) {
             [SevenTVURLProtocol refreshCachedEmoteCountForImageURLs:knownImageURLs
@@ -4290,11 +4170,7 @@ static NSArray<NSURL *> *S7TVAdvancedKnownEmoteImageURLs(void) {
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
 
-// Section 0 = Outils (vider le cache + diagnostics hooks)
-// Section 1 = Sauvegarde (export / import de tous les réglages)
-// Section 2 = Options (chat custom + bouton flottant)
-// Section 3 = Logs (activer ; voir/console/catégories n'existent visuellement
-//             que si « Activer les logs » est ON)
+// Sections: Tools, Transfer, Options and Logs.
 #define S7TV_SECTION_TOOLS        0
 #define S7TV_SECTION_TRANSFER     1
 #define S7TV_SECTION_OPTIONS      2
@@ -4303,7 +4179,7 @@ static NSArray<NSURL *> *S7TVAdvancedKnownEmoteImageURLs(void) {
 #define S7TV_TOOLS_ROW_CACHE       0
 #define S7TV_TOOLS_ROW_DIAGNOSTICS 1
 
-// Rows logiques de la section Logs.
+// Log-section rows.
 typedef NS_ENUM(NSInteger, S7TVLogsRow) {
     S7TVLogsRowEnable   = 0,
     S7TVLogsRowView     = 1,
@@ -4313,10 +4189,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
 
 #define S7TV_LOGS_CAT_COUNT       13
 
-// Lignes visibles de la section Logs : « Voir les logs », « Logs console » et
-// les 13 catégories n'existent visuellement que si « Activer les logs » est ON
-// (mécanisme générique de sous-options dépendantes ; leurs valeurs restent
-// stockées dans NSUserDefaults).
+// Log detail rows are visible only when logging is enabled.
 - (NSArray<NSNumber *> *)s7tv_visibleLogsRows {
     BOOL logsOn = [SevenTVManager sharedManager].logsEnabled;
     NSMutableDictionary<NSNumber *, NSNumber *> *conditional = [NSMutableDictionary dictionary];
@@ -4365,7 +4238,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
 
-    // ── Section Outils : vider le cache + diagnostics hooks ───────────────
+    // Tools: clear cache and hook diagnostics.
     if (ip.section == S7TV_SECTION_TOOLS) {
         if (ip.row == S7TV_TOOLS_ROW_DIAGNOSTICS) {
             return S7TVNavCell(L(@"diagnostics_title"), L(@"diagnostics_subtitle"),
@@ -4443,9 +4316,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
         NSArray<NSNumber *> *visible = [self s7tv_visibleLogsRows];
         NSInteger visibleCount = (NSInteger)visible.count;
 
-        // ── Bloc Diagnostics VAFT : dernier bloc de la page Logs ───────────
-        // Indépendant du toggle « Activer les logs » et de la méthode AdBlock
-        // (moteur TASDiagnostics distinct des logs TwitchPlusK).
+        // VAFT diagnostics are independent of TwitchPlusK logs and AdBlock.
         if (ip.row >= visibleCount) {
             switch (ip.row - visibleCount) {
                 case 0:
@@ -4525,7 +4396,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
         if (ip.row >= visibleCount) return [[UITableViewCell alloc] init];
         NSInteger row = visible[ip.row].integerValue;
 
-        // --- Activer les logs (interrupteur global, toujours visible) ---
+        // Enable logs.
         if (row == S7TVLogsRowEnable) {
             return S7TVSwitchCell(L(@"switch_enable_logs"),
                         @"bolt.fill",
@@ -4534,7 +4405,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
                         self, @selector(toggleLogsEnabled:), nil);
         }
 
-        // --- Voir les logs (n'existe visuellement que si logsEnabled == ON) ---
+        // View logs when logging is enabled.
         if (row == S7TVLogsRowView) {
             UITableViewCell *cell = [[UITableViewCell alloc]
                 initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
@@ -4577,7 +4448,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
             return cell;
         }
 
-        // --- Logs console (Console.app) — disparaît si logsEnabled == NO ---
+        // Console logging when logging is enabled.
         if (row == S7TVLogsRowConsole) {
             return S7TVSwitchCell(L(@"switch_logs_console"),
                         @"terminal.fill",
@@ -4586,7 +4457,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
                         self, @selector(toggleDebug:), nil);
         }
 
-        // --- Catégories de logs ---
+        // Log categories.
         NSInteger catIdx = row - S7TVLogsRowFirstCat;
         NSArray<NSString *> *titles = @[
             L(@"log_cat_errors"), L(@"log_cat_chat_custom"), L(@"log_cat_channel_points"),
@@ -4604,7 +4475,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
             @"lock.rotation", @"photo.fill",
             @"trash.fill",
         ];
-        // Couleur ON de chaque catégorie (même ordre que "icons" / "values").
+        // Enabled colors, in the same order as icons and values.
         NSArray<UIColor *> *colors = @[
             UIColor.systemRedColor,     UIColor.systemOrangeColor, UIColor.systemYellowColor,
             UIColor.systemTealColor,
@@ -4661,12 +4532,11 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
         NSArray<NSNumber *> *visible = [self s7tv_visibleLogsRows];
         NSInteger visibleCount = (NSInteger)visible.count;
 
-        // ── Bloc Diagnostics VAFT ──────────────────────────────────────────
+        // VAFT diagnostics block.
         if (ip.row >= visibleCount) {
             switch (ip.row - visibleCount) {
                 case 1: {
-                    // View Diagnostic Report : écran original du moteur
-                    // TASDiagnostics, poussé dans notre navigation.
+                    // Push the TASDiagnostics report screen.
                     id viewer = tas_create_diagnostic_log_viewer();
                     if (!viewer) return;
                     [viewer setTitle:L(@"vaft_report_title")];
@@ -4693,7 +4563,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
 
         NSInteger row = visible[ip.row].integerValue;
         if (row == S7TVLogsRowView) {
-            // L'effacement des logs vit dans cet écran (bouton « Effacer »).
+            // Log clearing is handled by this screen.
             [self.navigationController
                 pushViewController:[[SevenTVLogsController alloc] init] animated:YES];
         }
@@ -4701,8 +4571,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
     }
 }
 
-// Vide entièrement le cache 7TV (disque + mémoire + badges) via
-// SevenTVManager, puis relance le chargement des emotes.
+// Clears the 7TV disk/memory/badge cache and reloads emotes.
 - (void)clearCache {
     SevenTVManager *mgr = [SevenTVManager sharedManager];
     __weak typeof(self) weakSelf = self;
@@ -4722,7 +4591,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
     }];
 }
 
-// ── Sauvegarde des réglages TwitchPlusK ─────────────────────────────────────
+// Settings export/import.
 
 - (void)s7tv_exportSettingsFromAnchor:(UIView *)anchor {
     NSError *error = nil;
@@ -4778,12 +4647,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         return;
     }
 
-    // Capture the shape before importing.  The transfer helper intentionally
-    // exposes only a count, but the post-import migration must distinguish an
-    // old archive containing `s7tv_favorites` from a modern archive that has
-    // only provider-qualified `s7tv_favorites_v2`: replacing the legacy 7TV
-    // slice in the latter case would overwrite imported 7TV favorites with
-    // whatever happened to be on this device before the import.
+    // Detect legacy favorites before importing to avoid overwriting the current 7TV slice.
     BOOL hasLegacyFavorites = NO;
     id archive = [NSPropertyListSerialization propertyListWithData:data
                                                               options:NSPropertyListImmutable
@@ -4811,15 +4675,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 }
 
 - (void)s7tv_applyImportedSettingsWithLegacyFavorites:(BOOL)hasLegacyFavorites {
-    // Les préférences générales vivent aussi en mémoire dans le singleton.
-    // Cette méthode les relit sans repasser par les setters (qui réécrivent
-    // immédiatement NSUserDefaults et risqueraient de modifier le backup).
+    // Reload singleton preferences without rewriting the imported backup.
     [[SevenTVManager sharedManager] reloadPreferencesFromDefaults];
-    // An older export can contain only the unqualified `s7tv_favorites`
-    // array, while this install may already have created `s7tv_favorites_v2`.
-    // Replace just the legacy 7TV slice after reloading the manager so the
-    // imported list is not silently ignored; BTTV/FFZ qualified favorites
-    // remain untouched.
+    // Replace only the legacy 7TV slice; keep BTTV/FFZ favorites untouched.
     if (hasLegacyFavorites) {
         [[S7TVEmoteCatalog sharedCatalog]
             replaceLegacySevenTVFavoriteIDs:
@@ -4829,8 +4687,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         postNotificationName:S7TVProviderCatalogDidUpdateNotification
                       object:[S7TVEmoteCatalog sharedCatalog]
                     userInfo:@{@"favorites": @YES}];
-    // Les préférences multi-provider sont exportées automatiquement (préfixe
-    // s7tv_) ; normaliser leur ordre et appliquer la migration v1 après import.
+    // Normalize multi-provider settings and apply the v1 migration after import.
     [S7TVEmoteProviderSettings migrateLegacySettings];
     [[NSNotificationCenter defaultCenter]
         postNotificationName:S7TVEmoteProviderSettingsDidChangeNotification object:nil];
@@ -4846,18 +4703,14 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     [S7TVLocalization shared].currentLanguage = (S7TVLanguage)language;
     self.title = L(@"title_avance");
 
-    // Les setters réinstallent/retirent l'observateur de rotation et mettent
-    // à jour le bouton du lecteur déjà présent, ce qu'une simple écriture
-    // dans NSUserDefaults ne ferait pas.
+    // Use setters to refresh the rotation observer and existing player button.
     s7tv_setOrientationLockButtonEnabled(s7tv_orientationLockButtonEnabled());
     s7tv_setAutoOrientationLockMode(s7tv_autoOrientationLockMode());
 
-    // Import AdBlock : le snapshot du toggle maître est rafraîchi à chaud ;
-    // la méthode ACTIVE reste figée au lancement (jamais modifiée par import).
+    // Refresh the AdBlock configured snapshot; the active method stays fixed until restart.
     S7TVAdblockRefreshRuntimeSnapshots();
 
-    // Méthode configurée != méthode active → redémarrage Twitch requis pour
-    // appliquer la méthode importée. Aucun hook n'est installé/désinstallé ici.
+    // A configured/active mismatch requires a Twitch restart; hooks are unchanged here.
     if (S7TVAdblockConfiguredMethod() != S7TVAdblockActiveMethod()) {
         S7TVAdblockMethod configured = S7TVAdblockConfiguredMethod();
         NSString *message;
@@ -4886,12 +4739,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 - (void)toggleLogsEnabled:(UISwitch *)sw {
     [SevenTVManager sharedManager].logsEnabled = sw.isOn;
-    // Apparition/disparition de « Voir les logs », « Logs console » et des
-    // catégories (sous-options dépendantes — voir S7TVVisibleRowIndexes).
+    // Refresh dependent log rows.
     S7TVReloadSection(self.tableView, S7TV_SECTION_LOGS);
 }
 
-// ── Diagnostics VAFT (moteur TASDiagnostics distinct des logs TwitchPlusK) ──
+// VAFT diagnostics use the separate TASDiagnostics engine.
 
 - (void)toggleVaftDiagnosticLogging:(UISwitch *)sw {
     tas_diagnostics_set_logging_enabled(sw.isOn);

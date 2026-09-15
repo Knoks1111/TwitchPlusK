@@ -1,19 +1,4 @@
-/*
- * 7tv-system-native-behavior-hooks.m
- *
- * Module "100% autonome" qui modifie un comportement natif de Twitch
- * sans rapport avec le rendu 7TV (emotes/chat/badges) :
- *
- *  Verrou d'orientation — ajoute un bouton à côté du bouton Share du lecteur
- *     theater pour verrouiller l'orientation de l'écran (requestGeometryUpdate
- *     iOS 16+, fallback setStatusBarOrientation: sinon), avec toast de
- *     confirmation.
- *
- * Fonctions exposées par ce fichier (déclarées dans 7tv-system-native-behavior-hooks.h) :
- *  - s7tv_isOrientationLocked() — lecture seule pour l'état du bouton ajouté
- *  - s7tv_swizzle_orientation_lock() — réactive l'observer d'auto-lock au
- *     lancement si nécessaire ; les swizzles s'installent au premier lock
- */
+/* Adds the custom orientation button and handles auto-lock. */
 
 #import "System/7tv-system-native-behavior-hooks.h"
 #import "Core/7tv-core-manager.h"
@@ -27,8 +12,8 @@ static NSString *const kS7TVOrientationLockButtonEnabled =
 static NSString *const kS7TVAutoOrientationLockMode =
     @"s7tv_auto_orientation_lock_mode";
 
-static const char kS7TVShareHijacked = 8;
 static char kS7TVOrientationLockButtonKey;
+static __weak UIView *s_activeControlsView;
 
 @interface SevenTVManager (OrientationLock)
 - (void)s7tv_toggleOrientationLock:(UIButton *)sender;
@@ -38,6 +23,7 @@ static void s7tv_refreshOrientationObserver(void);
 static BOOL s7tv_hasOrientationLockButtonInActivePlayer(void);
 static void s7tv_enumerateActiveViews(void (^visit)(UIView *view));
 static UIView *s7tv_activePlayerGeometryView(void);
+static UIWindowScene *s7tv_activeWindowScene(void);
 
 static NSArray<NSNumber *> *s7tv_orientationButtonStates(void) {
     return @[@(UIControlStateNormal), @(UIControlStateHighlighted),
@@ -56,9 +42,8 @@ static UIButton *s7tv_orientationLockButtonForControls(UIView *controls) {
     }
 
     NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:controls];
-    while (pending.count > 0) {
-        UIView *candidate = pending.firstObject;
-        [pending removeObjectAtIndex:0];
+    for (NSUInteger index = 0; index < pending.count; index++) {
+        UIView *candidate = pending[index];
         if ([candidate isKindOfClass:UIButton.class] &&
             [candidate.accessibilityIdentifier isEqualToString:@"s7tv_lock_button"]) {
             return (UIButton *)candidate;
@@ -68,13 +53,12 @@ static UIButton *s7tv_orientationLockButtonForControls(UIView *controls) {
     return nil;
 }
 
-static UIButton *s7tv_orientationShareButtonForControls(UIView *controls) {
+static UIButton *s7tv_shareButtonForControls(UIView *controls) {
     if (!controls) return nil;
 
     NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:controls];
-    while (pending.count > 0) {
-        UIView *candidate = pending.firstObject;
-        [pending removeObjectAtIndex:0];
+    for (NSUInteger index = 0; index < pending.count; index++) {
+        UIView *candidate = pending[index];
         if ([candidate isKindOfClass:UIButton.class] &&
             [candidate.accessibilityIdentifier isEqualToString:@"share_button"]) {
             return (UIButton *)candidate;
@@ -125,8 +109,7 @@ static void s7tv_removeOrientationLockButton(UIView *controls) {
     if (!controls) return;
     UIButton *button = s7tv_orientationLockButtonForControls(controls);
     if (!button) {
-        objc_setAssociatedObject(controls, &kS7TVShareHijacked, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (s_activeControlsView == controls) s_activeControlsView = nil;
         return;
     }
 
@@ -140,24 +123,17 @@ static void s7tv_removeOrientationLockButton(UIView *controls) {
     [button removeFromSuperview];
     objc_setAssociatedObject(controls, &kS7TVOrientationLockButtonKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(controls, &kS7TVShareHijacked, nil,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-static UIView *s7tv_orientationControlsForButton(UIButton *button) {
-    UIView *candidate = button;
-    while (candidate &&
-           ![NSStringFromClass(candidate.class)
-               isEqualToString:@"Twitch.TheaterPlayerControlsView"]) {
-        candidate = candidate.superview;
-    }
-    return candidate;
+    if (s_activeControlsView == controls) s_activeControlsView = nil;
 }
 
 void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
     if (!s7tv_orientationLockButtonEnabled()) return;
     if (![NSStringFromClass(view.class) isEqualToString:@"Twitch.TheaterPlayerControlsView"] ||
-        !view.window || s7tv_orientationLockButtonForControls(view)) return;
+        !view.window) return;
+    if (s7tv_orientationLockButtonForControls(view)) {
+        s_activeControlsView = view;
+        return;
+    }
 
     __weak UIView *weakView = view;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
@@ -168,12 +144,8 @@ void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
                 isEqualToString:@"Twitch.PictureInPictureWindow"] ||
             s7tv_orientationLockButtonForControls(controls)) return;
 
-        UIButton *shareButton = s7tv_orientationShareButtonForControls(controls);
-        if (!shareButton) {
-            [[SevenTVManager sharedManager]
-                log:@"⚠️ share_button introuvable dans TheaterPlayerControlsView"];
-            return;
-        }
+        UIButton *shareButton = s7tv_shareButtonForControls(controls);
+        if (!shareButton) return;
 
         UIStackView *stack = nil;
         if ([shareButton.superview isKindOfClass:UIStackView.class]) {
@@ -185,11 +157,7 @@ void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
                 stack = candidate;
             }
         }
-        if (!stack) {
-            [[SevenTVManager sharedManager]
-                log:@"⚠️ stack Share introuvable dans TheaterPlayerControlsView"];
-            return;
-        }
+        if (!stack) return;
 
         UIButton *lockButton = [UIButton buttonWithType:UIButtonTypeSystem];
         lockButton.translatesAutoresizingMaskIntoConstraints = NO;
@@ -222,35 +190,21 @@ void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
         s7tv_registerOrientationButtonForHitTesting(controls, lockButton);
         objc_setAssociatedObject(controls, &kS7TVOrientationLockButtonKey,
                                  lockButton, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(controls, &kS7TVShareHijacked, @YES,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        s_activeControlsView = controls;
         [[SevenTVManager sharedManager]
             log:@"✅ Bouton verrou orientation ajouté à côté de Share"];
         s7tv_refreshOrientationObserver();
     });
 }
 
-// État global verrou d'orientation — déplacées depuis le haut de
-// 7tv-core-runtime-hooks.m (section "Clés associated objects") où elles vivaient sans
-// rapport avec les autres clés qui y restent. s_orientationLocked est lue en
-// lecture seule par le hijack du bouton Share ci-dessus, avant même le
-// premier lock, pour l'état initial de l'icône) via s7tv_isOrientationLocked().
+// Global orientation-lock state.
 static BOOL s_orientationLocked = NO;
 static UIInterfaceOrientationMask s_lockedOrientationMask = UIInterfaceOrientationMaskAll;
 static UIDeviceOrientation s_lastAutoLockCandidate = UIDeviceOrientationUnknown;
 
-// ────────────────────────────────────────────────────────────
-// MARK: - Verrou d'orientation (bouton Share hijacké)
-// Approche : requestGeometryUpdate (iOS 16+) pour forcer l'orientation
-// de la scène au niveau système — c'est la seule API qui contrôle
-// réellement la rotation visuelle sur les apps SwiftUI modernes.
-// Combiné avec shouldAutorotate=NO pour bloquer UIKit en parallèle.
-// ────────────────────────────────────────────────────────────
-
-// ── Orientation verrouillée capturée au moment du lock ───────────────────────
+// Orientation is enforced with scene geometry and UIKit guards.
 static UIInterfaceOrientation s_lockedOrientation = UIInterfaceOrientationUnknown;
 
-// ── Observer rotation physique ───────────────────────────────────────────────
 static id s_orientationObserver = nil;
 static void s7tv_setOrientationLockState(BOOL locked,
                                          UIInterfaceOrientation requestedOrientation,
@@ -272,22 +226,22 @@ S7TVAutoOrientationLockMode s7tv_autoOrientationLockMode(void) {
     return (S7TVAutoOrientationLockMode)rawMode;
 }
 
-// ── Force la géométrie de toutes les scènes actives ─────────────────────────
+// Requests the target orientation through the scene API.
 static void s7tv_forceSceneOrientation(UIInterfaceOrientationMask mask) {
-    // iOS 16+ : UIWindowScene requestGeometryUpdate:errorHandler:
-    // Appelé via objc_msgSend pour éviter les erreurs de header manquant dans le SDK Theos
-    SEL reqSel   = NSSelectorFromString(@"requestGeometryUpdate:errorHandler:");
+    SEL reqSel = NSSelectorFromString(
+        @"requestGeometryUpdateWithPreferences:errorHandler:");
     Class prefsCls = NSClassFromString(@"UIWindowSceneGeometryPreferencesIOS");
 
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        if (![scene isKindOfClass:[UIWindowScene class]] ||
+            scene.activationState != UISceneActivationStateForegroundActive) continue;
         UIWindowScene *ws = (UIWindowScene *)scene;
 
         if (prefsCls && [ws respondsToSelector:reqSel]) {
             id prefs = [[prefsCls alloc] initWithInterfaceOrientations:mask];
             ((void(*)(id, SEL, id, id))objc_msgSend)(ws, reqSel, prefs, nil);
         } else {
-            // Fallback iOS < 16 : setStatusBarOrientation:animated: (déprécié)
+            // Fallback for older iOS versions.
             UIInterfaceOrientation target = UIInterfaceOrientationPortrait;
             if (mask == UIInterfaceOrientationMaskLandscapeLeft)               target = UIInterfaceOrientationLandscapeLeft;
             else if (mask == UIInterfaceOrientationMaskLandscapeRight)         target = UIInterfaceOrientationLandscapeRight;
@@ -301,8 +255,7 @@ static void s7tv_forceSceneOrientation(UIInterfaceOrientationMask mask) {
 
 static UIInterfaceOrientation s7tv_interfaceOrientationForDeviceOrientation(
     UIDeviceOrientation deviceOrientation) {
-    // Les enums device et interface sont inversés : lorsque le haut physique
-    // du téléphone pointe à gauche, le contenu UIKit est en LandscapeRight.
+    // Device and interface landscape values use opposite sides.
     if (deviceOrientation == UIDeviceOrientationLandscapeLeft) {
         return UIInterfaceOrientationLandscapeRight;
     }
@@ -315,9 +268,7 @@ static UIInterfaceOrientation s7tv_interfaceOrientationForDeviceOrientation(
 static BOOL s7tv_autoModeAcceptsInterfaceOrientation(
     S7TVAutoOrientationLockMode mode, UIInterfaceOrientation orientation) {
     if (mode == S7TVAutoOrientationLockModeBothLandscapes) return YES;
-    // Les orientations UIDevice et UIInterface sont opposées. Les libellés
-    // Gauche/Droite décrivent le geste physique de l'utilisateur : le mode
-    // Gauche doit donc accepter LandscapeRight côté interface, et inversement.
+    // Map the configured physical side to the interface orientation.
     if (orientation == UIInterfaceOrientationLandscapeLeft) {
         return mode == S7TVAutoOrientationLockModeLandscapeRight;
     }
@@ -331,8 +282,7 @@ static void s7tv_handlePhysicalOrientationChange(void) {
     UIDeviceOrientation deviceOrientation = UIDevice.currentDevice.orientation;
     if (deviceOrientation == UIDeviceOrientationPortrait ||
         deviceOrientation == UIDeviceOrientationPortraitUpsideDown) {
-        // Le retour en portrait réarme l'auto-lock. Un déverrouillage manuel
-        // en restant exactement du même côté ne reboucle donc pas.
+        // Portrait arms the next auto-lock detection.
         s_lastAutoLockCandidate = UIDeviceOrientationUnknown;
         return;
     }
@@ -344,8 +294,7 @@ static void s7tv_handlePhysicalOrientationChange(void) {
     S7TVAutoOrientationLockMode mode = s7tv_autoOrientationLockMode();
     if (target == UIInterfaceOrientationUnknown) return;
     if (!s7tv_autoModeAcceptsInterfaceOrientation(mode, target)) {
-        // Quitter le côté sélectionné vers l'autre paysage réarme aussi la
-        // détection, sans exiger un passage artificiel par le portrait.
+        // A non-selected landscape side arms a new detection.
         s_lastAutoLockCandidate = UIDeviceOrientationUnknown;
         return;
     }
@@ -363,9 +312,7 @@ static void s7tv_handlePhysicalOrientationChange(void) {
     });
 }
 
-// L'observer reste vivant lorsque le verrou est actif OU lorsqu'une détection
-// automatique est configurée. Il est entièrement supprimé dans les autres cas
-// pour ne laisser aucun travail permanent inutile en arrière-plan.
+// Keep the observer only while auto-lock is active.
 static void s7tv_startOrientationObserver(void) {
     if (s_orientationObserver) return;
     [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
@@ -373,13 +320,10 @@ static void s7tv_startOrientationObserver(void) {
         addObserverForName:UIDeviceOrientationDidChangeNotification
                     object:nil
                      queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *n) {
-        if (s_orientationLocked) {
-            [[SevenTVManager sharedManager] log:@"🔒 Rotation physique bloquée (verrou actif)"];
-            return;
-        }
-        s7tv_handlePhysicalOrientationChange();
-    }];
+                usingBlock:^(__unused NSNotification *note) {
+                    if (s_orientationLocked) return;
+                    s7tv_handlePhysicalOrientationChange();
+                }];
 }
 
 static void s7tv_stopOrientationObserver(void) {
@@ -392,18 +336,15 @@ static void s7tv_stopOrientationObserver(void) {
 static void s7tv_refreshOrientationObserver(void) {
     BOOL autoLockActive = s7tv_orientationLockButtonEnabled() &&
         s7tv_autoOrientationLockMode() != S7TVAutoOrientationLockModeDisabled;
-    if (s_orientationLocked || autoLockActive) {
+    if (!s_orientationLocked && autoLockActive) {
         s7tv_startOrientationObserver();
-        if (!s_orientationLocked && autoLockActive) {
-            s7tv_handlePhysicalOrientationChange();
-        }
+        s7tv_handlePhysicalOrientationChange();
     } else {
         s7tv_stopOrientationObserver();
     }
 }
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
-// Pastille de confirmation réutilisant le rendu du HUD des gestes du player.
+// Reuse the player HUD for lock feedback.
 static void s7tv_showOrientationToast(BOOL locked) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIView *geometryView = s7tv_activePlayerGeometryView();
@@ -418,7 +359,7 @@ static void s7tv_showOrientationToast(BOOL locked) {
                                               iconTint);
     });
 }
-// C'est le check système qui prime sur toutes les overrides Twitch dans les VCs.
+// Global UIKit guard while locked.
 @interface UIApplication (S7TVOrientationLock)
 - (UIInterfaceOrientationMask)s7tv_supportedInterfaceOrientationsForWindow:(UIWindow *)window;
 @end
@@ -429,7 +370,7 @@ static void s7tv_showOrientationToast(BOOL locked) {
 }
 @end
 
-// ── Garde UIViewController au cas où (certains chemins UIKit passent par là) ──
+// UIKit's native scene-level orientation lock preference.
 @interface UIViewController (S7TVOrientationLock)
 - (UIInterfaceOrientationMask)s7tv_supportedInterfaceOrientations;
 @end
@@ -440,17 +381,16 @@ static void s7tv_showOrientationToast(BOOL locked) {
 }
 @end
 
-@interface UIViewController (S7TVAutorotate)
-- (BOOL)s7tv_shouldAutorotate;
+@interface UIViewController (S7TVOrientationPreferenceLock)
+- (BOOL)s7tv_prefersInterfaceOrientationLocked;
 @end
-@implementation UIViewController (S7TVAutorotate)
-- (BOOL)s7tv_shouldAutorotate {
-    if (s_orientationLocked) return NO;
-    return [self s7tv_shouldAutorotate];
+@implementation UIViewController (S7TVOrientationPreferenceLock)
+- (BOOL)s7tv_prefersInterfaceOrientationLocked {
+    if (s_orientationLocked) return YES;
+    return [self s7tv_prefersInterfaceOrientationLocked];
 }
 @end
 
-// ── Action toggle ─────────────────────────────────────────────────────────────
 @implementation SevenTVManager (OrientationLock)
 
 static void s7tv_install_orientation_swizzles(void) {
@@ -466,9 +406,10 @@ static void s7tv_install_orientation_swizzles(void) {
                      @selector(s7tv_supportedInterfaceOrientations));
         s7tv_swizzle([UIViewController class],
                      [UIViewController class],
-                     @selector(shouldAutorotate),
-                     @selector(s7tv_shouldAutorotate));
-        [[SevenTVManager sharedManager] log:@"✅ Swizzles verrou orientation installés (premier lock)"];
+                     NSSelectorFromString(@"prefersInterfaceOrientationLocked"),
+                     @selector(s7tv_prefersInterfaceOrientationLocked));
+        [[SevenTVManager sharedManager]
+            log:@"✅ Hooks verrou orientation installés (premier lock)"];
     });
 }
 
@@ -478,9 +419,8 @@ static void s7tv_enumerateActiveViews(void (^visit)(UIView *view)) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
             NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:window];
-            while (pending.count) {
-                UIView *view = pending.firstObject;
-                [pending removeObjectAtIndex:0];
+            for (NSUInteger index = 0; index < pending.count; index++) {
+                UIView *view = pending[index];
                 visit(view);
                 [pending addObjectsFromArray:view.subviews];
             }
@@ -489,59 +429,19 @@ static void s7tv_enumerateActiveViews(void (^visit)(UIView *view)) {
 }
 
 static UIView *s7tv_activePlayerGeometryView(void) {
-    __block UIView *usableTheaterView = nil;
-    __block UIView *activeControlsView = nil;
-    __block UIView *fallbackTheaterView = nil;
-
-    s7tv_enumerateActiveViews(^(UIView *view) {
-        NSString *className = NSStringFromClass(view.class);
-        BOOL isTheaterView = [className isEqualToString:@"Twitch.TheaterView"];
-        BOOL isControlsView =
-            [className isEqualToString:@"Twitch.TheaterPlayerControlsView"];
-        if (!isTheaterView && !isControlsView) return;
-
-        UIWindow *window = view.window;
-        if (!window || window.hidden ||
-            ![NSStringFromClass(window.class)
-                isEqualToString:@"Twitch.PictureInPictureWindow"]) return;
-
-        if (isTheaterView && !fallbackTheaterView) {
-            fallbackTheaterView = view;
-        }
-
-        if (isControlsView && !activeControlsView) {
-            activeControlsView = view;
-        }
-
-        BOOL usable = CGRectGetWidth(view.bounds) > 1.0 &&
-            CGRectGetHeight(view.bounds) > 1.0;
-        if (!usable) return;
-        if (isTheaterView && !usableTheaterView) {
-            usableTheaterView = view;
-        }
-    });
-
-    // Utilise exactement la même vue de géométrie que le module de gestes :
-    // les contrôles quand ils ont leur vraie taille, puis le TheaterView ou
-    // son ancêtre utilisable pendant les transitions.
-    UIView *gestureGeometry =
-        s7tv_playerGestureGeometryViewForControls(activeControlsView);
-    return gestureGeometry ?: usableTheaterView ?: fallbackTheaterView;
+    UIView *controls = s_activeControlsView;
+    if (!controls || !controls.window || controls.window.hidden) return nil;
+    if (![NSStringFromClass(controls.window.class)
+            isEqualToString:@"Twitch.PictureInPictureWindow"]) return nil;
+    return s7tv_playerGestureGeometryViewForControls(controls);
 }
 
 static BOOL s7tv_hasOrientationLockButtonInActivePlayer(void) {
-    __block BOOL found = NO;
-    s7tv_enumerateActiveViews(^(UIView *view) {
-        if (found || ![view isKindOfClass:UIButton.class] ||
-            ![view.accessibilityIdentifier isEqualToString:@"s7tv_lock_button"]) return;
-        UIWindow *window = view.window;
-        if (window && !window.hidden &&
-            [NSStringFromClass(window.class)
-                isEqualToString:@"Twitch.PictureInPictureWindow"]) {
-            found = YES;
-        }
-    });
-    return found;
+    UIView *controls = s_activeControlsView;
+    if (!controls || !controls.window || controls.window.hidden) return NO;
+    if (![NSStringFromClass(controls.window.class)
+            isEqualToString:@"Twitch.PictureInPictureWindow"]) return NO;
+    return s7tv_orientationLockButtonForControls(controls) != nil;
 }
 
 static void s7tv_updateOrientationLockButtons(void) {
@@ -553,17 +453,14 @@ static void s7tv_updateOrientationLockButtons(void) {
         ? [UIColor colorWithRed:0.55 green:0.25 blue:0.95 alpha:1.0]
         : [UIColor whiteColor];
 
-    s7tv_enumerateActiveViews(^(UIView *view) {
-        if (![view isKindOfClass:UIButton.class] ||
-            ![view.accessibilityIdentifier isEqualToString:@"s7tv_lock_button"]) return;
-        UIButton *button = (UIButton *)view;
-        for (NSNumber *state in s7tv_orientationButtonStates()) {
-            [button setImage:icon forState:state.unsignedIntegerValue];
-        }
-        button.tintColor = tint;
-        button.accessibilityLabel = s_orientationLocked
-            ? L(@"a11y_unlock_orientation") : L(@"a11y_lock_orientation");
-    });
+    UIButton *button = s7tv_orientationLockButtonForControls(s_activeControlsView);
+    if (!button) return;
+    for (NSNumber *state in s7tv_orientationButtonStates()) {
+        [button setImage:icon forState:state.unsignedIntegerValue];
+    }
+    button.tintColor = tint;
+    button.accessibilityLabel = s_orientationLocked
+        ? L(@"a11y_unlock_orientation") : L(@"a11y_lock_orientation");
 }
 
 static UIInterfaceOrientationMask s7tv_maskForInterfaceOrientation(
@@ -590,6 +487,27 @@ static UIWindowScene *s7tv_activeWindowScene(void) {
     return nil;
 }
 
+static void s7tv_notifyOrientationPolicyChanged(void) {
+    UIWindowScene *scene = s7tv_activeWindowScene();
+    if (!scene) return;
+
+    SEL supportedSel = NSSelectorFromString(
+        @"setNeedsUpdateOfSupportedInterfaceOrientations");
+    SEL lockedSel = NSSelectorFromString(
+        @"setNeedsUpdateOfPrefersInterfaceOrientationLocked");
+
+    for (UIWindow *window in scene.windows) {
+        UIViewController *root = window.rootViewController;
+        if (!root) continue;
+        if ([root respondsToSelector:supportedSel]) {
+            ((void(*)(id, SEL))objc_msgSend)(root, supportedSel);
+        }
+        if ([root respondsToSelector:lockedSel]) {
+            ((void(*)(id, SEL))objc_msgSend)(root, lockedSel);
+        }
+    }
+}
+
 static void s7tv_setOrientationLockState(BOOL locked,
                                          UIInterfaceOrientation requestedOrientation,
                                          BOOL showToast) {
@@ -606,12 +524,11 @@ static void s7tv_setOrientationLockState(BOOL locked,
         s_lockedOrientation = current;
         s_lockedOrientationMask = s7tv_maskForInterfaceOrientation(current);
         s_orientationLocked = YES;
+        s7tv_notifyOrientationPolicyChanged();
 
-        // L'auto-lock peut être notifié juste avant la fin de l'animation
-        // UIKit. Dans ce seul cas, termine explicitement la rotation vers le
-        // côté détecté avant que le masque ne la fige.
+        // Complete a pending auto-rotation before applying the mask.
         if (requestedOrientation != UIInterfaceOrientationUnknown &&
-            activeScene.interfaceOrientation != requestedOrientation) {
+            activeScene && activeScene.interfaceOrientation != requestedOrientation) {
             s7tv_forceSceneOrientation(s_lockedOrientationMask);
         }
         [[SevenTVManager sharedManager]
@@ -623,6 +540,7 @@ static void s7tv_setOrientationLockState(BOOL locked,
         UIDeviceOrientation physical = UIDevice.currentDevice.orientation;
         s_lastAutoLockCandidate = UIDeviceOrientationIsLandscape(physical)
             ? physical : UIDeviceOrientationUnknown;
+        s7tv_notifyOrientationPolicyChanged();
         s7tv_forceSceneOrientation(UIInterfaceOrientationMaskAll);
         [UIViewController attemptRotationToDeviceOrientation];
         [[SevenTVManager sharedManager] log:@"🔓 Orientation déverrouillée"];
@@ -641,9 +559,7 @@ static void s7tv_setOrientationLockState(BOOL locked,
 
 @end
 
-// Getter en lecture seule vers s_orientationLocked — utilisé par le hijack
-// du bouton Share (icône/tint/label initiaux, avant
-// même le premier lock). La variable elle-même reste privée à ce fichier.
+// Getter en lecture seule utilisé par le bouton ajouté au player.
 BOOL s7tv_isOrientationLocked(void) {
     return s_orientationLocked;
 }
@@ -658,18 +574,18 @@ void s7tv_setOrientationLockButtonEnabled(BOOL enabled) {
             if (s_orientationLocked) {
                 s7tv_setOrientationLockState(NO, UIInterfaceOrientationUnknown, NO);
             }
-            NSMutableArray<UIButton *> *buttons = [NSMutableArray array];
+            NSMutableArray<UIView *> *controlsViews = [NSMutableArray array];
             s7tv_enumerateActiveViews(^(UIView *view) {
-                if ([view isKindOfClass:UIButton.class] &&
-                    [view.accessibilityIdentifier isEqualToString:@"s7tv_lock_button"]) {
-                    [buttons addObject:(UIButton *)view];
+                if ([NSStringFromClass(view.class)
+                        isEqualToString:@"Twitch.TheaterPlayerControlsView"]) {
+                    [controlsViews addObject:view];
                 }
             });
-            for (UIButton *button in buttons) {
-                s7tv_removeOrientationLockButton(
-                    s7tv_orientationControlsForButton(button));
+            for (UIView *controls in controlsViews) {
+                s7tv_removeOrientationLockButton(controls);
             }
             s_lastAutoLockCandidate = UIDeviceOrientationUnknown;
+            s_activeControlsView = nil;
         } else {
             NSMutableArray<UIView *> *controlsViews = [NSMutableArray array];
             s7tv_enumerateActiveViews(^(UIView *view) {
@@ -701,9 +617,6 @@ void s7tv_setAutoOrientationLockMode(S7TVAutoOrientationLockMode mode) {
 }
 
 void s7tv_swizzle_orientation_lock(void) {
-    // Les swizzles restent installés à la demande au premier verrouillage.
-    // Seul l'observer physique démarre ici si l'auto-lock était déjà activé
-    // dans les préférences d'une session précédente.
     dispatch_async(dispatch_get_main_queue(), ^{
         s7tv_refreshOrientationObserver();
     });

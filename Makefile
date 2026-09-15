@@ -3,6 +3,7 @@
 # ============================================================
 
 ARCHS = arm64
+TWITCHPLUSK_VERSION = 1.0.5
 TARGET = iphone:clang:16.5:14.0
 
 include $(THEOS)/makefiles/common.mk
@@ -53,11 +54,13 @@ TwitchPlusK_FILES = \
     Sources/System/7tv-system-player-gestures.m \
     Sources/System/7tv-system-player-reload.m \
     Sources/System/7tv-system-autoclaim.m \
+    Sources/System/7tv-system-update-checker.m \
     Sources/UI/7tv-info-tooltip.m \
     Sources/UI/7tv-oled-mode.m
 
 # ── Options de compilation ──
 TwitchPlusK_CFLAGS := \
+    -DS7TV_BUILD_VERSION='"$(TWITCHPLUSK_VERSION)"' \
     -fobjc-arc \
     -I$(THEOS_PROJECT_DIR) \
     -I$(THEOS_PROJECT_DIR)/Sources \

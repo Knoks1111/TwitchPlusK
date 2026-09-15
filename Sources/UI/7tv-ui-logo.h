@@ -1,17 +1,6 @@
-/*
- * 7tv-ui-logo.h
- * Logo 7TV — PNG fond transparent, ratio correct.
- * kS7TVLogoBase64 : utilisé dans le bouton Bits ET dans le header du picker.
- * Taille PNG : 76×56 px → affichage @2x : 38×28 pt
- */
-
 #ifndef SevenTVLogo_h
 #define SevenTVLogo_h
 
-// UIImage *logo = [UIImage imageWithData:
-//   [[NSData alloc] initWithBase64EncodedString:kS7TVLogoBase64
-//                                       options:0]
-//   scale:2.0];
 static NSString * const kS7TVLogoBase64 =
     @"iVBORw0KGgoAAAANSUhEUgAAAEwAAAA4CAYAAABXJB78AAAmjUlEQVR42q17eZgdVbX92uecGu/Q"
     @"UzohA0kIhAydgUACRBQJAiIKD4du4CEoColAQAhzCL9OA2EKkBCQIYCKPHnarU8UxehTGZ7AgwBh"
@@ -189,4 +178,4 @@ static NSString * const kS7TVLogoBase64 =
     @"eJq69wZGMrMRRtZ02D2hIwwgpdL7OSxXr1n1w6tvvbUw6rDDZFtb2z7P6/8DH5Mte3dppggAAAAA"
     @"SUVORK5CYII=";
 
-#endif /* SevenTVLogo_h */
+#endif

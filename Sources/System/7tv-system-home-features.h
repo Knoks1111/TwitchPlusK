@@ -1,7 +1,4 @@
-/*
- * Home/navigation features derived from TwitchAdBlock (MIT):
- * launch destination, Twitch Stories visibility, and Live-feed watch limit.
- */
+// Lancement, Stories, fil Live (dérivé de TwitchAdBlock, MIT).
 
 #import <Foundation/Foundation.h>
 
@@ -23,14 +20,16 @@ void s7tv_registerHomeFeatureDefaults(void);
 S7TVLaunchDestination s7tv_launchDestination(void);
 void s7tv_setLaunchDestination(S7TVLaunchDestination destination);
 
+// Onglet de la barre visé par une destination, -1 si aucune.
+NSInteger s7tv_launchDestinationTab(S7TVLaunchDestination destination);
+
 BOOL s7tv_hideTwitchStoriesEnabled(void);
 void s7tv_setHideTwitchStoriesEnabled(BOOL enabled);
 
 BOOL s7tv_keepLiveFeedPlayingEnabled(void);
 void s7tv_setKeepLiveFeedPlayingEnabled(BOOL enabled);
 
-// Installe les hooks privés Twitch nécessaires au lancement et aux Stories.
-// Le watch limit est traité dans 7tv-adblock-data.m sur les réponses GQL.
+// Installe les hooks. Watch limit : voir 7tv-adblock-data.m.
 void s7tv_installHomeFeatureRuntimeHooks(void);
 
 NS_ASSUME_NONNULL_END

@@ -16,10 +16,12 @@
 #import "Chat/7tv-chat-appearance-config.h"
 #import "Localization/7tv-localization-manager.h"
 #import "System/7tv-system-native-behavior-hooks.h"
+#import "System/7tv-system-chat-top-banner.h"
 #import "System/7tv-system-player-gestures.h"
 #import "System/7tv-system-player-reload.h"
 #import "System/7tv-system-autoclaim.h"
 #import "System/7tv-system-home-features.h"
+#import "System/7tv-system-tab-visibility.h"
 #import "Adblock/7tv-adblock-settings.h"
 #import "Adblock/Proxy/7tv-adblock-proxy-status.h"
 #import "Diagnostics/7tv-hook-diagnostics.h"
@@ -353,7 +355,8 @@ static UITableViewCell *S7TVNavCell(NSString *title,
         // Subtitle styling.
         subLbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
         subLbl.textColor = S7TVGray();
-        subLbl.numberOfLines = 1;
+        subLbl.numberOfLines = 0;
+        subLbl.lineBreakMode = NSLineBreakByWordWrapping;
         subLbl.translatesAutoresizingMaskIntoConstraints = NO;
 
         // Center the title/subtitle stack.
@@ -388,6 +391,9 @@ static UITableViewCell *S7TVNavCell(NSString *title,
         [NSLayoutConstraint activateConstraints:@[
             [icon.leadingAnchor     constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
             [icon.centerYAnchor     constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            // Sans sous-titre, la contrainte d'axe manquait : un titre long
+            // débordait vers la gauche, hors de la cellule.
+            [titleLbl.leadingAnchor  constraintEqualToAnchor:icon.trailingAnchor constant:14],
             // Required vertical constraints resolve multi-line labels.
             [titleLbl.topAnchor      constraintEqualToAnchor:cell.contentView.topAnchor constant:10],
             [titleLbl.bottomAnchor   constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
@@ -402,6 +408,30 @@ static UITableViewCell *S7TVNavCell(NSString *title,
             ]];
         }
     }
+    return cell;
+}
+
+// Ligne d'explication permanente d'un écran de réglages : le texte est relu via
+// sa clé à chaque construction de cellule, donc à jour après un changement de langue.
+static UITableViewCell *S7TVDescriptionCell(NSString *key) {
+    UITableViewCell *cell = [[UITableViewCell alloc]
+        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.backgroundColor = S7TVCellBg();
+
+    UILabel *lbl = [[UILabel alloc] init];
+    lbl.text = L(key);
+    lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+    lbl.textColor = UIColor.whiteColor;
+    lbl.numberOfLines = 0;
+    lbl.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:lbl];
+    [NSLayoutConstraint activateConstraints:@[
+        [lbl.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+        [lbl.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+        [lbl.topAnchor      constraintEqualToAnchor:cell.contentView.topAnchor constant:10],
+        [lbl.bottomAnchor   constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
+    ]];
     return cell;
 }
 
@@ -842,6 +872,16 @@ static NSString *S7TVValueWithDefaultMark(NSString *value, BOOL isDefault) {
     return [value stringByAppendingString:L(@"common_default_suffix")];
 }
 
+// Alerte à un bouton, partagée par les pages de réglages.
+static void S7TVShowAlert(UIViewController *presenter, NSString *title, NSString *message) {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:title
+                                                              message:message
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
+                                          style:UIAlertActionStyleDefault handler:nil]];
+    [presenter presentViewController:a animated:YES completion:nil];
+}
+
 typedef NS_ENUM(NSInteger, S7TVPickerAnimationsMode) {
     S7TVPickerAnimationsModeDisabled = 0,
     S7TVPickerAnimationsModeEnabled = 1,
@@ -974,7 +1014,6 @@ static void s7tv_settingsDidSelect(id self, SEL cmd, UITableView *tableView,
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     SevenTVSettingsController *controller = [SevenTVSettingsController new];
     [((UIViewController *)self).navigationController pushViewController:controller animated:YES];
-    [[SevenTVManager sharedManager] log:@"✅ 7TV Settings ouvert depuis les paramètres Twitch"];
 }
 
 static void s7tv_settingsExchangeMethod(Class target, SEL originalSelector,
@@ -1029,8 +1068,6 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
     s7tv_settingsExchangeMethod(target, @selector(tableView:didSelectRowAtIndexPath:),
         NSSelectorFromString(@"s7tv_tableView:didSelectRowAtIndexPath:"),
         (IMP)s7tv_settingsDidSelect, "v@:@@");
-    [[SevenTVManager sharedManager]
-        log:@"✅ AccountMenuViewController swizzlé — section 7TV Settings injectée"];
 }
 
 - (instancetype)init {
@@ -1994,11 +2031,11 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 // Emote animation and CDN resolution settings.
 typedef NS_ENUM(NSInteger, S7TVAppearanceSection) {
     S7TVAppearanceSectionIntro = 0,
-    S7TVAppearanceSectionTheme = 1,
+    S7TVAppearanceSectionInterface = 1,
     S7TVAppearanceSectionEmotes = 2,
 };
 
-// Rows logiques de la section Émotes.
+//    Rows logiques de la section Émotes.
 typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
     S7TVAppearanceEmoteRowResolution = 0,
     S7TVAppearanceEmoteRowPickerAnimations = 1,
@@ -2006,6 +2043,13 @@ typedef NS_ENUM(NSInteger, S7TVAppearanceEmoteRow) {
     S7TVAppearanceEmoteRowProviderPriority = 3,
     S7TVAppearanceEmoteRowPickerOpening = 4,
     S7TVAppearanceEmoteRowMixedPicker = 5,
+};
+
+// Rows logiques de la section Interface (affichage, bannières, onglets).
+typedef NS_ENUM(NSInteger, S7TVAppearanceInterfaceRow) {
+    S7TVAppearanceInterfaceRowTheme = 0,        // mode OLED
+    S7TVAppearanceInterfaceRowChatBanners = 1,
+    S7TVAppearanceInterfaceRowTabBar = 2,
 };
 
 static NSString *S7TVPickerOpeningModeTitle(NSString *mode) {
@@ -2064,24 +2108,112 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
         : L(@"setting_emote_providers_none");
 }
 
-// Group provider selection in one check-list while keeping providers independent.
-@interface S7TVProviderSelectionController : UITableViewController
+// Reusable multi-selection screen used by providers and chat elements.
+@interface S7TVMultiSelectionOption : NSObject
+@property (nonatomic, copy) NSString *identifier;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, strong, nullable) UIImage *image;
+@property (nonatomic, copy) BOOL (^isEnabled)(void);
+@property (nonatomic, copy) void (^setEnabled)(BOOL enabled);
+@end
+
+@implementation S7TVMultiSelectionOption
+@end
+
+static NSArray<S7TVMultiSelectionOption *> *S7TVExternalProviderSelectionOptions(void) {
+    NSMutableArray<S7TVMultiSelectionOption *> *options = [NSMutableArray arrayWithCapacity:3];
+    for (NSNumber *value in S7TVExternalProviderValues()) {
+        S7TVExternalEmoteProvider provider =
+            (S7TVExternalEmoteProvider)value.integerValue;
+        S7TVExternalEmoteProvider selectedProvider = provider;
+        S7TVMultiSelectionOption *option = [S7TVMultiSelectionOption new];
+        option.identifier = S7TVEmoteProviderIdentifier(provider);
+        option.title = S7TVExternalProviderDisplayName(provider);
+        option.image = S7TVExternalProviderLogo(provider);
+        option.isEnabled = ^BOOL {
+            return [S7TVEmoteProviderSettings isProviderEnabled:selectedProvider];
+        };
+        option.setEnabled = ^(BOOL enabled) {
+            [S7TVEmoteProviderSettings setProvider:selectedProvider enabled:enabled];
+        };
+        [options addObject:option];
+    }
+    return options;
+}
+
+static NSArray<S7TVMultiSelectionOption *> *S7TVChatTopBannerSelectionOptions(void) {
+    NSArray<NSDictionary *> *definitions = @[
+        @{
+            @"id": @"messages-and-announcements",
+            @"title": L(@"chat_top_hide_messages_announcements"),
+            @"image": @"pin.fill",
+        },
+        @{
+            @"id": @"goals-and-leaderboard",
+            @"title": L(@"chat_top_hide_goals_leaderboard"),
+            @"image": @"list.number",
+        },
+    ];
+
+    NSArray<BOOL (^)(void)> *readers = @[
+        ^BOOL { return s7tv_hideChatMessagesAndAnnouncementsEnabled(); },
+        ^BOOL { return s7tv_hideChatGoalsAndLeaderboardEnabled(); },
+    ];
+    NSArray<void (^)(BOOL)> *writers = @[
+        ^(BOOL enabled) { s7tv_setHideChatMessagesAndAnnouncementsEnabled(enabled); },
+        ^(BOOL enabled) { s7tv_setHideChatGoalsAndLeaderboardEnabled(enabled); },
+    ];
+
+    NSMutableArray<S7TVMultiSelectionOption *> *options =
+        [NSMutableArray arrayWithCapacity:definitions.count];
+    [definitions enumerateObjectsUsingBlock:^(NSDictionary *definition,
+                                               NSUInteger index,
+                                               BOOL *stop) {
+        (void)stop;
+        S7TVMultiSelectionOption *option = [S7TVMultiSelectionOption new];
+        option.identifier = definition[@"id"];
+        option.title = definition[@"title"];
+        option.image = [UIImage systemImageNamed:definition[@"image"]];
+        option.isEnabled = readers[index];
+        option.setEnabled = writers[index];
+        [options addObject:option];
+    }];
+    return options;
+}
+
+static NSString *S7TVEnabledChatTopBannerSummary(void) {
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (S7TVMultiSelectionOption *option in S7TVChatTopBannerSelectionOptions()) {
+        if (option.isEnabled()) [names addObject:option.title];
+    }
+    return names.count > 0
+        ? [names componentsJoinedByString:@" · "]
+        : L(@"setting_chat_top_banners_none");
+}
+
+@interface S7TVMultiSelectionController : UITableViewController
 @property (nonatomic, copy, nullable) void (^onFinish)(void);
+- (instancetype)initWithTitle:(NSString *)title
+                       options:(NSArray<S7TVMultiSelectionOption *> *)options;
 @end
 
-@interface S7TVProviderSelectionController ()
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *enabledByProvider;
+@interface S7TVMultiSelectionController ()
+@property (nonatomic, copy) NSString *selectionTitle;
+@property (nonatomic, copy) NSArray<S7TVMultiSelectionOption *> *options;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *enabledByIdentifier;
 @end
 
-@implementation S7TVProviderSelectionController
+@implementation S7TVMultiSelectionController
 
-- (instancetype)init {
+- (instancetype)initWithTitle:(NSString *)title
+                       options:(NSArray<S7TVMultiSelectionOption *> *)options {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     if (self) {
-        _enabledByProvider = [NSMutableDictionary dictionaryWithCapacity:3];
-        for (NSNumber *value in S7TVExternalProviderValues()) {
-            S7TVExternalEmoteProvider provider = (S7TVExternalEmoteProvider)value.integerValue;
-            _enabledByProvider[value] = @([S7TVEmoteProviderSettings isProviderEnabled:provider]);
+        _selectionTitle = [title copy];
+        _options = [options copy];
+        _enabledByIdentifier = [NSMutableDictionary dictionaryWithCapacity:options.count];
+        for (S7TVMultiSelectionOption *option in _options) {
+            _enabledByIdentifier[option.identifier] = @(option.isEnabled());
         }
     }
     return self;
@@ -2089,9 +2221,8 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = L(@"setting_emote_providers");
+    self.title = self.selectionTitle;
     S7TVStyleTableView(self.tableView);
-    // Use the TwitchPlusK purple accent for checks and navigation.
     self.view.tintColor = S7TVAccent();
     self.tableView.tintColor = S7TVAccent();
     self.navigationController.navigationBar.tintColor = S7TVAccent();
@@ -2124,37 +2255,36 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     (void)tableView;
     (void)section;
-    return S7TVExternalProviderValues().count;
+    return self.options.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     (void)tableView;
-    NSArray<NSNumber *> *providers = S7TVExternalProviderValues();
-    if (indexPath.row >= (NSInteger)providers.count)
+    if (indexPath.row >= (NSInteger)self.options.count)
         return [[UITableViewCell alloc] init];
-
-    NSNumber *value = providers[indexPath.row];
-    S7TVExternalEmoteProvider provider =
-        (S7TVExternalEmoteProvider)value.integerValue;
+    S7TVMultiSelectionOption *option = self.options[indexPath.row];
     UITableViewCell *cell = [[UITableViewCell alloc]
         initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = S7TVCellBg();
-    cell.textLabel.text = S7TVExternalProviderDisplayName(provider);
+    cell.textLabel.text = option.title;
     cell.textLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
     cell.textLabel.textColor = UIColor.whiteColor;
-    cell.imageView.image = S7TVExternalProviderLogo(provider);
-    cell.accessoryType = [self.enabledByProvider[value] boolValue]
+    // Let long option titles wrap to multiple lines instead of truncating.
+    cell.textLabel.numberOfLines = 0;
+    cell.textLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    cell.imageView.image = option.image;
+    cell.accessoryType = [self.enabledByIdentifier[option.identifier] boolValue]
         ? UITableViewCellAccessoryCheckmark
         : UITableViewCellAccessoryNone;
     return cell;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSArray<NSNumber *> *providers = S7TVExternalProviderValues();
-    if (indexPath.row >= (NSInteger)providers.count) return;
-    NSNumber *value = providers[indexPath.row];
-    self.enabledByProvider[value] = @(![self.enabledByProvider[value] boolValue]);
+    if (indexPath.row >= (NSInteger)self.options.count) return;
+    S7TVMultiSelectionOption *option = self.options[indexPath.row];
+    BOOL enabled = [self.enabledByIdentifier[option.identifier] boolValue];
+    self.enabledByIdentifier[option.identifier] = @(!enabled);
     [tableView reloadRowsAtIndexPaths:@[indexPath]
                      withRowAnimation:UITableViewRowAnimationNone];
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
@@ -2165,13 +2295,10 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
 }
 
 - (void)s7tv_finish {
-    for (NSNumber *value in S7TVExternalProviderValues()) {
-        S7TVExternalEmoteProvider provider =
-            (S7TVExternalEmoteProvider)value.integerValue;
-        BOOL oldValue = [S7TVEmoteProviderSettings isProviderEnabled:provider];
-        BOOL newValue = [self.enabledByProvider[value] boolValue];
-        if (oldValue != newValue)
-            [S7TVEmoteProviderSettings setProvider:provider enabled:newValue];
+    for (S7TVMultiSelectionOption *option in self.options) {
+        BOOL oldValue = option.isEnabled();
+        BOOL newValue = [self.enabledByIdentifier[option.identifier] boolValue];
+        if (oldValue != newValue) option.setEnabled(newValue);
     }
     void (^finish)(void) = self.onFinish;
     [self dismissViewControllerAnimated:YES completion:finish];
@@ -2220,7 +2347,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     if (s == S7TVAppearanceSectionIntro) return 1;
     if (s == S7TVAppearanceSectionEmotes) return [self s7tv_visibleEmoteRows].count;
-    if (s == S7TVAppearanceSectionTheme) return 1;
+    if (s == S7TVAppearanceSectionInterface) return 3;
     return 0;
 }
 
@@ -2231,7 +2358,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     if (s == S7TVAppearanceSectionIntro) return [[UIView alloc] init];
     if (s == S7TVAppearanceSectionEmotes) return S7TVSectionHeader(L(@"section_emotes"), NO, nil);
-    if (s == S7TVAppearanceSectionTheme) return S7TVSectionHeader(L(@"section_theme"), NO, nil);
+    if (s == S7TVAppearanceSectionInterface) return S7TVSectionHeader(L(@"section_interface"), NO, nil);
     return [[UIView alloc] init];
 }
 
@@ -2249,24 +2376,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     if (ip.section == S7TVAppearanceSectionIntro) {
         // Chat settings are available from the picker ("Aa").
-        UITableViewCell *cell = [[UITableViewCell alloc]
-            initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.backgroundColor = S7TVCellBg();
-        UILabel *lbl = [[UILabel alloc] init];
-        lbl.text = L(@"desc_chat_custom_location");
-        lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-        lbl.textColor = UIColor.whiteColor;
-        lbl.numberOfLines = 0;
-        lbl.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.contentView addSubview:lbl];
-        [NSLayoutConstraint activateConstraints:@[
-            [lbl.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
-            [lbl.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
-            [lbl.topAnchor      constraintEqualToAnchor:cell.contentView.topAnchor constant:10],
-            [lbl.bottomAnchor   constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
-        ]];
-        return cell;
+        return S7TVDescriptionCell(@"desc_chat_custom_location");
     }
     if (ip.section == S7TVAppearanceSectionEmotes) {
         NSArray<NSNumber *> *visible = [self s7tv_visibleEmoteRows];
@@ -2279,7 +2389,7 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
                             S7TVCurrentPickerAnimationsMode()),
                         S7TVCurrentPickerAnimationsMode() ==
                             S7TVPickerAnimationsModeEnabled),
-                    @"photo.stack.fill", S7TVAccent(), nil);
+                    @"sparkles", S7TVAccent(), nil);
             case S7TVAppearanceEmoteRowPickerOpening: {
                 NSString *mode = [S7TVEmoteProviderSettings pickerOpeningMode];
                 return S7TVNavCell(L(@"setting_emote_picker_opening"),
@@ -2315,18 +2425,54 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
             }
         }
     }
-    if (ip.section == S7TVAppearanceSectionTheme) {
-        return S7TVSwitchCell(L(@"switch_oled_mode"),
-                    @"circle.lefthalf.filled",
-                    UIColor.systemIndigoColor,
-                    S7TVOLEDModeEnabled(),
-                    self, @selector(toggleOLEDMode:), @"desc_oled_mode");
+    if (ip.section == S7TVAppearanceSectionInterface) {
+        switch ((S7TVAppearanceInterfaceRow)ip.row) {
+            case S7TVAppearanceInterfaceRowTheme:
+                return S7TVSwitchCell(L(@"switch_oled_mode"),
+                            @"circle.lefthalf.filled",
+                            UIColor.systemIndigoColor,
+                            S7TVOLEDModeEnabled(),
+                            self, @selector(toggleOLEDMode:), @"desc_oled_mode");
+            case S7TVAppearanceInterfaceRowTabBar:
+                // Les deux réglages sont liés : ils se règlent sur l'écran dédié.
+                return S7TVNavCell(L(@"section_tab_bar"), nil,
+                    @"rectangle.split.3x1.fill", S7TVAccent(), @"desc_tab_bar");
+            case S7TVAppearanceInterfaceRowChatBanners:
+            default:
+                return S7TVNavCell(L(@"setting_chat_top_banners"),
+                    S7TVEnabledChatTopBannerSummary(),
+                    @"rectangle.stack.fill", S7TVAccent(), nil);
+        }
     }
     return [[UITableViewCell alloc] init];
 }
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section == S7TVAppearanceSectionInterface) {
+        if (ip.row == S7TVAppearanceInterfaceRowTabBar) {
+            [self.navigationController pushViewController:
+                [[SevenTVTabBarSettingsController alloc] init] animated:YES];
+            return;
+        }
+        // Le mode OLED est un interrupteur : rien à ouvrir.
+        if (ip.row != S7TVAppearanceInterfaceRowChatBanners) return;
+        UITableViewCell *anchor = [tv cellForRowAtIndexPath:ip];
+        S7TVMultiSelectionController *banners =
+            [[S7TVMultiSelectionController alloc]
+                initWithTitle:L(@"setting_chat_top_banners")
+                       options:S7TVChatTopBannerSelectionOptions()];
+        __weak typeof(self) weakSelf = self;
+        banners.onFinish = ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            S7TVReloadCellWithoutJump(strongSelf.tableView, anchor);
+        };
+        UINavigationController *navigation = [[UINavigationController alloc]
+            initWithRootViewController:banners];
+        navigation.modalPresentationStyle = UIModalPresentationPageSheet;
+        [self presentViewController:navigation animated:YES completion:nil];
+        return;
+    }
     if (ip.section != S7TVAppearanceSectionEmotes) return;
     NSArray<NSNumber *> *visible = [self s7tv_visibleEmoteRows];
     if (ip.row >= (NSInteger)visible.count) return;
@@ -2336,8 +2482,10 @@ static NSString *S7TVEnabledExternalProviderSummary(void) {
     } else if (visible[ip.row].integerValue == S7TVAppearanceEmoteRowResolution) {
         [self presentResolutionPickerFromCell:anchor];
     } else if (visible[ip.row].integerValue == S7TVAppearanceEmoteRowProviders) {
-        S7TVProviderSelectionController *providers =
-            [[S7TVProviderSelectionController alloc] init];
+        S7TVMultiSelectionController *providers =
+            [[S7TVMultiSelectionController alloc]
+                initWithTitle:L(@"setting_emote_providers")
+                       options:S7TVExternalProviderSelectionOptions()];
         __weak typeof(self) weakSelf = self;
         providers.onFinish = ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -2553,12 +2701,105 @@ typedef NS_ENUM(NSInteger, S7TVContentSection) {
     S7TVContentSectionPlayer    = 2,  // Player and gestures
 };
 
-// Rows for the Home and Playback section.
+// Noms et icônes des onglets de la barre (une ligne par onglet, ordre réel).
+static NSString *S7TVTabItemName(S7TVTabItem item) {
+    switch (item) {
+        case S7TVTabItemHome:     return L(@"tab_name_home");
+        case S7TVTabItemExplore:  return L(@"tab_name_explore");
+        case S7TVTabItemCreate:   return L(@"tab_name_create");
+        case S7TVTabItemActivity: return L(@"tab_name_activity");
+        case S7TVTabItemProfile:  return L(@"tab_name_profile");
+    }
+    return @"";
+}
+
+// Nom court de la sous-page d'une destination (« Live », « Catégories »…),
+// nil pour les destinations qui n'en ont pas.
+static NSString *S7TVTabPageTitle(S7TVLaunchDestination destination) {
+    switch (destination) {
+        case S7TVLaunchDestinationHomeFollowing:      return L(@"tab_page_following");
+        case S7TVLaunchDestinationHomeLive:           return L(@"tab_page_live");
+        case S7TVLaunchDestinationHomeClips:          return L(@"tab_page_clips");
+        case S7TVLaunchDestinationBrowseCategories:   return L(@"tab_page_categories");
+        case S7TVLaunchDestinationBrowseLiveChannels: return L(@"tab_page_live_channels");
+        default:                                      return nil;
+    }
+}
+
+static NSString *S7TVTabItemIcon(S7TVTabItem item) {
+    switch (item) {
+        case S7TVTabItemHome:     return @"house.fill";
+        case S7TVTabItemExplore:  return @"safari.fill";
+        case S7TVTabItemCreate:   return @"plus.circle.fill";
+        case S7TVTabItemActivity: return @"bell.fill";
+        case S7TVTabItemProfile:  return @"person.crop.circle.fill";
+    }
+    return @"circle.fill";
+}
+
+// Couleur propre à chaque onglet ; un onglet masqué reste gris.
+static UIColor *S7TVTabItemColor(S7TVTabItem item) {
+    switch (item) {
+        case S7TVTabItemHome:     return S7TVAccent();                                             // violet Twitch
+        case S7TVTabItemExplore:  return [UIColor colorWithRed:0.30 green:0.62 blue:1.00 alpha:1.0]; // bleu
+        case S7TVTabItemCreate:   return [UIColor colorWithRed:0.30 green:0.75 blue:0.45 alpha:1.0]; // vert
+        case S7TVTabItemActivity: return [UIColor colorWithRed:0.95 green:0.35 blue:0.50 alpha:1.0]; // rose
+        case S7TVTabItemProfile:  return [UIColor colorWithRed:0.25 green:0.70 blue:0.95 alpha:1.0]; // cyan
+    }
+    return S7TVAccent();
+}
+
+// La ligne « Défaut » n'est pas un onglet : elle porte la couleur du tweak.
+static UIColor *S7TVTabItemColorDefaultRow(void) {
+    return S7TVAccent();
+}
+
+// L'onglet visé par une destination de lancement est-il masqué ? Dans cet état,
+// la destination ne peut pas être honorée au démarrage.
+static BOOL S7TVLaunchDestinationTabHidden(S7TVLaunchDestination destination) {
+    NSInteger tab = s7tv_launchDestinationTab(destination);
+    return tab >= 0 && s7tv_tabItemHidden((S7TVTabItem)tab);
+}
+
+// Destination par défaut d'un onglet : sert de repli quand l'onglet choisi
+// comme écran de lancement vient d'être masqué.
+static S7TVLaunchDestination S7TVDefaultDestinationForTab(S7TVTabItem item) {
+    switch (item) {
+        case S7TVTabItemHome:     return S7TVLaunchDestinationHomeFollowing;
+        case S7TVTabItemExplore:  return S7TVLaunchDestinationBrowseCategories;
+        case S7TVTabItemActivity: return S7TVLaunchDestinationActivity;
+        case S7TVTabItemProfile:  return S7TVLaunchDestinationProfile;
+        case S7TVTabItemCreate:   break;
+    }
+    return S7TVLaunchDestinationDefault;
+}
+
+// Repli : l'onglet visible le plus proche du masqué, en commençant par le
+// voisin de gauche (le plus proche dans l'ordre de la barre).
+static S7TVLaunchDestination S7TVNearestVisibleDestination(S7TVTabItem item) {
+    for (NSInteger delta = 1; delta < S7TV_TAB_ITEM_COUNT; delta++) {
+        NSInteger before = (NSInteger)item - delta;
+        if (before >= 0 && !s7tv_tabItemHidden((S7TVTabItem)before)) {
+            S7TVLaunchDestination destination =
+                S7TVDefaultDestinationForTab((S7TVTabItem)before);
+            if (destination != S7TVLaunchDestinationDefault) return destination;
+        }
+        NSInteger after = (NSInteger)item + delta;
+        if (after < S7TV_TAB_ITEM_COUNT && !s7tv_tabItemHidden((S7TVTabItem)after)) {
+            S7TVLaunchDestination destination =
+                S7TVDefaultDestinationForTab((S7TVTabItem)after);
+            if (destination != S7TVLaunchDestinationDefault) return destination;
+        }
+    }
+    return S7TVLaunchDestinationDefault;
+}
+
+// Rows for the Home and Playback section. L'écran de lancement est réglé dans la
+// section de la barre d'onglets, avec laquelle il est lié.
 typedef NS_ENUM(NSInteger, S7TVContentHomeRow) {
-    S7TVContentHomeRowLaunchScreen   = 0,
-    S7TVContentHomeRowHideStories    = 1,
-    S7TVContentHomeRowKeepLiveFeed   = 2,
-    S7TVContentHomeRowAutoCollect    = 3,
+    S7TVContentHomeRowHideStories    = 0,
+    S7TVContentHomeRowKeepLiveFeed   = 1,
+    S7TVContentHomeRowAutoCollect    = 2,
 };
 
 typedef NS_ENUM(NSInteger, S7TVContentPlayerRow) {
@@ -2714,7 +2955,6 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
 }
 
 @interface SevenTVContentPageController () <UIDocumentPickerDelegate>
-- (void)presentLaunchDestinationPickerFromCell:(UIView *)anchor;
 - (void)presentOrientationLockSettingPickerFromCell:(UIView *)anchor;
 - (void)presentPlayerGestureAssignmentPickerFromCell:(UIView *)anchor
                                                 side:(BOOL)leftSide;
@@ -2773,7 +3013,6 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
 // Visible Home and Playback rows.
 - (NSArray<NSNumber *> *)s7tv_visibleHomeRows {
     return S7TVVisibleRowIndexes(@[
-        @(S7TVContentHomeRowLaunchScreen),
         @(S7TVContentHomeRowHideStories),
         @(S7TVContentHomeRowKeepLiveFeed),
         @(S7TVContentHomeRowAutoCollect),
@@ -2837,18 +3076,10 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 
-    // Home and Playback: launch screen, stories, live feed, points and rotation.
     if (ip.section == S7TVContentSectionHome) {
         NSArray<NSNumber *> *visible = [self s7tv_visibleHomeRows];
         if (ip.row >= (NSInteger)visible.count) return [[UITableViewCell alloc] init];
         switch (visible[ip.row].integerValue) {
-            case S7TVContentHomeRowLaunchScreen: {
-                S7TVLaunchDestination destination = s7tv_launchDestination();
-                return S7TVNavCell(L(@"setting_launch_screen"),
-                    S7TVValueWithDefaultMark(S7TVLaunchDestinationTitle(destination),
-                        destination == S7TVLaunchDestinationDefault),
-                    @"rectangle.stack.fill", S7TVAccent(), nil);
-            }
             case S7TVContentHomeRowHideStories:
                 return S7TVSwitchCell(L(@"switch_hide_twitch_stories"),
                     @"circle.slash", [UIColor colorWithRed:0.95 green:0.35 blue:0.50 alpha:1.0],
@@ -3029,11 +3260,6 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
         }
         return;
     }
-    if (ip.section != S7TVContentSectionHome) return;
-    NSInteger logicalRow = [self s7tv_visibleHomeRows][ip.row].integerValue;
-    if (logicalRow == S7TVContentHomeRowLaunchScreen) {
-        [self presentLaunchDestinationPickerFromCell:anchor];
-    }
 }
 
 - (void)toggleAutoCollect:(UISwitch *)sw {
@@ -3209,36 +3435,6 @@ static NSArray<NSString *> *S7TVSevenTVIDsFromPCFavorites(NSArray *rawFavorites)
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
-- (void)presentLaunchDestinationPickerFromCell:(UIView *)anchor {
-    UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:L(@"setting_launch_screen")
-                          message:nil
-                   preferredStyle:UIAlertControllerStyleActionSheet];
-    // Use the settings purple accent for non-destructive actions.
-    sheet.view.tintColor = S7TVAccent();
-    S7TVLaunchDestination current = s7tv_launchDestination();
-    for (NSInteger raw = S7TVLaunchDestinationDefault;
-         raw <= S7TVLaunchDestinationProfile; raw++) {
-        S7TVLaunchDestination destination = (S7TVLaunchDestination)raw;
-        NSString *title = S7TVLaunchDestinationTitle(destination);
-        if (destination == current) title = [@"✓  " stringByAppendingString:title];
-        __weak typeof(self) weakSelf = self;
-        [sheet addAction:[UIAlertAction actionWithTitle:title
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction *action) {
-            (void)action;
-            s7tv_setLaunchDestination(destination);
-            S7TVReloadCellWithoutJump(weakSelf.tableView, anchor);
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-    sheet.popoverPresentationController.sourceView = anchor;
-    sheet.popoverPresentationController.sourceRect = anchor.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-
 // Import favorites from a 7TV PC JSON export.
 
 - (void)importFavoritesFromFile {
@@ -3307,19 +3503,405 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                           L(@"alert_import_success_message_format"),
                           (unsigned long)added,
                           (unsigned long)skipped]];
-    [[SevenTVManager sharedManager] log:@"📥 Import favoris 7TV : %lu total, %lu ajoutés",
-     (unsigned long)merged.count, (unsigned long)added];
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller { }
 
 - (void)s7tv_showAlert:(NSString *)title message:(NSString *)msg {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:title
-                                                               message:msg
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:L(@"common_ok")
-                                          style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:a animated:YES completion:nil];
+    S7TVShowAlert(self, title, msg);
+}
+@end// Ligne de l'écran barre d'onglets : radio (écran de lancement) et interrupteur
+// (onglet visible) sur la même ligne. `tabIndex` < 0 décrit « Défaut ». Création
+// n'a pas de radio : aucune destination de lancement ne la vise. `subPageTitle`
+// ajoute une seconde ligne optionnelle (sous-page ouverte, ou « masqué »).
+static UITableViewCell *S7TVTabOptionCell(NSInteger tabIndex,
+                                         NSString *title,
+                                         NSString *sfName,
+                                         NSString *subPageTitle,
+                                         BOOL isLaunch,
+                                         BOOL isVisible,
+                                         id target,
+                                         SEL switchAction,
+                                         SEL subPageAction) {
+    UITableViewCell *cell = [[UITableViewCell alloc]
+        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.selectionStyle  = UITableViewCellSelectionStyleNone;
+    // Ligne de lancement : fond gris neutre (un cercle seul se repère mal).
+    cell.backgroundColor = isLaunch ? [UIColor colorWithWhite:1.0 alpha:0.08]
+                                    : S7TVCellBg();
+
+    UIImageView *radio = nil;
+    if (tabIndex != S7TVTabItemCreate) {
+        UIImageSymbolConfiguration *radioCfg = [UIImageSymbolConfiguration
+            configurationWithPointSize:20 weight:UIImageSymbolWeightRegular];
+        radio = [[UIImageView alloc] initWithImage:[UIImage
+            systemImageNamed:(isLaunch ? @"largecircle.fill.circle" : @"circle")
+            withConfiguration:radioCfg]];
+        radio.tintColor = isLaunch ? S7TVAccent() : S7TVGray();
+        radio.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:radio];
+    }
+
+    UIImageView *icon = nil;
+    if (sfName.length) {
+        UIColor *tint = tabIndex >= 0 ? S7TVTabItemColor((S7TVTabItem)tabIndex)
+                                      : S7TVTabItemColorDefaultRow();
+        icon = S7TVIcon(sfName, isVisible ? tint : S7TVGray());
+        [cell.contentView addSubview:icon];
+    }
+
+    UILabel *lbl = [[UILabel alloc] init];
+    lbl.text = title;
+    // Match native settings typography.
+    lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
+    lbl.textColor = isVisible ? [UIColor whiteColor] : S7TVGray();
+    lbl.numberOfLines = 1;
+    lbl.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:lbl];
+
+    UISwitch *sw = nil;
+    if (tabIndex >= 0) {
+        sw = [[UISwitch alloc] init];
+        sw.on          = isVisible;
+        sw.onTintColor = S7TVAccent();
+        sw.tag         = tabIndex;
+        sw.accessibilityLabel = title;
+        [sw addTarget:target action:switchAction
+     forControlEvents:UIControlEventValueChanged];
+        sw.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:sw];
+    }
+
+    // Seconde ligne : sous-page à choisir, ou simple mention (« masqué »).
+    UIView *secondLine = nil;
+    if (subPageTitle.length) {
+        if (subPageAction) {
+            // Assemblé à la main : sur un bouton système, le chevron garde sa
+            // couleur propre et se cale sur les métriques du bouton.
+            UIColor *subColor = S7TVAccent();
+            UIControl *control = [[UIControl alloc] init];
+            control.tag = tabIndex;
+            [control addTarget:target action:subPageAction
+              forControlEvents:UIControlEventTouchUpInside];
+
+            UILabel *subLabel = [[UILabel alloc] init];
+            subLabel.text = [NSString stringWithFormat:@"%@ %@",
+                             L(@"tab_bar_open_with"), subPageTitle];
+            subLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+            subLabel.textColor = subColor;
+            subLabel.translatesAutoresizingMaskIntoConstraints = NO;
+            [control addSubview:subLabel];
+
+            UIImageSymbolConfiguration *chevronCfg = [UIImageSymbolConfiguration
+                configurationWithPointSize:11 weight:UIImageSymbolWeightSemibold];
+            UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage
+                systemImageNamed:@"chevron.right" withConfiguration:chevronCfg]];
+            chevron.tintColor = subColor;
+            chevron.translatesAutoresizingMaskIntoConstraints = NO;
+            [control addSubview:chevron];
+
+            [NSLayoutConstraint activateConstraints:@[
+                [subLabel.leadingAnchor constraintEqualToAnchor:control.leadingAnchor],
+                [subLabel.topAnchor constraintEqualToAnchor:control.topAnchor],
+                [subLabel.bottomAnchor constraintEqualToAnchor:control.bottomAnchor],
+                [chevron.leadingAnchor constraintEqualToAnchor:subLabel.trailingAnchor
+                                                      constant:5],
+                // Centré sur la hauteur de capitale du texte, pas sur sa boîte.
+                [chevron.centerYAnchor constraintEqualToAnchor:subLabel.firstBaselineAnchor
+                                                      constant:-4],
+                [chevron.trailingAnchor constraintEqualToAnchor:control.trailingAnchor],
+            ]];
+            secondLine = control;
+        } else {
+            UILabel *note = [[UILabel alloc] init];
+            note.text = subPageTitle;
+            note.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
+            note.textColor = S7TVGray();
+            secondLine = note;
+        }
+        secondLine.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:secondLine];
+    }
+
+    NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray array];
+    if (radio) {
+        [constraints addObjectsFromArray:@[
+            [radio.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor
+                                                constant:16],
+            [radio.centerYAnchor constraintEqualToAnchor:lbl.centerYAnchor],
+            [radio.widthAnchor   constraintEqualToConstant:22],
+            [radio.heightAnchor  constraintEqualToConstant:22],
+        ]];
+    }
+    [constraints addObject:[lbl.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor
+                                                         constant:12]];
+    // Sans radio (Création), la place est conservée pour garder les colonnes alignées.
+    if (icon) {
+        [constraints addObject:radio
+            ? [icon.leadingAnchor constraintEqualToAnchor:radio.trailingAnchor constant:10]
+            : [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor
+                                                 constant:48]];
+        [constraints addObjectsFromArray:@[
+            [icon.centerYAnchor constraintEqualToAnchor:lbl.centerYAnchor],
+            [lbl.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:12],
+        ]];
+    } else {
+        [constraints addObject:radio
+            ? [lbl.leadingAnchor constraintEqualToAnchor:radio.trailingAnchor constant:12]
+            : [lbl.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor
+                                                constant:48]];
+    }
+    if (sw) {
+        [constraints addObjectsFromArray:@[
+            [sw.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor
+                                              constant:-16],
+            [sw.centerYAnchor  constraintEqualToAnchor:lbl.centerYAnchor],
+            [lbl.trailingAnchor constraintLessThanOrEqualToAnchor:sw.leadingAnchor
+                                                         constant:-12],
+        ]];
+    } else {
+        [constraints addObject:[lbl.trailingAnchor
+            constraintLessThanOrEqualToAnchor:cell.contentView.trailingAnchor constant:-16]];
+    }
+    if (secondLine) {
+        [constraints addObjectsFromArray:@[
+            [secondLine.leadingAnchor constraintEqualToAnchor:lbl.leadingAnchor],
+            [secondLine.topAnchor constraintEqualToAnchor:lbl.bottomAnchor constant:3],
+            [secondLine.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor
+                                                    constant:-12],
+            [secondLine.trailingAnchor
+                constraintLessThanOrEqualToAnchor:cell.contentView.trailingAnchor
+                                         constant:-16],
+        ]];
+    } else {
+        [constraints addObject:[lbl.bottomAnchor
+            constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-12]];
+    }
+    [NSLayoutConstraint activateConstraints:constraints];
+    return cell;
+}
+
+// MARK: - SevenTVTabBarSettingsController
+// Masquage des onglets de la barre principale et écran de lancement. Les deux
+// réglages sont liés : une destination dont l'onglet est masqué ne peut pas être
+// honorée. Ils partagent donc un même écran, atteint par une seule ligne dans le
+// menu Contenu.
+
+// Deux sections : l'explication permanente, puis les réglages eux-mêmes.
+typedef NS_ENUM(NSInteger, S7TVTabBarSettingsSection) {
+    S7TVTabBarSettingsSectionIntro = 0,
+    S7TVTabBarSettingsSectionOptions = 1,
+};
+
+typedef NS_ENUM(NSInteger, S7TVTabBarSettingsRow) {
+    S7TVTabBarSettingsRowDefault = 0,   // « Défaut » : aucun onglet imposé
+    S7TVTabBarSettingsRowFirstTab,      // puis un onglet par ligne, ordre réel
+};
+
+@implementation SevenTVTabBarSettingsController
+
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = L(@"section_tab_bar");
+    S7TVStyleTableView(self.tableView);
+    S7TVRegisterOLEDObserver(self);
+}
+
+- (void)s7tv_oledModeDidChange {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        S7TVApplyOLEDStyle(self);
+    });
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    if (s == S7TVTabBarSettingsSectionIntro) return 1;
+    return S7TVTabBarSettingsRowFirstTab + S7TV_TAB_ITEM_COUNT;
+}
+
+- (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
+    return (s == S7TVTabBarSettingsSectionIntro) ? 8 : 34;
+}
+
+// Annonce les deux colonnes : radio (départ) à gauche, interrupteur (visible)
+// à droite.
+- (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
+    UIView *container = [[UIView alloc] init];
+    container.backgroundColor = [UIColor clearColor];
+
+    if (s == S7TVTabBarSettingsSectionIntro) return [[UIView alloc] init];
+
+    UILabel *launch = [[UILabel alloc] init];
+    launch.text = L(@"tab_bar_header_launch").uppercaseString;
+    UILabel *visible = [[UILabel alloc] init];
+    visible.text = L(@"tab_bar_header_visible").uppercaseString;
+    for (UILabel *lbl in @[launch, visible]) {
+        lbl.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
+        // En-têtes de colonnes à la couleur du tweak.
+        lbl.textColor = S7TVAccent();
+        lbl.translatesAutoresizingMaskIntoConstraints = NO;
+        [container addSubview:lbl];
+    }
+    visible.textAlignment = NSTextAlignmentRight;
+    [NSLayoutConstraint activateConstraints:@[
+        [launch.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor constant:20],
+        [launch.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor constant:-8],
+        [visible.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+        [visible.bottomAnchor  constraintEqualToAnchor:launch.bottomAnchor],
+    ]];
+    return container;
+}
+
+- (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
+    UIView *v = [[UIView alloc] init];
+    v.backgroundColor = [UIColor clearColor];
+    return v;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    S7TVLaunchDestination destination = s7tv_launchDestination();
+    NSInteger launchTab = s7tv_launchDestinationTab(destination);
+
+    if (ip.section == S7TVTabBarSettingsSectionIntro) {
+        return S7TVDescriptionCell(@"desc_tab_bar");
+    }
+
+    if (ip.row == S7TVTabBarSettingsRowDefault) {
+        return S7TVTabOptionCell(-1, L(@"launch_default"), @"star.fill", nil,
+            launchTab < 0, YES, self, nil, NULL);
+    }
+
+    NSInteger tabRow = ip.row - S7TVTabBarSettingsRowFirstTab;
+    if (tabRow < 0 || tabRow >= S7TV_TAB_ITEM_COUNT) {
+        return [[UITableViewCell alloc] init];
+    }
+    S7TVTabItem item = (S7TVTabItem)tabRow;
+    BOOL isVisible = !s7tv_tabItemHidden(item);
+    BOOL isLaunch = launchTab == tabRow && !S7TVLaunchDestinationTabHidden(destination);
+
+    // L'onglet de départ affiche la sous-page qu'il ouvrira. Un onglet masqué
+    // n'affiche rien, sauf s'il est la destination (cas d'un import de réglages).
+    NSString *subPage = nil;
+    SEL subPageAction = NULL;
+    if (isLaunch) {
+        subPage = S7TVTabPageTitle(destination);
+        subPageAction = @selector(openTabPagePicker:);
+    } else if (!isVisible && launchTab == tabRow) {
+        subPage = L(@"tab_hidden_badge");
+    }
+
+    return S7TVTabOptionCell(tabRow, S7TVTabItemName(item), S7TVTabItemIcon(item),
+        subPage, isLaunch, isVisible, self,
+        @selector(toggleTabSwitch:), subPageAction);
+}
+
+- (NSIndexPath *)tableView:(UITableView *)tv willSelectRowAtIndexPath:(NSIndexPath *)ip {
+    // Le test porte sur la SECTION : la première ligne des réglages porte aussi
+    // le numéro 0, et elle doit rester sélectionnable.
+    if (ip.section == S7TVTabBarSettingsSectionIntro) return nil;
+    if (ip.row == S7TVTabBarSettingsRowDefault) return ip;
+    NSInteger tabRow = ip.row - S7TVTabBarSettingsRowFirstTab;
+    if (tabRow < 0 || tabRow >= S7TV_TAB_ITEM_COUNT) return nil;
+    // Création (feuille de composition) et les onglets masqués ne peuvent pas
+    // être l'écran de lancement : leur ligne est inerte.
+    if (tabRow == S7TVTabItemCreate) return nil;
+    return s7tv_tabItemHidden((S7TVTabItem)tabRow) ? nil : ip;
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section != S7TVTabBarSettingsSectionOptions) return;
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    NSInteger tabRow = ip.row - S7TVTabBarSettingsRowFirstTab;
+    [self s7tv_setLaunchTab:ip.row == S7TVTabBarSettingsRowDefault ? -1 : tabRow];
+}
+
+// La radio fixe l'écran de lancement ; la sous-page déjà réglée est conservée.
+- (void)s7tv_setLaunchTab:(NSInteger)tab {
+    if (tab < 0) {
+        s7tv_setLaunchDestination(S7TVLaunchDestinationDefault);
+    } else {
+        S7TVLaunchDestination current = s7tv_launchDestination();
+        s7tv_setLaunchDestination(s7tv_launchDestinationTab(current) == tab
+            ? current
+            : S7TVDefaultDestinationForTab((S7TVTabItem)tab));
+    }
+    S7TVReloadSectionWithoutJump(self.tableView, S7TVTabBarSettingsSectionOptions);
+}
+
+// Choix de la sous-page ouverte par l'onglet de départ.
+- (void)openTabPagePicker:(UIControl *)control {
+    S7TVTabItem item = (S7TVTabItem)control.tag;
+    NSArray<NSNumber *> *options = nil;
+    if (item == S7TVTabItemHome) {
+        options = @[@(S7TVLaunchDestinationHomeFollowing),
+                    @(S7TVLaunchDestinationHomeLive),
+                    @(S7TVLaunchDestinationHomeClips)];
+    } else if (item == S7TVTabItemExplore) {
+        options = @[@(S7TVLaunchDestinationBrowseCategories),
+                    @(S7TVLaunchDestinationBrowseLiveChannels)];
+    }
+    if (!options.count) return;
+
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:S7TVTabItemName(item)
+                          message:nil
+                   preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
+    S7TVLaunchDestination current = s7tv_launchDestination();
+    for (NSNumber *raw in options) {
+        S7TVLaunchDestination destination = (S7TVLaunchDestination)raw.integerValue;
+        NSString *title = S7TVTabPageTitle(destination);
+        if (destination == current) title = [@"✓  " stringByAppendingString:title];
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            (void)action;
+            s7tv_setLaunchDestination(destination);
+            S7TVReloadSectionWithoutJump(self.tableView, S7TVTabBarSettingsSectionOptions);
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    sheet.popoverPresentationController.sourceView = control;
+    sheet.popoverPresentationController.sourceRect = control.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+// ── Onglets ───────────────────────────────────────────
+
+// L'interrupteur porte la visibilité : allumé = onglet visible.
+- (void)s7tv_applyTabSwitch:(UISwitch *)sw forItem:(S7TVTabItem)item {
+    BOOL hide = !sw.isOn;
+    if (hide && s7tv_tabVisibleCount() <= 1) {
+        sw.on = YES;
+        S7TVShowAlert(self, L(@"section_tab_bar"), L(@"alert_tab_bar_min_message"));
+        return;
+    }
+    s7tv_setTabItemHidden(item, hide);
+    // La destination suit le masquage au lieu de retomber ailleurs en silence.
+    if (hide &&
+        s7tv_launchDestinationTab(s7tv_launchDestination()) == (NSInteger)item) {
+        S7TVLaunchDestination replacement = S7TVNearestVisibleDestination(item);
+        s7tv_setLaunchDestination(replacement);
+        S7TVShowAlert(self, L(@"setting_launch_screen"),
+            [NSString stringWithFormat:L(@"alert_launch_destination_moved"),
+             S7TVLaunchDestinationTitle(replacement)]);
+    }
+    // La barre ne rejoue pas son layout tant que cet écran est présenté.
+    s7tv_tabVisibilityApplyNow();
+    // Le repère de départ, la mention « masqué » et les sous-pages ont pu bouger.
+    S7TVReloadSectionWithoutJump(self.tableView, S7TVTabBarSettingsSectionOptions);
+}
+
+- (void)toggleTabSwitch:(UISwitch *)sw {
+    [self s7tv_applyTabSwitch:sw forItem:(S7TVTabItem)sw.tag];
 }
 
 @end
@@ -3327,6 +3909,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
 
 // MARK: - SevenTVFavoritesListController
+
 // Favorite emotes with provider-qualified keys and resolved names.
 
 @interface SevenTVFavoritesListController ()
@@ -4187,7 +4770,7 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
     S7TVLogsRowFirstCat = 3,
 };
 
-#define S7TV_LOGS_CAT_COUNT       13
+#define S7TV_LOGS_CAT_COUNT       3
 
 // Log detail rows are visible only when logging is enabled.
 - (NSArray<NSNumber *> *)s7tv_visibleLogsRows {
@@ -4460,45 +5043,21 @@ typedef NS_ENUM(NSInteger, S7TVLogsRow) {
         // Log categories.
         NSInteger catIdx = row - S7TVLogsRowFirstCat;
         NSArray<NSString *> *titles = @[
-            L(@"log_cat_errors"), L(@"log_cat_chat_custom"), L(@"log_cat_channel_points"),
-            L(@"log_cat_swizzle"), L(@"log_cat_cache"), L(@"log_cat_prefetch"),
-            L(@"log_cat_api"), L(@"log_cat_irc"),
-            L(@"log_cat_ui_picker"), L(@"section_favoris"),
-            L(@"log_cat_orientation"), L(@"log_cat_cdn"),
-            L(@"log_cat_dump"),
+            L(@"log_cat_errors"), L(@"log_cat_chat_custom"),
+            L(@"log_cat_channel_points"),
         ];
         NSArray<NSString *> *icons = @[
             @"exclamationmark.triangle.fill", @"hammer.fill", @"gift.fill",
-            @"bolt.horizontal.circle.fill", @"network", @"arrow.down.circle.fill", @"globe",
-            @"antenna.radiowaves.left.and.right",
-            @"paintbrush.fill", @"star.fill",
-            @"lock.rotation", @"photo.fill",
-            @"trash.fill",
         ];
-        // Enabled colors, in the same order as icons and values.
+        // Couleurs correspondantes.
         NSArray<UIColor *> *colors = @[
-            UIColor.systemRedColor,     UIColor.systemOrangeColor, UIColor.systemYellowColor,
-            UIColor.systemTealColor,
-            UIColor.systemBlueColor,    UIColor.systemIndigoColor, UIColor.systemPurpleColor, UIColor.systemPinkColor,
-            UIColor.systemBrownColor,   UIColor.systemYellowColor,
-            UIColor.systemBlueColor,    UIColor.systemTealColor,
-            UIColor.systemRedColor,
+            UIColor.systemRedColor, UIColor.systemOrangeColor, UIColor.systemYellowColor,
         ];
         NSArray<NSNumber *> *values = @[
             @(mgr.logErrors), @(mgr.logChatCustom), @(mgr.logChannelPoints),
-            @(mgr.logSwizzle), @(mgr.logCache),
-            @(mgr.logPrefetch), @(mgr.logAPI), @(mgr.logIRCChannel),
-            @(mgr.logUIPicker), @(mgr.logFavorites), @(mgr.logOrientation),
-            @(mgr.logImageConversion),
-            @(mgr.logDump),
         ];
         NSArray *selectors = @[
             @"toggleLogErrors:", @"toggleLogChatCustom:", @"toggleLogChannelPoints:",
-            @"toggleLogSwizzle:", @"toggleLogCache:",
-            @"toggleLogPrefetch:", @"toggleLogAPI:", @"toggleLogIRCChannel:",
-            @"toggleLogUIPicker:", @"toggleLogFavorites:", @"toggleLogOrientation:",
-            @"toggleLogImageConversion:",
-            @"toggleLogDump:",
         ];
 
         UITableViewCell *cell = S7TVSwitchCell(titles[catIdx],
@@ -4763,17 +5322,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)toggleFloatingButton:(UISwitch *)sw         { [SevenTVManager sharedManager].showFloatingButton  = sw.isOn; }
 
 - (void)toggleLogErrors:(UISwitch *)sw           { [SevenTVManager sharedManager].logErrors           = sw.isOn; }
-- (void)toggleLogSwizzle:(UISwitch *)sw          { [SevenTVManager sharedManager].logSwizzle          = sw.isOn; }
-- (void)toggleLogCache:(UISwitch *)sw            { [SevenTVManager sharedManager].logCache            = sw.isOn; }
-- (void)toggleLogPrefetch:(UISwitch *)sw         { [SevenTVManager sharedManager].logPrefetch         = sw.isOn; }
-- (void)toggleLogAPI:(UISwitch *)sw              { [SevenTVManager sharedManager].logAPI              = sw.isOn; }
-- (void)toggleLogIRCChannel:(UISwitch *)sw       { [SevenTVManager sharedManager].logIRCChannel       = sw.isOn; }
-- (void)toggleLogUIPicker:(UISwitch *)sw         { [SevenTVManager sharedManager].logUIPicker         = sw.isOn; }
-- (void)toggleLogFavorites:(UISwitch *)sw        { [SevenTVManager sharedManager].logFavorites        = sw.isOn; }
-- (void)toggleLogOrientation:(UISwitch *)sw      { [SevenTVManager sharedManager].logOrientation      = sw.isOn; }
-- (void)toggleLogImageConversion:(UISwitch *)sw  { [SevenTVManager sharedManager].logImageConversion  = sw.isOn; }
 - (void)toggleLogChatCustom:(UISwitch *)sw       { [SevenTVManager sharedManager].logChatCustom       = sw.isOn; }
 - (void)toggleLogChannelPoints:(UISwitch *)sw    { [SevenTVManager sharedManager].logChannelPoints    = sw.isOn; }
-- (void)toggleLogDump:(UISwitch *)sw             { [SevenTVManager sharedManager].logDump             = sw.isOn; }
 
 @end

@@ -39,9 +39,8 @@ static void s7tv_autoClaimLog(NSString *format, ...) {
                                                arguments:arguments];
     va_end(arguments);
     if (message.length) {
-        // Keep the existing Channel Points log category while retaining the
-        // stable diagnostic prefix used to filter these lines.
-        [[SevenTVManager sharedManager] log:@"[AutoClaim] %@ — Channel Points", message];
+        // Channel Points diagnostics.
+        [[SevenTVManager sharedManager] log:@"[ChannelPoints] [AutoClaim] %@", message];
     }
 }
 

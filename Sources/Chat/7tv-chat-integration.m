@@ -328,7 +328,7 @@ void s7tv_reloadActiveChatCustomViewForConfiguration(void) {
     });
 }
 
-static const NSTimeInterval kS7TVChatReloadDelay = 0.15;
+static const NSTimeInterval kS7TVChatReloadDelay = 0.05;
 
 static void s7tv_scheduleVODChatCustomReloadOnMain(SevenTVChatCustomView *customView,
                                                     UIView *nativeView) {

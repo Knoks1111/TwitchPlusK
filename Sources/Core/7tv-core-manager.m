@@ -225,6 +225,8 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     if (self) {
         self.modalPresentationStyle = UIModalPresentationCustom;
         self.transitioningDelegate  = self;
+        // Flèche et libellé « Retour » à la couleur du tweak sur tous les écrans.
+        self.navigationBar.tintColor = S7TVAccent();
     }
     return self;
 }
@@ -291,22 +293,11 @@ static const CGFloat kS7TVMenuHeight = 520.0;
         _chatCustomTestEnabled = YES;  // Activé par défaut — c'est le mode de rendu du chat désormais
         _debugLogging          = (S7TV_DEBUG == 1);
 
-        // Système de logs par catégorie — valeurs par défaut avant chargement
-        // des préférences sauvegardées (voir loadPreferences ci-dessous).
+        // Valeurs par défaut des logs.
         _logsEnabled       = YES;
         _logErrors         = YES;   // Erreurs/Avertissements visibles par défaut
-        _logSwizzle        = NO;
-        _logCache          = NO;
-        _logPrefetch       = NO;
-        _logAPI            = NO;
-        _logIRCChannel     = NO;
-        _logUIPicker       = NO;
-        _logFavorites      = NO;
-        _logOrientation    = NO;
-        _logImageConversion = NO;
-        _logChatCustom     = YES;   // ON par défaut pendant le dev du chat custom (Phase 0+)
+        _logChatCustom     = NO;    // Désactivé par défaut
         _logChannelPoints  = NO;    // OFF par défaut
-        _logDump           = NO;
 
         _globalEmotes      = @{};
         _channelEmotes     = @{};
@@ -342,7 +333,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 // ============================================================
 
 - (void)setup {
-    [self log:@"SevenTVManager: setup démarré"];
     [[S7TVEmoteCatalog sharedCatalog] loadGlobalProviders];
     [self s7tv_syncLegacyEmoteViews];
 }
@@ -414,18 +404,18 @@ static const CGFloat kS7TVMenuHeight = 520.0;
     // --- Logs : interrupteur global + catégories ---
     if ([prefs objectForKey:@"s7tv_logs_enabled"]      != nil) _logsEnabled           = [prefs boolForKey:@"s7tv_logs_enabled"];
     if ([prefs objectForKey:@"s7tv_log_errors"]        != nil) _logErrors             = [prefs boolForKey:@"s7tv_log_errors"];
-    if ([prefs objectForKey:@"s7tv_log_swizzle"]       != nil) _logSwizzle            = [prefs boolForKey:@"s7tv_log_swizzle"];
-    if ([prefs objectForKey:@"s7tv_log_cache"]         != nil) _logCache              = [prefs boolForKey:@"s7tv_log_cache"];
-    if ([prefs objectForKey:@"s7tv_log_prefetch"]      != nil) _logPrefetch           = [prefs boolForKey:@"s7tv_log_prefetch"];
-    if ([prefs objectForKey:@"s7tv_log_api"]           != nil) _logAPI                = [prefs boolForKey:@"s7tv_log_api"];
-    if ([prefs objectForKey:@"s7tv_log_irc_channel"]   != nil) _logIRCChannel         = [prefs boolForKey:@"s7tv_log_irc_channel"];
-    if ([prefs objectForKey:@"s7tv_log_ui_picker"]     != nil) _logUIPicker           = [prefs boolForKey:@"s7tv_log_ui_picker"];
-    if ([prefs objectForKey:@"s7tv_log_favorites"]     != nil) _logFavorites          = [prefs boolForKey:@"s7tv_log_favorites"];
-    if ([prefs objectForKey:@"s7tv_log_orientation"]   != nil) _logOrientation        = [prefs boolForKey:@"s7tv_log_orientation"];
-    if ([prefs objectForKey:@"s7tv_log_image_conv"]    != nil) _logImageConversion    = [prefs boolForKey:@"s7tv_log_image_conv"];
     if ([prefs objectForKey:@"s7tv_log_chat_custom"]   != nil) _logChatCustom         = [prefs boolForKey:@"s7tv_log_chat_custom"];
     if ([prefs objectForKey:@"s7tv_log_channel_points"] != nil) _logChannelPoints     = [prefs boolForKey:@"s7tv_log_channel_points"];
-    if ([prefs objectForKey:@"s7tv_log_dump"]          != nil) _logDump               = [prefs boolForKey:@"s7tv_log_dump"];
+
+    // Supprimer les anciennes préférences de logs.
+    for (NSString *key in @[
+        @"s7tv_log_swizzle", @"s7tv_log_cache", @"s7tv_log_prefetch",
+        @"s7tv_log_api", @"s7tv_log_irc_channel", @"s7tv_log_ui_picker",
+        @"s7tv_log_favorites", @"s7tv_log_orientation", @"s7tv_log_image_conv",
+        @"s7tv_log_dump"
+    ]) {
+        [prefs removeObjectForKey:key];
+    }
 
     // Charger les favoris (array d'IDs 7TV)
     NSArray *savedFavs = [prefs arrayForKey:@"s7tv_favorites"];
@@ -461,18 +451,8 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
     [prefs setBool:self.logsEnabled          forKey:@"s7tv_logs_enabled"];
     [prefs setBool:self.logErrors            forKey:@"s7tv_log_errors"];
-    [prefs setBool:self.logSwizzle           forKey:@"s7tv_log_swizzle"];
-    [prefs setBool:self.logCache             forKey:@"s7tv_log_cache"];
-    [prefs setBool:self.logPrefetch          forKey:@"s7tv_log_prefetch"];
-    [prefs setBool:self.logAPI               forKey:@"s7tv_log_api"];
-    [prefs setBool:self.logIRCChannel        forKey:@"s7tv_log_irc_channel"];
-    [prefs setBool:self.logUIPicker          forKey:@"s7tv_log_ui_picker"];
-    [prefs setBool:self.logFavorites         forKey:@"s7tv_log_favorites"];
-    [prefs setBool:self.logOrientation       forKey:@"s7tv_log_orientation"];
-    [prefs setBool:self.logImageConversion   forKey:@"s7tv_log_image_conv"];
     [prefs setBool:self.logChatCustom        forKey:@"s7tv_log_chat_custom"];
     [prefs setBool:self.logChannelPoints     forKey:@"s7tv_log_channel_points"];
-    [prefs setBool:self.logDump              forKey:@"s7tv_log_dump"];
     [prefs synchronize];
 }
 
@@ -569,7 +549,7 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 - (void)setChatCustomTestEnabled:(BOOL)v {
     _chatCustomTestEnabled = v;
     [self savePreferences];
-    [self log:@"🏗 Test chat custom %@", v ? @"ACTIVÉ" : @"désactivé"];
+    [self log:@"[ChatCustom] 🏗 Test chat custom %@", v ? @"ACTIVÉ" : @"désactivé"];
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter]
             postNotificationName:S7TVChatCustomToggleDidChangeNotification
@@ -590,18 +570,8 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
 // --- Logs : catégories ---
 - (void)setLogErrors:(BOOL)v         { _logErrors = v;         [self savePreferences]; }
-- (void)setLogSwizzle:(BOOL)v         { _logSwizzle = v;         [self savePreferences]; }
-- (void)setLogCache:(BOOL)v           { _logCache = v;           [self savePreferences]; }
-- (void)setLogPrefetch:(BOOL)v        { _logPrefetch = v;        [self savePreferences]; }
-- (void)setLogAPI:(BOOL)v             { _logAPI = v;             [self savePreferences]; }
-- (void)setLogIRCChannel:(BOOL)v      { _logIRCChannel = v;      [self savePreferences]; }
-- (void)setLogUIPicker:(BOOL)v        { _logUIPicker = v;        [self savePreferences]; }
-- (void)setLogFavorites:(BOOL)v       { _logFavorites = v;       [self savePreferences]; }
-- (void)setLogOrientation:(BOOL)v     { _logOrientation = v;     [self savePreferences]; }
-- (void)setLogImageConversion:(BOOL)v { _logImageConversion = v; [self savePreferences]; }
 - (void)setLogChatCustom:(BOOL)v      { _logChatCustom = v;      [self savePreferences]; }
 - (void)setLogChannelPoints:(BOOL)v   { _logChannelPoints = v;   [self savePreferences]; }
-- (void)setLogDump:(BOOL)v            { _logDump = v;            [self savePreferences]; }
 
 
 // ============================================================
@@ -610,7 +580,6 @@ static const CGFloat kS7TVMenuHeight = 520.0;
 
 - (void)loadGlobalEmotes {
     if (![S7TVEmoteProviderSettings isProviderEnabled:S7TVExternalEmoteProvider7TV]) {
-        [self log:@"⏭️ Chargement global 7TV ignoré : provider désactivé"];
         return;
     }
     [[S7TVEmoteCatalog sharedCatalog]
@@ -756,7 +725,6 @@ static NSString *S7TVNormalizedTwitchBearerToken(NSString *value) {
         }
     }
     if (!credentialsChanged) return;
-    [self log:@"🏗 Badges: token normalisé OAuth→Bearer et sauvegardé"];
     [[NSNotificationCenter defaultCenter]
         postNotificationName:S7TVTwitchCredentialsDidUpdateNotification object:self];
     // Déclencher le chargement des badges maintenant qu'on a le token
@@ -915,8 +883,6 @@ static NSString *S7TVNormalizedTwitchBearerToken(NSString *value) {
         [rootVC.view addSubview:btn];
         self.settingsButton = btn;
 
-        [self log:@"✅ Bouton 7TV dans UIWindow flottante (level %.0f)",
-            (double)floatingWin.windowLevel];
     });
 }
 
@@ -1009,110 +975,32 @@ static NSString *S7TVNormalizedTwitchBearerToken(NSString *value) {
 // ============================================================
 // MARK: - Classification automatique des logs par catégorie
 // ============================================================
-// Le message déjà formaté (après application des arguments) est analysé par
-// simple recherche de sous-chaînes distinctives. L'ordre des tests fait foi :
-// dès qu'une règle matche, la catégorie est retenue (pas de cumul).
-//
-// Erreurs/Avertissements est toujours testé en premier : un ❌/⚠️ dans un log
-// IRC, picker, etc. tombe dans "Erreurs", pas dans sa catégorie d'origine —
-// c'est volontaire (cf. discussion avec l'utilisateur).
-static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
-    BOOL (^has)(NSString *) = ^BOOL(NSString *needle) {
-        return [msg rangeOfString:needle].location != NSNotFound;
-    };
+// Seuls les marqueurs explicites sont reconnus.
+static BOOL s7tv_categoryForMessage(NSString *msg, S7TVLogCategory *outCategory) {
+    if (!msg.length || !outCategory) return NO;
 
-    // 0. Diagnostic réseau TEMPORAIRE (dump picker natif Twitch) — priorité
-    // ABSOLUE, vérifiée avant toute autre règle. Le contenu de ces lignes
-    // inclut des données Twitch imprévisibles (noms d'opérations GQL, URLs)
-    // qui pourraient sinon matcher n'importe quel mot-clé ci-dessous selon
-    // ce que Twitch renvoie — un seul tag fixe garantit une catégorie stable
-    // quel que soit le contenu. Retirer cette règle en même temps que le
-    // reste du diagnostic (voir 7tv-core-runtime-hooks.m, S7TVGQLSnifferProtocol).
-    if (has(@"[NetDump]")) return S7TVLogCategoryDump;
-
-    // 1. Diagnostic temporaire des récompenses du chat custom. Priorité
-    // absolue : le payload peut lui-même contenir "Channel Points", des
-    // erreurs ou n'importe quel autre mot-clé de classification.
-    if (has(@"[ChatCustom]")) return S7TVLogCategoryChatCustom;
-
-    // 2. Channel Points (autoclaim) — priorité absolue, avant Erreurs :
-    // tous les logs de l'autoclaim (succès 🎁 et échecs "Erreur ...") ont
-    // leur propre catégorie dédiée, pas de dispersion en Erreurs/Dump.
-    if (has(@"Channel Points")) return S7TVLogCategoryChannelPoints;
-
-    // 3. Erreurs / Avertissements — priorité absolue
-    if (has(@"❌") || has(@"⚠️")) return S7TVLogCategoryError;
-
-    // 4. Dump (architecture/méthodes — très verbeux, à part)
-    if (has(@"[DBG-DUMP]") || has(@"🩻")) return S7TVLogCategoryDump;
-
-    // 4. Orientation Lock
-    if (has(@"Orientation") || has(@"orientation") || has(@"verrou") || has(@"Rotation"))
-        return S7TVLogCategoryOrientation;
-
-    // 5. CDN / Cache emotes (téléchargement + mise en cache WebP natif)
-    if (has(@"WebP") || has(@"URLProtocol cache") || has(@"Réponse CDN") ||
-        has(@"Préfetch") || has(@"Bilan :"))
-        return S7TVLogCategoryImageConversion;
-
-    // 6. Favoris
-    if (has(@"Favori")) return S7TVLogCategoryFavorites;
-
-    // 7. IRC / Channel
-    if (has(@"room-id") || has(@"broadcaster ID") ||
-        has(@"GQL") || has(@"Mapping sauvé") || has(@"Rejoint le channel") ||
-        has(@"Channel rejoint") || has(@"twitchID en cache") || has(@"twitchID") ||
-        has(@"Pas de twitchID"))
-        return S7TVLogCategoryIRCChannel;
-
-    // 8. Prefetch
-    if (has(@"Prefetch") || has(@"Préfetch") || has(@"Fetch déjà en cours"))
-        return S7TVLogCategoryPrefetch;
-
-    // 11. Cache / Réseau
-    if (has(@"cache hit") || has(@"cache miss") || has(@"Prewarm") ||
-        has(@"Préchauffage") || has(@"Écriture cache") || has(@"sérialiser le cache") ||
-        has(@"URLProtocol"))
-        return S7TVLogCategoryCache;
-
-    // 12. API Emotes
-    if (has(@"emotes globales") || has(@"emotes channel") || has(@"emotes du channel") ||
-        has(@"Chargement emotes") || has(@"emote_set") || has(@"JSON invalide"))
-        return S7TVLogCategoryAPI;
-
-    // 13. UI / Picker
-    if (has(@"TextEntryView") || has(@"picker") || has(@"Picker") ||
-        has(@"Bouton 7TV") || has(@"Bits") || has(@"insertText") ||
-        has(@"paste:") || has(@"didSelect") || has(@"firstResponder") ||
-        has(@"Settings ouvert"))
-        return S7TVLogCategoryUIPicker;
-
-    // 14. Swizzle / Boot
-    if (has(@"swizzle") || has(@"Swizzle") || has(@"Hook ") || has(@"hooké") ||
-        has(@"Chargement TwitchSevenTV") || has(@"SevenTVManager prêt") ||
-        has(@"setup démarré") || has(@"NSURLSession") || has(@"WebSocketTask") ||
-        has(@"sharedSession"))
-        return S7TVLogCategorySwizzle;
-
-    // Par défaut : non classé → Dump (pour ne rien perdre silencieusement)
-    return S7TVLogCategoryDump;
+    // Marqueurs explicites uniquement.
+    if ([msg rangeOfString:@"[ChannelPoints]"].location != NSNotFound) {
+        *outCategory = S7TVLogCategoryChannelPoints;
+        return YES;
+    }
+    if ([msg rangeOfString:@"[ChatCustom]"].location != NSNotFound) {
+        *outCategory = S7TVLogCategoryChatCustom;
+        return YES;
+    }
+    if ([msg rangeOfString:@"❌"].location != NSNotFound ||
+        [msg rangeOfString:@"⚠️"].location != NSNotFound) {
+        *outCategory = S7TVLogCategoryError;
+        return YES;
+    }
+    return NO;
 }
 
 - (BOOL)s7tv_isCategoryEnabled:(S7TVLogCategory)cat {
     switch (cat) {
-        case S7TVLogCategoryError:           return self.logErrors;
-        case S7TVLogCategorySwizzle:         return self.logSwizzle;
-        case S7TVLogCategoryCache:           return self.logCache;
-        case S7TVLogCategoryPrefetch:        return self.logPrefetch;
-        case S7TVLogCategoryAPI:             return self.logAPI;
-        case S7TVLogCategoryIRCChannel:      return self.logIRCChannel;
-        case S7TVLogCategoryUIPicker:        return self.logUIPicker;
-        case S7TVLogCategoryFavorites:       return self.logFavorites;
-        case S7TVLogCategoryOrientation:     return self.logOrientation;
-        case S7TVLogCategoryImageConversion: return self.logImageConversion;
-        case S7TVLogCategoryChatCustom:      return self.logChatCustom;
-        case S7TVLogCategoryChannelPoints:   return self.logChannelPoints;
-        case S7TVLogCategoryDump:            return self.logDump;
+        case S7TVLogCategoryError:         return self.logErrors;
+        case S7TVLogCategoryChatCustom:    return self.logChatCustom;
+        case S7TVLogCategoryChannelPoints: return self.logChannelPoints;
     }
     return NO;
 }
@@ -1127,12 +1015,12 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
     NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
 
-    // Interrupteur global : si OFF, rien n'est enregistré (buffer, disque, NSLog).
+    // Interrupteur global.
     if (!self.logsEnabled) return;
 
-    // Classification + filtre par catégorie : si la catégorie est désactivée,
-    // on ignore complètement la ligne (elle n'est même pas écrite sur disque).
-    S7TVLogCategory cat = s7tv_categoryForMessage(msg);
+    // Ignorer les lignes désactivées ou non reconnues.
+    S7TVLogCategory cat;
+    if (!s7tv_categoryForMessage(msg, &cat)) return;
     if (![self s7tv_isCategoryEnabled:cat]) return;
 
     NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
@@ -1208,8 +1096,6 @@ static S7TVLogCategory s7tv_categoryForMessage(NSString *msg) {
 
 - (void)clearAllCachesWithCompletion:(void (^)(NSUInteger))completion {
     NSUInteger clearedEmoteCount = (NSUInteger)[SevenTVURLProtocol cachedEmoteCount];
-    [self log:@"🗑️ Vidage complet du cache 7TV demandé (%lu emotes indexées)",
-     (unsigned long)clearedEmoteCount];
 
     // Empêche tout téléchargement/décodage déjà en vol de repeupler les
     // caches après l'action utilisateur.
@@ -1355,7 +1241,6 @@ static BOOL s7tv_acceptIncomingIRCLine(NSString *ircLine) {
     NSString *displayName = s7tv_tagValue(tags, @"display-name", @"");
     if (!displayName.length || [displayName isEqualToString:self.currentViewerDisplayName]) return;
     self.currentViewerDisplayName = displayName;
-    [self log:@"👤 Pseudo viewer connecté détecté (USERSTATE): %@", displayName];
 }
 
 - (BOOL)s7tv_handleIRCModerationEvent:(NSString *)ircLine {
@@ -1380,7 +1265,7 @@ static BOOL s7tv_acceptIncomingIRCLine(NSString *ircLine) {
     NSString *afterCommand = [[rest substringFromIndex:NSMaxRange(commandRange)]
         stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (!afterCommand.length) {
-        [self log:@"⚠️ Modération %@ ignorée (channel absent)", command];
+        [self log:@"[ChatCustom] ⚠️ Modération %@ ignorée (channel absent)", command];
         return YES;
     }
 
@@ -1396,11 +1281,11 @@ static BOOL s7tv_acceptIncomingIRCLine(NSString *ircLine) {
     if (isClearMessage) {
         NSString *targetMessageID = s7tv_tagValue(tags, @"target-msg-id", @"");
         if (!targetMessageID.length) {
-            [self log:@"⚠️ CLEARMSG ignoré (target-msg-id absent)"];
+            [self log:@"[ChatCustom] ⚠️ CLEARMSG ignoré (target-msg-id absent)"];
             return YES;
         }
         [store markMessageDeletedByID:targetMessageID completion:^{
-            [self log:@"🛡 CLEARMSG appliqué (message id=%@)", targetMessageID];
+            [self log:@"[ChatCustom] 🛡 CLEARMSG appliqué (message id=%@)", targetMessageID];
             s7tv_applyModerationStateToRetainedMessage(
                 targetMessageID, S7TVChatMessageStateDeletedCollapsed,
                 S7TVChatModerationKindMessageDeleted, 0);
@@ -1422,19 +1307,19 @@ static BOOL s7tv_acceptIncomingIRCLine(NSString *ircLine) {
                                      completion:^{
             s7tv_applyModerationToRetainedMessagesForUser(
                 targetUserID, trailing, kind, durationSeconds);
-            [self log:@"🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@, %@)",
+            [self log:@"[ChatCustom] 🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@, %@)",
                 targetUserID, trailing.length ? trailing : @"inconnu",
                 isTimeout ? [NSString stringWithFormat:@"timeout=%lds", (long)durationSeconds]
                           : @"ban permanent"];
             s7tv_reloadActiveChatCustomViewAnimated();
         }];
     } else if (trailing.length) {
-        [self log:@"⚠️ CLEARCHAT ciblé ignoré (target-user-id absent, login=%@)",
+        [self log:@"[ChatCustom] ⚠️ CLEARCHAT ciblé ignoré (target-user-id absent, login=%@)",
             trailing];
     } else {
         [store markAllMessagesDeletedWithCompletion:^{
             s7tv_applyModerationToAllRetainedMessages();
-            [self log:@"🛡 CLEARCHAT global appliqué"];
+            [self log:@"[ChatCustom] 🛡 CLEARCHAT global appliqué"];
             s7tv_reloadActiveChatCustomViewAnimated();
         }];
     }
@@ -1548,7 +1433,7 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
             ? (NSHTTPURLResponse *)response : nil;
         if (error || http.statusCode < 200 || http.statusCode >= 300 || !data.length) {
             [[SevenTVManager sharedManager]
-                log:@"⚠️ Historique récent indisponible pour %@ (%@, HTTP %ld)",
+                log:@"[ChatCustom] ⚠️ Historique récent indisponible pour %@ (%@, HTTP %ld)",
                 channel, error.localizedDescription ?: @"réponse vide", (long)http.statusCode];
             return;
         }
@@ -1561,7 +1446,7 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
             ? payload[@"messages"] : nil;
         if (jsonError || ![rawMessages isKindOfClass:NSArray.class]) {
             [[SevenTVManager sharedManager]
-                log:@"⚠️ Historique récent invalide pour %@: %@",
+                log:@"[ChatCustom] ⚠️ Historique récent invalide pour %@: %@",
                 channel, jsonError.localizedDescription ?: @"champ messages absent"];
             return;
         }
@@ -1592,7 +1477,7 @@ static void s7tv_fetchRecentHistory(NSString *channel, NSUInteger generation) {
             completion:^{
                 if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
                 [[SevenTVManager sharedManager]
-                    log:@"🕘 %lu messages historiques chargés pour %@",
+                    log:@"[ChatCustom] 🕘 %lu messages historiques chargés pour %@",
                     (unsigned long)history.count, channel];
                 s7tv_scheduleChatCustomReload();
             }];
@@ -1620,7 +1505,7 @@ static void s7tv_beginRecentHistory(NSString *channel, NSUInteger generation) {
     SevenTVManager *manager = [SevenTVManager sharedManager];
     [manager.chatMessageStore replaceAllMessages:@[welcome, divider] completion:^{
         if (!s7tv_recentHistoryRequestIsCurrent(channel, generation)) return;
-        [manager log:@"🏗 Chat initialisé pour %@ (historique en cours)", channel];
+        [manager log:@"[ChatCustom] 🏗 Chat initialisé pour %@ (historique en cours)", channel];
         s7tv_scheduleChatCustomReload();
         s7tv_fetchRecentHistory(channel, generation);
     }];

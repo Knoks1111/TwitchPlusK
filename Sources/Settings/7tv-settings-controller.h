@@ -18,6 +18,7 @@ FOUNDATION_EXPORT UIColor *S7TVAccent(void);
 // Settings pages.
 @interface SevenTVAppearancePageController : UITableViewController @end  // Apparence
 @interface SevenTVContentPageController    : UITableViewController @end  // Contenu
+@interface SevenTVTabBarSettingsController : UITableViewController @end  // Onglets + écran de lancement
 @interface SevenTVAdblockPageController    : UITableViewController @end  // Adblock vidéo + proxy
 @interface SevenTVAdvancedPageController   : UITableViewController @end  // Avancé
 @interface SevenTVFavoritesListController  : UITableViewController @end

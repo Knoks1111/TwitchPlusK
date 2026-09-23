@@ -2,6 +2,25 @@
 
 This file keeps the cumulative release history of TwitchPlusK, with the newest release listed first.
 
+## [1.0.6] (Twitch 31.0.2) - 2026-09-24
+
+### New Features
+
+- Added tab bar customization (Appearance → Interface → Tab Bar & Launch) to hide any tab (Home, Browse, Create, Activity or Profile) from Twitch's main bar, with the remaining tabs redistributing natively without flicker.
+- Added grouped settings (Appearance → Interface → Chat elements to hide) to hide pinned messages and announcements, or creator goals and leaderboard banners.
+- reduced the message display delay from 150 ms to 50 ms for faster updates.
+
+### Changed
+
+- Improved the custom launch screen and tab bar settings page: merged into a single page with a permanent description, Launch/Visible column headers, per-tab colored icons, and automatic remapping of the launch destination when its tab gets hidden.
+- Removed unnecessary logs and cleaned up the Advanced settings category.
+- Cleaned up the Diagnostics screen by removing duplicate entries and adding missing hook checks for channel resolution and player tools.
+
+### Fixes
+
+- Fixed various UI issues in the tab bar settings page (duplicate icons, wrong chevron color, alignment and text overflow).
+- Fixed auto-lock crashes when leaving the app or entering Picture in Picture.
+
 ## [1.0.5] (Twitch 31.0.2) - 2026-09-15
 
 ### New Features

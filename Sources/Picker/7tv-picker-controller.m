@@ -246,8 +246,6 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
                                                        forControlEvent:UIControlEventTouchUpInside]) {
                     [bitsButton removeTarget:target action:NSSelectorFromString(action)
                             forControlEvents:UIControlEventTouchUpInside];
-                    [manager log:@"🔌 Bits: action retirée — %@->%@",
-                        NSStringFromClass([target class]), action];
                 }
             }
 
@@ -284,9 +282,6 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
             [bitsButton addTarget:manager
                            action:@selector(s7tv_emoteButtonTappedForButton:)
                  forControlEvents:UIControlEventTouchUpInside];
-            [manager log:@"✅ Bouton Bits hijacké → 7TV (frame=%.0f,%.0f,%.0f,%.0f)",
-                bitsButton.frame.origin.x, bitsButton.frame.origin.y,
-                bitsButton.frame.size.width, bitsButton.frame.size.height];
             return;
         }
 
@@ -327,9 +322,6 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
               forControlEvents:UIControlEventTouchUpInside];
             [target addSubview:button];
             [target bringSubviewToFront:button];
-            [manager log:@"🎹 Bouton 7TV fallback injecté — x=%.0f y=%.0f", x, y];
-        } else {
-            [manager log:@"ℹ️ Bouton Bits déjà hijacké, rien à faire"];
         }
     });
 }
@@ -991,7 +983,6 @@ static const CGFloat kS7TVPickerAvatarDiameter = 22.0;
             // Chercher la sous-classe TextEntryView de Twitch (UITextView)
             if ([v isKindOfClass:[UITextView class]] && [cn containsString:@"TextEntryView"]) {
                 self.emotePickerTextEntryView = (UITextView *)v;
-                [[SevenTVManager sharedManager] log:@"✅ TextEntryView trouvé: %@", cn];
                 break;
             }
         }
@@ -1061,7 +1052,6 @@ static const CGFloat kS7TVPickerAvatarDiameter = 22.0;
     [self _hideFakeChatPreview];
 }
 - (void)cleanupPickerForStreamClose {
-    [[SevenTVManager sharedManager] log:@"🔒 cleanupPickerForStreamClose → nettoyage picker"];
     self.pickerSearchAlertActive = NO;
     self.pickerOrientationGeneration += 1;
     [self _s7tv_deactivateVisiblePickerAnimations];
@@ -1628,12 +1618,10 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
         tv.inputAccessoryView = nil;
         // Étape 2 : devenir firstResponder → UIKit affiche inputView (notre picker)
         if (!tv.isFirstResponder) {
-            [[SevenTVManager sharedManager] log:@"ℹ️ tv pas firstResponder → becomeFirstResponder"];
             [tv becomeFirstResponder];
         }
         // Étape 3 : recharger pour appliquer le nouvel inputView
         [tv reloadInputViews];
-        [[SevenTVManager sharedManager] log:@"✅ picker en dessous de la chat bar (inputView) sur %@", NSStringFromClass([tv class])];
         // Étape 4 (Point 1) : ré-imposer l'offset en haut APRÈS la présentation
         // réelle. reloadInputViews déclenche la mise en fenêtre de l'inputView
         // et son propre passage de layout (safe area / adjustedContentInset),
@@ -3273,12 +3261,6 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
     } else {
         [[SevenTVManager sharedManager] setEmote:emote.emoteID favorited:!isFav];
     }
-    if (isFav) {
-        [[SevenTVManager sharedManager] log:@"💔 Favori retiré : %@", emote.emoteName];
-    } else {
-        [[SevenTVManager sharedManager] log:@"⭐ Favori ajouté : %@", emote.emoteName];
-    }
-
     // Haptique
     UINotificationFeedbackGenerator *haptic = [[UINotificationFeedbackGenerator alloc] init];
     [haptic notificationOccurred:UINotificationFeedbackTypeSuccess];
@@ -4086,11 +4068,6 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
         }
     }
 
-    [[SevenTVManager sharedManager] log:@"🔍 didSelect — textView:%@ textField:%@ keyInput:%@",
-     textView  ? NSStringFromClass([textView  class]) : @"nil",
-     textField ? NSStringFromClass([textField class]) : @"nil",
-     keyInput  ? NSStringFromClass([(UIView *)keyInput class]) : @"nil"];
-
     // ── Étape 3: construire le texte à insérer ────────────────────────────────
     NSString *currentText = @"";
     if (textView)       currentText = textView.text  ?: @"";
@@ -4135,7 +4112,6 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
         if ([textView respondsToSelector:@selector(paste:)]) {
             [textView paste:nil];
             inserted = YES;
-            [[SevenTVManager sharedManager] log:@"✅ paste: emote → «%@»", emoteText];
         } else {
             // Ultime fallback
             [textView insertText:toAppend];
@@ -4163,12 +4139,10 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
     } else if (textField) {
         [textField becomeFirstResponder];
         [(id<UIKeyInput>)textField insertText:toAppend];
-        [[SevenTVManager sharedManager] log:@"✅ insertText: UITextField → «%@»", toAppend];
         inserted = YES;
     } else if (keyInput) {
         [(UIView *)keyInput becomeFirstResponder];
         [(id<UIKeyInput>)keyInput insertText:toAppend];
-        [[SevenTVManager sharedManager] log:@"✅ insertText: UIKeyInput → «%@»", toAppend];
         inserted = YES;
     }
 

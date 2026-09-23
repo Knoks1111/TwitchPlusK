@@ -40,6 +40,7 @@
 #import "Badge/7tv-badge-provider.h"
 #import "Picker/7tv-picker-controller.h"
 #import "System/7tv-system-native-behavior-hooks.h"
+#import "System/7tv-system-chat-top-banner.h"
 #import "System/7tv-system-autoclaim.h"
 #import "System/7tv-system-update-checker.h"
 #import "System/7tv-system-home-features.h"
@@ -88,8 +89,6 @@ void s7tv_swizzle(Class targetClass,
     Method swizzledOnTarget = class_getInstanceMethod(targetClass, swizzled);
     method_exchangeImplementations(origMethod, swizzledOnTarget);
 
-    [[SevenTVManager sharedManager] log:@"✅ swizzle OK [%@] %@",
-     NSStringFromClass(targetClass), NSStringFromSelector(original)];
 }
 
 
@@ -119,6 +118,7 @@ void s7tv_swizzle(Class targetClass,
     s7tv_handlePlayerReloadViewLifecycle(self);
     s7tv_handleTheaterControlsViewLifecycle(self);
     s7tv_handleNativeChatViewLifecycle(self);
+    s7tv_handleChatTopBannerViewLifecycle(self);
 
     s7tv_handleChatInputViewLifecycle(self);
 }
@@ -312,7 +312,6 @@ static void s7tv_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
 // de classes abstrait ; Apollo.URLSessionClient est une classe concrète
 // normale, instanciée directement par Apollo).
 static BOOL s_s7tvApolloGQLSwizzled = NO;
-static BOOL s_s7tvApolloDeferredSuccessLogged = NO;
 
 static BOOL s7tv_try_swizzle_apollo_gql(void) {
     @synchronized ([SevenTVManager class]) {
@@ -345,9 +344,6 @@ static BOOL s7tv_try_swizzle_apollo_gql(void) {
 static void s7tv_swizzle_apollo_gql(void) {
     if (s7tv_try_swizzle_apollo_gql()) return;
 
-    [[SevenTVManager sharedManager]
-        log:@"ℹ️ Apollo pas encore chargé, installation différée du hook GQL"];
-
     // TwitchApollo peut être chargé après le constructeur du tweak. Un échec
     // initial ne doit plus condamner l'acquisition des images de monnaie pour
     // toute la session. Les essais sont bornés et la fonction est idempotente.
@@ -357,19 +353,7 @@ static void s7tv_swizzle_apollo_gql(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                        (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            if (s7tv_try_swizzle_apollo_gql()) {
-                BOOL shouldLog = NO;
-                @synchronized ([SevenTVManager class]) {
-                    if (!s_s7tvApolloDeferredSuccessLogged) {
-                        s_s7tvApolloDeferredSuccessLogged = YES;
-                        shouldLog = YES;
-                    }
-                }
-                if (shouldLog) {
-                    [[SevenTVManager sharedManager]
-                        log:@"✅ Hook GQL Apollo installé après chargement différé"];
-                }
-            } else if (index == delays.count - 1) {
+            if (!s7tv_try_swizzle_apollo_gql() && index == delays.count - 1) {
                 [[SevenTVManager sharedManager]
                     log:@"⚠️ Apollo.URLSessionClient toujours introuvable — images de monnaie indisponibles"];
             }
@@ -506,8 +490,6 @@ static void s7tv_swizzle_token_capture(void) {
     NSMutableURLRequest *probeReq = [[NSMutableURLRequest alloc]
                                       initWithURL:[NSURL URLWithString:@"https://gql.twitch.tv/"]];
     Class classReq = object_getClass(probeReq);
-    [[SevenTVManager sharedManager] log:@"🔍 NSMutableURLRequest concret: %@",
-     NSStringFromClass(classReq)];
     s7tv_swizzle(classReq, [NSMutableURLRequest class],
                  @selector(setValue:forHTTPHeaderField:),
                  @selector(s7tv_setValue:forHTTPHeaderField:));
@@ -521,8 +503,6 @@ static void s7tv_swizzle_token_capture(void) {
     // utilise une différente pour ses requêtes GQL.
     Class classCfgDefault = object_getClass([NSURLSessionConfiguration defaultSessionConfiguration]);
     Class classCfgEphemeral = object_getClass([NSURLSessionConfiguration ephemeralSessionConfiguration]);
-    [[SevenTVManager sharedManager] log:@"🔍 NSURLSessionConfiguration default: %@ / ephemeral: %@",
-     NSStringFromClass(classCfgDefault), NSStringFromClass(classCfgEphemeral)];
 
     s7tv_swizzle(classCfgDefault, [NSURLSessionConfiguration class],
                  @selector(setHTTPAdditionalHeaders:),
@@ -533,7 +513,6 @@ static void s7tv_swizzle_token_capture(void) {
                      @selector(s7tv_setHTTPAdditionalHeaders:));
     }
 
-    [[SevenTVManager sharedManager] log:@"🔌 Token capture (request + session config) installé"];
 }
 
 
@@ -554,23 +533,17 @@ static void s7tv_swizzle_session(void) {
     NSURLSession *probeStd = [NSURLSession sessionWithConfiguration:
                               [NSURLSessionConfiguration defaultSessionConfiguration]];
     Class classStd = object_getClass(probeStd);
-    [[SevenTVManager sharedManager] log:@"🔍 NSURLSession standard: %@",
-     NSStringFromClass(classStd)];
     s7tv_swizzle(classStd, [NSURLSession class], selRequest, swizRequest);
     s7tv_swizzle(classStd, [NSURLSession class], selURL, swizURL);
     s7tv_swizzle(classStd, [NSURLSession class], selReqOnly, swizReqOnly);
     s7tv_swizzle(classStd, [NSURLSession class], selUpload, swizUpload);
 
     Class classShared = object_getClass([NSURLSession sharedSession]);
-    [[SevenTVManager sharedManager] log:@"🔍 NSURLSession shared: %@",
-     NSStringFromClass(classShared)];
     if (classShared != classStd) {
         s7tv_swizzle(classShared, [NSURLSession class], selRequest, swizRequest);
         s7tv_swizzle(classShared, [NSURLSession class], selURL, swizURL);
         s7tv_swizzle(classShared, [NSURLSession class], selReqOnly, swizReqOnly);
         s7tv_swizzle(classShared, [NSURLSession class], selUpload, swizUpload);
-    } else {
-        [[SevenTVManager sharedManager] log:@"ℹ️  sharedSession même classe que standard"];
     }
 }
 
@@ -592,9 +565,6 @@ static void s7tv_swizzle_websocket(void) {
     NSURLSessionWebSocketTask *probeTask = [probeSession webSocketTaskWithURL:probeURL];
     Class realWSClass = object_getClass(probeTask);
     [probeTask cancel];
-
-    [[SevenTVManager sharedManager] log:@"🔍 WebSocketTask classe concrète: %@",
-     NSStringFromClass(realWSClass)];
 
     s7tv_swizzle(realWSClass, wsAbstractClass,
                  @selector(receiveMessageWithCompletionHandler:),
@@ -699,9 +669,6 @@ static void s7tv_setupChannelResolverBindings(void) {
 
 __attribute__((constructor))
 static void TwitchSevenTVInit(void) {
-    SevenTVManager *mgr = [SevenTVManager sharedManager];
-    [mgr log:@"🔌 Chargement TwitchSevenTV v2.0 (substrate-free)..."];
-
     s7tv_setupChannelResolverBindings();
     S7TVChannelResolverSetup();
 
@@ -768,13 +735,11 @@ static void TwitchSevenTVInit(void) {
         S7TVUpdateCheckerSetup();
         // Catalogue global.
         [SevenTVBadgeProvider setup];
-        [[SevenTVManager sharedManager] log:@"✅ SevenTVManager prêt"];
 
         dispatch_after(
             dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
             dispatch_get_main_queue(), ^{
                 [[SevenTVManager sharedManager] addSettingsButton];
-                [[SevenTVManager sharedManager] log:@"✅ Bouton 7TV ajouté"];
             }
         );
     });

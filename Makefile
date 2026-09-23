@@ -3,7 +3,7 @@
 # ============================================================
 
 ARCHS = arm64
-TWITCHPLUSK_VERSION = 1.0.5
+TWITCHPLUSK_VERSION = 1.0.6
 TARGET = iphone:clang:16.5:14.0
 
 include $(THEOS)/makefiles/common.mk
@@ -51,8 +51,10 @@ TwitchPlusK_FILES = \
     Sources/Localization/7tv-localization-manager.m \
     Sources/System/7tv-system-home-features.m \
     Sources/System/7tv-system-native-behavior-hooks.m \
+    Sources/System/7tv-system-chat-top-banner.m \
     Sources/System/7tv-system-player-gestures.m \
     Sources/System/7tv-system-player-reload.m \
+    Sources/System/7tv-system-tab-visibility.m \
     Sources/System/7tv-system-autoclaim.m \
     Sources/System/7tv-system-update-checker.m \
     Sources/UI/7tv-info-tooltip.m \

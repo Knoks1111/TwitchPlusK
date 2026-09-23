@@ -409,7 +409,7 @@ S7TVChatMessage * _Nullable s7tv_parsePRIVMSG(
     if (hasChannelPointTags) {
         S7TVChannelPointRewardInfo *resolvedInfo = msg.channelPointRewardInfo;
         [[SevenTVManager sharedManager]
-            log:@"[ChatCustom] 🧭 Channel Points IRC: msg-id=%@ custom-reward-id=%@ classified=%@ reward-id=%@",
+            log:@"[ChannelPoints] 🧭 Channel Points IRC: msg-id=%@ custom-reward-id=%@ classified=%@ reward-id=%@",
             ircMessageID.length ? ircMessageID : @"<none>",
             customRewardID.length ? customRewardID : @"<none>",
             resolvedInfo ? @"yes" : @"no",
@@ -788,13 +788,13 @@ void s7tv_ingestAutomaticRewardsFromGQLData(
                              [lowerRaw containsString:@"communitypoint"];
     if (!containsAutomaticRewards && !containsPointSettings) {
         if (mentionsPointData) {
-            [manager log:@"[ChatCustom] 🧭 Channel Points GQL: payload reçu mais aucun champ automatiqueRewards/communityPointsSettings reconnu (bytes=%lu)",
+            [manager log:@"[ChannelPoints] 🧭 Channel Points GQL: payload reçu mais aucun champ automatiqueRewards/communityPointsSettings reconnu (bytes=%lu)",
                 (unsigned long)data.length];
         }
         return;
     }
 
-    [manager log:@"[ChatCustom] 🧭 Channel Points GQL: payload candidat (bytes=%lu automaticRewards=%@ communityPointsSettings=%@ request-channel=%@ ambiguous=%@)",
+    [manager log:@"[ChannelPoints] 🧭 Channel Points GQL: payload candidat (bytes=%lu automaticRewards=%@ communityPointsSettings=%@ request-channel=%@ ambiguous=%@)",
         (unsigned long)data.length,
         containsAutomaticRewards ? @"yes" : @"no",
         containsPointSettings ? @"yes" : @"no",
@@ -804,7 +804,7 @@ void s7tv_ingestAutomaticRewardsFromGQLData(
     NSError *jsonError = nil;
     id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
     if (!root) {
-        [manager log:@"[ChatCustom] 🧭 Channel Points GQL: JSON invalide (%@)",
+        [manager log:@"[ChannelPoints] 🧭 Channel Points GQL: JSON invalide (%@)",
             jsonError.localizedDescription ?: @"payload vide"];
         return;
     }
@@ -818,11 +818,11 @@ void s7tv_ingestAutomaticRewardsFromGQLData(
     NSMutableArray<NSString *> *channelIDs = [NSMutableArray array];
     s7tv_collectCommunityPointSettingsDictionaries(root, settingsCandidates, channelIDs);
     if (!settingsCandidates.count) {
-        [manager log:@"[ChatCustom] 🧭 Channel Points GQL: aucun dictionnaire de settings trouvé"];
+        [manager log:@"[ChannelPoints] 🧭 Channel Points GQL: aucun dictionnaire de settings trouvé"];
         return;
     }
 
-    [manager log:@"[ChatCustom] 🧭 Channel Points GQL: %lu dictionnaire(s) de settings trouvé(s)",
+    [manager log:@"[ChannelPoints] 🧭 Channel Points GQL: %lu dictionnaire(s) de settings trouvé(s)",
         (unsigned long)settingsCandidates.count];
 
     NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
@@ -858,7 +858,7 @@ void s7tv_ingestAutomaticRewardsFromGQLData(
             s7tv_collectAutomaticRewardDictionaries(settings, rawRewards);
         }
         if (!rawRewards.count) {
-            [manager log:@"[ChatCustom] 🧭 Channel Points GQL: settings channel=%@ sans automatic reward exploitable",
+            [manager log:@"[ChannelPoints] 🧭 Channel Points GQL: settings channel=%@ sans automatic reward exploitable",
                 resolvedChannelID.length ? resolvedChannelID : @"<none>"];
         }
         NSMutableDictionary<NSString *, S7TVChannelPointRewardInfo *> *nextCatalog =
@@ -900,7 +900,7 @@ void s7tv_ingestAutomaticRewardsFromGQLData(
             }
             info.isUserInputRequired = info.titleLocalizationKey.length > 0;
             nextCatalog[type] = info;
-            [manager log:@"[ChatCustom] 🧭 Channel Points GQL reward: channel=%@ type=%@ cost=%ld pricing=%@",
+            [manager log:@"[ChannelPoints] 🧭 Channel Points GQL reward: channel=%@ type=%@ cost=%ld pricing=%@",
                 resolvedChannelID.length ? resolvedChannelID : @"<none>",
                 type,
                 (long)info.cost,
@@ -912,7 +912,7 @@ void s7tv_ingestAutomaticRewardsFromGQLData(
                 catalogs[channelKey] = nextCatalog;
             }
         }
-        [manager log:@"[ChatCustom] 🧭 Channel Points GQL: catalogue channel=%@ %@ (%lu reward(s))",
+        [manager log:@"[ChannelPoints] 🧭 Channel Points GQL: catalogue channel=%@ %@ (%lu reward(s))",
             resolvedChannelID.length ? resolvedChannelID : @"<none>",
             nextCatalog.count ? @"stored" : @"empty",
             (unsigned long)nextCatalog.count];
@@ -1236,7 +1236,7 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
     if (!containsCustomRedemption && !containsAutomaticRedemption) return @[];
 
     SevenTVManager *manager = [SevenTVManager sharedManager];
-    [manager log:@"[ChatCustom] 🧭 Channel Points WebSocket: reward marker detected (custom=%@ automatic=%@ bytes=%lu)",
+    [manager log:@"[ChannelPoints] 🧭 Channel Points WebSocket: reward marker detected (custom=%@ automatic=%@ bytes=%lu)",
         containsCustomRedemption ? @"yes" : @"no",
         containsAutomaticRedemption ? @"yes" : @"no",
         (unsigned long)text.length];
@@ -1247,20 +1247,20 @@ NSArray<S7TVChatMessage *> *s7tv_channelPointMessagesFromWebSocketText(
         ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError]
         : nil;
     if (!root) {
-        [manager log:@"[ChatCustom] 🧭 Channel Points WebSocket: JSON invalide (%@)",
+        [manager log:@"[ChannelPoints] 🧭 Channel Points WebSocket: JSON invalide (%@)",
             jsonError.localizedDescription ?: @"payload vide"];
         return @[];
     }
     NSMutableArray<S7TVChatMessage *> *messages = [NSMutableArray array];
     s7tv_collectChannelPointMessages(root, messages, providers);
     if (!messages.count) {
-        [manager log:@"[ChatCustom] 🧭 Channel Points WebSocket: aucun événement reward reconnu"];
+        [manager log:@"[ChannelPoints] 🧭 Channel Points WebSocket: aucun événement reward reconnu"];
     } else {
-        [manager log:@"[ChatCustom] 🧭 Channel Points WebSocket: %lu événement(s) reconnu(s)",
+        [manager log:@"[ChannelPoints] 🧭 Channel Points WebSocket: %lu événement(s) reconnu(s)",
             (unsigned long)messages.count];
         for (S7TVChatMessage *message in messages) {
             S7TVChannelPointRewardInfo *info = message.channelPointRewardInfo;
-            [manager log:@"[ChatCustom] 🧭 Channel Points WebSocket reward: id=%@",
+            [manager log:@"[ChannelPoints] 🧭 Channel Points WebSocket reward: id=%@",
                 info.rewardID.length ? info.rewardID : @"<none>"];
         }
     }

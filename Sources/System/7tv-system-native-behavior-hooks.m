@@ -15,6 +15,10 @@ static NSString *const kS7TVAutoOrientationLockMode =
 static char kS7TVOrientationLockButtonKey;
 static __weak UIView *s_activeControlsView;
 
+static BOOL s_orientationPolicySuspended = NO;
+static NSUInteger s_orientationLifecycleGeneration = 0;
+static NSArray *s_orientationLifecycleObservers = nil;
+
 @interface SevenTVManager (OrientationLock)
 - (void)s7tv_toggleOrientationLock:(UIButton *)sender;
 @end
@@ -24,6 +28,14 @@ static BOOL s7tv_hasOrientationLockButtonInActivePlayer(void);
 static void s7tv_enumerateActiveViews(void (^visit)(UIView *view));
 static UIView *s7tv_activePlayerGeometryView(void);
 static UIWindowScene *s7tv_activeWindowScene(void);
+static void s7tv_refreshOrientationPolicySuspension(void);
+static void s7tv_installOrientationLifecycleObservers(void);
+
+static BOOL s7tv_isPictureInPictureWindow(UIWindow *window) {
+    if (!window) return NO;
+    NSString *className = NSStringFromClass(window.class);
+    return [className hasSuffix:@"PictureInPictureWindow"];
+}
 
 static NSArray<NSNumber *> *s7tv_orientationButtonStates(void) {
     return @[@(UIControlStateNormal), @(UIControlStateHighlighted),
@@ -132,6 +144,7 @@ void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
         !view.window) return;
     if (s7tv_orientationLockButtonForControls(view)) {
         s_activeControlsView = view;
+        s7tv_refreshOrientationPolicySuspension();
         return;
     }
 
@@ -140,8 +153,7 @@ void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
                    dispatch_get_main_queue(), ^{
         UIView *controls = weakView;
         if (!s7tv_orientationLockButtonEnabled() || !controls || !controls.window ||
-            ![NSStringFromClass(controls.window.class)
-                isEqualToString:@"Twitch.PictureInPictureWindow"] ||
+            !s7tv_isPictureInPictureWindow(controls.window) ||
             s7tv_orientationLockButtonForControls(controls)) return;
 
         UIButton *shareButton = s7tv_shareButtonForControls(controls);
@@ -191,8 +203,7 @@ void s7tv_handleTheaterControlsViewLifecycle(UIView *view) {
         objc_setAssociatedObject(controls, &kS7TVOrientationLockButtonKey,
                                  lockButton, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         s_activeControlsView = controls;
-        [[SevenTVManager sharedManager]
-            log:@"✅ Bouton verrou orientation ajouté à côté de Share"];
+        s7tv_refreshOrientationPolicySuspension();
         s7tv_refreshOrientationObserver();
     });
 }
@@ -228,6 +239,11 @@ S7TVAutoOrientationLockMode s7tv_autoOrientationLockMode(void) {
 
 // Requests the target orientation through the scene API.
 static void s7tv_forceSceneOrientation(UIInterfaceOrientationMask mask) {
+    if (s_orientationPolicySuspended ||
+        UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
+        return;
+    }
+
     SEL reqSel = NSSelectorFromString(
         @"requestGeometryUpdateWithPreferences:errorHandler:");
     Class prefsCls = NSClassFromString(@"UIWindowSceneGeometryPreferencesIOS");
@@ -286,7 +302,8 @@ static void s7tv_handlePhysicalOrientationChange(void) {
         s_lastAutoLockCandidate = UIDeviceOrientationUnknown;
         return;
     }
-    if (s_orientationLocked || !s7tv_orientationLockButtonEnabled() ||
+    if (s_orientationPolicySuspended || s_orientationLocked ||
+        !s7tv_orientationLockButtonEnabled() ||
         !s7tv_hasOrientationLockButtonInActivePlayer()) return;
 
     UIInterfaceOrientation target =
@@ -301,9 +318,12 @@ static void s7tv_handlePhysicalOrientationChange(void) {
     if (s_lastAutoLockCandidate == deviceOrientation) return;
 
     s_lastAutoLockCandidate = deviceOrientation;
+    NSUInteger generation = s_orientationLifecycleGeneration;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (s_orientationLocked || !s7tv_orientationLockButtonEnabled() ||
+        if (generation != s_orientationLifecycleGeneration ||
+            s_orientationPolicySuspended || s_orientationLocked ||
+            !s7tv_orientationLockButtonEnabled() ||
             !s7tv_hasOrientationLockButtonInActivePlayer() ||
             UIDevice.currentDevice.orientation != deviceOrientation ||
             !s7tv_autoModeAcceptsInterfaceOrientation(
@@ -317,11 +337,11 @@ static void s7tv_startOrientationObserver(void) {
     if (s_orientationObserver) return;
     [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
     s_orientationObserver = [[NSNotificationCenter defaultCenter]
-        addObserverForName:UIDeviceOrientationDidChangeNotification
+                addObserverForName:UIDeviceOrientationDidChangeNotification
                     object:nil
                      queue:[NSOperationQueue mainQueue]
                 usingBlock:^(__unused NSNotification *note) {
-                    if (s_orientationLocked) return;
+                    if (s_orientationPolicySuspended || s_orientationLocked) return;
                     s7tv_handlePhysicalOrientationChange();
                 }];
 }
@@ -336,7 +356,7 @@ static void s7tv_stopOrientationObserver(void) {
 static void s7tv_refreshOrientationObserver(void) {
     BOOL autoLockActive = s7tv_orientationLockButtonEnabled() &&
         s7tv_autoOrientationLockMode() != S7TVAutoOrientationLockModeDisabled;
-    if (!s_orientationLocked && autoLockActive) {
+    if (!s_orientationPolicySuspended && !s_orientationLocked && autoLockActive) {
         s7tv_startOrientationObserver();
         s7tv_handlePhysicalOrientationChange();
     } else {
@@ -365,18 +385,24 @@ static void s7tv_showOrientationToast(BOOL locked) {
 @end
 @implementation UIApplication (S7TVOrientationLock)
 - (UIInterfaceOrientationMask)s7tv_supportedInterfaceOrientationsForWindow:(UIWindow *)window {
-    if (s_orientationLocked) return s_lockedOrientationMask;
+    if (s_orientationLocked && !s_orientationPolicySuspended &&
+        UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
+        return s_lockedOrientationMask;
+    }
     return [self s7tv_supportedInterfaceOrientationsForWindow:window];
 }
 @end
 
-// UIKit's native scene-level orientation lock preference.
+// Apply the lock through UIKit orientation callbacks.
 @interface UIViewController (S7TVOrientationLock)
 - (UIInterfaceOrientationMask)s7tv_supportedInterfaceOrientations;
 @end
 @implementation UIViewController (S7TVOrientationLock)
 - (UIInterfaceOrientationMask)s7tv_supportedInterfaceOrientations {
-    if (s_orientationLocked) return s_lockedOrientationMask;
+    if (s_orientationLocked && !s_orientationPolicySuspended &&
+        UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
+        return s_lockedOrientationMask;
+    }
     return [self s7tv_supportedInterfaceOrientations];
 }
 @end
@@ -386,7 +412,10 @@ static void s7tv_showOrientationToast(BOOL locked) {
 @end
 @implementation UIViewController (S7TVOrientationPreferenceLock)
 - (BOOL)s7tv_prefersInterfaceOrientationLocked {
-    if (s_orientationLocked) return YES;
+    if (s_orientationLocked && !s_orientationPolicySuspended &&
+        UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
+        return YES;
+    }
     return [self s7tv_prefersInterfaceOrientationLocked];
 }
 @end
@@ -396,6 +425,7 @@ static void s7tv_showOrientationToast(BOOL locked) {
 static void s7tv_install_orientation_swizzles(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        s7tv_installOrientationLifecycleObservers();
         s7tv_swizzle([UIApplication class],
                      [UIApplication class],
                      @selector(supportedInterfaceOrientationsForWindow:),
@@ -408,8 +438,6 @@ static void s7tv_install_orientation_swizzles(void) {
                      [UIViewController class],
                      NSSelectorFromString(@"prefersInterfaceOrientationLocked"),
                      @selector(s7tv_prefersInterfaceOrientationLocked));
-        [[SevenTVManager sharedManager]
-            log:@"✅ Hooks verrou orientation installés (premier lock)"];
     });
 }
 
@@ -488,30 +516,78 @@ static UIWindowScene *s7tv_activeWindowScene(void) {
 }
 
 static void s7tv_notifyOrientationPolicyChanged(void) {
-    UIWindowScene *scene = s7tv_activeWindowScene();
-    if (!scene) return;
+    if (s_orientationPolicySuspended ||
+        UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
+        return;
+    }
 
     SEL supportedSel = NSSelectorFromString(
         @"setNeedsUpdateOfSupportedInterfaceOrientations");
     SEL lockedSel = NSSelectorFromString(
         @"setNeedsUpdateOfPrefersInterfaceOrientationLocked");
 
-    for (UIWindow *window in scene.windows) {
-        UIViewController *root = window.rootViewController;
-        if (!root) continue;
-        if ([root respondsToSelector:supportedSel]) {
-            ((void(*)(id, SEL))objc_msgSend)(root, supportedSel);
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class] ||
+            scene.activationState != UISceneActivationStateForegroundActive) {
+            continue;
         }
-        if ([root respondsToSelector:lockedSel]) {
-            ((void(*)(id, SEL))objc_msgSend)(root, lockedSel);
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            UIViewController *root = window.rootViewController;
+            if (!root) continue;
+            if ([root respondsToSelector:supportedSel]) {
+                ((void(*)(id, SEL))objc_msgSend)(root, supportedSel);
+            }
+            if ([root respondsToSelector:lockedSel]) {
+                ((void(*)(id, SEL))objc_msgSend)(root, lockedSel);
+            }
         }
     }
+}
+
+static void s7tv_refreshOrientationPolicySuspension(void) {
+    BOOL shouldSuspend =
+        UIApplication.sharedApplication.applicationState != UIApplicationStateActive;
+    if (shouldSuspend == s_orientationPolicySuspended) return;
+
+    s_orientationPolicySuspended = shouldSuspend;
+    s_orientationLifecycleGeneration++;
+    if (shouldSuspend) s7tv_stopOrientationObserver();
+    else s7tv_refreshOrientationObserver();
+    s7tv_notifyOrientationPolicyChanged();
+}
+
+static void s7tv_installOrientationLifecycleObservers(void) {
+    if (s_orientationLifecycleObservers) return;
+
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    NSArray<NSString *> *notificationNames = @[
+        UIApplicationWillResignActiveNotification,
+        UIApplicationDidBecomeActiveNotification,
+        UIWindowDidBecomeVisibleNotification,
+        UIWindowDidBecomeHiddenNotification,
+        UISceneWillDeactivateNotification,
+        UISceneDidActivateNotification,
+        UISceneDidDisconnectNotification,
+    ];
+    NSMutableArray *tokens = [NSMutableArray arrayWithCapacity:notificationNames.count];
+    for (NSString *name in notificationNames) {
+        id token = [center addObserverForName:name
+                                       object:nil
+                                        queue:NSOperationQueue.mainQueue
+                                   usingBlock:^(__unused NSNotification *note) {
+            s7tv_refreshOrientationPolicySuspension();
+        }];
+        if (token) [tokens addObject:token];
+    }
+    s_orientationLifecycleObservers = [tokens copy];
+    s7tv_refreshOrientationPolicySuspension();
 }
 
 static void s7tv_setOrientationLockState(BOOL locked,
                                          UIInterfaceOrientation requestedOrientation,
                                          BOOL showToast) {
     if (locked == s_orientationLocked) return;
+    s_orientationLifecycleGeneration++;
 
     if (locked) {
         s7tv_install_orientation_swizzles();
@@ -531,8 +607,6 @@ static void s7tv_setOrientationLockState(BOOL locked,
             activeScene && activeScene.interfaceOrientation != requestedOrientation) {
             s7tv_forceSceneOrientation(s_lockedOrientationMask);
         }
-        [[SevenTVManager sharedManager]
-            log:@"🔒 Orientation verrouillée (orientation=%ld)", (long)current];
     } else {
         s_orientationLocked = NO;
         s_lockedOrientationMask = UIInterfaceOrientationMaskAll;
@@ -542,8 +616,9 @@ static void s7tv_setOrientationLockState(BOOL locked,
             ? physical : UIDeviceOrientationUnknown;
         s7tv_notifyOrientationPolicyChanged();
         s7tv_forceSceneOrientation(UIInterfaceOrientationMaskAll);
-        [UIViewController attemptRotationToDeviceOrientation];
-        [[SevenTVManager sharedManager] log:@"🔓 Orientation déverrouillée"];
+        if (!s_orientationPolicySuspended) {
+            [UIViewController attemptRotationToDeviceOrientation];
+        }
     }
 
     s7tv_refreshOrientationObserver();
@@ -570,6 +645,7 @@ void s7tv_setOrientationLockButtonEnabled(BOOL enabled) {
     [defaults synchronize];
 
     dispatch_async(dispatch_get_main_queue(), ^{
+        s_orientationLifecycleGeneration++;
         if (!enabled) {
             if (s_orientationLocked) {
                 s7tv_setOrientationLockState(NO, UIInterfaceOrientationUnknown, NO);
@@ -611,6 +687,7 @@ void s7tv_setAutoOrientationLockMode(S7TVAutoOrientationLockMode mode) {
                                              forKey:kS7TVAutoOrientationLockMode];
     [NSUserDefaults.standardUserDefaults synchronize];
     dispatch_async(dispatch_get_main_queue(), ^{
+        s_orientationLifecycleGeneration++;
         s_lastAutoLockCandidate = UIDeviceOrientationUnknown;
         s7tv_refreshOrientationObserver();
     });
@@ -618,6 +695,7 @@ void s7tv_setAutoOrientationLockMode(S7TVAutoOrientationLockMode mode) {
 
 void s7tv_swizzle_orientation_lock(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        s7tv_installOrientationLifecycleObservers();
         s7tv_refreshOrientationObserver();
     });
 }

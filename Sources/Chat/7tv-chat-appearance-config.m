@@ -271,7 +271,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     [prefs setBool:YES forKey:kS7TVCfgDeletedOpacityMigrated];
 
     [[SevenTVManager sharedManager]
-        log:@"🏗 Config chargée — emote7TV=%.1f emoteTwitch=%.1f gif=%.1f badge=%.1f "
+        log:@"[ChatCustom] 🏗 Config chargée — emote7TV=%.1f emoteTwitch=%.1f gif=%.1f badge=%.1f "
              @"pseudo=%.1f message=%.1f lineSpacing=%.1f pseudoMsgSpacing=%.1f "
              @"emoteOff=%.1f res=%ldx",
         _emote7TVSize, _emoteTwitchSize, _gifSize, _badgeSize, _usernameFontSize,
@@ -480,7 +480,7 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     [prefs removeObjectForKey:kS7TVCfgDeletedRevealMode];
     [prefs removeObjectForKey:kS7TVCfgDeletedMessageStyle];
     [self save];
-    [[SevenTVManager sharedManager] log:@"🏗 Config réinitialisée aux défauts"];
+    [[SevenTVManager sharedManager] log:@"[ChatCustom] 🏗 Config réinitialisée aux défauts"];
     [self s7tv_postDidChangeNotification];
 }
 

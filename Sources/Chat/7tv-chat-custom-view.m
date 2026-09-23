@@ -1649,7 +1649,7 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
             NSString *mode = (updated.state == S7TVChatMessageStateDeletedExpanded)
                 ? @"révélé" : @"masqué";
             [[SevenTVManager sharedManager]
-                log:@"🛡 Message supprimé %@ localement (id=%@)",
+                log:@"[ChatCustom] 🛡 Message supprimé %@ localement (id=%@)",
                     mode, deletedMessageID];
             s7tv_applyModerationStateToRetainedMessage(
                 deletedMessageID, updated.state, updated.moderationKind,
@@ -2060,12 +2060,6 @@ static UIColor *s7tv_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
                                   memberKeys:@[]];
     }
 
-    NSString *logName = memberNames.count
-        ? [memberNames componentsJoinedByString:@" + "]
-        : (token.text ?: token.providerEmoteID);
-    NSString *logFormat = shouldFavorite ? @"⭐ Favori ajouté depuis le chat : %@"
-                                          : @"💔 Favori retiré depuis le chat : %@";
-    [[SevenTVManager sharedManager] log:logFormat, logName];
     [self s7tv_refreshEmotePreviewFavoriteState];
 
     UINotificationFeedbackGenerator *feedback = [[UINotificationFeedbackGenerator alloc] init];

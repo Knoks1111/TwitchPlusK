@@ -247,7 +247,6 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
     NSString *scope = @"global";
     NSDictionary<NSString *, NSString *> *credentials = [mgr s7tv_twitchCredentialsSnapshot];
     if (!credentials[@"Authorization"].length || !credentials[@"Client-ID"].length) {
-        [mgr log:@"⏳ Badges global: credentials pas encore disponibles, attente GQL..."];
         if (retryGeneration) {
             [self s7tv_resetBadgeRetryForScope:scope
                                     generation:retryGeneration.unsignedIntegerValue];
@@ -276,8 +275,6 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
         }
         self.fetchingGlobalBadges = YES;
     }
-
-    [mgr log:@"🏗 Badges: chargement catalogue global"];
 
     __weak typeof(self) weakSelf = self;
     NSURLRequest *req = [self s7tv_helixRequestWithURL:url];
@@ -335,8 +332,6 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
                     postNotificationName:S7TVBadgesCatalogUpdatedNotification object:nil];
             });
         });
-        [[SevenTVManager sharedManager]
-            log:@"🏗 Badges globaux chargés (%lu sets)", (unsigned long)parsed.count];
     }];
     [task resume];
 }
@@ -368,7 +363,6 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
         // fetch n'a jamais réellement eu lieu. C'était la cause des badges de
         // sub (channel-only, pas de repli global côté Twitch pour ce set)
         // manquants alors que les badges globaux (mod/VIP/turbo) s'affichaient.
-        [mgr log:@"⏳ Badges channel: credentials pas encore disponibles, attente GQL..."];
         if (retryGeneration) {
             [self s7tv_resetBadgeRetryForScope:scope
                                     generation:retryGeneration.unsignedIntegerValue];
@@ -410,8 +404,6 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
             [self.fetchingBadgeChannelIDs addObject:channelID];
         }
     }
-
-    [mgr log:@"🏗 Badges: chargement catalogue channel %@", channelID];
 
     __weak typeof(self) weakSelf = self;
     NSURLRequest *req = [self s7tv_helixRequestWithURL:url];
@@ -475,8 +467,6 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
         NSString *currentChannelID = [SevenTVManager sharedManager].currentChannelTwitchID;
         if (currentChannelID.length &&
             ![currentChannelID isEqualToString:channelID]) {
-            [[SevenTVManager sharedManager]
-                log:@"ℹ️ Réponse badges ignorée pour ancienne chaîne %@", channelID];
             [strongSelf s7tv_resetBadgeRetryForScope:scope generation:requestGeneration];
             return;
         }
@@ -512,9 +502,6 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
                     postNotificationName:S7TVBadgesCatalogUpdatedNotification object:nil];
             });
         });
-        [[SevenTVManager sharedManager]
-            log:@"🏗 Badges channel chargés (%lu sets) pour %@",
-            (unsigned long)parsed.count, channelID];
     }];
     [task resume];
 }
@@ -608,7 +595,6 @@ static BOOL S7TVBadgeFailureIsTransient(NSData *data,
     dispatch_barrier_async(self.badgeQueue, ^{
         self.channelBadges = @{};
     });
-    [[SevenTVManager sharedManager] log:@"🏗 Badges channel réinitialisés (changement de chaîne)"];
 }
 
 #pragma mark - Résolution

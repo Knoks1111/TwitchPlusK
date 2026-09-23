@@ -6,6 +6,20 @@ static NSString *const S7TVSettingsTransferMarkerKey = @"twitchplusk_settings";
 static NSString *const S7TVSettingsTransferValuesKey = @"values";
 static NSString *const S7TVLegacyChannelPointsKey = @"TCDBGLiveAutoCollectChannelPoints";
 
+static BOOL S7TVSettingsTransferIsRemovedLogKey(NSString *key) {
+    static NSSet<NSString *> *keys;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keys = [NSSet setWithArray:@[
+            @"s7tv_log_swizzle", @"s7tv_log_cache", @"s7tv_log_prefetch",
+            @"s7tv_log_api", @"s7tv_log_irc_channel", @"s7tv_log_ui_picker",
+            @"s7tv_log_favorites", @"s7tv_log_orientation",
+            @"s7tv_log_image_conv", @"s7tv_log_dump",
+        ]];
+    });
+    return [keys containsObject:key];
+}
+
 static NSArray<NSString *> *S7TVSettingsTransferInternalPrefixes(void) {
     static NSArray<NSString *> *prefixes;
     static dispatch_once_t onceToken;
@@ -27,6 +41,8 @@ static BOOL S7TVSettingsTransferIsInternalKey(NSString *key) {
 
 static BOOL S7TVSettingsTransferOwnsKey(NSString *key) {
     if (![key isKindOfClass:NSString.class]) return NO;
+    // Accepter les anciennes clés uniquement pour les imports historiques.
+    if (S7TVSettingsTransferIsRemovedLogKey(key)) return YES;
     if ([key isEqualToString:S7TVLegacyChannelPointsKey]) return YES;
     // Clé originale du moteur TASDiagnostics (VAFT) : conservée telle quelle
     // pour la provenance upstream, incluse dans l'export/import.
@@ -46,7 +62,8 @@ static NSDictionary<NSString *, id> *S7TVSettingsTransferValues(void) {
     NSDictionary<NSString *, id> *defaults = [userDefaults dictionaryRepresentation];
     NSMutableDictionary<NSString *, id> *values = [NSMutableDictionary dictionary];
     [defaults enumerateKeysAndObjectsUsingBlock:^(NSString *key, id value, BOOL *stop) {
-        if (S7TVSettingsTransferOwnsKey(key) &&
+        if (!S7TVSettingsTransferIsRemovedLogKey(key) &&
+            S7TVSettingsTransferOwnsKey(key) &&
             [NSPropertyListSerialization propertyList:value isValidForFormat:NSPropertyListXMLFormat_v1_0]) {
             values[key] = value;
         }
@@ -168,6 +185,7 @@ NSUInteger S7TVSettingsImportData(NSData *data, NSError **error) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSUInteger importedCount = 0;
     for (NSString *key in valuesToImport) {
+        if (S7TVSettingsTransferIsRemovedLogKey(key)) continue;
         [defaults setObject:valuesToImport[key] forKey:key];
         importedCount++;
     }

@@ -4,11 +4,11 @@
  */
 
 #import "System/7tv-system-home-features.h"
+#import "System/7tv-system-tab-visibility.h"
 #import "Adblock/7tv-adblock-runtime.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <os/log.h>
 #import <math.h>
 #import <limits.h>
 
@@ -24,8 +24,7 @@ void s7tv_registerHomeFeatureDefaults(void) {
     [S7TVHomeFeatureDefaults() registerDefaults:@{
         S7TVLaunchDestinationKey: @(S7TVLaunchDestinationDefault),
         S7TVHideTwitchStoriesKey: @NO,
-        // Même valeur par défaut que TwitchAdBlock : la limite du fil Live
-        // est neutralisée sans configuration supplémentaire.
+        // Actif par défaut (défaut TwitchAdBlock).
         S7TVKeepLiveFeedPlayingKey: @YES,
     }];
 }
@@ -71,8 +70,7 @@ static BOOL S7TVHomeExchangeInstanceMethod(Class target, Class source,
     Method replacementMethod = class_getInstanceMethod(source, replacement);
     if (!originalMethod || !replacementMethod) return NO;
 
-    // Crée d'abord des implémentations propres à la classe cible afin de ne
-    // jamais échanger une méthode héritée sur UIViewController/NSObject.
+    // Jamais échanger une méthode héritée.
     class_addMethod(target, original, method_getImplementation(originalMethod),
                     method_getTypeEncoding(originalMethod));
     class_addMethod(target, replacement, method_getImplementation(replacementMethod),
@@ -84,22 +82,42 @@ static BOOL S7TVHomeExchangeInstanceMethod(Class target, Class source,
     return YES;
 }
 
+NSInteger s7tv_launchDestinationTab(S7TVLaunchDestination destination) {
+    switch (destination) {
+        case S7TVLaunchDestinationHomeFollowing:
+        case S7TVLaunchDestinationHomeLive:
+        case S7TVLaunchDestinationHomeClips:
+            return S7TVTabItemHome;
+        case S7TVLaunchDestinationBrowseCategories:
+        case S7TVLaunchDestinationBrowseLiveChannels:
+            return S7TVTabItemExplore;
+        case S7TVLaunchDestinationActivity:
+            return S7TVTabItemActivity;
+        case S7TVLaunchDestinationProfile:
+            return S7TVTabItemProfile;
+        case S7TVLaunchDestinationDefault:
+            break;
+    }
+    return -1;
+}
+
+// Sous-page visée, -1 si aucune.
+static NSInteger S7TVLaunchDestinationSubTab(S7TVLaunchDestination destination) {
+    switch (destination) {
+        case S7TVLaunchDestinationHomeFollowing:       return 0;
+        case S7TVLaunchDestinationHomeLive:            return 1;
+        case S7TVLaunchDestinationHomeClips:           return 2;
+        case S7TVLaunchDestinationBrowseCategories:    return 0;
+        case S7TVLaunchDestinationBrowseLiveChannels:  return 1;
+        default:                                       return -1;
+    }
+}
+
 static BOOL S7TVLaunchDestinationParts(S7TVLaunchDestination destination,
                                        NSInteger *tab, NSInteger *subTab) {
-    NSInteger resolvedTab = -1;
-    NSInteger resolvedSubTab = -1;
-    switch (destination) {
-        case S7TVLaunchDestinationHomeFollowing:       resolvedTab = 0; resolvedSubTab = 0; break;
-        case S7TVLaunchDestinationHomeLive:            resolvedTab = 0; resolvedSubTab = 1; break;
-        case S7TVLaunchDestinationHomeClips:           resolvedTab = 0; resolvedSubTab = 2; break;
-        case S7TVLaunchDestinationBrowseCategories:    resolvedTab = 1; resolvedSubTab = 0; break;
-        case S7TVLaunchDestinationBrowseLiveChannels:  resolvedTab = 1; resolvedSubTab = 1; break;
-        case S7TVLaunchDestinationActivity:             resolvedTab = 3; break;
-        case S7TVLaunchDestinationProfile:              resolvedTab = 4; break;
-        case S7TVLaunchDestinationDefault:              break;
-    }
+    NSInteger resolvedTab = s7tv_launchDestinationTab(destination);
     if (tab) *tab = resolvedTab;
-    if (subTab) *subTab = resolvedSubTab;
+    if (subTab) *subTab = S7TVLaunchDestinationSubTab(destination);
     return resolvedTab >= 0;
 }
 
@@ -163,7 +181,6 @@ static BOOL S7TVTryHideStories(UIViewController *controller) {
     UIView *targetView = S7TVFindSubviewMatching(controller.view, needle);
     if (targetView) {
         S7TVRemoveAndCollapseSlot(targetView);
-        os_log(OS_LOG_DEFAULT, "[S7TV-Home] Twitch Stories view hidden");
         return YES;
     }
 
@@ -181,7 +198,6 @@ static BOOL S7TVTryHideStories(UIViewController *controller) {
         zeroHeight.priority = UILayoutPriorityRequired;
         zeroHeight.active = YES;
     }
-    os_log(OS_LOG_DEFAULT, "[S7TV-Home] Twitch Stories controller hidden");
     return YES;
 }
 
@@ -190,31 +206,37 @@ static char S7TVStoriesRetriesScheduledKey;
 
 @interface NSObject (S7TVHomeFeaturesRuntime)
 - (void)s7tv_home_tabBarViewDidAppear:(BOOL)animated;
+- (void)s7tv_home_tabBarViewDidLayoutSubviews;
 - (void)s7tv_home_discoveryViewDidLayoutSubviews;
 - (void)s7tv_home_browseViewDidAppear:(BOOL)animated;
 - (void)s7tv_home_storiesViewDidLayoutSubviews;
 @end
 
-@implementation NSObject (S7TVHomeFeaturesRuntime)
-
-- (void)s7tv_home_tabBarViewDidAppear:(BOOL)animated {
+@implementation NSObject (S7TVHomeFeaturesRuntime)- (void)s7tv_home_tabBarViewDidAppear:(BOOL)animated {
     [self s7tv_home_tabBarViewDidAppear:animated];
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        NSInteger tab = -1;
-        if (!S7TVLaunchDestinationParts(s7tv_launchDestination(), &tab, NULL)) return;
+        NSInteger stockTab = -1;
+        if (!S7TVLaunchDestinationParts(s7tv_launchDestination(), &stockTab, NULL)) return;
+        if (stockTab < 0) return;
+
+        // Ordre d'origine → index réel.
+        NSUInteger index = s7tv_tabVisibilityIndexForStockIndex((NSUInteger)stockTab);
+        if (index == NSNotFound) return;
+
         UITabBarController *controller = (UITabBarController *)self;
-        if (tab >= 0 && tab < (NSInteger)controller.viewControllers.count) {
-            controller.selectedIndex = (NSUInteger)tab;
-            os_log(OS_LOG_DEFAULT, "[S7TV-Home] launch tab selected=%ld", (long)tab);
-        }
+        if (index < controller.viewControllers.count) controller.selectedIndex = index;
     });
+}
+
+- (void)s7tv_home_tabBarViewDidLayoutSubviews {
+    [self s7tv_home_tabBarViewDidLayoutSubviews];
+    s7tv_tabVisibilityApply((UITabBarController *)self);
 }
 
 - (void)s7tv_home_discoveryViewDidLayoutSubviews {
     [self s7tv_home_discoveryViewDidLayoutSubviews];
-    // Même scan de secours que TwitchAdBlock : le bouton vit parfois dans
-    // l'en-tête du fil et non directement dans FollowingViewController.
+    // Le bouton vit parfois dans l'en-tête du fil.
     S7TVAdblockHideAdFreeUpsellIfNeeded();
 
     NSInteger tab = -1;
@@ -294,6 +316,7 @@ static char S7TVStoriesRetriesScheduledKey;
 @end
 
 static BOOL S7TVLaunchTabHookInstalled = NO;
+static BOOL S7TVTabLayoutHookInstalled = NO;
 static BOOL S7TVDiscoveryHookInstalled = NO;
 static BOOL S7TVBrowseHookInstalled = NO;
 static BOOL S7TVStoriesHookInstalled = NO;
@@ -308,6 +331,15 @@ static void S7TVTryInstallHomeFeatureHooks(void) {
                     @selector(s7tv_home_tabBarViewDidAppear:));
             }
         }
+        if (!S7TVTabLayoutHookInstalled) {
+            Class target = NSClassFromString(@"_TtC6Twitch16TabBarController");
+            if (target) {
+                S7TVTabLayoutHookInstalled = S7TVHomeExchangeInstanceMethod(
+                    target, NSObject.class, @selector(viewDidLayoutSubviews),
+                    @selector(s7tv_home_tabBarViewDidLayoutSubviews));
+            }
+        }
+        s7tv_installTabVisibilityHooks();
         if (!S7TVDiscoveryHookInstalled) {
             Class target = NSClassFromString(@"_TtC6Twitch30DiscoveryFeedTabViewController");
             if (target) {

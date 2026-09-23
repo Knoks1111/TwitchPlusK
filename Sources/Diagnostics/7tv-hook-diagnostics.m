@@ -84,9 +84,11 @@ void S7TVHookDiagnosticsRegisterKnownTargets(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         // ────────────────────────────────────────────────────────────────
-        // Proxy AdBlock — registre historique de TwitchAdBlock.  On conserve
-        // volontairement ces 10 entrées globales (sans détailler les selectors)
-        // pour garder le diagnostic Proxy identique à l'ancien écran.
+        // Proxy AdBlock — cibles hookées uniquement lorsque la méthode
+        // active est Proxy. Les cibles home/Turbo (TabBar, Browse,
+        // DiscoveryFeed, StandardButton) sont installées dans les deux
+        // moteurs et déjà listées dans le groupe TwitchPlusK : pas de
+        // doublon ici.
         // ────────────────────────────────────────────────────────────────
         S7TVHookDiagnosticRegister(
             @"[TwitchAdBlock] AVURLAsset", @[@"AVURLAsset"], nil, NO,
@@ -103,29 +105,14 @@ void S7TVHookDiagnosticsRegisterKnownTargets(void) {
             @[@"_TtC6Twitch27HeadlinerFollowingAdManager"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
         S7TVHookDiagnosticRegister(
-            @"[TwitchAdBlock] _TtC12TwitchCoreUI14StandardButton",
-            @[@"_TtC12TwitchCoreUI14StandardButton"], nil, NO,
-            S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
             @"[TwitchAdBlock] URLSessionClient (TK or Apollo)",
             @[@"_TtC9TwitchKit18TKURLSessionClient", @"Apollo.URLSessionClient"],
             nil, NO, S7TVHookDiagnosticGroupProxyAdBlock);
         S7TVHookDiagnosticRegister(
-            @"[TwitchAdBlock] _TtC6Twitch16TabBarController",
-            @[@"_TtC6Twitch16TabBarController"], nil, NO,
+            @"[TwitchAdBlock] _TtC6Twitch27AssetResourceLoaderDelegate",
+            @[@"_TtC6Twitch27AssetResourceLoaderDelegate"], nil, NO,
             S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
-            @"[TwitchAdBlock] _TtC6Twitch20BrowseViewController",
-            @[@"_TtC6Twitch20BrowseViewController"], nil, NO,
-            S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
-            @"[TwitchAdBlock] _TtC6Twitch30DiscoveryFeedTabViewController",
-            @[@"_TtC6Twitch30DiscoveryFeedTabViewController"], nil, NO,
-            S7TVHookDiagnosticGroupProxyAdBlock);
-        S7TVHookDiagnosticRegister(
-            @"[TwitchAdBlock] _TtC6Twitch41DiscoveryFeedShelfContainerViewController",
-            @[@"_TtC6Twitch41DiscoveryFeedShelfContainerViewController"], nil, NO,
-            S7TVHookDiagnosticGroupProxyAdBlock);
+
 
         // ────────────────────────────────────────────────────────────────
         // Local (VAFT) AdBlock — chaque classe dynamique et chaque selector
@@ -232,6 +219,35 @@ void S7TVHookDiagnosticsRegisterKnownTargets(void) {
             @"tableView:didSelectRowAtIndexPath:", NO,
             S7TVHookDiagnosticGroupTwitchPlusK);
 
+        // ChannelResolver : résolution de la chaîne courante (live + VOD).
+        // Les sélecteurs de TwitchChatManager sont détaillés (point de
+        // rupture le plus fréquent après une mise à jour Twitch) ; les deux
+        // autres classes sont diagnostiquées par présence.
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] TwitchChatManager -addWithChannelIdentity:",
+            @[@"Twitch.TwitchChatManager", @"_TtC6Twitch17TwitchChatManager"],
+            @"addWithChannelIdentity:", NO,
+            S7TVHookDiagnosticGroupTwitchPlusK);
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] TwitchChatManager -setActiveChannelID:",
+            @[@"Twitch.TwitchChatManager", @"_TtC6Twitch17TwitchChatManager"],
+            @"setActiveChannelID:", NO,
+            S7TVHookDiagnosticGroupTwitchPlusK);
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] TwitchChatManager -resetActiveChannelID",
+            @[@"Twitch.TwitchChatManager", @"_TtC6Twitch17TwitchChatManager"],
+            @"resetActiveChannelID", NO,
+            S7TVHookDiagnosticGroupTwitchPlusK);
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] ChannelChatConnectionController",
+            @[@"Twitch.ChannelChatConnectionController",
+              @"_TtC6Twitch31ChannelChatConnectionController"], nil, NO,
+            S7TVHookDiagnosticGroupTwitchPlusK);
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] Twitch.MessageString (VOD chat)",
+            @[@"Twitch.MessageString", @"_TtC6Twitch13MessageString"], nil, NO,
+            S7TVHookDiagnosticGroupTwitchPlusK);
+
         S7TVHookDiagnosticRegister(
             @"[TwitchPlusK] TabBarController -viewDidAppear:",
             @[@"_TtC6Twitch16TabBarController"], @"viewDidAppear:", NO,
@@ -261,6 +277,20 @@ void S7TVHookDiagnosticsRegisterKnownTargets(void) {
         S7TVHookDiagnosticRegister(
             @"[TwitchPlusK] FollowingViewController -viewDidLayoutSubviews (Twitch Turbo)",
             @[@"_TtC6Twitch23FollowingViewController"], @"viewDidLayoutSubviews", NO,
+            S7TVHookDiagnosticGroupTwitchPlusK);
+
+        // Lecteur : gestes, boutons delay/stats et rechargement du stream.
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] Twitch.TheaterPlayerControlsView (player)",
+            @[@"Twitch.TheaterPlayerControlsView"], nil, NO,
+            S7TVHookDiagnosticGroupTwitchPlusK);
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] IVSPlayer (reload/delay)",
+            @[@"IVSPlayer"], nil, NO,
+            S7TVHookDiagnosticGroupTwitchPlusK);
+        S7TVHookDiagnosticRegister(
+            @"[TwitchPlusK] Twitch.PlayerCoreVideoPlayer (reload)",
+            @[@"Twitch.PlayerCoreVideoPlayer"], nil, NO,
             S7TVHookDiagnosticGroupTwitchPlusK);
 
         // GQL/WebSocket : ces interceptions alimentent les emotes, le chat,

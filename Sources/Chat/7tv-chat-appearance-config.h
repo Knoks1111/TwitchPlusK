@@ -72,6 +72,25 @@ typedef NS_ENUM(NSInteger, S7TVDeletedMessageRevealMode) {
 // correction cachée. Défaut -6, identique à la valeur affichée dans le picker.
 @property (nonatomic, assign) CGFloat emoteVerticalOffset;
 
+// --- Hauteur du picker d'emotes (points) ---
+// Valeurs distinctes par orientation : 280 pt ne laisse presque plus de place
+// au chat en paysage. Bornée à la place disponible, voir
+// -[SevenTVEmotePickerController _s7tv_resolvedGridHeight].
+@property (nonatomic, assign) CGFloat pickerHeightPortrait;
+@property (nonatomic, assign) CGFloat pickerHeightLandscape;
+
+// --- Taille des emotes dans le picker (facteur) ---
+// Facteur appliqué à la taille de cellule calculée depuis la largeur de la
+// grille. Un facteur plutôt qu'une valeur absolue : la taille de cellule
+// dépend de l'appareil, un défaut fixe changerait la densité sur SE et iPad.
+@property (nonatomic, assign) CGFloat pickerEmoteScalePortrait;
+@property (nonatomic, assign) CGFloat pickerEmoteScaleLandscape;
+
+// Bornes par orientation, pour une clé de réglage du picker
+// ("pickerHeightPortrait", "pickerEmoteScaleLandscape", …).
+FOUNDATION_EXPORT CGFloat S7TVPickerOptionMinForKey(NSString *sizeKey);
+FOUNDATION_EXPORT CGFloat S7TVPickerOptionMaxForKey(NSString *sizeKey);
+
 // --- Résolution d'image emotes (1x/2x/3x/4x) ---
 // Réglage commun aux providers externes. Chaque provider adapte ensuite la
 // valeur aux variantes réellement publiées par son CDN (FFZ, par exemple,

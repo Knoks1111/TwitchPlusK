@@ -2,6 +2,18 @@
 
 This file keeps the cumulative release history of TwitchPlusK, with the newest release listed first.
 
+## [1.0.7] (Twitch 31.0.2) - 2026-10-03
+
+### New Features
+
+- Emote picker height can now be set independently for portrait and landscape, each with its own adjustable range — so the picker stays compact in landscape and keeps a comfortable size in portrait.
+- The size of the emotes in the picker can now be adjusted, with independent settings for portrait and landscape.
+- Chat elements to hide now also removes the bar with the Subscribe and Gift Sub buttons, clearing up the top of the chat entirely.
+
+### Fixes
+
+- Fixed chat elements not being fully removed: hidden banners now detach from the interface instead of staying visible, subclasses are matched correctly.
+
 ## [1.0.6] (Twitch 31.0.2) - 2026-09-24
 
 ### New Features

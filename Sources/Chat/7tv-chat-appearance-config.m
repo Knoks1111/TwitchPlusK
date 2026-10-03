@@ -76,6 +76,10 @@ static NSString *const kS7TVCfgMessageFontSize         = @"s7tv_cfg_message_font
 static NSString *const kS7TVCfgLineSpacing             = @"s7tv_cfg_line_spacing";
 static NSString *const kS7TVCfgUsernameMessageSpacing  = @"s7tv_cfg_username_message_spacing";
 static NSString *const kS7TVCfgEmoteVerticalOffset     = @"s7tv_cfg_emote_vertical_offset";
+static NSString *const kS7TVCfgPickerHeightPortrait    = @"s7tv_cfg_picker_height_portrait";
+static NSString *const kS7TVCfgPickerHeightLandscape   = @"s7tv_cfg_picker_height_landscape";
+static NSString *const kS7TVCfgPickerEmoteScalePortrait  = @"s7tv_cfg_picker_emote_scale_portrait";
+static NSString *const kS7TVCfgPickerEmoteScaleLandscape = @"s7tv_cfg_picker_emote_scale_landscape";
 static NSString *const kS7TVCfgEmoteOffsetRealMigrated = @"s7tv_cfg_emote_offset_real_v1_migrated";
 static NSString *const kS7TVCfgEmote7TVResolution      = @"s7tv_cfg_emote_7tv_resolution";
 static NSString *const kS7TVCfgEmoteImageResolution    = @"s7tv_cfg_emote_resolution";
@@ -112,6 +116,54 @@ static const CGFloat kDefaultUsernameMessageSpacing = 4.0;  // TODO mesure réel
 // Valeur réelle transmise aux bounds de l'attachment : le picker et le rendu
 // utilisent désormais exactement le même nombre, sans rebase invisible.
 static const CGFloat kDefaultEmoteVerticalOffset    = -6.0;
+// 280 pt = hauteur historique, donc portrait inchangé sans migration.
+static const CGFloat kDefaultPickerHeightPortrait   = 260.0;
+static const CGFloat kDefaultPickerHeightLandscape  = 160.0;
+static const CGFloat kDefaultPickerEmoteScalePortrait  = 1.0;
+static const CGFloat kDefaultPickerEmoteScaleLandscape = 1.0;
+static const CGFloat kPickerHeightPortraitMin       = 120.0;
+static const CGFloat kPickerHeightPortraitMax       = 400.0;
+static const CGFloat kPickerHeightLandscapeMin      = 120.0;
+static const CGFloat kPickerHeightLandscapeMax      = 260.0;
+static const CGFloat kPickerEmoteScalePortraitMin   = 0.5;
+static const CGFloat kPickerEmoteScalePortraitMax   = 2.0;
+static const CGFloat kPickerEmoteScaleLandscapeMin  = 0.5;
+static const CGFloat kPickerEmoteScaleLandscapeMax  = 2.0;
+static NSString *const kS7TVPickerHeightPortraitKey  = @"pickerHeightPortrait";
+static NSString *const kS7TVPickerHeightLandscapeKey = @"pickerHeightLandscape";
+static NSString *const kS7TVPickerEmoteScalePortraitKey  = @"pickerEmoteScalePortrait";
+static NSString *const kS7TVPickerEmoteScaleLandscapeKey = @"pickerEmoteScaleLandscape";
+
+static BOOL S7TVPickerOptionIsLandscapeKey(NSString *sizeKey) {
+    return [sizeKey hasSuffix:@"Landscape"];
+}
+static BOOL S7TVPickerOptionIsEmoteScaleKey(NSString *sizeKey) {
+    return [sizeKey hasPrefix:@"pickerEmoteScale"];
+}
+
+CGFloat S7TVPickerOptionMinForKey(NSString *sizeKey) {
+    if (S7TVPickerOptionIsEmoteScaleKey(sizeKey)) {
+        return S7TVPickerOptionIsLandscapeKey(sizeKey) ? kPickerEmoteScaleLandscapeMin
+                                                       : kPickerEmoteScalePortraitMin;
+    }
+    return S7TVPickerOptionIsLandscapeKey(sizeKey) ? kPickerHeightLandscapeMin
+                                                   : kPickerHeightPortraitMin;
+}
+
+CGFloat S7TVPickerOptionMaxForKey(NSString *sizeKey) {
+    if (S7TVPickerOptionIsEmoteScaleKey(sizeKey)) {
+        return S7TVPickerOptionIsLandscapeKey(sizeKey) ? kPickerEmoteScaleLandscapeMax
+                                                       : kPickerEmoteScalePortraitMax;
+    }
+    return S7TVPickerOptionIsLandscapeKey(sizeKey) ? kPickerHeightLandscapeMax
+                                                   : kPickerHeightPortraitMax;
+}
+
+// Une valeur importée hors bornes ne doit pas casser la grille.
+static CGFloat S7TVClampPickerOption(CGFloat value, NSString *sizeKey) {
+    return MIN(S7TVPickerOptionMaxForKey(sizeKey),
+               MAX(S7TVPickerOptionMinForKey(sizeKey), value));
+}
 static const NSInteger kDefaultEmote7TVResolution   = 2;
 static const CGFloat kDefaultDeletedMessageOpacity  = 0.50;
 static const S7TVDeletedMessageStyle kDefaultDeletedMessageStyle = S7TVDeletedMessageStyleDimmed;
@@ -148,6 +200,10 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     _lineSpacing             = kDefaultLineSpacing;
     _usernameMessageSpacing  = kDefaultUsernameMessageSpacing;
     _emoteVerticalOffset     = kDefaultEmoteVerticalOffset;
+    _pickerHeightPortrait    = kDefaultPickerHeightPortrait;
+    _pickerHeightLandscape   = kDefaultPickerHeightLandscape;
+    _pickerEmoteScalePortrait  = kDefaultPickerEmoteScalePortrait;
+    _pickerEmoteScaleLandscape = kDefaultPickerEmoteScaleLandscape;
     _emote7TVResolution      = kDefaultEmote7TVResolution;
     _emoteImageResolution    = kDefaultEmote7TVResolution;
     _systemMessageBackgroundsEnabled = YES;
@@ -198,6 +254,23 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
         _emoteVerticalOffset = savedOffset;
     }
     [prefs setBool:YES forKey:kS7TVCfgEmoteOffsetRealMigrated];
+// Absents = pas encore réglés, la valeur en mémoire reste valable.
+if ([prefs objectForKey:kS7TVCfgPickerHeightPortrait] != nil)
+        _pickerHeightPortrait = S7TVClampPickerOption(
+            [prefs doubleForKey:kS7TVCfgPickerHeightPortrait],
+            kS7TVPickerHeightPortraitKey);
+    if ([prefs objectForKey:kS7TVCfgPickerHeightLandscape] != nil)
+        _pickerHeightLandscape = S7TVClampPickerOption(
+            [prefs doubleForKey:kS7TVCfgPickerHeightLandscape],
+            kS7TVPickerHeightLandscapeKey);
+    if ([prefs objectForKey:kS7TVCfgPickerEmoteScalePortrait] != nil)
+        _pickerEmoteScalePortrait = S7TVClampPickerOption(
+            [prefs doubleForKey:kS7TVCfgPickerEmoteScalePortrait],
+            kS7TVPickerEmoteScalePortraitKey);
+    if ([prefs objectForKey:kS7TVCfgPickerEmoteScaleLandscape] != nil)
+        _pickerEmoteScaleLandscape = S7TVClampPickerOption(
+            [prefs doubleForKey:kS7TVCfgPickerEmoteScaleLandscape],
+            kS7TVPickerEmoteScaleLandscapeKey);
     // Le réglage v2 est commun à tous les providers. Les installations
     // existantes n'ayant que la clé 7TV sont migrées sans perdre leur choix.
     NSString *resolutionKey = [prefs objectForKey:kS7TVCfgEmoteImageResolution] != nil
@@ -302,6 +375,10 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
     [prefs setDouble:self.lineSpacing            forKey:kS7TVCfgLineSpacing];
     [prefs setDouble:self.usernameMessageSpacing forKey:kS7TVCfgUsernameMessageSpacing];
     [prefs setDouble:self.emoteVerticalOffset    forKey:kS7TVCfgEmoteVerticalOffset];
+    [prefs setDouble:self.pickerHeightPortrait    forKey:kS7TVCfgPickerHeightPortrait];
+    [prefs setDouble:self.pickerHeightLandscape   forKey:kS7TVCfgPickerHeightLandscape];
+    [prefs setDouble:self.pickerEmoteScalePortrait  forKey:kS7TVCfgPickerEmoteScalePortrait];
+    [prefs setDouble:self.pickerEmoteScaleLandscape forKey:kS7TVCfgPickerEmoteScaleLandscape];
     [prefs setInteger:self.emoteImageResolution  forKey:kS7TVCfgEmoteImageResolution];
     [prefs setInteger:self.emoteImageResolution  forKey:kS7TVCfgEmote7TVResolution];
     [prefs setBool:self.systemMessageBackgroundsEnabled forKey:kS7TVCfgSystemBGEnabled];
@@ -397,6 +474,10 @@ static const S7TVDeletedMessageRevealMode kDefaultDeletedRevealMode = S7TVDelete
         @"lineSpacing":            @[@(kDefaultLineSpacing),           kS7TVCfgLineSpacing],
         @"usernameMessageSpacing": @[@(kDefaultUsernameMessageSpacing),kS7TVCfgUsernameMessageSpacing],
         @"emoteVerticalOffset":    @[@(kDefaultEmoteVerticalOffset),   kS7TVCfgEmoteVerticalOffset],
+        @"pickerHeightPortrait":   @[@(kDefaultPickerHeightPortrait),  kS7TVCfgPickerHeightPortrait],
+        @"pickerHeightLandscape":  @[@(kDefaultPickerHeightLandscape), kS7TVCfgPickerHeightLandscape],
+        @"pickerEmoteScalePortrait":  @[@(kDefaultPickerEmoteScalePortrait),  kS7TVCfgPickerEmoteScalePortrait],
+        @"pickerEmoteScaleLandscape": @[@(kDefaultPickerEmoteScaleLandscape), kS7TVCfgPickerEmoteScaleLandscape],
         @"emoteImageResolution":   @[@(kDefaultEmote7TVResolution),    kS7TVCfgEmoteImageResolution],
         @"emote7TVResolution":     @[@(kDefaultEmote7TVResolution),    kS7TVCfgEmote7TVResolution],
         @"deletedMessageTextOpacity": @[@(kDefaultDeletedMessageOpacity), kS7TVCfgDeletedMessageOpacity],

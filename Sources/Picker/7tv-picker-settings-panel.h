@@ -36,10 +36,6 @@
 // Le picker en gère lui-même le hidden/frame (visibilité + redimensionnement).
 @property (nonatomic, weak, readonly) UIView *panelView;
 
-// Hauteur du panneau catégorisé, utilisée par le
-// picker pour adapter sa propre hauteur quand le panneau est affiché.
-@property (nonatomic, assign, readonly) CGFloat contentHeight;
-
 // Faux chat (preview live 1:1, 5 messages factices) — construit par
 // -buildInView:... mais volontairement PAS attaché à panelView : le panneau
 // est l'inputView du clavier et ne peut pas héberger un aperçu positionné
@@ -52,6 +48,9 @@
 // Construit les trois catégories dans `container`, avec le style transmis par le picker
 // (couleurs déjà résolues). Doit être appelé une seule fois, à la création
 // du picker.
+// Recale la ligne "Taille du picker" sur l'orientation courante.
+- (void)s7tv_syncPickerSizeRow;
+
 - (void)buildInView:(UIView *)container
               frame:(CGRect)frame
             bgColor:(UIColor *)bgColor

@@ -48,6 +48,16 @@ void s7tv_handleChatInputViewLifecycle(UIView *view);
 // --- Panneau des tailles (toggle du bouton ⚙️, appelle SevenTVPickerSizesPanel) ---
 - (void)emotePickerSizesToggleTapped;
 
+// Taille de la fenêtre qui héberge le picker.
+- (CGSize)pickerHostSize;
+
+// Orientation courante. UIScreen plutôt que la fenêtre : après une rotation,
+// window.bounds a une passe de layout de retard et renverrait l'ancienne.
+- (BOOL)pickerHostIsLandscape;
+
+// Appliqué par le panneau ⚙️, qui n'a pas accès à l'inputView du clavier.
+- (void)pickerSizePreferenceDidChange;
+
 // --- Cache de tri interne, invalidé par SevenTVManager quand le catalogue
 // d'emotes change (nouveau channel, refresh global/channel) pour que le
 // picker retrie au prochain affichage. ---

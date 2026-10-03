@@ -17,6 +17,7 @@
 #import "Picker/7tv-picker-resolved-emote.h"
 #import "Picker/7tv-picker-cell.h"
 #import "Chat/7tv-chat-custom-view.h"
+#import "Chat/7tv-chat-appearance-config.h"
 #import "Badge/7tv-badge-provider.h"
 #import "Emote/7tv-emote-image-cache.h"
 #import "Emote/7tv-emote-catalog.h"
@@ -28,6 +29,7 @@
 #import "UI/bttv-ui-logo.h"
 #import "UI/ffz-ui-logo.h"
 #import "UI/7tv-oled-mode.h"
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
 static const char kS7TVTextFieldTagged = 5;
@@ -64,9 +66,37 @@ static UIColor *s7tv_pickerAccentColor(void) {
 // clavier custom, plutôt qu'un dispatch_async susceptible d'arriver trop tôt.
 @interface S7TVPickerContainerView : UIView
 @property (nonatomic, copy) dispatch_block_t didAttachToWindow;
+// UIKit impose sa frame à l'inputView : la seule hauteur qu'il respecte est
+// celle annoncée en Auto Layout. D'où translatesAutoresizingMaskIntoConstraints
+// à NO et une preferredHeight explicite.
+@property (nonatomic, assign) CGFloat preferredHeight;
 @end
 
 @implementation S7TVPickerContainerView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.translatesAutoresizingMaskIntoConstraints = NO;
+        _preferredHeight = frame.size.height;
+    }
+    return self;
+}
+
+- (void)setPreferredHeight:(CGFloat)preferredHeight {
+    if (fabs(_preferredHeight - preferredHeight) < 0.5) return;
+    _preferredHeight = preferredHeight;
+    [self invalidateIntrinsicContentSize];
+}
+
+- (CGSize)intrinsicContentSize {
+    // Jamais 0 : une hauteur nulle ferait disparaître le picker.
+    // CGFLOAT_MAX = "aucune contrainte" sur le sens horizontal (UIViewNoMetric).
+    return CGSizeMake(CGFLOAT_MAX,
+                      _preferredHeight > 0 ? _preferredHeight
+                                           : CGRectGetHeight(self.bounds));
+}
+
 - (void)didMoveToWindow {
     [super didMoveToWindow];
     if (self.window && self.didAttachToWindow) self.didAttachToWindow();
@@ -458,6 +488,7 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
 - (void)_s7tv_oledModeDidChange:(NSNotification *)notification;
 - (void)_s7tv_applyOLEDColors;
 - (void)_s7tv_relayoutPickerForSize:(CGSize)size;
+- (CGFloat)_s7tv_resolvedGridHeight;
 - (void)_showFakeChatPreviewAboveInputView;
 - (void)_s7tv_deactivateVisiblePickerAnimations;
 - (void)_s7tv_activateVisiblePickerAnimations;
@@ -530,6 +561,11 @@ void s7tv_handleChatInputViewLifecycle(UIView *view) {
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(_s7tv_oledModeDidChange:)
                                                       name:S7TVOLEDModeDidChangeNotification
+                                                    object:nil];
+
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                  selector:@selector(_s7tv_keyboardFrameDidChange:)
+                                                      name:UIKeyboardDidChangeFrameNotification
                                                     object:nil];
 
         // Le TextEntryView de Twitch peut résigner le first responder sans
@@ -667,8 +703,10 @@ static const CGFloat kS7TVPickerSearchH      = 38.0; // hauteur de la capsule de
 static const CGFloat kS7TVPickerBottomZoneH  =
     kS7TVPickerFloatMargin + kS7TVPickerFloatSize + kS7TVPickerFloatGap + kS7TVPickerSearchH + kS7TVPickerFloatMargin;
 
-static const CGFloat kS7TVPickerGridDefaultH =
-    280.0; // hauteur du picker en mode grille — référence pour le mode "tailles" (point 5)
+// Hauteur utile minimale : la zone basse (88 pt) plus une rangée d'emotes.
+static const CGFloat kS7TVPickerMinUsableH = 120.0;
+// Place réservée au-dessus du picker (safe area + chat bar).
+static const CGFloat kS7TVPickerChromeReserveH = 120.0;
 // (annulation lors du recyclage)
 - (NSURLSession *)pickerImageSession {
     static NSURLSession *s = nil;
@@ -878,9 +916,7 @@ static const CGFloat kS7TVPickerGridDefaultH =
             ?: strongSelf.emotePickerTextEntryView.window;
         CGFloat width = hostWindow.bounds.size.width;
         if (width <= 0) width = UIScreen.mainScreen.bounds.size.width;
-        CGFloat targetHeight = strongSelf.pickerSizesPanelVisible
-            ? MIN(MAX(strongSelf.sizesPanel.contentHeight, 160.0), kS7TVPickerGridDefaultH)
-            : kS7TVPickerGridDefaultH;
+        CGFloat targetHeight = [strongSelf _s7tv_resolvedGridHeight];
         BOOL attachedAsInputView = strongSelf.emotePickerTextEntryView.window &&
             strongSelf.emotePickerTextEntryView.inputView == strongSelf.emotePickerView;
         CGFloat originY = 0;
@@ -898,6 +934,8 @@ static const CGFloat kS7TVPickerGridDefaultH =
         }
         if (strongSelf.pickerSizesPanelVisible) {
             [strongSelf _showFakeChatPreviewAboveInputView];
+            // Le réglage affiché doit suivre l'orientation qui vient de changer.
+            [strongSelf.sizesPanel s7tv_syncPickerSizeRow];
         }
     });
 }
@@ -1548,7 +1586,7 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
     // ── Créer le picker si besoin ─────────────────────────────────────
     // Recalcule la taille à chaque ouverture pour s'adapter à l'orientation courante.
     CGSize screenSz = UIScreen.mainScreen.bounds.size;
-    CGFloat pickerH = kS7TVPickerGridDefaultH;
+    CGFloat pickerH = [self _s7tv_resolvedGridHeight];
     CGRect pickerFrame = CGRectMake(0, 0, screenSz.width, pickerH);
     if (!self.emotePickerView) {
         [self _createEmotePickerViewWithFrame:pickerFrame];
@@ -1614,6 +1652,7 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
     if (tv) {
         // Étape 1 : le picker DEVIENT le clavier (affiché en dessous de la chat bar)
         self.emotePickerView.hidden = NO;
+        self.emotePickerView.translatesAutoresizingMaskIntoConstraints = NO;
         tv.inputView = self.emotePickerView;
         tv.inputAccessoryView = nil;
         // Étape 2 : devenir firstResponder → UIKit affiche inputView (notre picker)
@@ -1643,7 +1682,9 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
                     if (w.isKeyWindow) { keyWindow = w; break; }
         if (!keyWindow) keyWindow = [UIApplication sharedApplication].windows.firstObject;
         if (keyWindow) {
-            CGFloat ph = 280.0;
+            // Sous-vie de fenêtre : plus d'inputView, donc retour au frame-based.
+            self.emotePickerView.translatesAutoresizingMaskIntoConstraints = YES;
+            CGFloat ph = [self _s7tv_resolvedGridHeight];
             self.emotePickerView.frame = CGRectMake(0,
                 keyWindow.bounds.size.height - ph - 56,
                 keyWindow.bounds.size.width, ph);
@@ -2272,6 +2313,31 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
     [self _s7tv_updateSubcategoryCapsule];
 }
 
+- (CGSize)pickerHostSize {
+    UIWindow *hostWindow = self.emotePickerTextEntryView.window
+        ?: self.emotePickerTextField.window
+        ?: self.emotePickerView.window;
+return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
+}
+
+- (BOOL)pickerHostIsLandscape {
+    CGSize screen = UIScreen.mainScreen.bounds.size;
+    if (screen.width > 0 && screen.height > 0) return screen.width > screen.height;
+    CGSize host = [self pickerHostSize];
+    return host.width > host.height;
+}
+
+// Hauteur de la grille pour l'orientation courante, bornée à la place disponible.
+- (CGFloat)_s7tv_resolvedGridHeight {
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    CGFloat wanted = [self pickerHostIsLandscape]
+        ? cfg.pickerHeightLandscape : cfg.pickerHeightPortrait;
+    // Seule la hauteur de la fenêtre sert au plafond, son retard est sans effet.
+    CGFloat ceiling = MAX(kS7TVPickerMinUsableH,
+                          [self pickerHostSize].height - kS7TVPickerChromeReserveH);
+    return MIN(wanted, ceiling);
+}
+
 // Recalcule et applique les frames de toutes les zones du picker (grille /
 // pastilles flottantes / panneau des tailles) — appelé à chaque ouverture,
 // changement d'orientation, et changement d'onglet. Plus de dock : tout est
@@ -2280,6 +2346,12 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
 - (void)_s7tv_relayoutPickerForSize:(CGSize)size {
     if (!self.emotePickerView) return;
 
+    // Point d'entrée unique de toute changement de taille : c'est ici que la
+    // hauteur Auto Layout du conteneur doit être rafraîchie.
+    [(S7TVPickerContainerView *)self.emotePickerView setPreferredHeight:size.height];
+    // Les cellules sont dimensionnées par sizeForItemAtIndexPath: : sans
+    // invalidation, le flow layout garde en cache les anciennes dimensions.
+    [self.emoteCollectionView.collectionViewLayout invalidateLayout];
     self.emoteCollectionView.frame = CGRectMake(0, 0, size.width, size.height);
 
     CGFloat bottomRowY = size.height - kS7TVPickerFloatMargin - kS7TVPickerSearchH
@@ -3356,8 +3428,20 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
         return;
     }
 
+    // Pas d'aperçu en paysage : la hauteur d'écran ne laisse pas la place,
+    // il masquerait le chat au lieu d'aider.
+    if (keyWindow.bounds.size.width > keyWindow.bounds.size.height) {
+        [self _hideFakeChatPreview];
+        return;
+    }
+
     CGFloat width     = keyWindow.bounds.size.width;
     static const CGFloat kFakeChatInset = 8.0; // même valeur que CGRectInset(container.bounds, 8, 8) plus bas
+
+    // La chat bar est recalée par UIKit après la reconstruction du clavier :
+    // sans forcer le layout, inputTopY est mesuré sur l'ancienne position et
+    // l'aperçu reste décalé.
+    [keyWindow layoutIfNeeded];
 
     CGFloat inputTopY = keyWindow.bounds.size.height;
     if (inputRoot) {
@@ -3401,6 +3485,29 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
     self.sizesPanel.fakeChatView.frame = CGRectInset(container.bounds, kFakeChatInset, kFakeChatInset);
     container.hidden = NO;
     [keyWindow bringSubviewToFront:container];
+}
+
+// La chat bar est recalée par UIKit pendant l'animation du clavier : sa frame
+// finale n'existe qu'à ce moment. Repositionner sur l'événement, et non sur un
+// délai deviné, sinon l'aperçu reste à l'ancienne position.
+// Même événement pour l'orientation : c'est le seul signal qui tombe APRÈS la
+// rotation de la fenêtre, donc le seul fiable pour recaler la ligne de taille.
+- (void)_s7tv_keyboardFrameDidChange:(NSNotification *)notification {
+    UIView *pickerView = self.emotePickerView;
+    if (!pickerView.window || pickerView.hidden) return;
+    // Filet : la zone clavier vient d'être redimensionnée, donc si la hauteur
+    // voulue a changé entre-temps (rotation) le conteneur doit se recaler.
+    CGFloat height = [self _s7tv_resolvedGridHeight];
+    if (fabs(pickerView.bounds.size.height - height) >= 0.5) {
+        CGRect frame = pickerView.frame;
+        frame.size.height = height;
+        pickerView.frame = frame;
+        [self _s7tv_relayoutPickerForSize:frame.size];
+        [self.emoteCollectionView setContentOffset:CGPointZero animated:NO];
+    }
+    if (!self.pickerSizesPanelVisible) return;
+    [self _showFakeChatPreviewAboveInputView];
+    [self.sizesPanel s7tv_syncPickerSizeRow];
 }
 
 - (void)_hideFakeChatPreview {
@@ -3462,22 +3569,11 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
                 withConfiguration:backCfg]
                                 forState:UIControlStateNormal];
 
-    // ── Point 5 : adapter la hauteur du picker au panneau où on se trouve ──
-    // Le panneau des tailles n'a que 5 lignes courtes : pas besoin de garder
-    // la hauteur de la grille (qui laissait un grand vide en dessous) si le
-    // contenu réel est plus court. On ne dépasse jamais la hauteur "grille"
-    // pour rester dans une zone confortable à l'écran.
-    // Toujours ré-appeler le relayout (pas seulement si la hauteur change) :
-    // c'est lui qui replace la capsule tailles/réglages du bon côté selon
-    // pickerSizesPanelVisible (à droite en grille, à gauche dans le panneau
-    // des tailles) — sans ça, sur un contenu de hauteur identique par
-    // coïncidence, les boutons resteraient du mauvais côté.
-    // Instantané (pas d'animation) : le déplacement de la capsule d'un côté à
-    // l'autre doit être immédiat, pas un glissement visible.
+    // Panneau et grille partagent la hauteur configurée : le toggle ne change
+// que le contenu affiché. Toujours relayout : c'est lui qui replace la
+// capsule tailles/réglages du bon côté.
     CGRect f = self.emotePickerView.frame;
-    CGFloat targetH = show
-        ? MIN(MAX(self.sizesPanel.contentHeight, 160.0), kS7TVPickerGridDefaultH)
-        : kS7TVPickerGridDefaultH;
+    CGFloat targetH = [self _s7tv_resolvedGridHeight];
     f.size.height = targetH;
     self.emotePickerView.frame = f;
     [self _s7tv_relayoutPickerForSize:f.size];
@@ -3489,6 +3585,9 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
         self.sizesPanel.fakeChatView.renderingSuspended = NO;
         [self.sizesPanel loadRealPreviewAssetsIfNeeded];
         [self _showFakeChatPreviewAboveInputView];
+        // Après l'aperçu : c'est lui qui attache le faux chat à la key window,
+        // seule source fiable pour lire l'orientation courante.
+        [self.sizesPanel s7tv_syncPickerSizeRow];
     } else {
         [self _hideFakeChatPreview];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -3498,9 +3597,29 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
 }
 
 // Ouvre l'écran de réglages complet depuis le picker (même écran que le
+// Le picker étant l'inputView, la fenêtre clavier n'est détruite que si le
+// texte résigne. reloadInputViews ne change donc pas la hauteur de la zone.
+// On repasse par le chemin éprouvé (fermeture + réouverture), seul moyen que
+// UIKit reconstruise le clavier à la nouvelle taille.
+- (void)pickerSizePreferenceDidChange {
+    // D'abord la grille : changer la taille des emotes ne bouge pas la hauteur,
+    // donc le cycle ci-dessous nepart pas et la grille resterait obsolète.
+    [self.emoteCollectionView.collectionViewLayout invalidateLayout];
+    if (!self.emotePickerView || !self.emotePickerTextField.window) return;
+    // Rien à reconstruire si la hauteur de l'orientation courante n'a pas bougé
+    // — cas où l'on édite la valeur de l'autre orientation.
+    if (fabs(self.emotePickerView.bounds.size.height
+             - [self _s7tv_resolvedGridHeight]) < 0.5) return;
+    UIView *inputRoot = self.emotePickerTextField;
+    BOOL panelWasVisible = self.pickerSizesPanelVisible;
+    [self _hideEmotePicker];
+    [self toggleEmotePickerForChatInputView:inputRoot];
+    if (panelWasVisible) [self emotePickerSizesToggleTapped];
+}
+
+// Ouvre l'écran de réglages complet depuis le picker (même écran que le
 // bouton flottant 7TV) — ferme d'abord le picker (clavier custom + inputView)
-// pour ne pas laisser le menu de réglages s'ouvrir par-dessus le picker
-// encore affiché en arrière-plan.
+// pour ne pas laisser les 2 superposés.
 - (void)_pickerSettingsTapped {
     [self _hideEmotePicker];
     [[SevenTVManager sharedManager] presentSettingsMenu];
@@ -3650,10 +3769,12 @@ static UIImage *S7TVPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) 
   sizeForItemAtIndexPath:(NSIndexPath *)indexPath {
 
     CGFloat cvW = cv.bounds.size.width > 0 ? cv.bounds.size.width : 390.0;
-    UIWindow *hostWindow = cv.window ?: self.emotePickerTextField.window;
-    CGSize hostSize = hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
-    CGFloat referenceColumns = hostSize.width > hostSize.height ? 10.0 : 6.0;
-    CGFloat cellH = MAX(32.0, floor(cvW / referenceColumns));
+    CGFloat referenceColumns = [self pickerHostIsLandscape] ? 10.0 : 6.0;
+    // Facteur réglable, plancher inchangé pour ne jamais descendre sous 32 pt.
+    SevenTVChatAppearanceConfig *cfg = [SevenTVChatAppearanceConfig sharedConfig];
+    CGFloat scale = [self pickerHostIsLandscape] ? cfg.pickerEmoteScaleLandscape
+                                                : cfg.pickerEmoteScalePortrait;
+    CGFloat cellH = MAX(32.0, floor(cvW / referenceColumns) * scale);
 
     SevenTVEmote *emote = [self _emoteForIndexPath:indexPath];
     if (!emote || emote.width <= 0 || emote.height <= 0) {

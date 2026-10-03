@@ -25,6 +25,11 @@
 
 static const char kS7TVRowKeyTag = 0;
 
+typedef NS_ENUM(NSInteger, S7TVPickerOption) {
+    S7TVPickerOptionHeight = 0,
+    S7TVPickerOptionEmoteScale,
+};
+
 
 // ============================================================
 // MARK: - Objet minimal <S7TVResolvedEmote> pour l'emote Twitch
@@ -91,7 +96,6 @@ static const char kS7TVRowKeyTag = 0;
 
 @interface SevenTVPickerSizesPanel ()
 @property (nonatomic, weak, readwrite) UIView *panelView;
-@property (nonatomic, assign, readwrite) CGFloat contentHeight;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UISlider *> *sizeSliders;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, UILabel *>  *sizeValueLabels;
 // Libellés (nameLbl) des lignes de sliders, gardés à part de sizeValueLabels
@@ -127,6 +131,10 @@ static const char kS7TVRowKeyTag = 0;
 @property (nonatomic, weak) UILabel *deletedOpacityLabel;
 @property (nonatomic, weak) UILabel *deletedOpacityValueLabel;
 @property (nonatomic, weak) UISlider *deletedOpacitySlider;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, UIButton *> *pickerOrientationLabels;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, UILabel *> *pickerValueLabels;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, UISlider *> *pickerSliders;
+@property (nonatomic, assign) BOOL pickerEditingLandscape;
 @property (nonatomic, strong) S7TVChatMessageStore *fakeChatStore;
 @property (nonatomic, strong) SevenTVChatCustomView *fakeChatView;
 @property (nonatomic, strong) UIColor *panelTextColor;
@@ -316,8 +324,22 @@ static const char kS7TVRowKeyTag = 0;
                                                    sepColor:sepColor accent:accent];
     moderationCategory.contentSize = CGSizeMake(frame.size.width, moderationY);
 
-    CGFloat contentY = 8.0;
+CGFloat contentY = 8.0;
     CGFloat rowH = 60.0;
+    self.pickerOrientationLabels = [NSMutableDictionary dictionary];
+    self.pickerValueLabels = [NSMutableDictionary dictionary];
+    self.pickerSliders = [NSMutableDictionary dictionary];
+    // Réglages du picker en tête : les plus structurants du panneau.
+    for (NSNumber *boxed in @[@(S7TVPickerOptionHeight), @(S7TVPickerOptionEmoteScale)]) {
+        contentY = [self _buildPickerOptionRow:boxed.integerValue
+                                   inScrollView:sizesCategory
+                                            atY:contentY
+                                          width:frame.size.width
+                                      textColor:textColor
+                                       subColor:subColor
+                                        sepColor:sepColor
+                                         accent:accent];
+    }
     for (NSArray *entry in self._sizeOptionsTable) {
         NSString *key = entry[0], *label = entry[1];
         CGFloat minVal = [entry[2] doubleValue], maxVal = [entry[3] doubleValue];
@@ -390,11 +412,10 @@ static const char kS7TVRowKeyTag = 0;
 
         [sizesCategory addSubview:row];
         contentY += rowH;
-    }
+}
     sizesCategory.contentSize = CGSizeMake(frame.size.width, contentY);
-    // Chaque catégorie scrolle indépendamment dans la hauteur habituelle
-    // du picker : changer d'onglet ne fait pas sauter le clavier ni l'aperçu.
-    self.contentHeight = frame.size.height;
+// Chaque catégorie scrolle indépendamment : changer d'onglet ne fait pas
+    // sauter le clavier ni l'aperçu.
     [container addSubview:sizesPanel];
 
     // buildInView: n'est appelé qu'une fois par panneau (voir le controller) —
@@ -500,6 +521,174 @@ static const char kS7TVRowKeyTag = 0;
     self.sizeSliders[key].value = (float)val;
     self.sizeValueLabels[key].text = [NSString stringWithFormat:@"%+ld pt", (long)llround(val)];
     [self.fakeChatView reloadMessages];
+}
+
+// Ligne de réglage du picker (hauteur ou taille des emotes). L'orientation
+// suit l'écran : le curseur édite toujours la valeur de l'orientation courante.
+- (CGFloat)_buildPickerOptionRow:(S7TVPickerOption)option
+                      inScrollView:(UIScrollView *)scrollView
+                               atY:(CGFloat)y
+                             width:(CGFloat)width
+                         textColor:(UIColor *)textColor
+                          subColor:(UIColor *)subColor
+                           sepColor:(UIColor *)sepColor
+                            accent:(UIColor *)accent {
+    const CGFloat rowH = 60.0;
+    UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, width, rowH)];
+    row.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIView *rowSep = [[UIView alloc] initWithFrame:
+        CGRectMake(12, rowH - 0.5, width - 24, 0.5)];
+    rowSep.backgroundColor = sepColor;
+    rowSep.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [row addSubview:rowSep];
+
+    const CGFloat pillW = 44.0;
+    const CGFloat resetLeft = width - 32;
+    const CGFloat pillLeft = resetLeft - 8 - pillW;
+
+    UILabel *nameLbl = [[UILabel alloc] initWithFrame:
+        CGRectMake(12, 11, pillLeft - 12 - 6, 16)];
+    nameLbl.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    nameLbl.textColor = textColor;
+    nameLbl.text = S7TVPickerOptionIsPercent(option)
+        ? L(@"size_label_picker_emote_size") : L(@"size_label_picker_height");
+    nameLbl.lineBreakMode = NSLineBreakByClipping;
+    nameLbl.adjustsFontSizeToFitWidth = YES;
+    nameLbl.minimumScaleFactor = 0.7;
+    nameLbl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [row addSubview:nameLbl];
+
+    UILabel *valuePill = [[UILabel alloc] initWithFrame:
+        CGRectMake(pillLeft, 7, pillW, 20)];
+    valuePill.font = [UIFont boldSystemFontOfSize:11];
+    valuePill.textColor = [UIColor whiteColor];
+    valuePill.textAlignment = NSTextAlignmentCenter;
+    valuePill.backgroundColor = accent;
+    valuePill.layer.cornerRadius = 6;
+    valuePill.layer.masksToBounds = YES;
+    valuePill.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [row addSubview:valuePill];
+    self.pickerValueLabels[@(option)] = valuePill;
+
+    UIButton *resetBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    resetBtn.frame = CGRectMake(resetLeft, 4, 28, 24);
+    resetBtn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    UIImageSymbolConfiguration *rCfg = [UIImageSymbolConfiguration
+        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
+    [resetBtn setImage:[UIImage systemImageNamed:@"arrow.counterclockwise"
+                                 withConfiguration:rCfg]
+              forState:UIControlStateNormal];
+    resetBtn.tintColor = subColor;
+    objc_setAssociatedObject(resetBtn, &kS7TVRowKeyTag, @(option),
+                             OBJC_ASSOCIATION_COPY_NONATOMIC);
+    [resetBtn addTarget:self action:@selector(_pickerOptionResetTapped:)
+        forControlEvents:UIControlEventTouchUpInside];
+    [row addSubview:resetBtn];
+
+    // Pastille d'orientation : purement indicative, elle suit l'écran.
+    const CGFloat indicatorW = 88.0;
+    UIButton *indicator = [UIButton buttonWithType:UIButtonTypeCustom];
+    indicator.frame = CGRectMake(12, 34, indicatorW, 22);
+    indicator.backgroundColor = accent;
+    indicator.layer.cornerRadius = 11;
+    indicator.clipsToBounds = YES;
+    indicator.userInteractionEnabled = NO;
+    indicator.titleLabel.font = [UIFont systemFontOfSize:11.5
+                                             weight:UIFontWeightSemibold];
+    [indicator setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [row addSubview:indicator];
+    self.pickerOrientationLabels[@(option)] = indicator;
+
+    const CGFloat sliderLeft = 12 + indicatorW + 8;
+    UISlider *slider = [[UISlider alloc] initWithFrame:
+        CGRectMake(sliderLeft, 34, resetLeft - 8 - sliderLeft, 22)];
+    slider.minimumTrackTintColor = accent;
+    slider.maximumTrackTintColor = [UIColor colorWithRed:0.25 green:0.25 blue:0.28 alpha:1.0];
+    slider.thumbTintColor        = accent;
+    slider.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    NSString *activeKey = [self _pickerActiveKeyForOption:option];
+    slider.minimumValue = S7TVPickerOptionMinForKey(activeKey);
+    slider.maximumValue = S7TVPickerOptionMaxForKey(activeKey);
+    objc_setAssociatedObject(slider, &kS7TVRowKeyTag, @(option),
+                             OBJC_ASSOCIATION_COPY_NONATOMIC);
+    [slider addTarget:self action:@selector(_pickerOptionSliderChanged:)
+  forControlEvents:UIControlEventValueChanged];
+    // Commit au relâchement, sinon le picker clignote à chaque tick.
+    [slider addTarget:self action:@selector(_pickerOptionSliderReleased:)
+  forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
+               UIControlEventTouchCancel];
+    [row addSubview:slider];
+    self.pickerSliders[@(option)] = slider;
+
+    [scrollView addSubview:row];
+    return y + rowH;
+}
+
+static BOOL S7TVPickerOptionIsPercent(S7TVPickerOption option) {
+    return option == S7TVPickerOptionEmoteScale;
+}
+
+- (NSString *)_pickerActiveKeyForOption:(S7TVPickerOption)option {
+    NSString *base = S7TVPickerOptionIsPercent(option) ? @"pickerEmoteScale"
+                                                       : @"pickerHeight";
+    return [NSString stringWithFormat:@"%@%@", base,
+            self.pickerEditingLandscape ? @"Landscape" : @"Portrait"];
+}
+
+- (void)s7tv_syncPickerSizeRow {
+    self.pickerEditingLandscape = [self.picker pickerHostIsLandscape];
+    [self _refreshPickerOptionControls];
+}
+
+- (void)_refreshPickerOptionControls {
+    NSString *orientation = self.pickerEditingLandscape
+        ? L(@"picker_orientation_landscape") : L(@"picker_orientation_portrait");
+    for (NSNumber *boxed in self.pickerSliders) {
+        S7TVPickerOption option = boxed.integerValue;
+        NSString *key = [self _pickerActiveKeyForOption:option];
+        UISlider *slider = self.pickerSliders[boxed];
+        slider.minimumValue = S7TVPickerOptionMinForKey(key);
+        slider.maximumValue = S7TVPickerOptionMaxForKey(key);
+        CGFloat value = [[[SevenTVChatAppearanceConfig sharedConfig]
+            valueForKey:key] doubleValue];
+        slider.value = (float)value;
+        self.pickerValueLabels[boxed].text = [self _formattedPickerValue:value
+                                                                   percent:S7TVPickerOptionIsPercent(option)];
+        [self.pickerOrientationLabels[boxed] setTitle:orientation
+                                          forState:UIControlStateNormal];
+    }
+}
+
+- (NSString *)_formattedPickerValue:(CGFloat)value percent:(BOOL)percent {
+    return percent ? [NSString stringWithFormat:@"%ld %%", (long)llround(value * 100.0)]
+                   : [NSString stringWithFormat:@"%ld pt", (long)llround(value)];
+}
+
+- (void)_pickerOptionSliderChanged:(UISlider *)slider {
+    NSNumber *boxed = objc_getAssociatedObject(slider, &kS7TVRowKeyTag);
+    if (!boxed) return;
+    S7TVPickerOption option = boxed.integerValue;
+    NSInteger value = S7TVPickerOptionIsPercent(option)
+        ? (NSInteger)lroundf(slider.value * 20.0)   // pas de 5 %
+        : (NSInteger)roundf(slider.value);
+    slider.value = S7TVPickerOptionIsPercent(option) ? value / 20.0 : value;
+    [[SevenTVChatAppearanceConfig sharedConfig]
+        setValue:(CGFloat)slider.value forSizeKey:[self _pickerActiveKeyForOption:option]];
+    self.pickerValueLabels[boxed].text = [self _formattedPickerValue:slider.value
+                                                             percent:S7TVPickerOptionIsPercent(option)];
+}
+
+- (void)_pickerOptionSliderReleased:(UISlider *)slider {
+    [self.picker pickerSizePreferenceDidChange];
+}
+
+- (void)_pickerOptionResetTapped:(UIButton *)sender {
+    NSNumber *boxed = objc_getAssociatedObject(sender, &kS7TVRowKeyTag);
+    if (!boxed) return;
+    [[SevenTVChatAppearanceConfig sharedConfig]
+        resetKeyToDefault:[self _pickerActiveKeyForOption:boxed.integerValue]];
+    [self _refreshPickerOptionControls];
+    [self.picker pickerSizePreferenceDidChange];
 }
 
 #pragma mark - Section couleurs (toggle + 3 UIColorWell)

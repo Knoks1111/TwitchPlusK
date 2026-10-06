@@ -3,7 +3,7 @@
 # ============================================================
 
 ARCHS = arm64
-TWITCHPLUSK_VERSION = 1.0.7
+TWITCHPLUSK_VERSION = 1.0.8
 TARGET = iphone:clang:16.5:14.0
 
 include $(THEOS)/makefiles/common.mk
@@ -19,6 +19,7 @@ TwitchPlusK_FILES = \
     Sources/Adblock/Proxy/7tv-adblock-proxy.m \
     Sources/Adblock/Proxy/7tv-adblock-resource-loader.m \
     Sources/Adblock/7tv-adblock-runtime.m \
+    Sources/Adblock/Emote/7tv-adblock-emote-proxy.m \
     Sources/Diagnostics/7tv-hook-diagnostics.m \
     Sources/Adblock/Proxy/Fishhook/fishhook.c \
     Sources/Adblock/Vaft/TwitchAdBlock.c \

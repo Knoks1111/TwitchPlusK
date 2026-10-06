@@ -10,13 +10,57 @@ static NSString *const S7TVAdblockProxyDispatchGuard = @"s7tv_adblock_proxy_disp
 static char S7TVAdblockProxySessionAssociationKey;
 static NSMutableDictionary<NSString *, NSNumber *> *s7tv_proxyLuminousCache;
 static dispatch_semaphore_t s7tv_proxyLuminousCacheLock;
+static NSMutableDictionary<NSString *, NSNumber *> *s7tv_proxyPrefixCache;
+static dispatch_semaphore_t s7tv_proxyPrefixCacheLock;
+// Dernier token Twitch brut (sans schéma) vu sur GQL, pour le ?auth= préfixe.
+static NSString *s7tv_lastTwitchRawAuthToken;
+static NSObject *s7tv_authTokenLock;
 
 static void S7TVAdblockInitializeProxyLuminousCache(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         s7tv_proxyLuminousCache = [NSMutableDictionary dictionary];
         s7tv_proxyLuminousCacheLock = dispatch_semaphore_create(1);
+        s7tv_proxyPrefixCache = [NSMutableDictionary dictionary];
+        s7tv_proxyPrefixCacheLock = dispatch_semaphore_create(1);
+        s7tv_authTokenLock = [NSObject new];
     });
+}
+
+// "OAuth/Bearer xxx" ou brut → xxx. Rejette Basic et vide.
+static NSString *S7TVAdblockRawTokenFromAuthHeader(NSString *value) {
+    NSString *trimmed = [value stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!trimmed.length) return nil;
+    NSRange separator = [trimmed rangeOfCharacterFromSet:
+        NSCharacterSet.whitespaceCharacterSet];
+    NSString *credential = nil;
+    if (separator.location == NSNotFound) {
+        credential = trimmed;
+    } else {
+        NSString *scheme = [trimmed substringToIndex:separator.location];
+        if ([scheme caseInsensitiveCompare:@"OAuth"] != NSOrderedSame &&
+            [scheme caseInsensitiveCompare:@"Bearer"] != NSOrderedSame) return nil;
+        credential = [[trimmed substringFromIndex:separator.location + 1]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    }
+    return credential.length ? credential : nil;
+}
+
+static void S7TVAdblockNoteTwitchAuthHeader(NSString *value) {
+    NSString *raw = S7TVAdblockRawTokenFromAuthHeader(value);
+    if (!raw.length) return;
+    S7TVAdblockInitializeProxyLuminousCache();
+    @synchronized (s7tv_authTokenLock) {
+        s7tv_lastTwitchRawAuthToken = [raw copy];
+    }
+}
+
+static NSString *S7TVAdblockCachedTwitchAuthToken(void) {
+    S7TVAdblockInitializeProxyLuminousCache();
+    @synchronized (s7tv_authTokenLock) {
+        return s7tv_lastTwitchRawAuthToken;
+    }
 }
 
 @interface S7TVAdblockProxyAuthDelegate : NSObject <NSURLSessionDelegate, NSURLSessionTaskDelegate>
@@ -143,6 +187,9 @@ void S7TVAdblockInvalidateProxyDetectionCache(void) {
     dispatch_semaphore_wait(s7tv_proxyLuminousCacheLock, DISPATCH_TIME_FOREVER);
     [s7tv_proxyLuminousCache removeAllObjects];
     dispatch_semaphore_signal(s7tv_proxyLuminousCacheLock);
+    dispatch_semaphore_wait(s7tv_proxyPrefixCacheLock, DISPATCH_TIME_FOREVER);
+    [s7tv_proxyPrefixCache removeAllObjects];
+    dispatch_semaphore_signal(s7tv_proxyPrefixCacheLock);
 }
 
 static NSString *S7TVAdblockProxyCacheKey(NSURL *url) {
@@ -182,36 +229,103 @@ static BOOL S7TVAdblockProxyIsLuminousV1(NSURL *proxyURL) {
     return luminous;
 }
 
-NSURL *S7TVAdblockRewriteURLThroughProxy(NSURL *URL, NSURL *proxyURL) {
-    NSArray<NSString *> *path = URL.path.pathComponents;
-    if (path.count < 2 || !S7TVAdblockProxyIsLuminousV1(proxyURL)) return URL;
-    BOOL vod = [path[1] isEqualToString:@"vod"];
-    NSString *playlistID = URL.lastPathComponent.stringByDeletingPathExtension;
-    NSString *query = URL.query ?: @"";
-    if (!vod && query.length) {
-        NSURLComponents *components = [NSURLComponents new];
-        components.percentEncodedQuery = query;
-        NSMutableArray<NSURLQueryItem *> *items = components.queryItems.mutableCopy
-            ?: [NSMutableArray array];
-        [items filterUsingPredicate:[NSPredicate predicateWithBlock:
-            ^BOOL(NSURLQueryItem *item, __unused NSDictionary *bindings) {
-                return ![item.name isEqualToString:@"token"] &&
-                       ![item.name isEqualToString:@"sig"];
-            }]];
-        components.queryItems = items.count ? items : nil;
-        query = components.percentEncodedQuery ?: @"";
-    }
-    NSString *fragment = query.length
-        ? [NSString stringWithFormat:@"%@.m3u8?%@", playlistID, query]
-        : [NSString stringWithFormat:@"%@.m3u8", playlistID];
-    NSMutableCharacterSet *allowed = NSCharacterSet.alphanumericCharacterSet.mutableCopy;
-    [allowed addCharactersInString:@"-_.~"];
-    NSString *encoded = [fragment stringByAddingPercentEncodingWithAllowedCharacters:allowed];
-    NSString *base = proxyURL.absoluteString;
+BOOL S7TVAdblockProxyIsPrefixStyle(NSURL *proxyURL) {
+    if (!proxyURL.host.length) return NO;
+    S7TVAdblockInitializeProxyLuminousCache();
+    NSString *key = S7TVAdblockProxyCacheKey(proxyURL);
+    dispatch_semaphore_wait(s7tv_proxyPrefixCacheLock, DISPATCH_TIME_FOREVER);
+    NSNumber *known = s7tv_proxyPrefixCache[key];
+    dispatch_semaphore_signal(s7tv_proxyPrefixCacheLock);
+    if (known) return known.boolValue;
+
+    // Sonde : <base>https://google.com → 2xx.
+    NSString *base = proxyURL.absoluteString ?: @"";
     if (![base hasSuffix:@"/"]) base = [base stringByAppendingString:@"/"];
-    NSString *result = [NSString stringWithFormat:@"%@%@/%@", base,
-                        vod ? @"vod" : @"playlist", encoded];
+    NSURL *probeURL = [NSURL URLWithString:
+        [base stringByAppendingString:@"https://google.com"]];
+    BOOL prefix = NO;
+    if (probeURL) {
+        __block NSInteger statusCode = -1;
+        dispatch_semaphore_t completed = dispatch_semaphore_create(0);
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:probeURL];
+        request.timeoutInterval = 3.0;
+        NSString *authorization = S7TVAdblockBasicAuthHeader(proxyURL);
+        if (authorization) [request setValue:authorization forHTTPHeaderField:@"Authorization"];
+        [[NSURLSession.sharedSession dataTaskWithRequest:request
+            completionHandler:^(__unused NSData *data, NSURLResponse *response, __unused NSError *error) {
+                if ([response isKindOfClass:NSHTTPURLResponse.class])
+                    statusCode = ((NSHTTPURLResponse *)response).statusCode;
+                dispatch_semaphore_signal(completed);
+            }] resume];
+        dispatch_semaphore_wait(completed,
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3500 * NSEC_PER_MSEC)));
+        prefix = statusCode >= 200 && statusCode < 300;
+    }
+    dispatch_semaphore_wait(s7tv_proxyPrefixCacheLock, DISPATCH_TIME_FOREVER);
+    s7tv_proxyPrefixCache[key] = @(prefix);
+    dispatch_semaphore_signal(s7tv_proxyPrefixCacheLock);
+    os_log(OS_LOG_DEFAULT, "[S7TV-Adblock] proxy %{public}@ prefix=%d",
+           proxyURL.host ?: @"?", prefix);
+    return prefix;
+}
+
+static NSURL *S7TVAdblockRewriteURLThroughPrefixProxy(NSURL *URL, NSURL *proxyURL) {
+    NSString *original = URL.absoluteString;
+    if (!original.length) return URL;
+    NSString *base = proxyURL.absoluteString ?: @"";
+    if (!base.length) return URL;
+    if (![base hasSuffix:@"/"]) base = [base stringByAppendingString:@"/"];
+    // Évite un double rewrite si l'URL est déjà proxifiée.
+    if ([original hasPrefix:base]) return URL;
+    NSString *result = [base stringByAppendingString:original];
+    NSString *rawAuth = S7TVAdblockCachedTwitchAuthToken();
+    if (rawAuth.length) {
+        NSString *separator = ([original rangeOfString:@"?"].location != NSNotFound) ? @"&" : @"?";
+        NSMutableCharacterSet *allowed = NSCharacterSet.alphanumericCharacterSet.mutableCopy;
+        [allowed addCharactersInString:@"-_.~"];
+        NSString *encoded = [rawAuth stringByAddingPercentEncodingWithAllowedCharacters:allowed];
+        result = [NSString stringWithFormat:@"%@%@auth=%@", result, separator, encoded ?: rawAuth];
+    }
     return [NSURL URLWithString:result] ?: URL;
+}
+
+NSURL *S7TVAdblockRewriteURLThroughProxy(NSURL *URL, NSURL *proxyURL) {
+    if (S7TVAdblockProxyIsLuminousV1(proxyURL)) {
+        NSArray<NSString *> *path = URL.path.pathComponents;
+        if (path.count < 2) return URL;
+        BOOL vod = [path[1] isEqualToString:@"vod"];
+        NSString *playlistID = URL.lastPathComponent.stringByDeletingPathExtension;
+        NSString *query = URL.query ?: @"";
+        if (!vod && query.length) {
+            NSURLComponents *components = [NSURLComponents new];
+            components.percentEncodedQuery = query;
+            NSMutableArray<NSURLQueryItem *> *items = components.queryItems.mutableCopy
+                ?: [NSMutableArray array];
+            [items filterUsingPredicate:[NSPredicate predicateWithBlock:
+                ^BOOL(NSURLQueryItem *item, __unused NSDictionary *bindings) {
+                    return ![item.name isEqualToString:@"token"] &&
+                           ![item.name isEqualToString:@"sig"];
+                }]];
+            components.queryItems = items.count ? items : nil;
+            query = components.percentEncodedQuery ?: @"";
+        }
+        NSString *fragment = query.length
+            ? [NSString stringWithFormat:@"%@.m3u8?%@", playlistID, query]
+            : [NSString stringWithFormat:@"%@.m3u8", playlistID];
+        NSMutableCharacterSet *allowed = NSCharacterSet.alphanumericCharacterSet.mutableCopy;
+        [allowed addCharactersInString:@"-_.~"];
+        NSString *encoded = [fragment stringByAddingPercentEncodingWithAllowedCharacters:allowed];
+        NSString *base = proxyURL.absoluteString;
+        if (![base hasSuffix:@"/"]) base = [base stringByAppendingString:@"/"];
+        NSString *result = [NSString stringWithFormat:@"%@%@/%@", base,
+                            vod ? @"vod" : @"playlist", encoded];
+        return [NSURL URLWithString:result] ?: URL;
+    }
+    // Sinon style préfixe, sinon URL intacte (fallback CONNECT préservé).
+    if (S7TVAdblockProxyIsPrefixStyle(proxyURL)) {
+        return S7TVAdblockRewriteURLThroughPrefixProxy(URL, proxyURL);
+    }
+    return URL;
 }
 
 static NSDictionary *S7TVAdblockParseProxyAddress(NSString *address) {
@@ -259,6 +373,12 @@ NSURLRequest *S7TVAdblockPrepareRequest(NSURLRequest *request, BOOL *blocked) {
     BOOL isGQLRequest = [host isEqualToString:@"gql.twitch.tv"];
     BOOL isMasterPlaylistRequest = S7TVAdblockIsMasterPlaylistHost(host);
     if (!isGQLRequest && !isMasterPlaylistRequest) return request;
+
+    // Mémorise le token OAuth GQL pour le ?auth= préfixe (Basic ignoré).
+    if (isGQLRequest) {
+        NSString *authHeader = [request valueForHTTPHeaderField:@"Authorization"];
+        if (authHeader.length) S7TVAdblockNoteTwitchAuthHeader(authHeader);
+    }
 
     NSMutableURLRequest *prepared = request.mutableCopy;
     NSData *body = S7TVAdblockTransformRequestData(request.HTTPBody, request);

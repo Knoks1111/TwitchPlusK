@@ -99,14 +99,58 @@ void S7TVAdblockCheckProxyStatus(
                             NSError *error) {
         NSInteger statusCode = [response isKindOfClass:NSHTTPURLResponse.class]
             ? ((NSHTTPURLResponse *)response).statusCode : -1;
-        BOOL functional = statusCode == 200;
-        os_log(OS_LOG_DEFAULT,
+        if (statusCode == 200) {
+            os_log(OS_LOG_DEFAULT,
                "[7TV-Adblock] functional proxy probe %{public}@:%d status=%ld errorCode=%ld",
                URL.host ?: @"?", (URL.port ?: @8080).intValue,
                (long)statusCode, (long)(error ? error.code : 0));
-        S7TVAdblockFinishProxyStatusProbe(
-            key, functional ? S7TVAdblockProxyStatusOnline
-                             : S7TVAdblockProxyStatusOffline);
+            S7TVAdblockFinishProxyStatusProbe(
+                key, S7TVAdblockProxyStatusOnline);
+            return;
+        }
+        // Repli préfixe : <base>https://google.com → 2xx.
+        NSString *base = URL.absoluteString ?: @"";
+        if (![base hasSuffix:@"/"]) base = [base stringByAppendingString:@"/"];
+        NSURL *prefixProbeURL = [NSURL URLWithString:
+            [base stringByAppendingString:@"https://google.com"]];
+        if (!prefixProbeURL) {
+            S7TVAdblockFinishProxyStatusProbe(key, S7TVAdblockProxyStatusOffline);
+            return;
+        }
+        NSMutableURLRequest *prefixRequest =
+            [NSMutableURLRequest requestWithURL:prefixProbeURL];
+        prefixRequest.HTTPMethod = @"GET";
+        prefixRequest.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+        prefixRequest.timeoutInterval = 4.0;
+        if (authorization) {
+            [prefixRequest setValue:authorization forHTTPHeaderField:@"Authorization"];
+        }
+        NSURLSessionConfiguration *prefixConfig =
+            [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        prefixConfig.URLCredentialStorage = nil;
+        prefixConfig.timeoutIntervalForRequest = 4.0;
+        prefixConfig.timeoutIntervalForResource = 5.0;
+        NSURLSession *prefixSession = [NSURLSession sessionWithConfiguration:prefixConfig];
+        NSURLSessionDataTask *prefixTask = [prefixSession dataTaskWithRequest:prefixRequest
+            completionHandler:^(__unused NSData *prefixData,
+                                NSURLResponse *prefixResponse,
+                                NSError *prefixError) {
+            NSInteger prefixCode = [prefixResponse isKindOfClass:NSHTTPURLResponse.class]
+                ? ((NSHTTPURLResponse *)prefixResponse).statusCode : -1;
+            BOOL functional = prefixCode >= 200 && prefixCode < 300;
+            os_log(OS_LOG_DEFAULT,
+                   "[7TV-Adblock] functional proxy probe %{public}@:%d status=%ld errorCode=%ld prefix=%d",
+                   URL.host ?: @"?", (URL.port ?: @8080).intValue,
+                   (long)prefixCode, (long)(prefixError ? prefixError.code : 0), functional);
+            S7TVAdblockFinishProxyStatusProbe(
+                key, functional ? S7TVAdblockProxyStatusOnline
+                                 : S7TVAdblockProxyStatusOffline);
+        }];
+        if (!prefixTask) {
+            S7TVAdblockFinishProxyStatusProbe(key, S7TVAdblockProxyStatusOffline);
+            return;
+        }
+        [prefixTask resume];
     }];
 
     if (!task) {

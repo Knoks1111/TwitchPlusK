@@ -15,6 +15,8 @@ BOOL S7TVAdblockIsInternalProxyDispatch(void);
 
 NSString * _Nullable S7TVAdblockBasicAuthHeader(NSURL *proxyURL);
 NSURL *S7TVAdblockRewriteURLThroughProxy(NSURL *URL, NSURL *proxyURL);
+// YES si proxy style préfixe (ex: rte.net.ru). Sonde <base>https://google.com (2xx), avec cache.
+BOOL S7TVAdblockProxyIsPrefixStyle(NSURL *proxyURL);
 NSURLSession *S7TVAdblockProxySession(NSURLSession *session, NSString *address);
 // Forget cached Luminous V1 detection results after the selected endpoint or
 // the custom proxy order changes. The next playlist request will probe again.

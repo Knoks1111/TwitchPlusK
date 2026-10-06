@@ -9,9 +9,8 @@ typedef NS_ENUM(NSInteger, S7TVAdblockProxyStatus) {
     S7TVAdblockProxyStatusOffline,
 };
 
-// Vérifie le fonctionnement réel du endpoint Luminous V1 : GET /ping avec
-// l'authentification configurée. « Online » signifie uniquement HTTP 200.
-// La sonde est asynchrone et les appels identiques déjà en cours sont groupés.
+// GET /ping (Luminous), sinon GET <base>https://google.com (préfixe).
+// « Online » = 2xx sur l'une des deux. Appels identiques groupés.
 void S7TVAdblockCheckProxyStatus(
     NSString *address,
     void (^completion)(S7TVAdblockProxyStatus status));

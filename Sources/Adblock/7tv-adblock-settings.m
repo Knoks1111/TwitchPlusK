@@ -15,20 +15,19 @@ static NSUserDefaults *S7TVAdblockDefaults(void) {
     return NSUserDefaults.standardUserDefaults;
 }
 
-// The original built-in endpoint is kept as the first choice for existing
-// installations. Its value is intentionally decoded only when needed, just
-// as it was before the selectable default endpoints were added.
+// Built-in en dernier (secours). Décodé uniquement au besoin.
 static NSString *S7TVAdblockBuiltinProxyAddress(void);
 
 void S7TVAdblockRegisterDefaults(void) {
     // Toggle maître : OFF par défaut (décision validée). Aucune migration :
     // les anciens utilisateurs qui reposaient sur l'ancien default implicite
     // ON sans jamais écrire la clé passent OFF après mise à jour (accepté).
+    // Défaut : eu.luminous.dev (built-in = dernier recours).
     [S7TVAdblockDefaults() registerDefaults:@{
         S7TVAdblockEnabledKey: @NO,
         S7TVAdblockProxyEnabledKey: @YES,
         S7TVAdblockCustomProxyEnabledKey: @NO,
-        S7TVAdblockDefaultProxyKey: S7TVAdblockBuiltinProxyAddress(),
+        S7TVAdblockDefaultProxyKey: @"https://eu.luminous.dev",
         // Même valeur par défaut que TwitchAdBlock v0.1.13.
         S7TVAdblockHideAdFreeButtonKey: @YES,
     }];
@@ -233,17 +232,22 @@ static NSString *S7TVAdblockBuiltinProxyAddress(void) {
 }
 
 NSArray<NSString *> *S7TVAdblockDefaultProxyAddresses(void) {
-    return @[S7TVAdblockBuiltinProxyAddress(),
-             @"https://eu.luminous.dev",
-             @"https://eu2.luminous.dev"];
+    return @[@"https://eu.luminous.dev",
+             @"https://eu2.luminous.dev",
+             @"https://proxy4.rte.net.ru/",
+             @"https://proxy5.rte.net.ru/",
+             @"https://proxy6.rte.net.ru/",
+             @"https://proxy7.rte.net.ru/",
+             S7TVAdblockBuiltinProxyAddress()];
 }
 
 NSString *S7TVAdblockDefaultProxyAddress(void) {
     NSString *selected = [S7TVAdblockDefaults() stringForKey:S7TVAdblockDefaultProxyKey];
-    for (NSString *address in S7TVAdblockDefaultProxyAddresses()) {
+    NSArray<NSString *> *all = S7TVAdblockDefaultProxyAddresses();
+    for (NSString *address in all) {
         if ([address isEqualToString:selected]) return address;
     }
-    return S7TVAdblockBuiltinProxyAddress();
+    return all.firstObject ?: S7TVAdblockBuiltinProxyAddress();
 }
 
 void S7TVAdblockSetDefaultProxyAddress(NSString *address) {

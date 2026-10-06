@@ -1,5 +1,6 @@
 #import "Emote/7tv-emote-catalog.h"
 #import "Emote/7tv-provider-settings.h"
+#import "Adblock/Emote/7tv-adblock-emote-proxy.h"
 #import <math.h>
 #import <stdlib.h>
 
@@ -1562,6 +1563,7 @@ static NSDictionary *S7TVConnectionSetWithPayload(id connections) {
                                        @"https://7tv.io/v3/emote-sets/%@",
                                        escapedID ?: setID]];
     if (!url) return;
+    url = S7TVEmoteProxyRewriteURL(url);
 
     dispatch_async(self.stateQueue, ^{
         if (!S7TVCatalogProviderEnabled(S7TVEmoteProviderIDSevenTV)) return;
@@ -1997,7 +1999,7 @@ static NSDictionary *S7TVConnectionSetWithPayload(id connections) {
                                : [NSString stringWithFormat:@"https://api.frankerfacez.com/v1/room/id/%@", channel];
             break;
     }
-    return [NSURL URLWithString:urlString];
+    return S7TVEmoteProxyRewriteURL([NSURL URLWithString:urlString]);
 }
 
 - (void)loadProvider:(S7TVEmoteProviderID)provider

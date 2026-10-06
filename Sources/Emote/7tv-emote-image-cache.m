@@ -5,6 +5,7 @@
  */
 
 #import "Emote/7tv-emote-image-cache.h"
+#import "Adblock/Emote/7tv-adblock-emote-proxy.h"
 #import "Network/7tv-network-emote-cache.h"
 #import "Core/7tv-core-manager.h"
 #import <ImageIO/ImageIO.h>
@@ -673,7 +674,9 @@ static NSTimeInterval s7tv_animationFrameDuration(CGImageSourceRef source, size_
 - (void)s7tv_fetchDataForURL:(NSURL *)url
                 persistToDisk:(BOOL)persistToDisk
                    completion:(void (^)(NSData * _Nullable data))completion {
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    // Fetch proxifié ; l'identité (compteur/provider) reste sur l'URL d'origine.
+    NSURL *fetchURL = S7TVEmoteProxyRewriteURL(url) ?: url;
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:fetchURL];
     if (persistToDisk) {
         req.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
         NSCachedURLResponse *cachedResponse =

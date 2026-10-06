@@ -23,6 +23,7 @@
 #import "System/7tv-system-home-features.h"
 #import "System/7tv-system-tab-visibility.h"
 #import "Adblock/7tv-adblock-settings.h"
+#import "Adblock/Emote/7tv-adblock-emote-proxy.h"
 #import "Adblock/Proxy/7tv-adblock-proxy-status.h"
 #import "Diagnostics/7tv-hook-diagnostics.h"
 #import "Settings/7tv-settings-transfer.h"
@@ -1349,6 +1350,10 @@ typedef NS_ENUM(NSInteger, S7TVHomeSection) {
 @property (nonatomic, strong) NSMutableArray<NSString *> *proxies;
 // Ignores probe callbacks from an older request.
 @property (nonatomic, assign) NSUInteger proxyStatusGeneration;
+// Sélection emotes indépendante du proxy vidéo (même structure).
+@property (nonatomic, strong) NSMutableArray<NSString *> *emoteProxies;
+@property (nonatomic, assign) S7TVAdblockProxyStatus emoteProxyStatus;
+@property (nonatomic, assign) NSUInteger emoteProxyStatusGeneration;
 @end
 
 static const NSInteger kS7TVProxyTextFieldTag = 0x7A01;
@@ -1359,18 +1364,27 @@ static const NSInteger kS7TVProxyDeleteButtonTag = 0x7A04;
 static NSString *S7TVAdblockDefaultProxyDisplayName(NSString *address) {
     NSArray<NSString *> *addresses = S7TVAdblockDefaultProxyAddresses();
     if (addresses.count > 0 && [address isEqualToString:addresses[0]])
-        return L(@"adblock_proxy_builtin");
-    if (addresses.count > 1 && [address isEqualToString:addresses[1]])
         return L(@"adblock_proxy_eu");
-    if (addresses.count > 2 && [address isEqualToString:addresses[2]])
+    if (addresses.count > 1 && [address isEqualToString:addresses[1]])
         return L(@"adblock_proxy_eu2");
-    return address.length ? address : L(@"adblock_proxy_builtin");
+    if (addresses.count > 2 && [address isEqualToString:addresses[2]])
+        return L(@"adblock_proxy_rte4");
+    if (addresses.count > 3 && [address isEqualToString:addresses[3]])
+        return L(@"adblock_proxy_rte5");
+    if (addresses.count > 4 && [address isEqualToString:addresses[4]])
+        return L(@"adblock_proxy_rte6");
+    if (addresses.count > 5 && [address isEqualToString:addresses[5]])
+        return L(@"adblock_proxy_rte7");
+    if (addresses.count > 6 && [address isEqualToString:addresses[6]])
+        return L(@"adblock_proxy_builtin");
+    return address.length ? address : L(@"adblock_proxy_eu");
 }
 
-// General-section rows.
+// General-section rows (ajout en fin : préserve les index).
 typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     S7TVAdblockGeneralRowMethod = 0,
     S7TVAdblockGeneralRowHideTurbo = 1,
+    S7TVAdblockGeneralRowEmoteProxy = 2,
 };
 
 @implementation SevenTVAdblockPageController
@@ -1380,6 +1394,8 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     if (self) {
         _proxyStatus = S7TVAdblockProxyStatusUnknown;
         _proxies = S7TVAdblockCustomProxyAddresses().mutableCopy;
+        _emoteProxyStatus = S7TVAdblockProxyStatusUnknown;
+        _emoteProxies = S7TVEmoteProxyCustomAddresses().mutableCopy;
     }
     return self;
 }
@@ -1390,6 +1406,7 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     S7TVStyleTableView(self.tableView);
     S7TVRegisterOLEDObserver(self);
     S7TVAdblockRegisterDefaults();
+    S7TVEmoteProxyRegisterDefaults();
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
 }
 
@@ -1419,6 +1436,10 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    // Emotes d'abord : son index vaut 1 quand la section vidéo est masquée.
+    if (section == [self s7tv_emoteSectionIndex] && [self s7tv_emoteSectionVisible]) {
+        return S7TVEmoteProxyCustomIsEnabled() ? 4 + self.emoteProxies.count : 3;
+    }
     if (section == 0) {
         // Method selector: Disabled, Proxy or Local (VAFT).
         return [self s7tv_visibleGeneralRows].count;
@@ -1431,6 +1452,10 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    if (section == [self s7tv_emoteSectionIndex] && [self s7tv_emoteSectionVisible]) {
+        return S7TVSectionHeader(L(@"adblock_emote_section"), NO,
+                                 @"adblock_emote_proxy_footer");
+    }
     if (section == 1 && [self s7tv_localVaftSectionVisible]) {
         // Local mode replaces the proxy header with an informational note.
         UIView *empty = [[UIView alloc] init];
@@ -1449,9 +1474,11 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 }
 
 // Visible General rows; the method selector replaces the old master toggle.
+// Toggle emotes ici : visible toute méthode.
 - (NSArray<NSNumber *> *)s7tv_visibleGeneralRows {
     return @[@(S7TVAdblockGeneralRowMethod),
-             @(S7TVAdblockGeneralRowHideTurbo)];
+             @(S7TVAdblockGeneralRowHideTurbo),
+             @(S7TVAdblockGeneralRowEmoteProxy)];
 }
 
 // Proxy rows follow the selected method.
@@ -1465,7 +1492,18 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    NSInteger base = ([self s7tv_proxySectionVisible] || [self s7tv_localVaftSectionVisible]) ? 2 : 1;
+    // Section emotes visible dès que son toggle est ON, toute méthode.
+    return base + ([self s7tv_emoteSectionVisible] ? 1 : 0);
+}
+
+// Index dynamique : 1 quand la section vidéo est masquée, 2 sinon.
+- (NSInteger)s7tv_emoteSectionIndex {
     return ([self s7tv_proxySectionVisible] || [self s7tv_localVaftSectionVisible]) ? 2 : 1;
+}
+
+- (BOOL)s7tv_emoteSectionVisible {
+    return S7TVEmoteProxyIsEnabled();
 }
 
 - (NSInteger)proxyIndexForRow:(NSInteger)row {
@@ -1502,12 +1540,38 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
                     @"shield.lefthalf.filled", S7TVAccent(), @"adblock_engine_footer");
             }
             case S7TVAdblockGeneralRowHideTurbo:
-            default:
                 return S7TVSwitchCell(L(@"adblock_hide_go_ad_free"), @"rectangle.slash",
                     [UIColor colorWithRed:0.95 green:0.45 blue:0.25 alpha:1.0],
                     S7TVAdblockHideAdFreeButtonEnabledFast(), self,
                     @selector(toggleHideGoAdFree:), nil);
+            case S7TVAdblockGeneralRowEmoteProxy:
+            default:
+                return S7TVSwitchCell(L(@"adblock_emote_proxy"), @"globe",
+                    UIColor.systemTealColor,
+                    S7TVEmoteProxyIsEnabled(), self,
+                    @selector(toggleEmoteProxy:), @"adblock_emote_proxy_info");
         }
+    }
+
+    if (indexPath.section == [self s7tv_emoteSectionIndex] &&
+        [self s7tv_emoteSectionVisible]) {
+        if (indexPath.row == 0) {
+            return S7TVNavCell(L(@"adblock_emote_default_proxy"),
+                               S7TVAdblockDefaultProxyDisplayName(
+                                   S7TVEmoteProxyDefaultAddress()),
+                               @"network", S7TVAccent(), nil);
+        }
+        if (indexPath.row == 1) {
+            return S7TVSwitchCell(L(@"adblock_custom_proxy"),
+                @"server.rack", UIColor.systemTealColor,
+                S7TVEmoteProxyCustomIsEnabled(), self,
+                @selector(toggleEmoteCustomProxy:), nil);
+        }
+        if (!S7TVEmoteProxyCustomIsEnabled()) return [self emoteProxyStatusCell];
+        NSInteger emoteProxyIndex = [self emoteProxyIndexForRow:indexPath.row];
+        if (emoteProxyIndex >= 0) return [self emoteProxyRowCellForIndex:emoteProxyIndex];
+        if (indexPath.row == [self addEmoteProxyRowIndex]) return [self addProxyCell];
+        return [self emoteProxyStatusCell];
     }
 
     if (indexPath.section == 1 && [self s7tv_localVaftSectionVisible]) {
@@ -1570,6 +1634,21 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
         [self.proxies addObject:@""];
         [self saveProxies];
         S7TVReloadSectionWithoutJump(self.tableView, 1);
+    }
+    if (indexPath.section == [self s7tv_emoteSectionIndex] &&
+        [self s7tv_emoteSectionVisible] &&
+        indexPath.row == 0) {
+        [self presentEmoteDefaultProxyPickerFromCell:
+            [tableView cellForRowAtIndexPath:indexPath]];
+        return;
+    }
+    if (indexPath.section == [self s7tv_emoteSectionIndex] &&
+        [self s7tv_emoteSectionVisible] &&
+        S7TVEmoteProxyCustomIsEnabled() &&
+        indexPath.row == [self addEmoteProxyRowIndex]) {
+        [self.emoteProxies addObject:@""];
+        [self saveEmoteProxies];
+        S7TVReloadSectionWithoutJump(self.tableView, [self s7tv_emoteSectionIndex]);
     }
     NSArray<NSNumber *> *visibleGeneral = [self s7tv_visibleGeneralRows];
     if (indexPath.section == 0 && indexPath.row < (NSInteger)visibleGeneral.count &&
@@ -1684,6 +1763,22 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     [self refreshProxyStatus];
 }
 
+- (void)toggleEmoteProxy:(UISwitch *)sender {
+    S7TVEmoteProxySetEnabled(sender.isOn);
+    // La section apparaît/disparaît : recharge complète.
+    S7TVReloadDataWithoutJump(self.tableView);
+    // URLs proxifiées = entrées cache séparées : purge pour recharger aussitôt.
+    [[SevenTVManager sharedManager] clearAllCaches];
+    if (sender.isOn) [self refreshEmoteProxyStatus];
+}
+
+- (void)toggleEmoteCustomProxy:(UISwitch *)sender {
+    S7TVEmoteProxySetCustomEnabled(sender.isOn);
+    self.emoteProxyStatus = S7TVAdblockProxyStatusUnknown;
+    S7TVReloadSectionWithoutJump(self.tableView, [self s7tv_emoteSectionIndex]);
+    [self refreshEmoteProxyStatus];
+}
+
 - (UITableViewCell *)defaultProxyCell {
     return S7TVNavCell(L(@"adblock_default_proxy"),
                        S7TVAdblockDefaultProxyDisplayName(
@@ -1726,6 +1821,279 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
         sheet.popoverPresentationController.sourceRect = anchor.bounds;
     }
     [self presentViewController:sheet animated:YES completion:nil];
+}
+
+
+// ── Section emotes : sélection indépendante du proxy vidéo ──
+
+- (NSInteger)emoteProxyIndexForRow:(NSInteger)row {
+    if (!S7TVEmoteProxyCustomIsEnabled() || row < 2 ||
+        row >= 2 + (NSInteger)self.emoteProxies.count) return -1;
+    return row - 2;
+}
+
+- (NSInteger)addEmoteProxyRowIndex {
+    return 2 + self.emoteProxies.count;
+}
+
+- (NSInteger)emoteStatusRowIndex {
+    return S7TVEmoteProxyCustomIsEnabled() ? 3 + self.emoteProxies.count : 2;
+}
+
+- (void)presentEmoteDefaultProxyPickerFromCell:(UIView *)anchor {
+    NSArray<NSString *> *addresses = S7TVAdblockDefaultProxyAddresses();
+    NSString *current = S7TVEmoteProxyDefaultAddress();
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:L(@"adblock_emote_default_proxy")
+                          message:L(@"adblock_default_proxy_footer")
+                   preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = S7TVAccent();
+
+    __weak typeof(self) weakSelf = self;
+    for (NSString *address in addresses) {
+        NSString *title = S7TVAdblockDefaultProxyDisplayName(address);
+        if ([address isEqualToString:current])
+            title = [@"✓  " stringByAppendingString:title];
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                   style:UIAlertActionStyleDefault
+                                                 handler:^(UIAlertAction *action) {
+            (void)action;
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            S7TVEmoteProxySetDefaultAddress(address);
+            self.emoteProxyStatus = S7TVAdblockProxyStatusUnknown;
+            S7TVReloadCellWithoutJump(self.tableView, anchor);
+            [self refreshEmoteProxyStatus];
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    if (anchor) {
+        sheet.popoverPresentationController.sourceView = anchor;
+        sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (UITableViewCell *)emoteProxyStatusCell {
+    UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"S7TVEmoteProxyStatusCell"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                      reuseIdentifier:@"S7TVEmoteProxyStatusCell"];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    }
+    cell.backgroundColor = S7TVCellBg();
+    cell.textLabel.text = S7TVEmoteProxyCustomIsEnabled()
+        ? L(@"adblock_proxy_custom_status") : L(@"adblock_proxy_default_status");
+    cell.textLabel.textColor = UIColor.whiteColor;
+    switch (self.emoteProxyStatus) {
+        case S7TVAdblockProxyStatusOnline:
+            cell.detailTextLabel.text = L(@"adblock_proxy_status_online");
+            cell.detailTextLabel.textColor = UIColor.systemGreenColor;
+            break;
+        case S7TVAdblockProxyStatusOffline:
+            cell.detailTextLabel.text = L(@"adblock_proxy_status_offline");
+            cell.detailTextLabel.textColor = UIColor.systemRedColor;
+            break;
+        case S7TVAdblockProxyStatusChecking:
+            cell.detailTextLabel.text = L(@"adblock_proxy_status_checking");
+            cell.detailTextLabel.textColor = UIColor.systemGrayColor;
+            break;
+        default:
+            cell.detailTextLabel.text = L(@"adblock_proxy_status_unknown");
+            cell.detailTextLabel.textColor = UIColor.systemGrayColor;
+            break;
+    }
+
+    UIButton *pingButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *pingSymbolConfiguration =
+        [UIImageSymbolConfiguration configurationWithPointSize:14.0
+                                                         weight:UIImageSymbolWeightSemibold];
+    [pingButton setImage:[UIImage systemImageNamed:@"arrow.clockwise"
+                                  withConfiguration:pingSymbolConfiguration]
+                  forState:UIControlStateNormal];
+    pingButton.titleLabel.font = [UIFont systemFontOfSize:13.0
+                                                   weight:UIFontWeightSemibold];
+    pingButton.tintColor = S7TVAccent();
+    pingButton.contentEdgeInsets = UIEdgeInsetsMake(4.0, 8.0, 4.0, 8.0);
+    pingButton.frame = CGRectMake(0.0, 0.0, 36.0, 32.0);
+    pingButton.accessibilityLabel = L(@"adblock_proxy_status_ping");
+    [pingButton addTarget:self action:@selector(manualEmoteProxyPing:)
+          forControlEvents:UIControlEventTouchUpInside];
+    pingButton.enabled = S7TVEmoteProxyIsEnabled() &&
+                         self.emoteProxyStatus != S7TVAdblockProxyStatusChecking;
+    cell.accessoryView = pingButton;
+    return cell;
+}
+
+- (void)manualEmoteProxyPing:(UIButton *)sender {
+    (void)sender;
+    if (!S7TVEmoteProxyIsEnabled()) return;
+    self.emoteProxyStatus = S7TVAdblockProxyStatusUnknown;
+    [self refreshEmoteProxyStatus];
+}
+
+- (UITableViewCell *)emoteProxyRowCellForIndex:(NSInteger)index {
+    UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"S7TVEmoteProxyRowCell"];
+    UIButton *up = nil;
+    UIButton *down = nil;
+    UIButton *deleteButton = nil;
+    UITextField *field = nil;
+    if (cell) {
+        up = (UIButton *)[cell.contentView viewWithTag:kS7TVProxyUpButtonTag];
+        down = (UIButton *)[cell.contentView viewWithTag:kS7TVProxyDownButtonTag];
+        deleteButton = (UIButton *)[cell.contentView viewWithTag:kS7TVProxyDeleteButtonTag];
+        field = (UITextField *)[cell.contentView viewWithTag:kS7TVProxyTextFieldTag];
+    } else {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:@"S7TVEmoteProxyRowCell"];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        up = [self proxyArrowButton:@"chevron.up" tag:kS7TVProxyUpButtonTag
+                             action:@selector(emoteProxyUpTapped:)];
+        down = [self proxyArrowButton:@"chevron.down" tag:kS7TVProxyDownButtonTag
+                               action:@selector(emoteProxyDownTapped:)];
+        deleteButton = [self proxyArrowButton:@"xmark.circle.fill"
+                                          tag:kS7TVProxyDeleteButtonTag
+                                       action:@selector(emoteProxyDeleteTapped:)];
+        deleteButton.accessibilityLabel = L(@"adblock_proxy_delete");
+        field = [[UITextField alloc] init];
+        field.tag = kS7TVProxyTextFieldTag;
+        field.translatesAutoresizingMaskIntoConstraints = NO;
+        field.placeholder = @"user:pass@host:port";
+        field.textColor = UIColor.whiteColor;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.keyboardType = UIKeyboardTypeURL;
+        field.returnKeyType = UIReturnKeyDone;
+        field.font = [UIFont systemFontOfSize:15];
+        field.delegate = self;
+        [field addTarget:self action:@selector(proxyFieldChanged:)
+        forControlEvents:UIControlEventEditingChanged];
+        [cell.contentView addSubview:up];
+        [cell.contentView addSubview:down];
+        [cell.contentView addSubview:deleteButton];
+        [cell.contentView addSubview:field];
+        [NSLayoutConstraint activateConstraints:@[
+            [up.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:12],
+            [up.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [up.widthAnchor constraintEqualToConstant:30],
+            [up.heightAnchor constraintEqualToConstant:30],
+            [down.leadingAnchor constraintEqualToAnchor:up.trailingAnchor constant:2],
+            [down.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [down.widthAnchor constraintEqualToConstant:30],
+            [down.heightAnchor constraintEqualToConstant:30],
+            [field.leadingAnchor constraintEqualToAnchor:down.trailingAnchor constant:10],
+            [deleteButton.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12],
+            [deleteButton.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [deleteButton.widthAnchor constraintEqualToConstant:28],
+            [deleteButton.heightAnchor constraintEqualToConstant:30],
+            [field.trailingAnchor constraintEqualToAnchor:deleteButton.leadingAnchor constant:-6],
+            [field.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [field.heightAnchor constraintEqualToConstant:40],
+        ]];
+    }
+    cell.backgroundColor = S7TVCellBg();
+    field.text = index < (NSInteger)self.emoteProxies.count ? self.emoteProxies[index] : @"";
+    BOOL canMoveUp = index > 0;
+    BOOL canMoveDown = index < (NSInteger)self.emoteProxies.count - 1;
+    up.enabled = canMoveUp;
+    up.alpha = canMoveUp ? 1.0 : 0.25;
+    down.enabled = canMoveDown;
+    down.alpha = canMoveDown ? 1.0 : 0.25;
+    return cell;
+}
+
+- (void)saveEmoteProxies {
+    S7TVEmoteProxySetCustomAddresses(self.emoteProxies);
+}
+
+- (void)emoteProxyUpTapped:(UIButton *)button {
+    NSIndexPath *path = [self.tableView indexPathForCell:
+        [self cellForProxySubview:button]];
+    if (!path) return;
+    NSInteger index = [self emoteProxyIndexForRow:path.row];
+    if (index <= 0) return;
+    [self.emoteProxies exchangeObjectAtIndex:index withObjectAtIndex:index - 1];
+    [self saveEmoteProxies];
+    S7TVReloadSectionWithoutJump(self.tableView, [self s7tv_emoteSectionIndex]);
+    self.emoteProxyStatus = S7TVAdblockProxyStatusUnknown;
+    [self refreshEmoteProxyStatus];
+}
+
+- (void)emoteProxyDownTapped:(UIButton *)button {
+    NSIndexPath *path = [self.tableView indexPathForCell:
+        [self cellForProxySubview:button]];
+    if (!path) return;
+    NSInteger index = [self emoteProxyIndexForRow:path.row];
+    if (index < 0 || index >= (NSInteger)self.emoteProxies.count - 1) return;
+    [self.emoteProxies exchangeObjectAtIndex:index withObjectAtIndex:index + 1];
+    [self saveEmoteProxies];
+    S7TVReloadSectionWithoutJump(self.tableView, [self s7tv_emoteSectionIndex]);
+    self.emoteProxyStatus = S7TVAdblockProxyStatusUnknown;
+    [self refreshEmoteProxyStatus];
+}
+
+- (void)removeEmoteProxyAtIndex:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)self.emoteProxies.count) return;
+    [self.emoteProxies removeObjectAtIndex:index];
+    [self saveEmoteProxies];
+    S7TVReloadSectionWithoutJump(self.tableView, [self s7tv_emoteSectionIndex]);
+    self.emoteProxyStatus = S7TVAdblockProxyStatusUnknown;
+    [self refreshEmoteProxyStatus];
+}
+
+- (void)emoteProxyDeleteTapped:(UIButton *)button {
+    UITableViewCell *cell = [self cellForProxySubview:button];
+    NSIndexPath *path = cell ? [self.tableView indexPathForCell:cell] : nil;
+    if (!path) return;
+    NSInteger index = [self emoteProxyIndexForRow:path.row];
+    [self removeEmoteProxyAtIndex:index];
+}
+
+- (void)refreshEmoteProxyStatus {
+    if (![self s7tv_emoteSectionVisible]) return;
+    NSUInteger generation = ++self.emoteProxyStatusGeneration;
+    NSString *address = nil;
+    if (S7TVEmoteProxyCustomIsEnabled()) {
+        for (NSString *proxy in self.emoteProxies) {
+            NSString *clean = [proxy stringByTrimmingCharactersInSet:
+                               NSCharacterSet.whitespaceCharacterSet];
+            if (clean.length) {
+                address = clean;
+                break;
+            }
+        }
+        if (!address) {
+            self.emoteProxyStatus = S7TVAdblockProxyStatusOffline;
+            [self reloadEmoteProxyStatusRow];
+            return;
+        }
+    } else {
+        address = S7TVEmoteProxyDefaultAddress();
+    }
+    self.emoteProxyStatus = S7TVAdblockProxyStatusChecking;
+    [self reloadEmoteProxyStatusRow];
+    __weak typeof(self) weakSelf = self;
+    S7TVAdblockCheckProxyStatus(address, ^(S7TVAdblockProxyStatus status) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || generation != self.emoteProxyStatusGeneration) return;
+        self.emoteProxyStatus = status;
+        [self reloadEmoteProxyStatusRow];
+    });
+}
+
+- (void)reloadEmoteProxyStatusRow {
+    if (![self s7tv_emoteSectionVisible]) return;
+    NSInteger section = [self s7tv_emoteSectionIndex];
+    NSInteger row = [self emoteStatusRowIndex];
+    if (section >= [self.tableView numberOfSections] ||
+        row >= [self.tableView numberOfRowsInSection:section]) return;
+    NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:section];
+    [self.tableView reloadRowsAtIndexPaths:@[path]
+                          withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (UITableViewCell *)proxyStatusCell {
@@ -1945,6 +2313,13 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     NSIndexPath *path = [self.tableView indexPathForCell:
         [self cellForProxySubview:field]];
     if (!path) return;
+    if (path.section == [self s7tv_emoteSectionIndex] && [self s7tv_emoteSectionVisible]) {
+        NSInteger emoteIndex = [self emoteProxyIndexForRow:path.row];
+        if (emoteIndex < 0 || emoteIndex >= (NSInteger)self.emoteProxies.count) return;
+        self.emoteProxies[emoteIndex] = field.text ?: @"";
+        [self saveEmoteProxies];
+        return;
+    }
     NSInteger index = [self proxyIndexForRow:path.row];
     if (index < 0 || index >= (NSInteger)self.proxies.count) return;
     self.proxies[index] = field.text ?: @"";
@@ -1952,6 +2327,10 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == [self s7tv_emoteSectionIndex] &&
+        [self s7tv_emoteSectionVisible]) {
+        return [self emoteProxyIndexForRow:indexPath.row] >= 0;
+    }
     return indexPath.section == 1 && [self proxyIndexForRow:indexPath.row] >= 0;
 }
 
@@ -1959,6 +2338,11 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
      forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
+    if (indexPath.section == [self s7tv_emoteSectionIndex] &&
+        [self s7tv_emoteSectionVisible]) {
+        [self removeEmoteProxyAtIndex:[self emoteProxyIndexForRow:indexPath.row]];
+        return;
+    }
     NSInteger index = [self proxyIndexForRow:indexPath.row];
     [self removeProxyAtIndex:index];
 }
@@ -2014,6 +2398,17 @@ typedef NS_ENUM(NSInteger, S7TVAdblockGeneralRow) {
     NSIndexPath *path = [self.tableView indexPathForCell:
         [self cellForProxySubview:textField]];
     if (!path) return;
+    if (path.section == [self s7tv_emoteSectionIndex] && [self s7tv_emoteSectionVisible]) {
+        NSInteger emoteIndex = [self emoteProxyIndexForRow:path.row];
+        if (emoteIndex >= 0 && emoteIndex < (NSInteger)self.emoteProxies.count) {
+            self.emoteProxies[emoteIndex] = textField.text ?: @"";
+            [self saveEmoteProxies];
+        }
+        if (S7TVEmoteProxyCustomIsEnabled()) {
+            [self refreshEmoteProxyStatus];
+        }
+        return;
+    }
     NSInteger index = [self proxyIndexForRow:path.row];
     if (index >= 0 && index < (NSInteger)self.proxies.count) {
         self.proxies[index] = textField.text ?: @"";

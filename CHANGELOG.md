@@ -2,6 +2,14 @@
 
 This file keeps the cumulative release history of TwitchPlusK, with the newest release listed first.
 
+## [1.0.8] (Twitch 31.0.2) - 2026-10-07
+
+### New Features
+
+- Added support for prefix-style video proxies (e.g. rte.net.ru) alongside Luminous, enabling 1440p playback with automatic auth token.
+- Added an independent emote proxy for countries where 7TV, BTTV, or FFZ are blocked, with its own proxy selection.
+- Added 4 new default video proxies.
+
 ## [1.0.7] (Twitch 31.0.2) - 2026-10-03
 
 ### New Features

@@ -270,7 +270,7 @@ jobs:
             exit 1
           fi
 
-          TAG="tpK-${TWITCHPLUSK_VERSION}-Twitch-${{ env.TWITCH_VERSION }}"
+          TAG="twitchplusk-v${TWITCHPLUSK_VERSION}-twitch-${{ env.TWITCH_VERSION }}"
           IPA_NAME="${{ env.IPA_NAME }}"
           TWITCH_VERSION="${{ env.TWITCH_VERSION }}"
           TITLE="TwitchPlusK — v${TWITCHPLUSK_VERSION} | Twitch — ${TWITCH_VERSION}"

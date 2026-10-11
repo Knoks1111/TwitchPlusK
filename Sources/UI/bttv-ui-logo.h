@@ -1,7 +1,7 @@
-#ifndef SevenTVBTTVLogo_h
-#define SevenTVBTTVLogo_h
+#ifndef TPKBTTVLogo_h
+#define TPKBTTVLogo_h
 
-static NSString * const kS7TVBTTVLogoBase64 =
+static NSString * const kTPKBTTVLogoBase64 =
     @"iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAYAAABS3GwHAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAA"
     @"DsMAAA7DAcdvqGQAABhdSURBVHhe7Z1/qJZVtsfXdyOMMP7hH17GPxpw6AxzIgPlGhhjpGRMQpGBwyQpFRg43IaUulRM0UQT"
     @"FXapS1wSCmrQ0IsOBTbYpUIj4TgkKOTgGXJImIYRrjAOI1xhZH3vH+96jq/bc877/N77ed79AanW8/b6vM+z195rr71+iCQS"

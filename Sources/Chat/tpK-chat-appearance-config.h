@@ -1,0 +1,186 @@
+/*
+ * tpK-chat-appearance-config.h
+ *
+ * Config centralisée du rendu du chat custom (Phase 1b du plan
+ * chat-twitch-custom). Injectée dans le renderer — aucune constante de
+ * taille ne doit être écrite en dur ailleurs dans le code de layout
+ * (exigence transverse #1).
+ *
+ * IMPORTANT — état des valeurs par défaut :
+ * emote7TVSize, badgeSize, usernameFontSize et messageFontSize ont été
+ * mesurées (screenshot device natif 3x retina + dump de cellule native
+ * in-app) — voir le détail dans tpK-chat-appearance-config.m. emoteTwitchSize,
+ * lineSpacing et usernameMessageSpacing restent des estimations "TODO mesure
+ * réelle", pas encore confirmées.
+ */
+
+#import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
+#import <UIKit/UIKit.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+// Postée sur le main thread à chaque changement de valeur (via un setter
+// custom ou après resetKeyToDefault:/resetAllToDefaults). Le chat custom en
+// live (TPKChatCustomView) observe cette notification pour se
+// redessiner immédiatement — utile pour la preview live du futur écran de
+// réglages (Phase 6).
+extern NSString *const TPKChatAppearanceConfigDidChangeNotification;
+
+typedef NS_ENUM(NSInteger, TPKDeletedMessageStyle) {
+    TPKDeletedMessageStyleDimmed = 0,
+    TPKDeletedMessageStyleStrikethrough,
+    TPKDeletedMessageStyleDimmedAndStrikethrough,
+};
+
+typedef NS_ENUM(NSInteger, TPKDeletedMessageRevealMode) {
+    TPKDeletedMessageRevealModeNever = 0,       // reste replié, tap désactivé
+    TPKDeletedMessageRevealModeOnTap,           // comportement actuel
+    TPKDeletedMessageRevealModeAlways,          // contenu affiché directement
+};
+
+@interface TPKChatAppearanceConfig : NSObject
+
++ (instancetype)sharedConfig;
+
+// --- Tailles (points, pas pixels) — chacune indépendante, pas de facteur
+// d'échelle global unique (exigence transverse #1). ---
+
+// Mesurée (screenshot 3x retina) — voir .m.
+@property (nonatomic, assign) CGFloat emote7TVSize;        // hauteur cible emote 7TV
+// TODO mesure réelle — pas d'emote Twitch native isolée dans le screenshot dispo.
+@property (nonatomic, assign) CGFloat emoteTwitchSize;     // hauteur cible emote Twitch native
+// Même hauteur de référence que les emotes du chat, réglable séparément
+// lorsque les GIFs reçus par Twitch nécessitent un ajustement.
+@property (nonatomic, assign) CGFloat gifSize;             // hauteur cible GIF Twitch
+// Mesurée (screenshot 3x retina) — voir .m.
+@property (nonatomic, assign) CGFloat badgeSize;           // hauteur cible badge (sub/mod/VIP/custom)
+// Mesurée (screenshot 3x retina) — voir .m.
+@property (nonatomic, assign) CGFloat usernameFontSize;    // taille texte pseudo
+// Mesurée (screenshot 3x retina) — voir .m.
+@property (nonatomic, assign) CGFloat messageFontSize;     // taille texte message
+
+// Espacements — ajoutés dès 1b comme prévu par le plan (§1, "à étendre
+// pendant la Phase 1"). TODO mesure réelle également.
+@property (nonatomic, assign) CGFloat lineSpacing;             // entre deux messages
+@property (nonatomic, assign) CGFloat usernameMessageSpacing;  // entre pseudo et texte du message
+
+// Décalage vertical des emotes (7TV + Twitch natives) dans la ligne de
+// message — fine-tune du bounds des attachments. Négatif = emote plus
+// haute, positif = plus basse. N'affecte PAS les badges.
+// Valeur réelle appliquée directement aux bounds du NSTextAttachment, sans
+// correction cachée. Défaut -6, identique à la valeur affichée dans le picker.
+@property (nonatomic, assign) CGFloat emoteVerticalOffset;
+
+// --- Hauteur du picker d'emotes (points) ---
+// Valeurs distinctes par orientation : 280 pt ne laisse presque plus de place
+// au chat en paysage. Bornée à la place disponible, voir
+// -[TPKEmotePickerController _tpk_resolvedGridHeight].
+@property (nonatomic, assign) CGFloat pickerHeightPortrait;
+@property (nonatomic, assign) CGFloat pickerHeightLandscape;
+
+// --- Taille des emotes dans le picker (facteur) ---
+// Facteur appliqué à la taille de cellule calculée depuis la largeur de la
+// grille. Un facteur plutôt qu'une valeur absolue : la taille de cellule
+// dépend de l'appareil, un défaut fixe changerait la densité sur SE et iPad.
+@property (nonatomic, assign) CGFloat pickerEmoteScalePortrait;
+@property (nonatomic, assign) CGFloat pickerEmoteScaleLandscape;
+
+// Bornes par orientation, pour une clé de réglage du picker
+// ("pickerHeightPortrait", "pickerEmoteScaleLandscape", …).
+FOUNDATION_EXPORT CGFloat TPKPickerOptionMinForKey(NSString *sizeKey);
+FOUNDATION_EXPORT CGFloat TPKPickerOptionMaxForKey(NSString *sizeKey);
+
+// --- Résolution d'image emotes (1x/2x/3x/4x) ---
+// Réglage commun aux providers externes. Chaque provider adapte ensuite la
+// valeur aux variantes réellement publiées par son CDN (FFZ, par exemple,
+// propose 1x/2x/4x). Le défaut technique reste 2x.
+@property (nonatomic, assign) NSInteger emoteImageResolution;
+
+// Compatibilité avec les réglages et exports des versions 7TV-only. Cette
+// propriété est un alias synchronisé de emoteImageResolution et sera retirée
+// uniquement après une migration de données suffisamment ancienne.
+@property (nonatomic, assign) NSInteger emote7TVResolution;
+
+// --- Fonds colorés des messages système (sub/resub/prime/gift) ---
+// Toggle unique : la barre d'accent (gauche) et l'icône (couronne/étoile/
+// cadeau) restent TOUJOURS affichées et colorées, quel que soit l'état de
+// ce toggle — seul le fond teinté (contentView.backgroundColor à 12%
+// d'opacité) est concerné. Défaut YES = comportement historique.
+@property (nonatomic, assign) BOOL systemMessageBackgroundsEnabled;
+
+// Une couleur configurable par catégorie. Défauts = anciennes couleurs en
+// dur de tpK-chat-custom-view.m (bleu/violet/rose).
+@property (nonatomic, strong) UIColor *subResubAccentColor;  // sub/resub non-Prime
+@property (nonatomic, strong) UIColor *primeAccentColor;     // sub/resub Prime
+@property (nonatomic, strong) UIColor *giftAccentColor;      // gift communautaire
+
+// --- Highlight "vous êtes mentionné" ---
+// Même mécanique visuelle que les fonds système ci-dessus (barre d'accent +
+// fond teinté à 12%, voir tpK-chat-custom-view.m,
+// tpk_configureSystemAccentWithColor:iconName:backgroundEnabled:),
+// appliquée quand TPKChatMessage.mentionsCurrentViewer == YES (viewer
+// connecté cité par quelqu'un d'autre — @pseudo ou pseudo nu). Toggle
+// unique combiné à la couleur (pas de fond neutre de repli comme pour
+// systemMessageBackgroundsEnabled) : off = aucun effet visuel du tout,
+// message rendu comme un message normal.
+@property (nonatomic, assign) BOOL selfMentionHighlightEnabled;
+@property (nonatomic, strong) UIColor *selfMentionHighlightColor;
+
+// --- Badge FIRST MESSAGE ---
+// Réutilise exactement le même composant visuel que le highlight de mention
+// (deux barres, fond teinté, petit libellé en haut à droite), avec son toggle
+// et sa couleur indépendants. Le modèle conserve toujours first-msg=1.
+@property (nonatomic, assign) BOOL showFirstMessageBadge;
+@property (nonatomic, strong) UIColor *firstMessageHighlightColor;
+
+// --- Shared Chat ---
+// Affiche l'avatar de la chaîne d'origine comme premier badge uniquement
+// quand source-room-id diffère de room-id. Défaut YES.
+@property (nonatomic, assign) BOOL sharedChatSourceAvatarsEnabled;
+
+// --- Messages supprimés / modération ---
+// Affiche la sanction IRC dans le placeholder replié (timeout avec durée
+// humaine, ou ban permanent). Le corps révélé peut être atténué, barré
+// ou les deux sans toucher au pseudo ni aux badges ; son opacité est
+// réglable de 0.25 à 1.0 pour les styles qui utilisent l'atténuation.
+@property (nonatomic, assign) BOOL showModerationDetails;
+@property (nonatomic, assign) TPKDeletedMessageRevealMode deletedMessageRevealMode;
+@property (nonatomic, assign) TPKDeletedMessageStyle deletedMessageStyle;
+@property (nonatomic, assign) CGFloat deletedMessageTextOpacity;
+
+// --- Persistance ---
+// Recharge à chaud depuis NSUserDefaults (ex: après un changement dans un
+// futur écran de réglages custom — Phase 6). Les valeurs non trouvées en
+// UserDefaults gardent leur défaut en mémoire (pas de reset silencieux).
+- (void)reloadFromDefaults;
+- (void)save;
+
+// Réinitialise UNE valeur donnée à son défaut (bouton "réinitialiser aux
+// valeurs Twitch" par élément — prévu explicitement en Phase 6, mais le
+// point d'accroche est posé dès maintenant pour ne pas avoir à retoucher
+// cette classe plus tard).
+- (void)resetKeyToDefault:(NSString *)key;
+- (void)resetAllToDefaults;
+
+// Écriture d'une valeur de taille par sa clé (KVC) — sauvegarde et notifie
+// automatiquement (voir TPKChatAppearanceConfigDidChangeNotification). Point
+// d'entrée unique utilisé par les sliders de réglages (Phase 6) plutôt que
+// d'exposer un setter dédié par propriété.
+- (void)setValue:(CGFloat)value forSizeKey:(NSString *)key;
+
+// Valeur par défaut (mesurée ou estimée) pour une clé donnée — utilisé par
+// l'UI de réglages (Phase 6) pour afficher "valeur par défaut Twitch: Xpt"
+// à côté du contrôle, sans dupliquer les constantes ailleurs.
+- (CGFloat)defaultValueForKey:(NSString *)key;
+
+// Équivalents couleur de setValue:forSizeKey:/defaultValueForKey: — mêmes
+// garanties (sauvegarde + notification), pour subResubAccentColor/
+// primeAccentColor/giftAccentColor.
+- (void)setColor:(UIColor *)color forColorKey:(NSString *)key;
+- (nullable UIColor *)defaultColorForColorKey:(NSString *)key;
+- (void)resetColorKeyToDefault:(NSString *)key;
+
+@end
+
+NS_ASSUME_NONNULL_END

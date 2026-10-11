@@ -9,7 +9,7 @@
  * Hosted in TwitchPlusK. Adaptations vs upstream (algorithm unchanged):
  *  - D1: no __attribute__((constructor)); vaft_initialize() is invoked by the
  *        host tweak's runtime setup when the active AdBlock method is Local.
- *  - D2: O(1) enabled-snapshot gates (extern S7TVAdblockEnabledFast) at the
+ *  - D2: O(1) enabled-snapshot gates (extern TPKAdblockEnabledFast) at the
  *        three entry points below, so the master AdBlock toggle stays cheap
  *        and takes effect on new requests without touching VAFT logic.
  *
@@ -42,7 +42,7 @@
 #include "TASDiagnostics.h"
 
 /* TwitchPlusK divergence D2: O(1) master-toggle snapshot (see file header). */
-extern BOOL S7TVAdblockEnabledFast(void);
+extern BOOL TPKAdblockEnabledFast(void);
 
 typedef unsigned long NSUInteger;
 typedef long NSInteger;
@@ -468,7 +468,7 @@ static id normalized_graphql_body(id body) {
 
 static id normalized_graphql_request_copy(id original) {
     if (!original) return nil;
-    if (!S7TVAdblockEnabledFast()) return nil; /* TwitchPlusK D2 */
+    if (!TPKAdblockEnabledFast()) return nil; /* TwitchPlusK D2 */
     id url = msg0(original, "URL");
     const char *host = utf8(msg0(url, "host"));
     if (!host || strcmp(host, "gql.twitch.tv") != 0) return nil;
@@ -526,7 +526,8 @@ static id blank_video_data(void) {
     static const char encoded[] =
         "AAAAKGZ0eXBtcDQyAAAAAWlzb21tcDQyZGFzaGF2YzFpc282aGxzZgAABEltb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAYagAAAAAAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAAABqHRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAURtZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAALuAAAAAAFXEAAAAAAAtaGRscgAAAAAAAAAAc291bgAAAAAAAAAAAAAAAFNvdW5kSGFuZGxlcgAAAADvbWluZgAAABBzbWhkAAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEAAACzc3RibAAAAGdzdHNkAAAAAAAAAAEAAABXbXA0YQAAAAAAAAABAAAAAAAAAAAAAgAQAAAAALuAAAAAAAAzZXNkcwAAAAADgICAIgABAASAgIAUQBUAAAAAAAAAAAAAAAWAgIACEZAGgICAAQIAAAAQc3R0cwAAAAAAAAAAAAAAEHN0c2MAAAAAAAAAAAAAABRzdHN6AAAAAAAAAAAAAAAAAAAAEHN0Y28AAAAAAAAAAAAAAeV0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAoAAAAFoAAAAAAGBbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAA9CQAAAAABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABLG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAOxzdGJsAAAAoHN0c2QAAAAAAAAAAQAAAJBhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAoABaABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAOmF2Y0MBTUAe/+EAI2dNQB6WUoFAX/LgLUBAQFAAAD6AAA6mDgAAHoQAA9CW7y4KAQAEaOuPIAAAABBzdHRzAAAAAAAAAAAAAAAQc3RzYwAAAAAAAAAAAAAAFHN0c3oAAAAAAAAAAAAAAAAAAAAQc3RjbwAAAAAAAAAAAAAASG12ZXgAAAAgdHJleAAAAAAAAAABAAAAAQAAAC4AAAAAAoAAAAAAACB0cmV4AAAAAAAAAAIAAAABAACCNQAAAAACQAAA";
     return ((id (*)(id, SEL, id, NSUInteger))objc_msgSend)(
-        (id)objc_getClass("NSData"), sel_registerName("dataWithBase64EncodedString:options:"),
+        msg0((id)objc_getClass("NSData"), "alloc"),
+        sel_registerName("initWithBase64EncodedString:options:"),
         nsstr(encoded), 0);
 }
 
@@ -630,7 +631,7 @@ static void protocol_stop_loading(id self, SEL command) {
 static BOOL protocol_can_init(id self, SEL command, id request) {
     (void)self;
     (void)command;
-    if (!S7TVAdblockEnabledFast()) return NO; /* TwitchPlusK D2 */
+    if (!TPKAdblockEnabledFast()) return NO; /* TwitchPlusK D2 */
     if (msg1(request, "valueForHTTPHeaderField:", nsstr(TAS_INTERNAL_HEADER))) return NO;
     id url = msg0(request, "URL");
     const char *absolute = utf8(msg0(url, "absoluteString"));
@@ -1504,7 +1505,7 @@ static id asset_init(id self, SEL command, id url, id options) {
         !(contains(absolute, "ttvnw.net") || contains(absolute, "twitch.tv"))) {
         return ((id (*)(id, SEL, id, id))g_original_asset_init)(self, command, url, options);
     }
-    if (!S7TVAdblockEnabledFast()) { /* TwitchPlusK D2 */
+    if (!TPKAdblockEnabledFast()) { /* TwitchPlusK D2 */
         return ((id (*)(id, SEL, id, id))g_original_asset_init)(self, command, url, options);
     }
     tas_diag_log_url("ASSET_INTERCEPT", absolute, "transport=AVURLAsset");

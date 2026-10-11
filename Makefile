@@ -3,7 +3,7 @@
 # ============================================================
 
 ARCHS = arm64
-TWITCHPLUSK_VERSION = 1.0.8
+TWITCHPLUSK_VERSION = 2.0.0
 TARGET = iphone:clang:16.5:14.0
 
 include $(THEOS)/makefiles/common.mk
@@ -13,57 +13,57 @@ LIBRARY_NAME = TwitchPlusK
 
 # ── Fichiers source regroupés par domaine ──
 TwitchPlusK_FILES = \
-    Sources/Adblock/7tv-adblock-settings.m \
-    Sources/Adblock/Proxy/7tv-adblock-proxy-status.m \
-    Sources/Adblock/Proxy/7tv-adblock-data.m \
-    Sources/Adblock/Proxy/7tv-adblock-proxy.m \
-    Sources/Adblock/Proxy/7tv-adblock-resource-loader.m \
-    Sources/Adblock/7tv-adblock-runtime.m \
-    Sources/Adblock/Emote/7tv-adblock-emote-proxy.m \
-    Sources/Diagnostics/7tv-hook-diagnostics.m \
+    Sources/Adblock/tpK-adblock-settings.m \
+    Sources/Adblock/Proxy/tpK-adblock-proxy-status.m \
+    Sources/Adblock/Proxy/tpK-adblock-data.m \
+    Sources/Adblock/Proxy/tpK-adblock-proxy.m \
+    Sources/Adblock/Proxy/tpK-adblock-resource-loader.m \
+    Sources/Adblock/tpK-adblock-runtime.m \
+    Sources/Adblock/Emote/tpK-adblock-emote-proxy.m \
+    Sources/Adblock/Combo/tpK-adblock-combo.m \
+    Sources/Settings/tpK-hook-diagnostics.m \
+    Sources/Settings/tpK-tap-logger.m \
     Sources/Adblock/Proxy/Fishhook/fishhook.c \
     Sources/Adblock/Vaft/TwitchAdBlock.c \
     Sources/Adblock/Vaft/TASDiagnostics.c \
-    Sources/Core/7tv-core-runtime-hooks.m \
-    Sources/Core/7tv-core-manager.m \
-    Sources/Core/7tv-channel-resolver.m \
-    Sources/Network/7tv-network-emote-cache.m \
-    Sources/Settings/7tv-settings-controller.m \
-    Sources/Settings/7tv-settings-transfer.m \
-    Sources/Logs/7tv-logs-controller.m \
-    Sources/Chat/7tv-chat-appearance-config.m \
-    Sources/Chat/7tv-chat-custom-view.m \
-    Sources/Chat/7tv-chat-integration.m \
-    Sources/Chat/7tv-chat-custom-vod.m \
-    Sources/Chat/7tv-chat-viewer-card.m \
-    Sources/Chat/7tv-chat-message.m \
-    Sources/Chat/7tv-chat-reply-thread-panel.m \
-    Sources/Chat/7tv-chat-tokenizer.m \
-    Sources/Emote/7tv-emote-animation-engine.m \
-    Sources/Emote/7tv-emote-catalog.m \
-    Sources/Emote/7tv-emote-image-cache.m \
-    Sources/Emote/7tv-emote-provider.m \
-    Sources/Emote/7tv-provider-settings.m \
-    Sources/Badge/7tv-badge-provider.m \
-    Sources/Picker/7tv-picker-cell.m \
-    Sources/Picker/7tv-picker-controller.m \
-    Sources/Picker/7tv-picker-resolved-emote.m \
-    Sources/Picker/7tv-picker-settings-panel.m \
-    Sources/Localization/7tv-localization-manager.m \
-    Sources/System/7tv-system-home-features.m \
-    Sources/System/7tv-system-native-behavior-hooks.m \
-    Sources/System/7tv-system-chat-top-banner.m \
-    Sources/System/7tv-system-player-gestures.m \
-    Sources/System/7tv-system-player-reload.m \
-    Sources/System/7tv-system-tab-visibility.m \
-    Sources/System/7tv-system-autoclaim.m \
-    Sources/System/7tv-system-update-checker.m \
-    Sources/UI/7tv-info-tooltip.m \
-    Sources/UI/7tv-oled-mode.m
+    Sources/Core/tpK-core-runtime-hooks.m \
+    Sources/Core/tpK-core-manager.m \
+    Sources/Core/tpK-channel-resolver.m \
+    Sources/Settings/tpK-settings-controller.m \
+    Sources/Settings/tpK-settings-transfer.m \
+    Sources/Logs/tpK-logs-controller.m \
+    Sources/Chat/tpK-chat-appearance-config.m \
+    Sources/Chat/tpK-chat-custom-view.m \
+    Sources/Chat/tpK-chat-integration.m \
+    Sources/Chat/tpK-chat-custom-vod.m \
+    Sources/Chat/tpK-chat-message.m \
+    Sources/Chat/tpK-chat-reply-thread-panel.m \
+    Sources/Chat/tpK-chat-tokenizer.m \
+    Sources/Emote/tpK-emote-animation-engine.m \
+    Sources/Emote/tpK-emote-catalog.m \
+    Sources/Emote/tpK-emote-image-cache.m \
+    Sources/Emote/tpK-emote-provider.m \
+    Sources/Emote/tpK-provider-settings.m \
+    Sources/Emote/tpK-badge-provider.m \
+    Sources/Emote/tpK-network-emote-cache.m \
+    Sources/Picker/tpK-picker-cell.m \
+    Sources/Picker/tpK-picker-controller.m \
+    Sources/Picker/tpK-picker-resolved-emote.m \
+    Sources/Picker/tpK-picker-settings-panel.m \
+    Sources/Localization/tpK-localization-manager.m \
+    Sources/System/tpK-system-home-features.m \
+    Sources/System/tpK-system-native-behavior-hooks.m \
+    Sources/System/tpK-system-player-gestures.m \
+    Sources/System/tpK-system-player-reload.m \
+    Sources/System/tpK-system-tab-visibility.m \
+    Sources/System/tpK-system-autoclaim.m \
+    Sources/System/tpK-system-update-checker.m \
+    Sources/UI/tpK-info-tooltip.m \
+    Sources/UI/tpK-oled-mode.m
 
 # ── Options de compilation ──
 TwitchPlusK_CFLAGS := \
-    -DS7TV_BUILD_VERSION='"$(TWITCHPLUSK_VERSION)"' \
+    -DTPK_BUILD_VERSION='"$(TWITCHPLUSK_VERSION)"' \
     -fobjc-arc \
     -I$(THEOS_PROJECT_DIR) \
     -I$(THEOS_PROJECT_DIR)/Sources \

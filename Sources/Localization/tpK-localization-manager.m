@@ -210,8 +210,8 @@ static NSString *const kTPKLanguageDefaultsKey = @"tpk_language";
                                                @"Enable only if your country blocks 7TV, BTTV, or FFZ. Otherwise, leave it off."],
         @"adblock_emote_section":            @[@"Proxy emotes", @"Emote proxy"],
         @"adblock_emote_default_proxy":      @[@"Proxy emotes par défaut", @"Default emote proxy"],
-        @"adblock_emote_proxy_footer":       @[@"Indépendant du proxy vidéo : les emotes peuvent passer par un proxy différent. Seuls les proxys de style préfixe sont utilisés, les autres choix restent en direct.",
-                                                @"Independent from the video proxy: emotes can use a different proxy. Only prefix-style proxies are used, other choices stay direct."],
+        @"adblock_emote_proxy_footer":       @[@"Indépendant du proxy vidéo : les emotes peuvent passer par un proxy différent. Les défauts viennent de la liste combo (RTE). Seuls les proxys de style préfixe sont utilisés, les autres choix restent en direct.",
+                                                @"Independent from the video proxy: emotes can use a different proxy. Defaults come from the combo list (RTE). Only prefix-style proxies are used, other choices stay direct."],
         @"adblock_proxy_default_status":     @[@"Proxy par défaut", @"Default proxy"],
         @"adblock_proxy_custom_status":      @[@"Proxy personnalisé", @"Custom proxy"],
         @"adblock_proxy_status_online":      @[@"● En ligne", @"● Online"],
@@ -296,6 +296,8 @@ static NSString *const kTPKLanguageDefaultsKey = @"tpk_language";
         @"settings_github_title":           @[@"GitHub repository", @"GitHub repository"],
         @"settings_github_subtitle":        @[@"Ajoute une étoile, signale un bug ou propose une idée.",
                                                @"Star, report bugs, or suggest improvements."],
+        @"settings_version_update":         @[@"Nouvelle version -> %@",
+                                               @"New version -> %@"],
 
         // ── Switchs de réglages ───────────────────────────────────────────
         @"switch_chat_custom":              @[@"Chat custom (debug)", @"Custom chat (debug)"],

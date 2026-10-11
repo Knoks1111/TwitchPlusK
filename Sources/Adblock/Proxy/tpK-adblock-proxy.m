@@ -10,9 +10,9 @@
 
 static NSString *const TPKAdblockProxyDispatchGuard = @"tpk_adblock_proxy_dispatch";
 static char TPKAdblockProxySessionAssociationKey;
-static NSMutableDictionary<NSString *, NSNumber *> *tpk_proxyLuminousCache;
+static NSMutableDictionary<NSString *, NSDictionary *> *tpk_proxyLuminousCache;
 static dispatch_semaphore_t tpk_proxyLuminousCacheLock;
-static NSMutableDictionary<NSString *, NSNumber *> *tpk_proxyPrefixCache;
+static NSMutableDictionary<NSString *, NSDictionary *> *tpk_proxyPrefixCache;
 static dispatch_semaphore_t tpk_proxyPrefixCacheLock;
 // Dernier token Twitch brut (sans schéma) vu sur GQL, pour le ?auth= préfixe.
 static NSString *tpk_lastTwitchRawAuthToken;
@@ -211,13 +211,39 @@ static NSString *TPKAdblockProxyCacheKey(NSURL *url) {
             url.host ?: @"?", url.port ?: @80];
 }
 
+// Négatif réexpiré après TTL (sonde à froid empoisonnée au redémarrage) ;
+// positif gardé indéfiniment.
+static const NSTimeInterval kTPKProxyNegativeCacheTTL = 60.0;
+
+static BOOL TPKAdblockCachedDetection(NSMutableDictionary *cache, dispatch_semaphore_t lock,
+                                      NSString *key, BOOL *outValue) {
+    dispatch_semaphore_wait(lock, DISPATCH_TIME_FOREVER);
+    NSDictionary *entry = cache[key];
+    dispatch_semaphore_signal(lock);
+    if (![entry isKindOfClass:NSDictionary.class]) return NO;
+    BOOL value = [entry[@"v"] boolValue];
+    if (!value &&
+        CFAbsoluteTimeGetCurrent() - [entry[@"t"] doubleValue] >= kTPKProxyNegativeCacheTTL) {
+        return NO;
+    }
+    if (outValue) *outValue = value;
+    return YES;
+}
+
+static void TPKAdblockStoreDetection(NSMutableDictionary *cache, dispatch_semaphore_t lock,
+                                     NSString *key, BOOL value) {
+    NSDictionary *entry = @{@"v": @(value), @"t": @(CFAbsoluteTimeGetCurrent())};
+    dispatch_semaphore_wait(lock, DISPATCH_TIME_FOREVER);
+    cache[key] = entry;
+    dispatch_semaphore_signal(lock);
+}
+
 static BOOL TPKAdblockProxyIsLuminousV1(NSURL *proxyURL) {
     TPKAdblockInitializeProxyLuminousCache();
     NSString *key = TPKAdblockProxyCacheKey(proxyURL);
-    dispatch_semaphore_wait(tpk_proxyLuminousCacheLock, DISPATCH_TIME_FOREVER);
-    NSNumber *known = tpk_proxyLuminousCache[key];
-    dispatch_semaphore_signal(tpk_proxyLuminousCacheLock);
-    if (known) return known.boolValue;
+    BOOL knownValue = NO;
+    if (TPKAdblockCachedDetection(tpk_proxyLuminousCache, tpk_proxyLuminousCacheLock,
+                                  key, &knownValue)) return knownValue;
 
     __block NSInteger statusCode = -1;
     dispatch_semaphore_t completed = dispatch_semaphore_create(0);
@@ -235,9 +261,8 @@ static BOOL TPKAdblockProxyIsLuminousV1(NSURL *proxyURL) {
     dispatch_semaphore_wait(completed,
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3500 * NSEC_PER_MSEC)));
     BOOL luminous = statusCode == 200;
-    dispatch_semaphore_wait(tpk_proxyLuminousCacheLock, DISPATCH_TIME_FOREVER);
-    tpk_proxyLuminousCache[key] = @(luminous);
-    dispatch_semaphore_signal(tpk_proxyLuminousCacheLock);
+    TPKAdblockStoreDetection(tpk_proxyLuminousCache, tpk_proxyLuminousCacheLock,
+                             key, luminous);
     os_log(OS_LOG_DEFAULT, "[TPK-Adblock] proxy %{public}@ luminous=%d",
            proxyURL.host ?: @"?", luminous);
     return luminous;
@@ -247,10 +272,9 @@ BOOL TPKAdblockProxyIsPrefixStyle(NSURL *proxyURL) {
     if (!proxyURL.host.length) return NO;
     TPKAdblockInitializeProxyLuminousCache();
     NSString *key = TPKAdblockProxyCacheKey(proxyURL);
-    dispatch_semaphore_wait(tpk_proxyPrefixCacheLock, DISPATCH_TIME_FOREVER);
-    NSNumber *known = tpk_proxyPrefixCache[key];
-    dispatch_semaphore_signal(tpk_proxyPrefixCacheLock);
-    if (known) return known.boolValue;
+    BOOL knownValue = NO;
+    if (TPKAdblockCachedDetection(tpk_proxyPrefixCache, tpk_proxyPrefixCacheLock,
+                                  key, &knownValue)) return knownValue;
 
     // Sonde : <base>https://google.com → 2xx.
     NSString *base = proxyURL.absoluteString ?: @"";
@@ -275,9 +299,8 @@ BOOL TPKAdblockProxyIsPrefixStyle(NSURL *proxyURL) {
             dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3500 * NSEC_PER_MSEC)));
         prefix = statusCode >= 200 && statusCode < 300;
     }
-    dispatch_semaphore_wait(tpk_proxyPrefixCacheLock, DISPATCH_TIME_FOREVER);
-    tpk_proxyPrefixCache[key] = @(prefix);
-    dispatch_semaphore_signal(tpk_proxyPrefixCacheLock);
+    TPKAdblockStoreDetection(tpk_proxyPrefixCache, tpk_proxyPrefixCacheLock,
+                             key, prefix);
     os_log(OS_LOG_DEFAULT, "[TPK-Adblock] proxy %{public}@ prefix=%d",
            proxyURL.host ?: @"?", prefix);
     return prefix;

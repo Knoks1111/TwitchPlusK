@@ -89,6 +89,15 @@ static void TPKCheckForUpdate(void) {
     }] resume];
 }
 
+NSString * _Nullable TPKUpdateCheckerAvailableVersion(void) {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSDictionary *manifest = [defaults dictionaryForKey:kManifest];
+    if (!TPKValidManifest(manifest)) return nil;
+    NSString *version = manifest[@"version"];
+    if ([version compare:@TPK_BUILD_VERSION options:NSNumericSearch] != NSOrderedDescending) return nil;
+    return version;
+}
+
 void TPKUpdateCheckerSetup(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{

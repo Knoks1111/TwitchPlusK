@@ -3,7 +3,7 @@
 # ============================================================
 
 ARCHS = arm64
-TWITCHPLUSK_VERSION = 2.0.0
+TWITCHPLUSK_VERSION = 2.0.1
 TARGET = iphone:clang:16.5:14.0
 
 include $(THEOS)/makefiles/common.mk

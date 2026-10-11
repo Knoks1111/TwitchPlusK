@@ -2,6 +2,22 @@
 
 This file keeps the cumulative release history of TwitchPlusK, with the newest release listed first.
 
+## [2.0.1] (Twitch 31.5) - 2026-10-11
+
+### New Features
+
+- Settings show the installed TwitchPlusK and Twitch versions below GitHub, plus the available update when there is one.
+
+### Changed
+
+- Built IPAs are now named `tpK-X-Twitch-Y.ipa`.
+- Emote proxy defaults now use the combo list (RTE inside), proxy4 selected.
+
+### Fixes
+
+- A failed proxy check at startup no longer sticks around: it retries after 60s, and proxies get re-probed shortly after launch. Covers emotes and video.
+- Emote proxy status now checks itself when you open settings.
+
 ## [2.0.0] (Twitch 31.5) - 2026-10-11
 
 > Back up your settings from the transfer screen BEFORE updating: settings were reset for 2.0.0, and your old backup can be re-imported afterwards if needed.

@@ -21,6 +21,7 @@
 #import "System/tpK-system-autoclaim.h"
 #import "System/tpK-system-home-features.h"
 #import "System/tpK-system-tab-visibility.h"
+#import "System/tpK-system-update-checker.h"
 #import "Adblock/tpK-adblock-settings.h"
 #import "Adblock/Emote/tpK-adblock-emote-proxy.h"
 #import "Adblock/Combo/tpK-adblock-combo.h"
@@ -515,6 +516,61 @@ static UITableViewCell *TPKGitHubRepositoryCell(void) {
         [stack.bottomAnchor constraintLessThanOrEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
     ]];
     TPKLoadGitHubAvatar(avatar);
+    return cell;
+}
+
+// Versions installées + update dispo (même ignorée au lancement).
+static UITableViewCell *TPKVersionsCell(void) {
+    UITableViewCell *cell = [[UITableViewCell alloc]
+        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.backgroundColor = TPKCellBg();
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+    NSString *build = @TPK_BUILD_VERSION;
+    if (!build.length) build = @"—";
+    NSString *app = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"];
+    if (![app isKindOfClass:NSString.class] || !app.length) app = @"—";
+    NSString *update = TPKUpdateCheckerAvailableVersion();
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.text = [@"TwitchPlusK " stringByAppendingString:build];
+    titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
+    titleLabel.textColor = TPKGray();
+
+    UILabel *appLabel = [[UILabel alloc] init];
+    appLabel.text = [@"Twitch " stringByAppendingString:app];
+    appLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
+    appLabel.textColor = TPKGray();
+
+    UIStackView *topRow = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, appLabel]];
+    topRow.axis = UILayoutConstraintAxisHorizontal;
+    topRow.alignment = UIStackViewAlignmentCenter;
+    topRow.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[topRow]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 6;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:stack];
+
+    if (update.length) {
+        UILabel *updateLabel = [[UILabel alloc] init];
+        updateLabel.text = [NSString stringWithFormat:L(@"settings_version_update"), update];
+        updateLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
+        updateLabel.textColor = TPKAccent();
+        updateLabel.textAlignment = NSTextAlignmentCenter;
+        [stack addArrangedSubview:updateLabel];
+        [updateLabel.leadingAnchor constraintEqualToAnchor:stack.leadingAnchor].active = YES;
+        [updateLabel.trailingAnchor constraintEqualToAnchor:stack.trailingAnchor].active = YES;
+    }
+
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+        [stack.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+        [stack.topAnchor constraintGreaterThanOrEqualToAnchor:cell.contentView.topAnchor constant:12],
+        [stack.bottomAnchor constraintLessThanOrEqualToAnchor:cell.contentView.bottomAnchor constant:-12],
+        [stack.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+    ]];
     return cell;
 }
 
@@ -1225,13 +1281,13 @@ typedef NS_ENUM(NSInteger, TPKHomeSection) {
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     switch (s) {
         case TPKHomeSectionMain:     return 4; // Apparence / Contenu / Adblock / Avancé
-        case TPKHomeSectionLanguage: return 2;
+        case TPKHomeSectionLanguage: return 3;
         default: return 0;
     }
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
-    if (ip.section == TPKHomeSectionLanguage && ip.row == 1) {
+    if (ip.section == TPKHomeSectionLanguage && (ip.row == 1 || ip.row == 2)) {
         return UITableViewAutomaticDimension;
     }
     return 60;
@@ -1323,6 +1379,10 @@ typedef NS_ENUM(NSInteger, TPKHomeSection) {
         return TPKGitHubRepositoryCell();
     }
 
+    if (ip.section == TPKHomeSectionLanguage && ip.row == 2) {
+        return TPKVersionsCell();
+    }
+
     if (ip.section == TPKHomeSectionLanguage) {
         UITableViewCell *cell = [[UITableViewCell alloc]
             initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
@@ -1371,6 +1431,18 @@ typedef NS_ENUM(NSInteger, TPKHomeSection) {
             [[UIApplication sharedApplication] openURL:url
                                                options:@{}
                                      completionHandler:nil];
+        }
+        return;
+    }
+
+    if (ip.section == TPKHomeSectionLanguage && ip.row == 2) {
+        if (TPKUpdateCheckerAvailableVersion()) {
+            NSURL *url = [NSURL URLWithString:@"https://github.com/Knoks1111/TwitchPlusK/releases/latest"];
+            if (url) {
+                [[UIApplication sharedApplication] openURL:url
+                                                   options:@{}
+                                         completionHandler:nil];
+            }
         }
         return;
     }
@@ -1480,6 +1552,9 @@ typedef NS_ENUM(NSInteger, TPKAdblockGeneralRow) {
     } else if (TPKAdblockConfiguredMethod() == TPKAdblockMethodProxyPlusLocal &&
         TPKAdblockProxyIsEnabled()) {
         [self refreshComboProxyStatus];
+    }
+    if (TPKEmoteProxyIsEnabled()) {
+        [self refreshEmoteProxyStatus];
     }
 }
 
@@ -2272,7 +2347,7 @@ typedef NS_ENUM(NSInteger, TPKAdblockGeneralRow) {
 }
 
 - (void)presentEmoteDefaultProxyPickerFromCell:(UIView *)anchor {
-    NSArray<NSString *> *addresses = TPKAdblockDefaultProxyAddresses();
+    NSArray<NSString *> *addresses = TPKAdblockComboProxyAddresses();
     NSString *current = TPKEmoteProxyDefaultAddress();
     UIAlertController *sheet = [UIAlertController
         alertControllerWithTitle:L(@"adblock_emote_default_proxy")

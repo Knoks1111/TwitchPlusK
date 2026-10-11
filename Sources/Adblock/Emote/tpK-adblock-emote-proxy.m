@@ -1,6 +1,7 @@
 #import "Adblock/Emote/tpK-adblock-emote-proxy.h"
 #import "Adblock/tpK-adblock-settings.h"
 #import "Adblock/Proxy/tpK-adblock-proxy.h"
+#import "Adblock/Combo/tpK-adblock-combo.h"
 
 static NSString *const kTPKEmoteProxyEnabledKey = @"tpk_emote_proxy_enabled";
 static NSString *const kTPKEmoteProxyDefaultKey = @"tpk_emote_proxy_default";
@@ -12,22 +13,22 @@ static NSUserDefaults *TPKEmoteProxyDefaults(void) {
     return [NSUserDefaults standardUserDefaults];
 }
 
-// 1er usage : hérite de la config vidéo, ensuite indépendant.
+// 1er usage : hérite du défaut combo (RTE), ensuite indépendant.
 static void TPKEmoteProxyEnsureSeeded(void) {
     NSUserDefaults *defaults = TPKEmoteProxyDefaults();
     if ([defaults boolForKey:kTPKEmoteProxySeededKey]) return;
     if (![defaults stringForKey:kTPKEmoteProxyDefaultKey].length) {
-        NSString *videoDefault = TPKAdblockDefaultProxyAddress();
-        if (videoDefault.length)
-            [defaults setObject:videoDefault forKey:kTPKEmoteProxyDefaultKey];
+        NSString *comboDefault = TPKAdblockComboProxyDefaultAddress();
+        if (comboDefault.length)
+            [defaults setObject:comboDefault forKey:kTPKEmoteProxyDefaultKey];
     }
     if (![defaults stringForKey:kTPKEmoteProxyCustomKey]) {
-        NSArray<NSString *> *videoCustoms = TPKAdblockCustomProxyAddresses();
-        if (videoCustoms.count) {
-            [defaults setObject:[videoCustoms componentsJoinedByString:@"\n"]
+        NSArray<NSString *> *comboCustoms = TPKAdblockComboProxyCustomAddresses();
+        if (comboCustoms.count) {
+            [defaults setObject:[comboCustoms componentsJoinedByString:@"\n"]
                          forKey:kTPKEmoteProxyCustomKey];
-            [defaults setBool:TPKAdblockCustomProxyIsEnabled()
-                      forKey:kTPKEmoteProxyCustomEnabledKey];
+            [defaults setBool:TPKAdblockComboProxyCustomIsEnabled()
+                       forKey:kTPKEmoteProxyCustomEnabledKey];
         }
     }
     [defaults setBool:YES forKey:kTPKEmoteProxySeededKey];
@@ -57,17 +58,17 @@ NSString *TPKEmoteProxyDefaultAddress(void) {
     TPKEmoteProxyEnsureSeeded();
     NSString *selected =
         [TPKEmoteProxyDefaults() stringForKey:kTPKEmoteProxyDefaultKey];
-    for (NSString *address in TPKAdblockDefaultProxyAddresses()) {
+    for (NSString *address in TPKAdblockComboProxyAddresses()) {
         if ([address isEqualToString:selected]) return address;
     }
-    return TPKAdblockDefaultProxyAddresses().firstObject;
+    return TPKAdblockComboProxyAddresses().firstObject;
 }
 
 void TPKEmoteProxySetDefaultAddress(NSString *address) {
     TPKEmoteProxyEnsureSeeded();
     NSString *clean = [address stringByTrimmingCharactersInSet:
                        NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    for (NSString *candidate in TPKAdblockDefaultProxyAddresses()) {
+    for (NSString *candidate in TPKAdblockComboProxyAddresses()) {
         if ([candidate isEqualToString:clean]) {
             [TPKEmoteProxyDefaults() setObject:clean forKey:kTPKEmoteProxyDefaultKey];
             [TPKEmoteProxyDefaults() synchronize];

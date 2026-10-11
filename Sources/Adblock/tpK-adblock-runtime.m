@@ -8,6 +8,7 @@
 #import "Adblock/Proxy/tpK-adblock-proxy.h"
 #import "Adblock/Proxy/tpK-adblock-resource-loader.h"
 #import "Adblock/Combo/tpK-adblock-combo.h"
+#import "Adblock/Emote/tpK-adblock-emote-proxy.h"
 #import "Adblock/tpK-adblock-settings.h"
 #import "Adblock/Vaft/tpK-adblock-vaft.h"
 #import "Adblock/Proxy/Fishhook/fishhook.h"
@@ -460,5 +461,26 @@ void TPKAdblockInstallRuntimeHooks(void) {
                 (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{ TPKAdblockTryInstallLateHooks(); });
         }
+
+        // Préchauffe la détection préfixe une fois le réseau établi : évite
+        // qu'une sonde à froid (timeout) empoisonne le cache au redémarrage.
+        // Sondes concurrentes (chacune bloque 3,5 s max en cas d'échec).
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
+            dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+            NSMutableArray<NSString *> *addresses = [NSMutableArray array];
+            if (TPKEmoteProxyIsEnabled()) {
+                [addresses addObjectsFromArray:TPKEmoteProxyEffectiveAddresses()];
+            }
+            if (TPKAdblockActiveMethodUsesProxy()) {
+                [addresses addObjectsFromArray:TPKAdblockEffectiveProxyAddresses()];
+                [addresses addObjectsFromArray:TPKAdblockComboProxyEffectiveAddresses()];
+            }
+            for (NSString *address in addresses) {
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+                    NSURL *proxyURL = TPKAdblockNormalizedProxyURL(address);
+                    if (proxyURL) TPKAdblockProxyIsPrefixStyle(proxyURL);
+                });
+            }
+        });
     });
 }

@@ -12,8 +12,8 @@ void TPKEmoteProxySetEnabled(BOOL enabled);
 void TPKEmoteProxyRegisterDefaults(void);
 
 // Sélection propre aux emotes (indépendante du proxy vidéo) : choix parmi
-// les défauts + liste custom multiligne. Au premier usage, initialisée depuis
-// la config vidéo pour préserver le comportement existant.
+// les défauts de la liste combo (RTE) + liste custom multiligne. Au premier
+// usage, initialisée depuis la config combo.
 NSString *TPKEmoteProxyDefaultAddress(void);
 void TPKEmoteProxySetDefaultAddress(NSString *address);
 NSArray<NSString *> *TPKEmoteProxyCustomAddresses(void);

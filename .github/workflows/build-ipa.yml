@@ -253,7 +253,7 @@ jobs:
             exit 1
           fi
 
-          IPA_NAME="twitchplusk-v${{ github.event.inputs.twitchplusk_version }}-twitch-${TWITCH_VERSION}.ipa"
+          IPA_NAME="tpK-${{ github.event.inputs.twitchplusk_version }}-Twitch-${TWITCH_VERSION}.ipa"
           mv TwitchPlusK_patched.ipa "$IPA_NAME"
           echo "✅ Final IPA: $IPA_NAME ($(du -sh "$IPA_NAME" | cut -f1))"
           echo "IPA_NAME=$IPA_NAME" >> $GITHUB_ENV
@@ -270,7 +270,7 @@ jobs:
             exit 1
           fi
 
-          TAG="twitchplusk-v${TWITCHPLUSK_VERSION}-twitch-${{ env.TWITCH_VERSION }}"
+          TAG="tpK-${TWITCHPLUSK_VERSION}-Twitch-${{ env.TWITCH_VERSION }}"
           IPA_NAME="${{ env.IPA_NAME }}"
           TWITCH_VERSION="${{ env.TWITCH_VERSION }}"
           TITLE="TwitchPlusK — v${TWITCHPLUSK_VERSION} | Twitch — ${TWITCH_VERSION}"

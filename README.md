@@ -38,30 +38,41 @@ Available in <img src="https://flagcdn.com/gb.svg" width="20"> **ENGLISH** and <
 
 Full CHANGELOG : [CHANGELOG.md](https://github.com/Knoks1111/TwitchPlusK/blob/main/CHANGELOG.md)
 
+## What it does
+
+### Chat and emotes
+
+- Customize chat sizes, spacing, and colors with a live preview.
+- Highlight mentions, first-time chatters, subscriptions, and gifts.
+- Reply to messages, view threads, and customize deleted-message display.
+- Use **7TV, BTTV, and FFZ emotes**, including animated and Zero-Width emotes.
+- Search emotes, manage favorites, and import favorites from PC.
+- Choose picker providers, animations, and the opening tab.
+
+### Ad blocking
+
+- **Proxy** — block stream ads through a default or custom proxy.
+- **Local (VAFT)** — block stream ads without a video proxy.
+- **Proxy + Local (VAFT)** — combine a stream relay with local ad blocking.
+- Use a separate emote proxy on networks that block emote services.
+
+### App customization
+
+- Swipe to adjust volume and brightness.
+- Refresh playback, reduce stream delay, and view video statistics.
+- Lock orientation automatically or manually.
+- Enable **OLED Mode**.
+- Hide and reorder tabs with an interactive preview.
+- Choose which page opens at launch.
+- Keep Live feed previews playing past Twitch's watch limit.
+- Automatically collect **Channel Points** bonuses.
+- And more...
+
 ## Tested configuration
 
 | Twitch | iOS | Device | Installation |
 | --- | --- | --- | --- |
 | 31.9 | 27.2 | iPhone 12 | Sideloaded |
-
-## What it does
-
-### Chat and emotes
-
-- Provides a fully customizable chat renderer that supports Twitch's native chat features while adding extras such as first-time chatter highlighting and more.
-- Adds **7TV, BTTV, and FFZ emotes** to Twitch chat with a custom emote picker.
-- Supports favorites, animated emotes, Zero-Width emotes, replies, and threads.
-
-### Ad blocking
-
-- Includes two different AdBlock methods:
-  - **Proxy** — uses a default or custom video proxy.
-  - **Local (VAFT)** — uses a local ad-blocking engine without a video proxy.
-
-### App customization
-
-- Adds **OLED Mode**, launch screen controls, Hide From Channels You Follow, Live Feed continuity, Orientation Lock, and more.
-- Includes settings export/import, automatic **Channel Points Auto Claim**, and more.
 
 ## Install
 

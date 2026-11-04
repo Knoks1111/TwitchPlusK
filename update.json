@@ -1,3 +1,43 @@
 {
-  "version": "2.0.1"
+  "version": "2.0.1",
+  "name": "TwitchPlusK",
+  "identifier": "com.knoks1111.twitchplusk.source",
+  "sourceURL": "https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/update.json",
+  "website": "https://github.com/Knoks1111/TwitchPlusK",
+  "iconURL": "https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/Assets/twitchplusk-icon.webp",
+  "tintColor": "9146FF",
+  "apps": [
+    {
+      "name": "TwitchPlusK",
+      "bundleIdentifier": "tv.twitch",
+      "developerName": "Knoks1111",
+      "localizedDescription": "Twitch for iOS with customizable chat, extra emotes, ad blocking and more. Full changelog: https://github.com/Knoks1111/TwitchPlusK/blob/main/CHANGELOG.md",
+      "iconURL": "https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/Assets/twitchplusk-icon.webp",
+      "versions": [
+        {
+          "version": "31.5",
+          "buildVersion": "262752111271985979",
+          "marketingVersion": "2.0.1 (Twitch 31.5)",
+          "date": "2026-10-11T18:17:11Z",
+          "downloadURL": "https://github.com/Knoks1111/TwitchPlusK/releases/download/twitchplusk-v2.0.1-twitch-31.5/tpK-2.0.1-Twitch-31.5.ipa",
+          "size": 196631719,
+          "minOSVersion": "16.4"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [
+          "com.apple.security.application-groups",
+          "keychain-access-groups"
+        ],
+        "privacy": {
+          "NSCameraUsageDescription": "Twitch needs permission to access the camera on this device to stream live video and change your profile image.",
+          "NSLocalNetworkUsageDescription": "Twitch uses the local network to discover Cast-enabled devices on your WiFi network.",
+          "NSMicrophoneUsageDescription": "Twitch needs permission to access the microphone on this device to stream live video.",
+          "NSPhotoLibraryAddUsageDescription": "Twitch needs permission to write to your photo library in order to save images.",
+          "NSUserTrackingUsageDescription": "Your iOS advertising ID and device data will be used to support creators and provide a personal ad experience."
+        }
+      }
+    }
+  ],
+  "news": []
 }

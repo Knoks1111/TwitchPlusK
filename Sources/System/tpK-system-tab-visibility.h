@@ -21,6 +21,8 @@ BOOL tpk_tabItemHidden(TPKTabItem item);
 void tpk_setTabItemHidden(TPKTabItem item, BOOL hidden);
 
 NSInteger tpk_tabVisibleCount(void);
+NSArray<NSNumber *> *tpk_tabItemOrder(void);
+void tpk_setTabItemOrder(NSArray<NSNumber *> *order);
 
 void tpk_tabVisibilityApply(UITabBarController *controller);
 

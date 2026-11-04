@@ -1,19 +1,4 @@
-/*
- * tpK-localization-manager.h
- *
- * Système de traduction FR/EN maison (pas de .strings/.lproj Apple — pas
- * adapté à un tweak Theos sans bundle de ressources dédié, et surtout on
- * veut un TOGGLE MANUEL dans les réglages, indépendant de la langue système
- * de l'iPhone).
- *
- * Usage : remplacer chaque @"Texte visible" par L(@"clé") dans le code UI.
- * Toutes les clés + leurs deux traductions vivent dans tpK-localization-manager.m.
- *
- * Seul le texte réellement affiché à l'écran est concerné (labels, titres,
- * boutons, messages d'alerte). Les logs internes (-log:) et les commentaires
- * restent en français dans le code, non traduits — ce ne sont pas des
- * strings UI.
- */
+// Tables Languages/*.strings intégrées au dylib ; langue choisie manuellement.
 
 #import <Foundation/Foundation.h>
 
@@ -34,7 +19,7 @@ typedef NS_ENUM(NSInteger, TPKLanguage) {
 
 // Traduction pour une clé donnée dans la langue actuelle. Si la clé est
 // inconnue (ou sa traduction vide dans la langue courante), retourne
-// "[clé]" — filet de sécurité VOLONTAIREMENT VISIBLE : plus facile à
+// "[Missing translation: clé]", toujours en anglais : plus facile à
 // repérer pendant les tests qu'une chaîne vide ou la clé nue, sans jamais
 // crasher.
 - (NSString *)stringForKey:(NSString *)key;

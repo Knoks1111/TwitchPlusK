@@ -73,9 +73,12 @@ FOUNDATION_EXPORT NSNotificationName const TPKChannelResolverDidChangeNotificati
 FOUNDATION_EXPORT void TPKChannelResolverSetup(void);
 FOUNDATION_EXPORT void TPKChannelResolverRefresh(void);
 
-// Secours indépendant du chat : login vu sur une playlist usher live.
-// Résout l'ID via Helix et nourrit le resolver (toutes versions).
+// Métadonnées Helix d'une playlist correspondant à la chaîne confirmée par le chat.
 FOUNDATION_EXPORT void TPKChannelResolverNoteStreamLogin(NSString * _Nullable login);
+// Confirmation IRC ROOMSTATE, indépendante des requêtes de playlists.
+FOUNDATION_EXPORT void TPKChannelResolverNoteChatRoom(NSString * _Nullable login,
+                                                    NSString * _Nullable roomID,
+                                                    id _Nullable sourceObject);
 
 FOUNDATION_EXPORT TPKChannelContext * _Nullable TPKCurrentChannelContext(void);
 FOUNDATION_EXPORT BOOL TPKChannelContextIsCurrent(TPKChannelContext * _Nullable context);

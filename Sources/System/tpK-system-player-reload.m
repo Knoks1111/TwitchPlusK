@@ -478,6 +478,10 @@ static id tpk_reloadFindActivePlayer(UIView *controls) {
     return nil;
 }
 
+id tpk_playerActivePlayerForView(UIView *view) {
+    return tpk_reloadFindActivePlayer(view);
+}
+
 static UIView *tpk_reloadControlsForButton(UIButton *button) {
     UIView *ancestor = button;
     while (ancestor) {

@@ -14,7 +14,7 @@ static NSMutableDictionary<NSString *, NSDictionary *> *tpk_proxyLuminousCache;
 static dispatch_semaphore_t tpk_proxyLuminousCacheLock;
 static NSMutableDictionary<NSString *, NSDictionary *> *tpk_proxyPrefixCache;
 static dispatch_semaphore_t tpk_proxyPrefixCacheLock;
-// Dernier token Twitch brut (sans schéma) vu sur GQL, pour le ?auth= préfixe.
+
 static NSString *tpk_lastTwitchRawAuthToken;
 static NSObject *tpk_authTokenLock;
 
@@ -29,7 +29,6 @@ static void TPKAdblockInitializeProxyLuminousCache(void) {
     });
 }
 
-// "OAuth/Bearer xxx" ou brut → xxx. Rejette Basic et vide.
 static NSString *TPKAdblockRawTokenFromAuthHeader(NSString *value) {
     NSString *trimmed = [value stringByTrimmingCharactersInSet:
         NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -131,7 +130,6 @@ BOOL TPKAdblockIsMasterPlaylistHost(NSString *host) {
     return [host isEqualToString:@"usher.ttvnw.net"];
 }
 
-// Login sur playlist live (.../channel/hls/<login>.m3u8). Pas les VOD.
 static NSString *TPKAdblockChannelLoginFromUsherURL(NSURL *URL) {
     if (!TPKAdblockIsMasterPlaylistHost(URL.host)) return nil;
     NSArray<NSString *> *parts = URL.path.pathComponents;
@@ -211,8 +209,7 @@ static NSString *TPKAdblockProxyCacheKey(NSURL *url) {
             url.host ?: @"?", url.port ?: @80];
 }
 
-// Négatif réexpiré après TTL (sonde à froid empoisonnée au redémarrage) ;
-// positif gardé indéfiniment.
+// Réessayer les sondes négatives ; conserver les détections positives.
 static const NSTimeInterval kTPKProxyNegativeCacheTTL = 60.0;
 
 static BOOL TPKAdblockCachedDetection(NSMutableDictionary *cache, dispatch_semaphore_t lock,
@@ -276,7 +273,6 @@ BOOL TPKAdblockProxyIsPrefixStyle(NSURL *proxyURL) {
     if (TPKAdblockCachedDetection(tpk_proxyPrefixCache, tpk_proxyPrefixCacheLock,
                                   key, &knownValue)) return knownValue;
 
-    // Sonde : <base>https://google.com → 2xx.
     NSString *base = proxyURL.absoluteString ?: @"";
     if (![base hasSuffix:@"/"]) base = [base stringByAppendingString:@"/"];
     NSURL *probeURL = [NSURL URLWithString:
@@ -312,7 +308,7 @@ static NSURL *TPKAdblockRewriteURLThroughPrefixProxy(NSURL *URL, NSURL *proxyURL
     NSString *base = proxyURL.absoluteString ?: @"";
     if (!base.length) return URL;
     if (![base hasSuffix:@"/"]) base = [base stringByAppendingString:@"/"];
-    // Évite un double rewrite si l'URL est déjà proxifiée.
+
     if ([original hasPrefix:base]) return URL;
     NSString *result = [base stringByAppendingString:original];
     NSString *rawAuth = TPKAdblockCachedTwitchAuthToken();
@@ -358,7 +354,7 @@ NSURL *TPKAdblockRewriteURLThroughProxy(NSURL *URL, NSURL *proxyURL) {
                             vod ? @"vod" : @"playlist", encoded];
         return [NSURL URLWithString:result] ?: URL;
     }
-    // Sinon style préfixe, sinon URL intacte (fallback CONNECT préservé).
+
     if (TPKAdblockProxyIsPrefixStyle(proxyURL)) {
         return TPKAdblockRewriteURLThroughPrefixProxy(URL, proxyURL);
     }
@@ -395,8 +391,6 @@ NSURLSession *TPKAdblockProxySession(NSURLSession *session, NSString *address) {
         delegateQueue:session.delegateQueue ?: [NSOperationQueue new]];
 }
 
-// Liste effective selon la méthode active : combo = liste combo séparée,
-// sinon liste vidéo. La détection chaîne/token au-dessus reste inchangée.
 static NSArray<NSString *> *TPKAdblockProxyEffectiveAddressesForMethod(void) {
     if (TPKAdblockActiveMethod() == TPKAdblockMethodProxyPlusLocal) {
         return TPKAdblockComboProxyEffectiveAddresses();
@@ -406,7 +400,7 @@ static NSArray<NSString *> *TPKAdblockProxyEffectiveAddressesForMethod(void) {
 
 NSURLRequest *TPKAdblockPrepareRequest(NSURLRequest *request, BOOL *blocked) {
     if (blocked) *blocked = NO;
-    // Détection chaîne, TOUJOURS active même adblock OFF (lecture seule).
+
     if (request) {
         NSString *sniffHost = request.URL.host.lowercaseString;
         if ([sniffHost isEqualToString:@"gql.twitch.tv"]) {
@@ -423,18 +417,18 @@ NSURLRequest *TPKAdblockPrepareRequest(NSURLRequest *request, BOOL *blocked) {
         if (blocked) *blocked = YES;
         return request;
     }
-    // Le proxy ne doit jamais toucher aux requêtes Helix (badges/avatars),
-    // aux CDN d'images, ni au reste de l'application. Seuls GQL et les
-    // playlists vidéo font partie de son pipeline.
+
     NSString *host = request.URL.host.lowercaseString;
     BOOL isGQLRequest = [host isEqualToString:@"gql.twitch.tv"];
     BOOL isMasterPlaylistRequest = TPKAdblockIsMasterPlaylistHost(host);
+    // Limiter le proxy à GraphQL et aux manifestes maîtres.
     if (!isGQLRequest && !isMasterPlaylistRequest) return request;
 
     NSMutableURLRequest *prepared = request.mutableCopy;
     NSData *body = TPKAdblockTransformRequestData(request.HTTPBody, request);
     if (body != request.HTTPBody) prepared.HTTPBody = body;
     if (!TPKAdblockProxyIsEnabled() ||
+        TPKAdblockActiveMethod() == TPKAdblockMethodLocalVaft ||
         !TPKAdblockIsMasterPlaylistHost(prepared.URL.host) ||
         TPKAdblockUserIsAdExempt(prepared.URL.query) ||
         TPKAdblockIsExternalPlayback()) return prepared;
@@ -459,6 +453,7 @@ NSURLRequest *TPKAdblockPrepareRequest(NSURLRequest *request, BOOL *blocked) {
 static NSURLSession *TPKAdblockConnectProxySessionIfNeeded(
     NSURLSession *session, NSURLRequest *request) {
     if (!TPKAdblockIsEnabled() || !TPKAdblockProxyIsEnabled() ||
+        TPKAdblockActiveMethod() == TPKAdblockMethodLocalVaft ||
         !TPKAdblockIsMasterPlaylistHost(request.URL.host) ||
         TPKAdblockUserIsAdExempt(request.URL.query) ||
         TPKAdblockIsExternalPlayback()) return nil;
@@ -478,9 +473,9 @@ NSURLSessionDataTask *TPKAdblockCreateConnectTaskIfNeeded(
     if (!proxySession) return nil;
     NSMutableDictionary *threadDictionary = NSThread.currentThread.threadDictionary;
     threadDictionary[TPKAdblockProxyDispatchGuard] = @YES;
-    // Marqueur VAFT : ce fetch tunnelé ne doit pas être réintercepté par
-    // TASURLProtocol (il contournerait le proxy).
+
     NSMutableURLRequest *tunneled = request.mutableCopy;
+    // Empêcher VAFT de réintercepter la requête et de contourner le proxy.
     [tunneled setValue:@"1" forHTTPHeaderField:@"X-TAS-Internal"];
     NSURLSessionDataTask *task = [proxySession dataTaskWithRequest:tunneled];
     [threadDictionary removeObjectForKey:TPKAdblockProxyDispatchGuard];
@@ -500,6 +495,7 @@ NSURLSessionDataTask *TPKAdblockCreateConnectTaskWithCompletionIfNeeded(
     NSMutableDictionary *threadDictionary = NSThread.currentThread.threadDictionary;
     threadDictionary[TPKAdblockProxyDispatchGuard] = @YES;
     NSMutableURLRequest *tunneled = request.mutableCopy;
+    // Empêcher VAFT de réintercepter la requête et de contourner le proxy.
     [tunneled setValue:@"1" forHTTPHeaderField:@"X-TAS-Internal"];
     NSURLSessionDataTask *task = [proxySession dataTaskWithRequest:tunneled
                                                  completionHandler:completion];

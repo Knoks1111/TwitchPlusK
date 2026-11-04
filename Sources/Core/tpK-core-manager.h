@@ -50,14 +50,15 @@ extern NSString *const TPKChatCustomToggleDidChangeNotification;
 void tpk_swizzle(Class targetClass, Class sourceClass, SEL original, SEL swizzled);
 
 
-// Logs: Errors, Custom Chat, Channel Points et Tap Logger.
+// Catégories indépendantes du journal général.
 typedef NS_ENUM(NSInteger, TPKLogCategory) {
     TPKLogCategoryError = 0,        // 🚨 Erreurs / Avertissements (❌ ⚠️)
     TPKLogCategoryChatCustom,       // 🏗 Chat Custom
     TPKLogCategoryChannelPoints,    // 🎁 Channel Points
     TPKLogCategoryTap,              // 👆 Tap Logger (diagnostic au tap)
+    TPKLogCategoryChannelResolver,  // 🧭 Channel Resolver
 };
-#define TPK_LOG_CATEGORY_COUNT 4
+#define TPK_LOG_CATEGORY_COUNT 5
 
 
 // ============================================================
@@ -110,6 +111,7 @@ typedef NS_ENUM(NSInteger, TPKLogCategory) {
 @property (nonatomic, assign) BOOL logChatCustom;           // 🏗 Chat Custom
 @property (nonatomic, assign) BOOL logChannelPoints;         // 🎁 Channel Points
 @property (nonatomic, assign) BOOL logTap;                   // 👆 Tap Logger — OFF par défaut
+@property (nonatomic, assign) BOOL logChannelResolver;
 
 // --- Données des emotes ---
 // Dictionnaire: @{ "KEKW": TPKEmote*, "Pog": TPKEmote*, ... }
@@ -230,4 +232,5 @@ typedef NS_ENUM(NSInteger, TPKLogCategory) {
 
 @interface TPKManager (IRCSessionState)
 - (void)handleIncomingChatWebSocketText:(NSString *)text;
+- (void)handleIncomingChatWebSocketText:(NSString *)text sourceObject:(id)sourceObject;
 @end

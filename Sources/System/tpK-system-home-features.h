@@ -1,4 +1,4 @@
-// Lancement, Stories, fil Live (dérivé de TwitchAdBlock, MIT).
+// Lancement et fil Live.
 
 #import <Foundation/Foundation.h>
 
@@ -23,11 +23,11 @@ void tpk_setLaunchDestination(TPKLaunchDestination destination);
 // Onglet de la barre visé par une destination, -1 si aucune.
 NSInteger tpk_launchDestinationTab(TPKLaunchDestination destination);
 
-BOOL tpk_hideTwitchStoriesEnabled(void);
-void tpk_setHideTwitchStoriesEnabled(BOOL enabled);
-
 BOOL tpk_keepLiveFeedPlayingEnabled(void);
 void tpk_setKeepLiveFeedPlayingEnabled(BOOL enabled);
+
+BOOL tpk_hideFollowedRecapsEnabled(void);
+void tpk_setHideFollowedRecapsEnabled(BOOL enabled);
 
 // Installe les hooks. Watch limit : voir tpK-adblock-data.m.
 void tpk_installHomeFeatureRuntimeHooks(void);

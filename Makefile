@@ -3,7 +3,7 @@
 # ============================================================
 
 ARCHS = arm64
-TWITCHPLUSK_VERSION = 2.0.1
+TWITCHPLUSK_VERSION = 2.0.2
 TARGET = iphone:clang:16.5:14.0
 
 include $(THEOS)/makefiles/common.mk
@@ -62,11 +62,18 @@ TwitchPlusK_FILES = \
     Sources/UI/tpK-oled-mode.m
 
 # ── Options de compilation ──
+TPK_LOCALIZATION_DIR = $(THEOS_PROJECT_DIR)/Sources/Localization/Languages
+TPK_LOCALIZATION_HEADER = $(THEOS_PROJECT_DIR)/.theos/localization/tpk-localization-data.h
+
+Sources/Adblock/Vaft/TwitchAdBlock.c_CFLAGS = -fblocks
+Sources/Adblock/Vaft/TASDiagnostics.c_CFLAGS = -x objective-c -fno-objc-arc -fblocks
+
 TwitchPlusK_CFLAGS := \
     -DTPK_BUILD_VERSION='"$(TWITCHPLUSK_VERSION)"' \
     -fobjc-arc \
     -I$(THEOS_PROJECT_DIR) \
     -I$(THEOS_PROJECT_DIR)/Sources \
+    -I$(THEOS_PROJECT_DIR)/.theos/localization \
     -Wno-unused-variable \
     -Wno-unused-function
 
@@ -79,6 +86,11 @@ TwitchPlusK_LDFLAGS = \
 TwitchPlusK_FRAMEWORKS = UIKit Foundation QuartzCore ImageIO AVFoundation MediaPlayer
 
 include $(THEOS_MAKE_PATH)/library.mk
+
+$(TPK_LOCALIZATION_HEADER): $(wildcard $(TPK_LOCALIZATION_DIR)/*.strings) $(TPK_LOCALIZATION_DIR) $(THEOS_PROJECT_DIR)/Sources/Localization/compile_localizations.py
+	@python3 "$(THEOS_PROJECT_DIR)/Sources/Localization/compile_localizations.py" --input "$(TPK_LOCALIZATION_DIR)" --output "$@"
+
+Sources/Localization/tpK-localization-manager.m $(THEOS_PROJECT_DIR)/Sources/Localization/tpK-localization-manager.m: $(TPK_LOCALIZATION_HEADER)
 
 after-stage::
 	@echo "✅ Compilation terminée (substrate-free)."

@@ -12,6 +12,14 @@ on:
       ipa_url:
         description: 'Direct Twitch IPA link (filebin, etc.)'
         required: true
+      publish_source:
+        description: 'Also commit the shared AltStore/SideStore update.json to main after publishing the IPA'
+        type: boolean
+        default: false
+
+concurrency:
+  group: publish-ipa
+  cancel-in-progress: false
 
 permissions:
   actions: read
@@ -22,6 +30,27 @@ jobs:
     runs-on: macos-14
 
     steps:
+
+      - uses: actions/checkout@v4
+
+      - name: Validate source publication
+        env:
+          TPK_VERSION: ${{ inputs.twitchplusk_version }}
+          PUBLISH_SOURCE: ${{ inputs.publish_source }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          version = os.environ['TPK_VERSION']
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version) or len(version) > 40:
+              raise SystemExit('Invalid TwitchPlusK version')
+          if os.environ['PUBLISH_SOURCE'] == 'true':
+              if os.environ['GITHUB_REF'] != 'refs/heads/main':
+                  raise SystemExit('Source publication requires the main branch')
+              expected = re.search(r'^TWITCHPLUSK_VERSION\s*[:?+]?=\s*(\S+)', Path('Makefile').read_text(), re.M)
+              if not expected or expected[1] != version:
+                  raise SystemExit('Release version must match TWITCHPLUSK_VERSION in Makefile')
+          PY
 
       - name: 🔑 Install ldid + lief
         env:
@@ -152,6 +181,8 @@ jobs:
           echo "✅ IPA: $(du -sh Twitch.ipa | cut -f1)"
 
       - name: 💉 Inject TwitchPlusK into the Twitch IPA
+        env:
+          TPK_VERSION: ${{ inputs.twitchplusk_version }}
         run: |
           set -euo pipefail
           DYLIB_PATH="${{ env.DYLIB_PATH }}"
@@ -169,6 +200,8 @@ jobs:
             exit 1
           fi
           echo "📂 App: $APP_PATH"
+
+          python3 .github/scripts/update_source.py stamp-build "$APP_PATH" "$TPK_VERSION"
 
           TWITCH_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" \
             "$APP_PATH/Info.plist" 2>/dev/null || echo "unknown")
@@ -258,6 +291,14 @@ jobs:
           echo "✅ Final IPA: $IPA_NAME ($(du -sh "$IPA_NAME" | cut -f1))"
           echo "IPA_NAME=$IPA_NAME" >> $GITHUB_ENV
 
+      - name: Prepare shared source metadata
+        env:
+          TPK_VERSION: ${{ inputs.twitchplusk_version }}
+        run: |
+          python3 .github/scripts/update_source.py generate "$IPA_NAME" "$TPK_VERSION" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --repository "$GITHUB_REPOSITORY" \
+            --output prepared-update.json
+
       - name: 🚀 Publish the IPA to Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -284,6 +325,17 @@ jobs:
           - **Full changelog:** [CHANGELOG.md](${CHANGELOG_URL})
           NOTESEOF
 
+          cat >> "$NOTES_FILE" <<'SOURCEEOF'
+
+          ## Automatic installation
+
+          Add [this source](https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/update.json) in AltStore Classic, SideStore or FlareStore to install TwitchPlusK and be notified when updates are available:
+
+          ```text
+          https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/update.json
+          ```
+          SOURCEEOF
+
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "📦 Release '$TAG' already exists — updating details and uploading asset"
             gh release edit "$TAG" \
@@ -303,6 +355,58 @@ jobs:
 
           echo "✅ IPA published: https://github.com/${{ github.repository }}/releases/tag/$TAG"
           echo "RELEASE_TAG=$TAG" >> $GITHUB_ENV
+
+      - name: Verify published IPA and finalize source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json publishedAt,isDraft,isPrerelease,assets > published-release.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          release = json.loads(Path('published-release.json').read_text())
+          source = json.loads(Path('prepared-update.json').read_text())
+          version = source['apps'][0]['versions'][0]
+          asset = next((a for a in release['assets'] if a['name'] == os.environ['IPA_NAME']), None)
+          if release['isDraft'] or release['isPrerelease'] or not release['publishedAt']:
+              raise SystemExit('Source requires a public stable release')
+          if not asset or asset['size'] != version['size'] or asset['url'] != version['downloadURL']:
+              raise SystemExit('Published IPA does not match the prepared source')
+          version['date'] = release['publishedAt']
+          Path('prepared-update.json').write_text(json.dumps(source, indent=2) + '\n')
+          if Path('prepared-update.json').stat().st_size > 16384:
+              raise SystemExit('Shared source exceeds 16 KiB')
+          PY
+
+      - name: Upload prepared source
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-update-source
+          path: prepared-update.json
+
+      - name: Publish shared source to main
+        if: ${{ inputs.publish_source }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/contents/update.json?ref=main" > remote-source.json
+          python3 - <<'PY'
+          import base64, json
+          from pathlib import Path
+          remote = json.loads(Path('remote-source.json').read_text())
+          current = json.loads(base64.b64decode(remote['content']))
+          data = Path('prepared-update.json').read_bytes()
+          source = json.loads(data)
+          number = lambda v: tuple(map(int, v.split('.')))
+          if number(source['version']) < number(current['version']):
+              raise SystemExit('Refusing to downgrade the shared update manifest')
+          body = {'message': 'Update shared app source for TwitchPlusK ' + source['version'],
+                  'content': base64.b64encode(data).decode(), 'sha': remote['sha'], 'branch': 'main'}
+          Path('source-request.json').write_text(json.dumps(body))
+          PY
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/update.json" --input source-request.json
 
       - name: ✅ Summary
         run: |

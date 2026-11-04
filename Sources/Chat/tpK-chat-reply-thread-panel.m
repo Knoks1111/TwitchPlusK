@@ -89,15 +89,11 @@ static NSString *tpk_insertMentionAtStartOfChatInput(NSString *username) {
     if (textView) {
         NSString *current = textView.text ?: @"";
 
-        textView.text = [mention stringByAppendingString:current];
-        textView.selectedRange = NSMakeRange(mention.length, 0);
-
-        [[NSNotificationCenter defaultCenter]
-            postNotificationName:UITextViewTextDidChangeNotification
-                          object:textView];
-        if ([textView.delegate respondsToSelector:@selector(textViewDidChange:)]) {
-            [textView.delegate textViewDidChange:textView];
-        }
+        // insertText: = vrai flux UIKit (delegate/undo/correction, sans clavier).
+        UITextPosition *origin = textView.beginningOfDocument;
+        textView.selectedTextRange =
+            [textView textRangeFromPosition:origin toPosition:origin];
+        [textView insertText:mention];
 
         NSString *finalText = textView.text ?: @"";
         NSInteger insertedLength = (NSInteger)finalText.length - (NSInteger)current.length;
@@ -109,14 +105,10 @@ static NSString *tpk_insertMentionAtStartOfChatInput(NSString *username) {
     } else if (textField) {
         NSString *current = textField.text ?: @"";
 
-        textField.text = [mention stringByAppendingString:current];
-
-        [[NSNotificationCenter defaultCenter]
-            postNotificationName:UITextFieldTextDidChangeNotification
-                          object:textField];
-        if ([textField.delegate respondsToSelector:@selector(textFieldDidChangeSelection:)]) {
-            [textField.delegate textFieldDidChangeSelection:textField];
-        }
+        UITextPosition *origin = textField.beginningOfDocument;
+        textField.selectedTextRange =
+            [textField textRangeFromPosition:origin toPosition:origin];
+        [textField insertText:mention];
 
         NSString *finalText = textField.text ?: @"";
         NSInteger insertedLength = (NSInteger)finalText.length - (NSInteger)current.length;
@@ -139,27 +131,23 @@ static void tpk_removeExactPrefixFromChatInput(NSString *exactPrefix) {
         NSString *current = textView.text ?: @"";
         if (![current hasPrefix:exactPrefix]) return;
 
-        textView.text = [current substringFromIndex:exactPrefix.length];
-        textView.selectedRange = NSMakeRange(0, 0);
-
-        [[NSNotificationCenter defaultCenter]
-            postNotificationName:UITextViewTextDidChangeNotification
-                          object:textView];
-        if ([textView.delegate respondsToSelector:@selector(textViewDidChange:)]) {
-            [textView.delegate textViewDidChange:textView];
-        }
+        // Vrai flux UIKit (replaceRange:) : même raison que l'insertion.
+        UITextPosition *start = textView.beginningOfDocument;
+        UITextPosition *end = [textView positionFromPosition:start
+                                                     offset:exactPrefix.length];
+        if (!end) return;
+        [textView replaceRange:[textView textRangeFromPosition:start toPosition:end]
+                      withText:@""];
     } else if (textField) {
         NSString *current = textField.text ?: @"";
         if (![current hasPrefix:exactPrefix]) return;
 
-        textField.text = [current substringFromIndex:exactPrefix.length];
-
-        [[NSNotificationCenter defaultCenter]
-            postNotificationName:UITextFieldTextDidChangeNotification
-                          object:textField];
-        if ([textField.delegate respondsToSelector:@selector(textFieldDidChangeSelection:)]) {
-            [textField.delegate textFieldDidChangeSelection:textField];
-        }
+        UITextPosition *start = textField.beginningOfDocument;
+        UITextPosition *end = [textField positionFromPosition:start
+                                                      offset:exactPrefix.length];
+        if (!end) return;
+        [textField replaceRange:[textField textRangeFromPosition:start toPosition:end]
+                       withText:@""];
     }
 }
 // MARK: - Panneau "Fil" (réponses)
@@ -259,6 +247,8 @@ static BOOL tpk_sameMessageInstances(NSArray<TPKChatMessage *> *left,
 @property (nonatomic, copy) NSString *selectedReplyTargetUsername;
 // Texte exact déjà transformé par Twitch : seul lui permet un retrait propre.
 @property (nonatomic, copy) NSString *lastInsertedMentionText;
+// Filet envoi : Twitch vide le champ sans notification, sondage borné.
+@property (nonatomic, strong) NSTimer *replySendWatchTimer;
 // Dernière géométrie mesurée (garde anti-boucle du re-budget).
 @property (nonatomic, assign) CGFloat measuredContainerWidth;
 @property (nonatomic, assign) CGFloat measuredHostMaxY;
@@ -318,6 +308,7 @@ static BOOL tpk_sameMessageInstances(NSArray<TPKChatMessage *> *left,
 }
 
 - (void)dealloc {
+    [self.replySendWatchTimer invalidate];
     [[NSNotificationCenter defaultCenter] removeObserver:self
         name:TPKOLEDModeDidChangeNotification object:nil];
 }
@@ -1240,12 +1231,33 @@ static BOOL tpk_sameMessageInstances(NSArray<TPKChatMessage *> *left,
 
     self.lastInsertedMentionText = tpk_insertMentionAtStartOfChatInput(username);
 
+    // Envoi sans signal : sondage 0.4s borné, meurt dans clear.
+    [self.replySendWatchTimer invalidate];
+    self.replySendWatchTimer = [NSTimer scheduledTimerWithTimeInterval:0.4
+        target:self selector:@selector(tpk_replySendWatchTick:)
+        userInfo:nil repeats:YES];
+
     if (replyComesFromThread) {
         [self tpk_layoutPanelContentInWindow:self.containerView.window];
     }
 }
 
+- (void)tpk_replySendWatchTick:(__unused NSTimer *)timer {
+    if (!self.selectedReplyTargetMessageID.length) {
+        [self.replySendWatchTimer invalidate];
+        self.replySendWatchTimer = nil;
+        return;
+    }
+    UITextField *field = nil;
+    UITextView *view = tpk_findActiveChatTextView(&field);
+    NSString *text = view ? (view.text ?: @"") : (field ? (field.text ?: @"") : nil);
+    if (!text || text.length) return;
+    [self tpk_clearReplyTargetRemovingMention];
+}
+
 - (void)tpk_clearReplyTargetRemovingMention {
+    [self.replySendWatchTimer invalidate];
+    self.replySendWatchTimer = nil;
     [self.replyTargetSourceView setReplyTargetHighlightedMessageID:nil];
     self.replyTargetSourceView = nil;
     self.selectedReplyTargetMessageID = nil;

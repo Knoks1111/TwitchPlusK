@@ -1,31 +1,3 @@
-/*
- * TwitchAdBlock VAFT for iOS — native port of pixeltris/TwitchAdSolutions
- * VAFT v24 (solution commit c51ef2fe8f667f9dc9216eb550924cf0d732ce27).
- *
- * Upstream project: BananaOnGitHub/TwitchAdBlock-VAFT-iOS (Apache-2.0),
- * port version 2.2.0 — https://github.com/BananaOnGitHub/TwitchAdBlock-VAFT-iOS
- * Upstream strategy: pixeltris/TwitchAdSolutions (MIT).
- *
- * Hosted in TwitchPlusK. Adaptations vs upstream (algorithm unchanged):
- *  - D1: no __attribute__((constructor)); vaft_initialize() is invoked by the
- *        host tweak's runtime setup when the active AdBlock method is Local.
- *  - D2: O(1) enabled-snapshot gates (extern TPKAdblockEnabledFast) at the
- *        three entry points below, so the master AdBlock toggle stays cheap
- *        and takes effect on new requests without touching VAFT logic.
- *
- * Everything else is kept as close to upstream as possible.
- */
-/*
- * TwitchAdBlock for iOS
- *
- * Native iOS adaptation of pixeltris/TwitchAdSolutions VAFT v24.
- *
- * This intentionally uses the Objective-C runtime instead of private Twitch
- * symbols. Twitch's Amazon IVS player and AVFoundation playback are both
- * covered: GraphQL and HLS requests are normalized through NSURLProtocol,
- * with AVAssetResourceLoader retained as a compatibility path.
- */
-
 #include <objc/objc.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
@@ -38,10 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
+#include <math.h>
 
 #include "TASDiagnostics.h"
 
-/* TwitchPlusK divergence D2: O(1) master-toggle snapshot (see file header). */
 extern BOOL TPKAdblockEnabledFast(void);
 
 typedef unsigned long NSUInteger;
@@ -58,6 +31,9 @@ typedef long NSInteger;
 #define TAS_MANIFEST_CAPACITY 262144
 #define TAS_URL_CAPACITY 8192
 
+extern id objc_getAssociatedObject(id object, const void *key);
+extern int objc_sync_enter(id object);
+extern int objc_sync_exit(id object);
 extern id objc_retain(id object);
 extern void objc_release(id object);
 extern void objc_setAssociatedObject(id object, const void *key, id value, uintptr_t policy);
@@ -144,11 +120,15 @@ typedef struct {
     char *backup_master_urls[TAS_PLAYER_TYPE_COUNT];
 } TASStreamContext;
 
+typedef struct TASContinuity TASContinuity;
+static void continuity_free(TASContinuity *state);
+
 typedef struct {
     char url[TAS_URL_CAPACITY];
     size_t stream_index;
     uint64_t generation;
     time_t last_seen;
+    TASContinuity *continuity[2];
 } TASVariantRoute;
 
 typedef struct {
@@ -179,6 +159,8 @@ static TASAdSegment g_ad_segments[TAS_MAX_AD_SEGMENTS];
 static size_t g_next_ad_segment;
 
 static char g_association_key;
+static char g_protocol_task_key, g_protocol_stopped_key, g_protocol_completed_key;
+static id g_protocol_session;
 static IMP g_original_asset_init;
 static IMP g_original_default_configuration;
 static IMP g_original_ephemeral_configuration;
@@ -222,6 +204,8 @@ static bool stream_ref_matches_locked(TASStreamRef ref) {
 static void clear_routes_for_stream_locked(size_t stream_index) {
     for (size_t i = 0; i < TAS_MAX_VARIANT_ROUTES; i++) {
         if (g_variant_routes[i].url[0] && g_variant_routes[i].stream_index == stream_index) {
+            continuity_free(g_variant_routes[i].continuity[0]);
+            continuity_free(g_variant_routes[i].continuity[1]);
             memset(&g_variant_routes[i], 0, sizeof(g_variant_routes[i]));
         }
     }
@@ -468,7 +452,7 @@ static id normalized_graphql_body(id body) {
 
 static id normalized_graphql_request_copy(id original) {
     if (!original) return nil;
-    if (!TPKAdblockEnabledFast()) return nil; /* TwitchPlusK D2 */
+    if (!TPKAdblockEnabledFast()) return nil;
     id url = msg0(original, "URL");
     const char *host = utf8(msg0(url, "host"));
     if (!host || strcmp(host, "gql.twitch.tv") != 0) return nil;
@@ -547,20 +531,96 @@ static id http_response(const char *url, NSInteger status, const char *mime, siz
     return response;
 }
 
+// Sérialiser les callbacks et l'annulation sur le même verrou récursif.
+static void protocol_deliver(id self, id data, id response, id error) {
+    objc_sync_enter(self);
+    if (!objc_getAssociatedObject(self, &g_protocol_stopped_key)) {
+        id client = msg0(self, "client");
+        if (error || !response) {
+            if (!error) error = ((id (*)(id, SEL, id, NSInteger, id))objc_msgSend)(
+                (id)objc_getClass("NSError"), sel_registerName("errorWithDomain:code:userInfo:"),
+                nsstr("NSURLErrorDomain"), -1, nil);
+            vmsg2(client, "URLProtocol:didFailWithError:", self, error);
+        } else {
+            vmsg3(client, "URLProtocol:didReceiveResponse:cacheStoragePolicy:", self, response, 0);
+            if (data && !objc_getAssociatedObject(self, &g_protocol_stopped_key))
+                vmsg2(client, "URLProtocol:didLoadData:", self, data);
+            if (!objc_getAssociatedObject(self, &g_protocol_stopped_key))
+                vmsg1(client, "URLProtocolDidFinishLoading:", self);
+        }
+    }
+    objc_setAssociatedObject(self, &g_protocol_task_key, nil, 1);
+    objc_sync_exit(self);
+}
+
+static void protocol_complete(id self, id data, id response, id error) {
+    id original = msg0(self, "request");
+    const char *original_url = utf8(msg0(msg0(original, "URL"), "absoluteString"));
+    objc_sync_enter(self);
+    bool stopped = objc_getAssociatedObject(self, &g_protocol_stopped_key) != nil;
+    objc_setAssociatedObject(self, &g_protocol_completed_key, nsstr("completed"), 1);
+    objc_sync_exit(self);
+    if (stopped) {
+        if (original_url && is_twitch_hls_url(original_url)) {
+            char detail[96];
+            snprintf(detail, sizeof(detail), "route=%016llx delivery=cancelled",
+                     (unsigned long long)tas_playback_url_id(original_url));
+            tas_diag_log("HLS_CANCELLED", detail);
+        }
+        return;
+    }
+
+    id output_data = data, output_response = response, rewritten_response = nil;
+    if (original_url && is_twitch_hls_url(original_url)) {
+        char detail[256];
+        snprintf(detail, sizeof(detail), "transport=NSURLProtocol status=%ld bytes=%zu error=%s",
+                 response ? (long)imsg0(response, "statusCode") : 0L,
+                 data ? data_length(data) : 0, error ? "yes" : "no");
+        tas_diag_log_url("HLS_RESPONSE", original_url, detail);
+        if (error || !data || !response || imsg0(response, "statusCode") < 200 ||
+            imsg0(response, "statusCode") >= 300) tas_diag_metric(TAS_DIAG_HLS_FAILURE, 1);
+    }
+    if (!error && data && response && original_url && is_twitch_hls_url(original_url)) {
+        char *text = copy_data_text(data);
+        if (text && starts_with(text, "#EXTM3U")) {
+            char *processed = process_manifest(original_url, text, false);
+            output_data = data_from_bytes(processed, strlen(processed));
+            rewritten_response = http_response(original_url, imsg0(response, "statusCode"),
+                                               "application/vnd.apple.mpegurl",
+                                               data_length(output_data), response);
+            output_response = rewritten_response;
+            free(processed);
+        }
+        free(text);
+    }
+    protocol_deliver(self, output_data, output_response, error);
+    if (rewritten_response) objc_release(rewritten_response);
+}
+
+static id protocol_session(void) {
+    static pthread_mutex_t session_lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&session_lock);
+    id *slot = &g_protocol_session;
+    if (!*slot) {
+        id config = msg0((id)objc_getClass("NSURLSessionConfiguration"), "defaultSessionConfiguration");
+        *slot = objc_retain(msg1((id)objc_getClass("NSURLSession"), "sessionWithConfiguration:", config));
+    }
+    id session = *slot;
+    pthread_mutex_unlock(&session_lock);
+    return session;
+}
+
 static void protocol_start_loading(id self, SEL command) {
     (void)command;
     id original = msg0(self, "request");
     const char *original_url = utf8(msg0(msg0(original, "URL"), "absoluteString"));
-    id client = msg0(self, "client");
 
     if (original_url && is_cached_ad_segment(original_url)) {
         tas_diag_metric(TAS_DIAG_SYNTHETIC_SEGMENT, 1);
         tas_diag_log_url("SYNTHETIC_SEGMENT", original_url, "transport=NSURLProtocol");
         id data = blank_video_data();
         id response = http_response(original_url, 200, "video/mp4", data_length(data), nil);
-        vmsg3(client, "URLProtocol:didReceiveResponse:cacheStoragePolicy:", self, response, 0);
-        vmsg2(client, "URLProtocol:didLoadData:", self, data);
-        vmsg1(client, "URLProtocolDidFinishLoading:", self);
+        protocol_deliver(self, data, response, nil);
         objc_release(response);
         return;
     }
@@ -581,57 +641,44 @@ static void protocol_start_loading(id self, SEL command) {
         tas_diag_log_url("HLS_REQUEST", original_url, "transport=NSURLProtocol");
     }
 
-    id response = nil;
-    id error = nil;
-    id data = synchronous_request(request, &response, &error);
-    id output_data = data;
-    id output_response = response;
-    id rewritten_response = nil;
-    if (original_url && is_twitch_hls_url(original_url)) {
-        char detail[256];
-        snprintf(detail, sizeof(detail), "transport=NSURLProtocol status=%ld bytes=%zu error=%s",
-                 response ? (long)imsg0(response, "statusCode") : 0L,
-                 data ? data_length(data) : 0,
-                 error ? "yes" : "no");
-        tas_diag_log_url("HLS_RESPONSE", original_url, detail);
-        if (error || !data || !response || imsg0(response, "statusCode") < 200 ||
-            imsg0(response, "statusCode") >= 300) {
-            tas_diag_metric(TAS_DIAG_HLS_FAILURE, 1);
+    id session = protocol_session();
+    objc_sync_enter(self);
+    if (!objc_getAssociatedObject(self, &g_protocol_stopped_key)) {
+        id held = objc_retain(self);
+        id task = ((id (*)(id, SEL, id, id))objc_msgSend)(session,
+            sel_registerName("dataTaskWithRequest:completionHandler:"), request,
+            (id)^(id data, id response, id error) {
+                protocol_complete(held, data, response, error);
+                objc_release(held);
+            });
+        if (task) {
+            objc_setAssociatedObject(self, &g_protocol_task_key, task, 1);
+            msg0(task, "resume");
+        } else {
+            objc_release(held);
+            protocol_deliver(self, nil, nil, nil);
         }
     }
-    if (!error && data && response && original_url && is_twitch_hls_url(original_url)) {
-        char *text = copy_data_text(data);
-        if (text && starts_with(text, "#EXTM3U")) {
-            char *processed = process_manifest(original_url, text, false);
-            output_data = data_from_bytes(processed, strlen(processed));
-            rewritten_response = http_response(original_url, imsg0(response, "statusCode"),
-                                               "application/vnd.apple.mpegurl",
-                                               data_length(output_data), response);
-            output_response = rewritten_response;
-            free(processed);
-        }
-        free(text);
-    }
-    if (error || !output_response) {
-        vmsg2(client, "URLProtocol:didFailWithError:", self, error);
-    } else {
-        vmsg3(client, "URLProtocol:didReceiveResponse:cacheStoragePolicy:", self, output_response, 0);
-        if (output_data) vmsg2(client, "URLProtocol:didLoadData:", self, output_data);
-        vmsg1(client, "URLProtocolDidFinishLoading:", self);
-    }
-    if (rewritten_response) objc_release(rewritten_response);
+    objc_sync_exit(self);
     objc_release(request);
 }
 
 static void protocol_stop_loading(id self, SEL command) {
-    (void)self;
     (void)command;
+    objc_sync_enter(self);
+    objc_setAssociatedObject(self, &g_protocol_stopped_key, nsstr("stopped"), 1);
+    id task = objc_retain(objc_getAssociatedObject(self, &g_protocol_task_key));
+    objc_setAssociatedObject(self, &g_protocol_task_key, nil, 1);
+    msg0(task, "cancel");
+    objc_release(task);
+    objc_sync_exit(self);
 }
 
 static BOOL protocol_can_init(id self, SEL command, id request) {
     (void)self;
     (void)command;
-    if (!TPKAdblockEnabledFast()) return NO; /* TwitchPlusK D2 */
+    if (!TPKAdblockEnabledFast()) return NO;
+    // Ignorer les requêtes internes pour éviter une interception récursive.
     if (msg1(request, "valueForHTTPHeaderField:", nsstr(TAS_INTERNAL_HEADER))) return NO;
     id url = msg0(request, "URL");
     const char *absolute = utf8(msg0(url, "absoluteString"));
@@ -739,6 +786,11 @@ static void add_variant_route_locked(TASStreamRef ref, const char *url, time_t n
     }
 
     TASVariantRoute *route = &g_variant_routes[route_index];
+    if (strcmp(route->url, url) || route->generation != ref.generation) {
+        continuity_free(route->continuity[0]);
+        continuity_free(route->continuity[1]);
+        route->continuity[0] = route->continuity[1] = NULL;
+    }
     copy_string(route->url, sizeof(route->url), url);
     route->stream_index = ref.index;
     route->generation = ref.generation;
@@ -773,6 +825,8 @@ static TASStreamRef stream_for_variant_locked(const char *url) {
         if (!route->url[0] || strcmp(route->url, url) != 0) continue;
         TASStreamRef ref = {route->stream_index, route->generation, true};
         if (!stream_ref_matches_locked(ref)) {
+            continuity_free(route->continuity[0]);
+            continuity_free(route->continuity[1]);
             memset(route, 0, sizeof(*route));
             continue;
         }
@@ -803,9 +857,50 @@ static bool snapshot_stream_for_variant(const char *url, TASStreamSnapshot *snap
     return snapshot->master_manifest != NULL;
 }
 
+static long long variant_resolution_area(const char *resolution) {
+    if (!resolution || resolution[0] < '0' || resolution[0] > '9') return 0;
+    char *end = NULL;
+    errno = 0;
+    unsigned long long width = strtoull(resolution, &end, 10);
+    if (errno || !width || *end != 'x' || end[1] < '0' || end[1] > '9') return 0;
+    const char *height_start = end + 1;
+    errno = 0;
+    unsigned long long height = strtoull(height_start, &end, 10);
+    if (errno || *end || !height || width > INT64_MAX / height) return 0;
+    return (long long)(width * height);
+}
+
+static bool variant_is_audio_only(const char *attributes, bool *video_codec) {
+    char video[128], name[128];
+    parse_attribute(attributes, "VIDEO=", video, sizeof(video));
+    parse_attribute(attributes, "NAME=", name, sizeof(name));
+    bool audio_codec = false;
+    *video_codec = false;
+    const char *codecs = strstr(attributes, "CODECS=");
+    if (codecs) {
+        codecs += strlen("CODECS=");
+        bool quoted = *codecs == '"';
+        if (quoted) codecs++;
+        const char *end = codecs;
+        while (*end && *end != '"' && *end != '\r' && *end != '\n' && (quoted || *end != ',')) end++;
+        while (codecs < end) {
+            while (codecs < end && (*codecs == ',' || *codecs == ' ')) codecs++;
+            size_t length = (size_t)(end - codecs);
+            const char *video_prefixes[] = {"avc1", "avc3", "hvc1", "hev1", "av01", "vp09", "vp08", "dvh1", "dvhe", "mp4v"};
+            const char *audio_prefixes[] = {"mp4a", "ac-3", "ec-3", "opus", "flac", "alac"};
+            for (size_t i = 0; i < sizeof(video_prefixes) / sizeof(video_prefixes[0]); i++)
+                if (length >= 4 && !strncmp(codecs, video_prefixes[i], 4) && (length == 4 || codecs[4] == '.' || codecs[4] == ',' || codecs[4] == ' ')) *video_codec = true;
+            for (size_t i = 0; i < sizeof(audio_prefixes) / sizeof(audio_prefixes[0]); i++)
+                if (length >= 4 && !strncmp(codecs, audio_prefixes[i], 4) && (length == 4 || codecs[4] == '.' || codecs[4] == ',' || codecs[4] == ' ')) audio_codec = true;
+            while (codecs < end && *codecs != ',') codecs++;
+        }
+    }
+    return !strcmp(video, "audio_only") || !strcmp(name, "audio_only") || (audio_codec && !*video_codec);
+}
+
 static bool variant_metadata(const char *master, const char *master_url, const char *variant_url,
                              char *resolution, size_t resolution_capacity,
-                             char *framerate, size_t framerate_capacity) {
+                             char *framerate, size_t framerate_capacity, bool *audio_only) {
     char *copy = strdup(master);
     char *save = NULL;
     char *previous = NULL;
@@ -817,6 +912,8 @@ static bool variant_metadata(const char *master, const char *master_url, const c
             if (strcmp(absolute, variant_url) == 0 && previous && starts_with(previous, "#EXT-X-STREAM-INF")) {
                 parse_attribute(previous, "RESOLUTION=", resolution, resolution_capacity);
                 parse_attribute(previous, "FRAME-RATE=", framerate, framerate_capacity);
+                bool video_codec;
+                *audio_only = variant_is_audio_only(previous, &video_codec);
                 found = true;
                 free(absolute);
                 break;
@@ -830,7 +927,7 @@ static bool variant_metadata(const char *master, const char *master_url, const c
 }
 
 static char *variant_for_resolution(const char *master, const char *master_url,
-                                    const char *resolution, const char *framerate) {
+                                    const char *resolution, const char *framerate, bool require_video) {
     char *copy = strdup(master);
     char *save = NULL;
     char *previous = NULL;
@@ -838,11 +935,7 @@ static char *variant_for_resolution(const char *master, const char *master_url,
     long long closest_difference = INT64_MAX;
     char *resolution_match = NULL;
     char *exact = NULL;
-    long long target_area = 0;
-    if (resolution && resolution[0]) {
-        char *separator = strchr(resolution, 'x');
-        if (separator) target_area = strtoll(resolution, NULL, 10) * strtoll(separator + 1, NULL, 10);
-    }
+    long long target_area = variant_resolution_area(resolution);
     for (char *line = strtok_r(copy, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
         trim_manifest_line(line);
         if (line[0] != '#' && contains(line, ".m3u8") && previous && starts_with(previous, "#EXT-X-STREAM-INF")) {
@@ -850,6 +943,14 @@ static char *variant_for_resolution(const char *master, const char *master_url,
             char line_framerate[64];
             parse_attribute(previous, "RESOLUTION=", line_resolution, sizeof(line_resolution));
             parse_attribute(previous, "FRAME-RATE=", line_framerate, sizeof(line_framerate));
+            long long area = variant_resolution_area(line_resolution);
+            bool video_codec;
+            bool audio_only = variant_is_audio_only(previous, &video_codec);
+            if (require_video && (audio_only || (!area && !video_codec))) {
+                tas_diag_log("VAFT_VARIANT_REJECTED", audio_only ? "reason=audio_only" : "reason=video_unconfirmed");
+                previous = line;
+                continue;
+            }
             char *absolute = absolute_url(master_url, line);
             if (resolution[0] && strcmp(line_resolution, resolution) == 0) {
                 if (!resolution_match) resolution_match = strdup(absolute);
@@ -859,9 +960,8 @@ static char *variant_for_resolution(const char *master, const char *master_url,
                     break;
                 }
             }
-            char *separator = strchr(line_resolution, 'x');
-            long long area = separator ? strtoll(line_resolution, NULL, 10) * strtoll(separator + 1, NULL, 10) : 0;
-            long long difference = target_area && area ? llabs(area - target_area) : 0;
+            long long difference = require_video && !area ? INT64_MAX :
+                                   (target_area && area ? llabs(area - target_area) : 0);
             if (!closest || difference < closest_difference) {
                 free(closest);
                 closest = strdup(absolute);
@@ -934,7 +1034,17 @@ static bool fetch_bytes(const char *url, id *data, id *response) {
     id request = make_internal_request(url, "GET");
     id error = nil;
     *data = synchronous_request(request, response, &error);
-    return *data && *response && !error && imsg0(*response, "statusCode") >= 200 && imsg0(*response, "statusCode") < 300;
+    bool success = *data && *response && !error && imsg0(*response, "statusCode") >= 200 && imsg0(*response, "statusCode") < 300;
+    if (!success) {
+        char detail[192];
+        snprintf(detail, sizeof(detail), "source=%016llx status=%ld data=%s error=%s error_code=%ld",
+                 (unsigned long long)tas_playback_url_id(url),
+                 *response ? (long)imsg0(*response, "statusCode") : 0L,
+                 *data ? "yes" : "no", error ? "yes" : "no",
+                 error ? (long)imsg0(error, "code") : 0L);
+        tas_diag_log("BACKUP_FETCH_FAILURE", detail);
+    }
+    return success;
 }
 
 static bool request_access_token(const char *channel, const char *player_type,
@@ -1067,6 +1177,81 @@ static void format_manifest_stats(char *output, size_t capacity, const TASManife
              stats->discontinuities, stats->prefetches, stats->scte_markers);
 }
 
+typedef struct {
+    bool valid;
+    uint64_t generation;
+    uint64_t route;
+    uint64_t source;
+    int kind;
+    time_t progress_at;
+    TASPlaybackManifest output;
+} TASPlaybackTraceState;
+
+static pthread_mutex_t g_playback_trace_lock = PTHREAD_MUTEX_INITIALIZER;
+static TASPlaybackTraceState g_playback_traces[64];
+static size_t g_next_playback_trace;
+
+static void trace_playback_output(TASStreamRef ref, const char *master_url,
+                                  const char *original_url, const char *original,
+                                  const char *selected_url, const char *selected,
+                                  bool filtered) {
+    if (!tas_diagnostics_logging_enabled() || !selected) return;
+    uint64_t route = tas_playback_url_id(original_url);
+    uint64_t source = tas_playback_url_id(selected_url);
+    tas_diag_trace_resources(ref.generation, route, source, selected);
+    int kind = selected_url && strcmp(selected_url, original_url) ? 1 : (filtered ? 2 : 0);
+    const char *kinds[] = {"original", "alternate", "filtered"};
+    TASPlaybackManifest input = tas_playback_parse(original);
+    TASPlaybackManifest output = tas_playback_parse(selected);
+    time_t now = time(NULL);
+    pthread_mutex_lock(&g_playback_trace_lock);
+    size_t slot = 64;
+    for (size_t i = 0; i < 64; i++) {
+        if (g_playback_traces[i].valid && g_playback_traces[i].generation == ref.generation &&
+            g_playback_traces[i].route == route) {
+            slot = i;
+            break;
+        }
+    }
+    bool initial = slot == 64;
+    if (initial) slot = g_next_playback_trace++ % 64;
+    TASPlaybackTraceState previous = initial ? (TASPlaybackTraceState){0} : g_playback_traces[slot];
+    bool changed = initial || previous.kind != kind || previous.source != source;
+    bool progressed = changed || previous.output.media_sequence != output.media_sequence ||
+                      previous.output.last_segment != output.last_segment;
+    time_t progress_at = progressed ? now : previous.progress_at;
+    g_playback_traces[slot] = (TASPlaybackTraceState){
+        .valid = true, .generation = ref.generation, .route = route, .source = source,
+        .kind = kind, .progress_at = progress_at, .output = output
+    };
+    pthread_mutex_unlock(&g_playback_trace_lock);
+    char input_detail[448], output_detail[448], previous_detail[448], detail[1536];
+    tas_playback_format(input_detail, sizeof(input_detail), &input);
+    tas_playback_format(output_detail, sizeof(output_detail), &output);
+    if (changed) {
+        tas_playback_format(previous_detail, sizeof(previous_detail), &previous.output);
+        snprintf(detail, sizeof(detail),
+                 "generation=%llu route=%016llx from=%s to=%s filtered=%d old_source=%016llx new_source=%016llx "
+                 "previous={%s} output={%s}",
+                 (unsigned long long)ref.generation, (unsigned long long)route,
+                 initial ? "start" : kinds[previous.kind], kinds[kind], filtered,
+                 (unsigned long long)previous.source, (unsigned long long)source,
+                 initial ? "unknown" : previous_detail, output_detail);
+        tas_diag_metric(TAS_DIAG_PLAYBACK_SWITCH, 1);
+        tas_diag_log("PLAYBACK_SWITCH", detail);
+        const char *phase = !initial && previous.kind == 1 && kind == 0 ? "return-original" :
+                            (kind == 1 ? "alternate" : (kind == 2 ? "filtered" : "original"));
+        tas_diag_player_snapshots(ref.generation, route, tas_playback_url_id(master_url), phase);
+    }
+    snprintf(detail, sizeof(detail),
+             "generation=%llu route=%016llx source=%s filtered=%d source_id=%016llx unchanged_for=%lld "
+             "input={%s} output={%s}",
+             (unsigned long long)ref.generation, (unsigned long long)route, kinds[kind], filtered,
+             (unsigned long long)source, (long long)(now >= progress_at ? now - progress_at : 0),
+             input_detail, output_detail);
+    tas_diag_log("PLAYBACK_HLS", detail);
+}
+
 static void clear_backup_master(TASStreamRef stream_ref, size_t index) {
     pthread_mutex_lock(&g_lock);
     if (stream_ref_matches_locked(stream_ref)) {
@@ -1144,7 +1329,7 @@ static char *load_backup_master(const char *original_master, const char *channel
 
 static char *fetch_vaft_variant(const char *original_master, const char *channel,
                                 const char *resolution, const char *framerate,
-                                TASStreamRef stream_ref,
+                                TASStreamRef stream_ref, bool require_video,
                                 char **selected_base_out) {
     char *fallback = NULL;
     char *fallback_url = NULL;
@@ -1162,7 +1347,8 @@ static char *fetch_vaft_variant(const char *original_master, const char *channel
                 free(master_url);
                 break;
             }
-            char *variant_url = variant_for_resolution(master, master_url, resolution, framerate);
+            char *variant_url = variant_for_resolution(master, master_url, resolution, framerate, require_video);
+            if (!variant_url) tas_diag_log("VAFT_VARIANT_UNAVAILABLE", "reason=no_eligible_variant action=try_next_existing_candidate");
             free(master);
             free(master_url);
 
@@ -1330,6 +1516,266 @@ static char *rewrite_manifest_urls(const char *playlist, const char *base_url, b
     return result ?: strdup(playlist);
 }
 
+#define TAS_CONTINUITY_SEGMENTS 128
+
+typedef struct {
+    char *body;
+    char *map;
+    double date;
+    double duration;
+    uint64_t discontinuity;
+} TASContinuitySegment;
+
+typedef struct {
+    TASContinuitySegment segments[TAS_CONTINUITY_SEGMENTS];
+    size_t count;
+    uint64_t sequence;
+    unsigned target;
+    unsigned version;
+    char *prefetch;
+} TASContinuityPlaylist;
+
+struct TASContinuity {
+    TASContinuityPlaylist output;
+    uint64_t source;
+    uint64_t source_discontinuity;
+    bool rewriting;
+};
+
+static void continuity_playlist_clear(TASContinuityPlaylist *playlist) {
+    for (size_t i = 0; i < playlist->count; i++) {
+        free(playlist->segments[i].body);
+        free(playlist->segments[i].map);
+    }
+    free(playlist->prefetch);
+    memset(playlist, 0, sizeof(*playlist));
+}
+
+static void continuity_free(TASContinuity *state) {
+    if (!state) return;
+    continuity_playlist_clear(&state->output);
+    free(state);
+}
+
+static double continuity_date(const char *value) {
+    struct tm date = {0};
+    char *end = strptime(value, "%Y-%m-%dT%H:%M:%S", &date);
+    if (!end) return NAN;
+    double fraction = 0;
+    if (*end == '.') {
+        const char *start = end;
+        fraction = strtod(start, &end);
+        if (end == start || !isfinite(fraction)) return NAN;
+    }
+    int zone = 0;
+    if (*end == 'Z' && !end[1]) {}
+    else if ((*end == '+' || *end == '-') && strlen(end) == 6 && end[3] == ':' &&
+             end[1] >= '0' && end[1] <= '9' && end[2] >= '0' && end[2] <= '9' &&
+             end[4] >= '0' && end[4] <= '9' && end[5] >= '0' && end[5] <= '9') {
+        int hours = (end[1] - '0') * 10 + end[2] - '0';
+        int minutes = (end[4] - '0') * 10 + end[5] - '0';
+        if (hours > 23 || minutes > 59) return NAN;
+        zone = (hours * 3600 + minutes * 60) * (*end == '+' ? 1 : -1);
+    } else return NAN;
+    return (double)timegm(&date) + fraction - zone;
+}
+
+static bool continuity_parse(const char *text, TASContinuityPlaylist *result) {
+    memset(result, 0, sizeof(*result));
+    if (!text || strlen(text) >= TAS_MANIFEST_CAPACITY) return false;
+    char *copy = strdup(text), *map = NULL, *pending = NULL;
+    size_t length = 0, capacity = 0, tail_length = 0, tail_capacity = 0;
+    double date = NAN, duration = NAN;
+    uint64_t discontinuity = 0;
+    bool ok = copy != NULL;
+    char *save = NULL;
+    for (char *line = ok ? strtok_r(copy, "\n", &save) : NULL; line && ok; line = strtok_r(NULL, "\n", &save)) {
+        trim_manifest_line(line);
+        if (starts_with(line, "#EXT-X-MEDIA-SEQUENCE:")) result->sequence = strtoull(line + 22, NULL, 10);
+        else if (starts_with(line, "#EXT-X-DISCONTINUITY-SEQUENCE:")) discontinuity = strtoull(line + 30, NULL, 10);
+        else if (starts_with(line, "#EXT-X-TARGETDURATION:")) result->target = (unsigned)strtoul(line + 22, NULL, 10);
+        else if (starts_with(line, "#EXT-X-VERSION:")) result->version = (unsigned)strtoul(line + 15, NULL, 10);
+        else if (starts_with(line, "#EXT-X-PROGRAM-DATE-TIME:")) {
+            date = continuity_date(line + 25);
+            append_text(&pending, &length, &capacity, line);
+            append_text(&pending, &length, &capacity, "\n");
+        } else if (starts_with(line, "#EXT-X-MAP:")) replace_owned_string(&map, line);
+        else if (!strcmp(line, "#EXT-X-DISCONTINUITY")) {
+            if (discontinuity == UINT64_MAX) ok = false;
+            else discontinuity++;
+        } else if (starts_with(line, "#EXTINF:")) {
+            duration = strtod(line + 8, NULL);
+            append_text(&pending, &length, &capacity, line);
+            append_text(&pending, &length, &capacity, "\n");
+        } else if (starts_with(line, "#EXT-X-TWITCH-PREFETCH:")) {
+            append_text(&result->prefetch, &tail_length, &tail_capacity, line);
+            append_text(&result->prefetch, &tail_length, &tail_capacity, "\n");
+        } else if (starts_with(line, "#EXT-X-KEY:") && !contains(line, "METHOD=NONE")) ok = false;
+        else if (starts_with(line, "#EXT-X-BYTERANGE:") || starts_with(line, "#EXT-X-PART") ||
+                 starts_with(line, "#EXT-X-SKIP:") || !strcmp(line, "#EXT-X-ENDLIST")) ok = false;
+        else if (line[0] && line[0] != '#') {
+            if (!isfinite(date) || !isfinite(duration) || duration <= 0 || result->count == TAS_CONTINUITY_SEGMENTS) { ok = false; break; }
+            append_text(&pending, &length, &capacity, line);
+            append_text(&pending, &length, &capacity, "\n");
+            TASContinuitySegment *segment = &result->segments[result->count++];
+            *segment = (TASContinuitySegment){pending, map ? strdup(map) : NULL, date, duration, discontinuity};
+            if (map && !segment->map) ok = false;
+            pending = NULL; length = 0; capacity = 0;
+            date += duration; duration = NAN;
+        }
+    }
+    free(copy); free(map); free(pending);
+    if (!ok || !result->count || !result->target || result->sequence > UINT64_MAX - result->count) {
+        continuity_playlist_clear(result);
+        return false;
+    }
+    return true;
+}
+
+static char *continuity_render(const TASContinuityPlaylist *playlist) {
+    char header[256];
+    snprintf(header, sizeof(header), "#EXTM3U\n#EXT-X-VERSION:%u\n#EXT-X-TARGETDURATION:%u\n"
+             "#EXT-X-MEDIA-SEQUENCE:%llu\n#EXT-X-DISCONTINUITY-SEQUENCE:%llu\n",
+             playlist->version < 6 ? 6 : playlist->version, playlist->target,
+             (unsigned long long)playlist->sequence,
+             (unsigned long long)playlist->segments[0].discontinuity);
+    char *text = NULL;
+    size_t length = 0, capacity = 0;
+    append_text(&text, &length, &capacity, header);
+    const char *map = NULL;
+    uint64_t discontinuity = playlist->segments[0].discontinuity;
+    for (size_t i = 0; i < playlist->count; i++) {
+        const TASContinuitySegment *segment = &playlist->segments[i];
+        while (discontinuity < segment->discontinuity) {
+            append_text(&text, &length, &capacity, "#EXT-X-DISCONTINUITY\n");
+            discontinuity++;
+        }
+        if (segment->map && (!map || strcmp(map, segment->map))) {
+            append_text(&text, &length, &capacity, segment->map);
+            append_text(&text, &length, &capacity, "\n");
+            map = segment->map;
+        }
+        if (!contains(segment->body, "#EXT-X-PROGRAM-DATE-TIME:")) {
+            time_t seconds = (time_t)floor(segment->date);
+            unsigned fraction = (unsigned)((segment->date - floor(segment->date)) * 1000000 + 0.5);
+            if (fraction == 1000000) { seconds++; fraction = 0; }
+            struct tm utc;
+            char date[48], tag[96];
+            if (gmtime_r(&seconds, &utc) && strftime(date, sizeof(date), "%Y-%m-%dT%H:%M:%S", &utc)) {
+                snprintf(tag, sizeof(tag), "#EXT-X-PROGRAM-DATE-TIME:%s.%06uZ\n", date, fraction);
+                append_text(&text, &length, &capacity, tag);
+            }
+        }
+        append_text(&text, &length, &capacity, segment->body);
+    }
+    if (playlist->prefetch) append_text(&text, &length, &capacity, playlist->prefetch);
+    return text;
+}
+
+static void continuity_drop_first(TASContinuityPlaylist *playlist) {
+    free(playlist->segments[0].body); free(playlist->segments[0].map);
+    memmove(playlist->segments, playlist->segments + 1, (--playlist->count) * sizeof(playlist->segments[0]));
+    playlist->sequence++;
+}
+
+static char *continuity_update(TASContinuity *state, const char *text, uint64_t source) {
+    TASContinuityPlaylist incoming;
+    if (!continuity_parse(text, &incoming)) {
+        tas_diag_log("HLS_CONTINUITY_UNSUPPORTED", "reason=unsupported_or_missing_timeline unchanged=yes");
+        return strdup(text);
+    }
+    TASContinuityPlaylist *output = &state->output;
+    if (!output->count || (!state->rewriting && state->source == source && incoming.sequence >= output->sequence)) {
+        continuity_playlist_clear(output);
+        *output = incoming;
+        state->source = source;
+        state->source_discontinuity = incoming.segments[incoming.count - 1].discontinuity;
+        return strdup(text);
+    }
+    size_t first = incoming.count;
+    TASContinuitySegment *last = &output->segments[output->count - 1];
+    double end = last->date + last->duration;
+    for (size_t i = 0; i < incoming.count; i++) {
+        if (incoming.segments[i].date >= end - 0.001) { first = i; break; }
+    }
+    bool switched = state->source != source;
+    uint64_t previous_disc = first < incoming.count ? incoming.segments[first].discontinuity : 0;
+    uint64_t next_disc = last->discontinuity;
+    if (switched && first < incoming.count && next_disc != UINT64_MAX) next_disc++;
+    uint64_t boundary = !switched && first < incoming.count ?
+        (previous_disc >= state->source_discontinuity ? previous_disc - state->source_discontinuity : 1) : 0;
+    bool boundary_valid = boundary <= 128 && next_disc <= UINT64_MAX - boundary;
+    if (boundary_valid) next_disc += boundary;
+    uint64_t checked_disc = next_disc, checked_previous = previous_disc;
+    bool valid = boundary_valid && !(switched && first < incoming.count && last->discontinuity == UINT64_MAX);
+    for (size_t i = first; valid && i < incoming.count; i++) {
+        TASContinuitySegment *segment = &incoming.segments[i];
+        valid = round(segment->duration) <= output->target && segment->discontinuity >= checked_previous &&
+                segment->discontinuity - checked_previous <= 128 &&
+                checked_disc <= UINT64_MAX - (segment->discontinuity - checked_previous);
+        if (valid) checked_disc += segment->discontinuity - checked_previous;
+        checked_previous = segment->discontinuity;
+    }
+    if (!valid || output->sequence > UINT64_MAX - output->count - (incoming.count - first)) {
+        tas_diag_log("HLS_CONTINUITY_REJECTED", "reason=incompatible_duration_or_counter unchanged_previous_window=yes");
+        continuity_playlist_clear(&incoming);
+        return continuity_render(output);
+    }
+    double wanted = 3.0 * output->target, total = 0, window = 0;
+    for (size_t i = 0; i < incoming.count; i++) window += incoming.segments[i].duration;
+    if (window > wanted) wanted = window;
+    for (size_t i = 0; i < output->count; i++) total += output->segments[i].duration;
+    for (size_t i = first; i < incoming.count; i++) {
+        TASContinuitySegment *segment = &incoming.segments[i];
+        next_disc += segment->discontinuity - previous_disc;
+        previous_disc = segment->discontinuity;
+        if (output->count == TAS_CONTINUITY_SEGMENTS) {
+            total -= output->segments[0].duration;
+            continuity_drop_first(output);
+        }
+        segment->discontinuity = next_disc;
+        output->segments[output->count++] = *segment;
+        total += segment->duration;
+        memset(segment, 0, sizeof(*segment));
+    }
+    while (output->count > 1 && total - output->segments[0].duration >= wanted) {
+        total -= output->segments[0].duration;
+        continuity_drop_first(output);
+    }
+    if (first < incoming.count && incoming.segments[first].body == NULL) {
+        state->source = source;
+        state->source_discontinuity = previous_disc;
+    }
+    state->rewriting = true;
+    if (incoming.version > output->version) output->version = incoming.version;
+    replace_owned_string(&output->prefetch, first < incoming.count ? incoming.prefetch : NULL);
+    char *result = continuity_render(output);
+    char detail[256];
+    snprintf(detail, sizeof(detail), "source=%016llx input_seq=%llu output_seq=%llu segments=%zu switch=%d pending=%d",
+             (unsigned long long)source, (unsigned long long)incoming.sequence,
+             (unsigned long long)output->sequence, output->count, switched, first == incoming.count);
+    tas_diag_log("HLS_CONTINUITY", detail);
+    continuity_playlist_clear(&incoming);
+    return result;
+}
+
+static char *continuous_manifest(TASStreamRef ref, const char *route_url, const char *source_url, const char *text, bool custom_scheme) {
+    char *result = NULL;
+    pthread_mutex_lock(&g_lock);
+    if (stream_ref_matches_locked(ref)) {
+        for (size_t i = 0; i < TAS_MAX_VARIANT_ROUTES; i++) {
+            TASVariantRoute *route = &g_variant_routes[i];
+            if (route->generation != ref.generation || strcmp(route->url, route_url)) continue;
+            TASContinuity **state = &route->continuity[custom_scheme ? 1 : 0];
+            if (!*state) *state = calloc(1, sizeof(**state));
+            if (*state) result = continuity_update(*state, text, tas_playback_url_id(source_url));
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_lock);
+    return result ?: strdup(text);
+}
+
 static char *process_manifest(const char *url, const char *playlist, bool custom_scheme) {
     char channel[512];
     channel_from_master_url(url, channel, sizeof(channel));
@@ -1366,11 +1812,13 @@ static char *process_manifest(const char *url, const char *playlist, bool custom
     if (has_ad_markers(playlist)) tas_diag_metric(TAS_DIAG_AD_MANIFEST, 1);
     tas_diag_log_url(has_ad_markers(playlist) ? "VARIANT_AD_MARKED" : "VARIANT_MANIFEST",
                      url, manifest_detail);
+    bool original_audio_only = false;
     variant_metadata(stream.master_manifest, stream.master_url, url,
-                     resolution, sizeof(resolution), framerate, sizeof(framerate));
+                     resolution, sizeof(resolution), framerate, sizeof(framerate), &original_audio_only);
 
     char *selected = NULL;
     char *selected_base = NULL;
+    bool filtered = false;
     if (has_ad_markers(playlist)) {
         if (stream.backup_variant_url[0] && time(NULL) - stream.backup_created < 600) {
             id backup_data = nil;
@@ -1388,7 +1836,7 @@ static char *process_manifest(const char *url, const char *playlist, bool custom
         }
         if (!selected && stream.master_url[0] && stream.channel[0]) {
             selected = fetch_vaft_variant(stream.master_url, stream.channel, resolution, framerate,
-                                          stream.ref, &selected_base);
+                                          stream.ref, !original_audio_only, &selected_base);
         }
         if (!selected) {
             selected = strdup(playlist);
@@ -1401,6 +1849,7 @@ static char *process_manifest(const char *url, const char *playlist, bool custom
             char *stripped = strip_ad_segments(selected, selected_base);
             free(selected);
             selected = stripped;
+            filtered = true;
         }
     } else {
         clear_active_backup(stream.ref);
@@ -1408,6 +1857,11 @@ static char *process_manifest(const char *url, const char *playlist, bool custom
         selected_base = strdup(url);
     }
     char *rewritten = rewrite_manifest_urls(selected, selected_base, custom_scheme);
+    char *continuous = continuous_manifest(stream.ref, url, selected_base, rewritten, custom_scheme);
+    free(rewritten);
+    rewritten = continuous;
+    trace_playback_output(stream.ref, stream.master_url, url, playlist,
+                          selected_base, rewritten, filtered);
     free(selected);
     free(selected_base);
     free(stream.master_manifest);
@@ -1505,7 +1959,7 @@ static id asset_init(id self, SEL command, id url, id options) {
         !(contains(absolute, "ttvnw.net") || contains(absolute, "twitch.tv"))) {
         return ((id (*)(id, SEL, id, id))g_original_asset_init)(self, command, url, options);
     }
-    if (!TPKAdblockEnabledFast()) { /* TwitchPlusK D2 */
+    if (!TPKAdblockEnabledFast()) {
         return ((id (*)(id, SEL, id, id))g_original_asset_init)(self, command, url, options);
     }
     tas_diag_log_url("ASSET_INTERCEPT", absolute, "transport=AVURLAsset");
@@ -1555,6 +2009,7 @@ static id session_with_configuration(id self, SEL command, id configuration) {
 static id session_with_configuration_delegate_queue(id self, SEL command, id configuration,
                                                      id delegate, id queue) {
     add_protocol_to_configuration(configuration);
+    tas_diag_observe_delegate(delegate);
     return ((id (*)(id, SEL, id, id, id))g_original_session_with_configuration_delegate_queue)(
         self, command, configuration, delegate, queue);
 }
@@ -1563,6 +2018,7 @@ static id data_task_with_request(id self, SEL command, id original) {
     id replacement = normalized_graphql_request_copy(original);
     id task = ((id (*)(id, SEL, id))g_original_data_task_request)(
         self, command, replacement ?: original);
+    tas_diag_observe_task(task);
     if (replacement) objc_release(replacement);
     return task;
 }
@@ -1570,7 +2026,8 @@ static id data_task_with_request(id self, SEL command, id original) {
 static id data_task_with_request_completion(id self, SEL command, id original, id completion) {
     id replacement = normalized_graphql_request_copy(original);
     id task = ((id (*)(id, SEL, id, id))g_original_data_task_request_completion)(
-        self, command, replacement ?: original, completion);
+        self, command, replacement ?: original, tas_diag_segment_completion(original, completion));
+    tas_diag_observe_task(task);
     if (replacement) objc_release(replacement);
     return task;
 }
@@ -1583,8 +2040,6 @@ static void swizzle_method(Class cls, const char *selector, IMP replacement, IMP
     method_setImplementation(method, replacement);
 }
 
-/* TwitchPlusK divergence D1: called by the host tweak when Local is the
- * active method — never installed as a second constructor. */
 void vaft_initialize(void) {
     Class url_protocol = objc_getClass("NSURLProtocol");
     g_protocol_class = objc_allocateClassPair(url_protocol, "TASURLProtocol", 0);

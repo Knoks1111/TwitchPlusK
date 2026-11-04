@@ -3055,6 +3055,7 @@ static NSArray<TPKMultiSelectionOption *> *TPKExternalProviderSelectionOptions(v
     return options;
 }
 
+
 @interface TPKMultiSelectionController : UITableViewController
 @property (nonatomic, copy, nullable) void (^onFinish)(void);
 - (instancetype)initWithTitle:(NSString *)title
@@ -3578,7 +3579,7 @@ static NSString *TPKTabItemName(TPKTabItem item) {
 static NSString *TPKTabPageTitle(TPKLaunchDestination destination) {
     switch (destination) {
         case TPKLaunchDestinationHomeFollowing:      return L(@"tab_page_following");
-        case TPKLaunchDestinationHomeLive:           return L(@"tab_page_live");
+        case TPKLaunchDestinationHomeLive:           return L(@"tab_page_live_default");
         case TPKLaunchDestinationHomeClips:          return L(@"tab_page_clips");
         case TPKLaunchDestinationBrowseCategories:   return L(@"tab_page_categories");
         case TPKLaunchDestinationBrowseLiveChannels: return L(@"tab_page_live_channels");
@@ -3598,34 +3599,11 @@ static NSString *TPKTabItemIcon(TPKTabItem item) {
 }
 
 // Couleur propre à chaque onglet ; un onglet masqué reste gris.
-static UIColor *TPKTabItemColor(TPKTabItem item) {
-    switch (item) {
-        case TPKTabItemHome:     return TPKAccent();                                             // violet Twitch
-        case TPKTabItemExplore:  return [UIColor colorWithRed:0.30 green:0.62 blue:1.00 alpha:1.0]; // bleu
-        case TPKTabItemCreate:   return [UIColor colorWithRed:0.30 green:0.75 blue:0.45 alpha:1.0]; // vert
-        case TPKTabItemActivity: return [UIColor colorWithRed:0.95 green:0.35 blue:0.50 alpha:1.0]; // rose
-        case TPKTabItemProfile:  return [UIColor colorWithRed:0.25 green:0.70 blue:0.95 alpha:1.0]; // cyan
-    }
-    return TPKAccent();
-}
-
-// La ligne « Défaut » n'est pas un onglet : elle porte la couleur du tweak.
-static UIColor *TPKTabItemColorDefaultRow(void) {
-    return TPKAccent();
-}
-
-// L'onglet visé par une destination de lancement est-il masqué ? Dans cet état,
-// la destination ne peut pas être honorée au démarrage.
-static BOOL TPKLaunchDestinationTabHidden(TPKLaunchDestination destination) {
-    NSInteger tab = tpk_launchDestinationTab(destination);
-    return tab >= 0 && tpk_tabItemHidden((TPKTabItem)tab);
-}
-
 // Destination par défaut d'un onglet : sert de repli quand l'onglet choisi
 // comme écran de lancement vient d'être masqué.
 static TPKLaunchDestination TPKDefaultDestinationForTab(TPKTabItem item) {
     switch (item) {
-        case TPKTabItemHome:     return TPKLaunchDestinationHomeFollowing;
+        case TPKTabItemHome:     return TPKLaunchDestinationHomeLive;
         case TPKTabItemExplore:  return TPKLaunchDestinationBrowseCategories;
         case TPKTabItemActivity: return TPKLaunchDestinationActivity;
         case TPKTabItemProfile:  return TPKLaunchDestinationProfile;
@@ -3634,20 +3612,21 @@ static TPKLaunchDestination TPKDefaultDestinationForTab(TPKTabItem item) {
     return TPKLaunchDestinationDefault;
 }
 
-// Repli : l'onglet visible le plus proche du masqué, en commençant par le
-// voisin de gauche (le plus proche dans l'ordre de la barre).
+// Repli sur le voisin visible le plus proche dans l'ordre personnalisé.
 static TPKLaunchDestination TPKNearestVisibleDestination(TPKTabItem item) {
+    NSArray<NSNumber *> *order = tpk_tabItemOrder();
+    NSInteger position = [order indexOfObject:@(item)];
     for (NSInteger delta = 1; delta < TPK_TAB_ITEM_COUNT; delta++) {
-        NSInteger before = (NSInteger)item - delta;
-        if (before >= 0 && !tpk_tabItemHidden((TPKTabItem)before)) {
+        NSInteger before = position - delta;
+        if (before >= 0 && !tpk_tabItemHidden((TPKTabItem)[order[before] integerValue])) {
             TPKLaunchDestination destination =
-                TPKDefaultDestinationForTab((TPKTabItem)before);
+                TPKDefaultDestinationForTab((TPKTabItem)[order[before] integerValue]);
             if (destination != TPKLaunchDestinationDefault) return destination;
         }
-        NSInteger after = (NSInteger)item + delta;
-        if (after < TPK_TAB_ITEM_COUNT && !tpk_tabItemHidden((TPKTabItem)after)) {
+        NSInteger after = position + delta;
+        if (after < TPK_TAB_ITEM_COUNT && !tpk_tabItemHidden((TPKTabItem)[order[after] integerValue])) {
             TPKLaunchDestination destination =
-                TPKDefaultDestinationForTab((TPKTabItem)after);
+                TPKDefaultDestinationForTab((TPKTabItem)[order[after] integerValue]);
             if (destination != TPKLaunchDestinationDefault) return destination;
         }
     }
@@ -3657,7 +3636,7 @@ static TPKLaunchDestination TPKNearestVisibleDestination(TPKTabItem item) {
 // Rows for the Home and Playback section. L'écran de lancement est réglé dans la
 // section de la barre d'onglets, avec laquelle il est lié.
 typedef NS_ENUM(NSInteger, TPKContentHomeRow) {
-    TPKContentHomeRowHideStories    = 0,
+    TPKContentHomeRowHideFollowedRecaps = 0,
     TPKContentHomeRowKeepLiveFeed   = 1,
     TPKContentHomeRowAutoCollect    = 2,
 };
@@ -3694,20 +3673,6 @@ typedef NS_ENUM(NSInteger, TPKOrientationLockSetting) {
     TPKOrientationLockSettingAutoRight,
     TPKOrientationLockSettingAutoBoth,
 };
-
-static NSString *TPKLaunchDestinationTitle(TPKLaunchDestination destination) {
-    switch (destination) {
-        case TPKLaunchDestinationHomeFollowing:      return L(@"launch_home_following");
-        case TPKLaunchDestinationHomeLive:           return L(@"launch_home_live");
-        case TPKLaunchDestinationHomeClips:          return L(@"launch_home_clips");
-        case TPKLaunchDestinationBrowseCategories:   return L(@"launch_browse_categories");
-        case TPKLaunchDestinationBrowseLiveChannels: return L(@"launch_browse_live_channels");
-        case TPKLaunchDestinationActivity:            return L(@"launch_activity");
-        case TPKLaunchDestinationProfile:             return L(@"launch_profile");
-        case TPKLaunchDestinationDefault:             return L(@"launch_default");
-    }
-    return L(@"launch_default");
-}
 
 static TPKOrientationLockSetting TPKCurrentOrientationLockSetting(void) {
     if (!tpk_orientationLockButtonEnabled()) {
@@ -3873,7 +3838,7 @@ static NSArray<NSString *> *TPKTPKIDsFromPCFavorites(NSArray *rawFavorites) {
 // Visible Home and Playback rows.
 - (NSArray<NSNumber *> *)tpk_visibleHomeRows {
     return TPKVisibleRowIndexes(@[
-        @(TPKContentHomeRowHideStories),
+        @(TPKContentHomeRowHideFollowedRecaps),
         @(TPKContentHomeRowKeepLiveFeed),
         @(TPKContentHomeRowAutoCollect),
     ], @{});
@@ -3940,10 +3905,10 @@ static NSArray<NSString *> *TPKTPKIDsFromPCFavorites(NSArray *rawFavorites) {
         NSArray<NSNumber *> *visible = [self tpk_visibleHomeRows];
         if (ip.row >= (NSInteger)visible.count) return [[UITableViewCell alloc] init];
         switch (visible[ip.row].integerValue) {
-            case TPKContentHomeRowHideStories:
-                return TPKSwitchCell(L(@"switch_hide_twitch_stories"),
-                    @"circle.slash", [UIColor colorWithRed:0.95 green:0.35 blue:0.50 alpha:1.0],
-                    tpk_hideTwitchStoriesEnabled(), self, @selector(toggleHideTwitchStories:), nil);
+            case TPKContentHomeRowHideFollowedRecaps:
+                return TPKSwitchCell(L(@"switch_hide_followed_recaps"),
+                    @"rectangle.stack", [UIColor colorWithRed:0.95 green:0.35 blue:0.50 alpha:1.0],
+                    tpk_hideFollowedRecapsEnabled(), self, @selector(toggleHideFollowedRecaps:), nil);
             case TPKContentHomeRowKeepLiveFeed:
                 return TPKSwitchCell(L(@"switch_keep_live_feed_playing"),
                     @"play.circle.fill", [UIColor colorWithRed:0.30 green:0.75 blue:0.45 alpha:1.0],
@@ -4126,11 +4091,12 @@ static NSArray<NSString *> *TPKTPKIDsFromPCFavorites(NSArray *rawFavorites) {
     TPKSetBool(kTCLiveAutoCollectChannelPoints, sw.isOn);
     TPKAutoClaimSettingsDidChange();
 }
-- (void)toggleHideTwitchStories:(UISwitch *)sw {
-    tpk_setHideTwitchStoriesEnabled(sw.isOn);
-}
 - (void)toggleKeepLiveFeedPlaying:(UISwitch *)sw {
     tpk_setKeepLiveFeedPlayingEnabled(sw.isOn);
+}
+
+- (void)toggleHideFollowedRecaps:(UISwitch *)sw {
+    tpk_setHideFollowedRecapsEnabled(sw.isOn);
 }
 
 - (void)togglePlayerGestures:(UISwitch *)sw {
@@ -4370,398 +4336,285 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)tpk_showAlert:(NSString *)title message:(NSString *)msg {
     TPKShowAlert(self, title, msg);
 }
-@end// Ligne de l'écran barre d'onglets : radio (écran de lancement) et interrupteur
-// (onglet visible) sur la même ligne. `tabIndex` < 0 décrit « Défaut ». Création
-// n'a pas de radio : aucune destination de lancement ne la vise. `subPageTitle`
-// ajoute une seconde ligne optionnelle (sous-page ouverte, ou « masqué »).
-static UITableViewCell *TPKTabOptionCell(NSInteger tabIndex,
-                                         NSString *title,
-                                         NSString *sfName,
-                                         NSString *subPageTitle,
-                                         BOOL isLaunch,
-                                         BOOL isVisible,
-                                         id target,
-                                         SEL switchAction,
-                                         SEL subPageAction) {
-    UITableViewCell *cell = [[UITableViewCell alloc]
-        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-    cell.selectionStyle  = UITableViewCellSelectionStyleNone;
-    // Ligne de lancement : fond gris neutre (un cercle seul se repère mal).
-    cell.backgroundColor = isLaunch ? [UIColor colorWithWhite:1.0 alpha:0.08]
-                                    : TPKCellBg();
+@end
 
-    UIImageView *radio = nil;
-    if (tabIndex != TPKTabItemCreate) {
-        UIImageSymbolConfiguration *radioCfg = [UIImageSymbolConfiguration
-            configurationWithPointSize:20 weight:UIImageSymbolWeightRegular];
-        radio = [[UIImageView alloc] initWithImage:[UIImage
-            systemImageNamed:(isLaunch ? @"largecircle.fill.circle" : @"circle")
-            withConfiguration:radioCfg]];
-        radio.tintColor = isLaunch ? TPKAccent() : TPKGray();
-        radio.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.contentView addSubview:radio];
-    }
-
-    UIImageView *icon = nil;
-    if (sfName.length) {
-        UIColor *tint = tabIndex >= 0 ? TPKTabItemColor((TPKTabItem)tabIndex)
-                                      : TPKTabItemColorDefaultRow();
-        icon = TPKIcon(sfName, isVisible ? tint : TPKGray());
-        [cell.contentView addSubview:icon];
-    }
-
-    UILabel *lbl = [[UILabel alloc] init];
-    lbl.text = title;
-    // Match native settings typography.
-    lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
-    lbl.textColor = isVisible ? [UIColor whiteColor] : TPKGray();
-    lbl.numberOfLines = 1;
-    lbl.translatesAutoresizingMaskIntoConstraints = NO;
-    [cell.contentView addSubview:lbl];
-
-    UISwitch *sw = nil;
-    if (tabIndex >= 0) {
-        sw = [[UISwitch alloc] init];
-        sw.on          = isVisible;
-        sw.onTintColor = TPKAccent();
-        sw.tag         = tabIndex;
-        sw.accessibilityLabel = title;
-        [sw addTarget:target action:switchAction
-     forControlEvents:UIControlEventValueChanged];
-        sw.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.contentView addSubview:sw];
-    }
-
-    // Seconde ligne : sous-page à choisir, ou simple mention (« masqué »).
-    UIView *secondLine = nil;
-    if (subPageTitle.length) {
-        if (subPageAction) {
-            // Assemblé à la main : sur un bouton système, le chevron garde sa
-            // couleur propre et se cale sur les métriques du bouton.
-            UIColor *subColor = TPKAccent();
-            UIControl *control = [[UIControl alloc] init];
-            control.tag = tabIndex;
-            [control addTarget:target action:subPageAction
-              forControlEvents:UIControlEventTouchUpInside];
-
-            UILabel *subLabel = [[UILabel alloc] init];
-            subLabel.text = [NSString stringWithFormat:@"%@ %@",
-                             L(@"tab_bar_open_with"), subPageTitle];
-            subLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-            subLabel.textColor = subColor;
-            subLabel.translatesAutoresizingMaskIntoConstraints = NO;
-            [control addSubview:subLabel];
-
-            UIImageSymbolConfiguration *chevronCfg = [UIImageSymbolConfiguration
-                configurationWithPointSize:11 weight:UIImageSymbolWeightSemibold];
-            UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage
-                systemImageNamed:@"chevron.right" withConfiguration:chevronCfg]];
-            chevron.tintColor = subColor;
-            chevron.translatesAutoresizingMaskIntoConstraints = NO;
-            [control addSubview:chevron];
-
-            [NSLayoutConstraint activateConstraints:@[
-                [subLabel.leadingAnchor constraintEqualToAnchor:control.leadingAnchor],
-                [subLabel.topAnchor constraintEqualToAnchor:control.topAnchor],
-                [subLabel.bottomAnchor constraintEqualToAnchor:control.bottomAnchor],
-                [chevron.leadingAnchor constraintEqualToAnchor:subLabel.trailingAnchor
-                                                      constant:5],
-                // Centré sur la hauteur de capitale du texte, pas sur sa boîte.
-                [chevron.centerYAnchor constraintEqualToAnchor:subLabel.firstBaselineAnchor
-                                                      constant:-4],
-                [chevron.trailingAnchor constraintEqualToAnchor:control.trailingAnchor],
-            ]];
-            secondLine = control;
-        } else {
-            UILabel *note = [[UILabel alloc] init];
-            note.text = subPageTitle;
-            note.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
-            note.textColor = TPKGray();
-            secondLine = note;
-        }
-        secondLine.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.contentView addSubview:secondLine];
-    }
-
-    NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray array];
-    if (radio) {
-        [constraints addObjectsFromArray:@[
-            [radio.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor
-                                                constant:16],
-            [radio.centerYAnchor constraintEqualToAnchor:lbl.centerYAnchor],
-            [radio.widthAnchor   constraintEqualToConstant:22],
-            [radio.heightAnchor  constraintEqualToConstant:22],
-        ]];
-    }
-    [constraints addObject:[lbl.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor
-                                                         constant:12]];
-    // Sans radio (Création), la place est conservée pour garder les colonnes alignées.
-    if (icon) {
-        [constraints addObject:radio
-            ? [icon.leadingAnchor constraintEqualToAnchor:radio.trailingAnchor constant:10]
-            : [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor
-                                                 constant:48]];
-        [constraints addObjectsFromArray:@[
-            [icon.centerYAnchor constraintEqualToAnchor:lbl.centerYAnchor],
-            [lbl.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:12],
-        ]];
-    } else {
-        [constraints addObject:radio
-            ? [lbl.leadingAnchor constraintEqualToAnchor:radio.trailingAnchor constant:12]
-            : [lbl.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor
-                                                constant:48]];
-    }
-    if (sw) {
-        [constraints addObjectsFromArray:@[
-            [sw.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor
-                                              constant:-16],
-            [sw.centerYAnchor  constraintEqualToAnchor:lbl.centerYAnchor],
-            [lbl.trailingAnchor constraintLessThanOrEqualToAnchor:sw.leadingAnchor
-                                                         constant:-12],
-        ]];
-    } else {
-        [constraints addObject:[lbl.trailingAnchor
-            constraintLessThanOrEqualToAnchor:cell.contentView.trailingAnchor constant:-16]];
-    }
-    if (secondLine) {
-        [constraints addObjectsFromArray:@[
-            [secondLine.leadingAnchor constraintEqualToAnchor:lbl.leadingAnchor],
-            [secondLine.topAnchor constraintEqualToAnchor:lbl.bottomAnchor constant:3],
-            [secondLine.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor
-                                                    constant:-12],
-            [secondLine.trailingAnchor
-                constraintLessThanOrEqualToAnchor:cell.contentView.trailingAnchor
-                                         constant:-16],
-        ]];
-    } else {
-        [constraints addObject:[lbl.bottomAnchor
-            constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-12]];
-    }
-    [NSLayoutConstraint activateConstraints:constraints];
-    return cell;
-}
-
-// MARK: - TPKTabBarSettingsController
-// Masquage des onglets de la barre principale et écran de lancement. Les deux
-// réglages sont liés : une destination dont l'onglet est masqué ne peut pas être
-// honorée. Ils partagent donc un même écran, atteint par une seule ligne dans le
-// menu Contenu.
-
-// Deux sections : l'explication permanente, puis les réglages eux-mêmes.
 typedef NS_ENUM(NSInteger, TPKTabBarSettingsSection) {
-    TPKTabBarSettingsSectionIntro = 0,
-    TPKTabBarSettingsSectionOptions = 1,
+    TPKTabBarSettingsSectionLaunch = 0,
+    TPKTabBarSettingsSectionVisible,
+    TPKTabBarSettingsSectionHidden,
 };
 
-typedef NS_ENUM(NSInteger, TPKTabBarSettingsRow) {
-    TPKTabBarSettingsRowDefault = 0,   // « Défaut » : aucun onglet imposé
-    TPKTabBarSettingsRowFirstTab,      // puis un onglet par ligne, ordre réel
-};
+@interface TPKTabBarSettingsController ()
+@property (nonatomic, copy) NSArray<NSNumber *> *visibleTabs;
+@property (nonatomic, copy) NSArray<NSNumber *> *hiddenTabs;
+@end
 
 @implementation TPKTabBarSettingsController
 
 - (instancetype)init {
-    self = [super initWithStyle:UITableViewStyleInsetGrouped];
-    return self;
+    return [super initWithStyle:UITableViewStyleInsetGrouped];
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = L(@"section_tab_bar");
     TPKStyleTableView(self.tableView);
+    self.tableView.allowsSelectionDuringEditing = YES;
+    [self.tableView setEditing:YES animated:NO];
     TPKRegisterOLEDObserver(self);
+    [self tpk_reloadTabs];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self tpk_reloadTabs];
 }
 
 - (void)tpk_oledModeDidChange {
     dispatch_async(dispatch_get_main_queue(), ^{
         TPKApplyOLEDStyle(self);
+        [self.tableView reloadData];
     });
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
-
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    if (s == TPKTabBarSettingsSectionIntro) return 1;
-    return TPKTabBarSettingsRowFirstTab + TPK_TAB_ITEM_COUNT;
+- (void)tpk_readTabs {
+    NSMutableArray *visible = [NSMutableArray array];
+    NSMutableArray *hidden = [NSMutableArray array];
+    for (NSNumber *raw in tpk_tabItemOrder())
+        [(tpk_tabItemHidden((TPKTabItem)raw.integerValue) ? hidden : visible) addObject:raw];
+    self.visibleTabs = visible;
+    self.hiddenTabs = hidden;
 }
 
-- (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
-    return (s == TPKTabBarSettingsSectionIntro) ? 8 : 34;
+- (void)tpk_reloadTabs {
+    [self tpk_readTabs];
+    CGPoint offset = self.tableView.contentOffset;
+    [self.tableView reloadData];
+    [self.tableView layoutIfNeeded];
+    CGFloat maximum = MAX(-self.tableView.adjustedContentInset.top,
+        self.tableView.contentSize.height - self.tableView.bounds.size.height + self.tableView.adjustedContentInset.bottom);
+    offset.y = MIN(MAX(offset.y, -self.tableView.adjustedContentInset.top), maximum);
+    [self.tableView setContentOffset:offset animated:NO];
 }
 
-// Annonce les deux colonnes : radio (départ) à gauche, interrupteur (visible)
-// à droite.
-- (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
-    UIView *container = [[UIView alloc] init];
-    container.backgroundColor = [UIColor clearColor];
+- (BOOL)tpk_hasSubpage {
+    NSInteger tab = tpk_launchDestinationTab(tpk_launchDestination());
+    return tab == TPKTabItemHome || tab == TPKTabItemExplore;
+}
 
-    if (s == TPKTabBarSettingsSectionIntro) return [[UIView alloc] init];
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
 
-    UILabel *launch = [[UILabel alloc] init];
-    launch.text = L(@"tab_bar_header_launch").uppercaseString;
-    UILabel *visible = [[UILabel alloc] init];
-    visible.text = L(@"tab_bar_header_visible").uppercaseString;
-    for (UILabel *lbl in @[launch, visible]) {
-        lbl.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
-        // En-têtes de colonnes à la couleur du tweak.
-        lbl.textColor = TPKAccent();
-        lbl.translatesAutoresizingMaskIntoConstraints = NO;
-        [container addSubview:lbl];
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
+    if (section == TPKTabBarSettingsSectionLaunch) return [self tpk_hasSubpage] ? 2 : 1;
+    return section == TPKTabBarSettingsSectionVisible ? self.visibleTabs.count : self.hiddenTabs.count;
+}
+
+- (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)section {
+    NSString *key = section == TPKTabBarSettingsSectionLaunch ? @"tab_bar_header_launch" :
+        (section == TPKTabBarSettingsSectionVisible ? @"tab_bar_header_visible" : @"tab_bar_header_hidden");
+    return TPKSectionHeader(L(key), NO, nil);
+}
+
+- (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)section { return 38; }
+
+- (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)section {
+    return nil;
+}
+
+- (UITableViewCell *)tpk_previewCell {
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.backgroundColor = TPKCellBg();
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    UIStackView *bar = [[UIStackView alloc] init];
+    bar.axis = UILayoutConstraintAxisHorizontal;
+    bar.distribution = UIStackViewDistributionFillEqually;
+    bar.spacing = 4;
+    bar.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:bar];
+    NSInteger launch = tpk_launchDestinationTab(tpk_launchDestination());
+    for (NSNumber *raw in self.visibleTabs) {
+        TPKTabItem item = (TPKTabItem)raw.integerValue;
+        BOOL selected = launch == item;
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+        button.tag = item;
+        button.enabled = item != TPKTabItemCreate;
+        button.backgroundColor = selected ? [TPKAccent() colorWithAlphaComponent:0.20] : UIColor.clearColor;
+        button.layer.cornerRadius = 12;
+        button.accessibilityLabel = TPKTabItemName(item);
+        button.accessibilityHint = L(item == TPKTabItemCreate ? @"tab_bar_create_hint" : @"tab_bar_choose_launch");
+        if (selected) button.accessibilityTraits |= UIAccessibilityTraitSelected;
+        [button addTarget:self action:@selector(tpk_previewTapped:) forControlEvents:UIControlEventTouchUpInside];
+        UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightMedium];
+        UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:TPKTabItemIcon(item) withConfiguration:configuration]];
+        icon.contentMode = UIViewContentModeScaleAspectFit;
+        icon.tintColor = selected ? TPKAccent() : TPKGray();
+        UILabel *name = [[UILabel alloc] init];
+        name.text = TPKTabItemName(item);
+        name.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption2];
+        name.adjustsFontForContentSizeCategory = YES;
+        name.adjustsFontSizeToFitWidth = YES;
+        name.minimumScaleFactor = 0.75;
+        name.textAlignment = NSTextAlignmentCenter;
+        name.textColor = icon.tintColor;
+        UIStackView *content = [[UIStackView alloc] initWithArrangedSubviews:@[icon, name]];
+        content.axis = UILayoutConstraintAxisVertical;
+        content.spacing = 2;
+        content.userInteractionEnabled = NO;
+        content.translatesAutoresizingMaskIntoConstraints = NO;
+        content.accessibilityElementsHidden = YES;
+        [button addSubview:content];
+        [NSLayoutConstraint activateConstraints:@[
+            [content.leadingAnchor constraintEqualToAnchor:button.leadingAnchor constant:2],
+            [content.trailingAnchor constraintEqualToAnchor:button.trailingAnchor constant:-2],
+            [content.centerYAnchor constraintEqualToAnchor:button.centerYAnchor],
+            [content.topAnchor constraintGreaterThanOrEqualToAnchor:button.topAnchor constant:4],
+            [content.bottomAnchor constraintLessThanOrEqualToAnchor:button.bottomAnchor constant:-4],
+            [icon.heightAnchor constraintEqualToConstant:20],
+            [button.heightAnchor constraintGreaterThanOrEqualToConstant:44],
+        ]];
+        [bar addArrangedSubview:button];
     }
-    visible.textAlignment = NSTextAlignmentRight;
     [NSLayoutConstraint activateConstraints:@[
-        [launch.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor constant:20],
-        [launch.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor constant:-8],
-        [visible.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
-        [visible.bottomAnchor  constraintEqualToAnchor:launch.bottomAnchor],
+        [bar.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:6],
+        [bar.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-6],
+        [bar.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:4],
+        [bar.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-4],
     ]];
-    return container;
-}
-
-- (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
-    UIView *v = [[UIView alloc] init];
-    v.backgroundColor = [UIColor clearColor];
-    return v;
+    return cell;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
-    TPKLaunchDestination destination = tpk_launchDestination();
-    NSInteger launchTab = tpk_launchDestinationTab(destination);
-
-    if (ip.section == TPKTabBarSettingsSectionIntro) {
-        return TPKDescriptionCell(@"desc_tab_bar");
+    if (ip.section == TPKTabBarSettingsSectionLaunch && ip.row == 0) return [self tpk_previewCell];
+    UITableViewCellStyle style = ip.section == TPKTabBarSettingsSectionLaunch ?
+        UITableViewCellStyleValue1 : UITableViewCellStyleDefault;
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:style reuseIdentifier:nil];
+    cell.backgroundColor = TPKCellBg();
+    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    cell.textLabel.adjustsFontForContentSizeCategory = YES;
+    cell.textLabel.textColor = UIColor.whiteColor;
+    cell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    cell.detailTextLabel.adjustsFontForContentSizeCategory = YES;
+    cell.detailTextLabel.textColor = TPKGray();
+    cell.detailTextLabel.numberOfLines = 1;
+    cell.detailTextLabel.adjustsFontSizeToFitWidth = YES;
+    cell.detailTextLabel.minimumScaleFactor = 0.8;
+    cell.tintColor = TPKAccent();
+    if (ip.section == TPKTabBarSettingsSectionLaunch) {
+        cell.textLabel.text = L(@"tab_bar_subpage");
+        cell.detailTextLabel.text = TPKTabPageTitle(tpk_launchDestination());
+        cell.imageView.image = [UIImage systemImageNamed:@"rectangle.on.rectangle"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.editingAccessoryType = cell.accessoryType;
+        cell.imageView.tintColor = UIColor.whiteColor;
+        return cell;
     }
-
-    if (ip.row == TPKTabBarSettingsRowDefault) {
-        return TPKTabOptionCell(-1, L(@"launch_default"), @"star.fill", nil,
-            launchTab < 0, YES, self, nil, NULL);
-    }
-
-    NSInteger tabRow = ip.row - TPKTabBarSettingsRowFirstTab;
-    if (tabRow < 0 || tabRow >= TPK_TAB_ITEM_COUNT) {
-        return [[UITableViewCell alloc] init];
-    }
-    TPKTabItem item = (TPKTabItem)tabRow;
-    BOOL isVisible = !tpk_tabItemHidden(item);
-    BOOL isLaunch = launchTab == tabRow && !TPKLaunchDestinationTabHidden(destination);
-
-    // L'onglet de départ affiche la sous-page qu'il ouvrira. Un onglet masqué
-    // n'affiche rien, sauf s'il est la destination (cas d'un import de réglages).
-    NSString *subPage = nil;
-    SEL subPageAction = NULL;
-    if (isLaunch) {
-        subPage = TPKTabPageTitle(destination);
-        subPageAction = @selector(openTabPagePicker:);
-    } else if (!isVisible && launchTab == tabRow) {
-        subPage = L(@"tab_hidden_badge");
-    }
-
-    return TPKTabOptionCell(tabRow, TPKTabItemName(item), TPKTabItemIcon(item),
-        subPage, isLaunch, isVisible, self,
-        @selector(toggleTabSwitch:), subPageAction);
-}
-
-- (NSIndexPath *)tableView:(UITableView *)tv willSelectRowAtIndexPath:(NSIndexPath *)ip {
-    // Le test porte sur la SECTION : la première ligne des réglages porte aussi
-    // le numéro 0, et elle doit rester sélectionnable.
-    if (ip.section == TPKTabBarSettingsSectionIntro) return nil;
-    if (ip.row == TPKTabBarSettingsRowDefault) return ip;
-    NSInteger tabRow = ip.row - TPKTabBarSettingsRowFirstTab;
-    if (tabRow < 0 || tabRow >= TPK_TAB_ITEM_COUNT) return nil;
-    // Création (feuille de composition) et les onglets masqués ne peuvent pas
-    // être l'écran de lancement : leur ligne est inerte.
-    if (tabRow == TPKTabItemCreate) return nil;
-    return tpk_tabItemHidden((TPKTabItem)tabRow) ? nil : ip;
+    NSNumber *raw = (ip.section == TPKTabBarSettingsSectionVisible ? self.visibleTabs : self.hiddenTabs)[ip.row];
+    TPKTabItem item = (TPKTabItem)raw.integerValue;
+    cell.textLabel.text = TPKTabItemName(item);
+    cell.imageView.image = [UIImage systemImageNamed:TPKTabItemIcon(item)];
+    cell.imageView.tintColor = UIColor.whiteColor;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.showsReorderControl = ip.section == TPKTabBarSettingsSectionVisible;
+    return cell;
 }
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
-    if (ip.section != TPKTabBarSettingsSectionOptions) return;
     [tv deselectRowAtIndexPath:ip animated:YES];
-    NSInteger tabRow = ip.row - TPKTabBarSettingsRowFirstTab;
-    [self tpk_setLaunchTab:ip.row == TPKTabBarSettingsRowDefault ? -1 : tabRow];
+    if (ip.section != TPKTabBarSettingsSectionLaunch) return;
+    if (ip.row == 1) [self openTabPagePicker:[tv cellForRowAtIndexPath:ip]];
 }
 
-// La radio fixe l'écran de lancement ; la sous-page déjà réglée est conservée.
-- (void)tpk_setLaunchTab:(NSInteger)tab {
-    if (tab < 0) {
-        tpk_setLaunchDestination(TPKLaunchDestinationDefault);
-    } else {
-        TPKLaunchDestination current = tpk_launchDestination();
-        tpk_setLaunchDestination(tpk_launchDestinationTab(current) == tab
-            ? current
-            : TPKDefaultDestinationForTab((TPKTabItem)tab));
-    }
-    TPKReloadSectionWithoutJump(self.tableView, TPKTabBarSettingsSectionOptions);
-}
-
-// Choix de la sous-page ouverte par l'onglet de départ.
-- (void)openTabPagePicker:(UIControl *)control {
-    TPKTabItem item = (TPKTabItem)control.tag;
-    NSArray<NSNumber *> *options = nil;
-    if (item == TPKTabItemHome) {
-        options = @[@(TPKLaunchDestinationHomeFollowing),
-                    @(TPKLaunchDestinationHomeLive),
-                    @(TPKLaunchDestinationHomeClips)];
-    } else if (item == TPKTabItemExplore) {
-        options = @[@(TPKLaunchDestinationBrowseCategories),
-                    @(TPKLaunchDestinationBrowseLiveChannels)];
-    }
-    if (!options.count) return;
-
-    UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:TPKTabItemName(item)
-                          message:nil
-                   preferredStyle:UIAlertControllerStyleActionSheet];
-    sheet.view.tintColor = TPKAccent();
+- (void)tpk_previewTapped:(UIButton *)button {
+    TPKTabItem item = (TPKTabItem)button.tag;
+    if (item == TPKTabItemCreate || tpk_tabItemHidden(item)) return;
     TPKLaunchDestination current = tpk_launchDestination();
+    tpk_setLaunchDestination(tpk_launchDestinationTab(current) == item ? current : TPKDefaultDestinationForTab(item));
+    [self tpk_reloadTabs];
+}
+
+- (void)openTabPagePicker:(UIView *)anchor {
+    TPKTabItem item = (TPKTabItem)tpk_launchDestinationTab(tpk_launchDestination());
+    NSArray<NSNumber *> *options = item == TPKTabItemHome ?
+        @[@(TPKLaunchDestinationHomeFollowing), @(TPKLaunchDestinationHomeLive), @(TPKLaunchDestinationHomeClips)] :
+        (item == TPKTabItemExplore ? @[@(TPKLaunchDestinationBrowseCategories), @(TPKLaunchDestinationBrowseLiveChannels)] : @[]);
+    if (!options.count) return;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TPKTabItemName(item)
+        message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    sheet.view.tintColor = TPKAccent();
     for (NSNumber *raw in options) {
         TPKLaunchDestination destination = (TPKLaunchDestination)raw.integerValue;
         NSString *title = TPKTabPageTitle(destination);
-        if (destination == current) title = [@"✓  " stringByAppendingString:title];
-        [sheet addAction:[UIAlertAction actionWithTitle:title
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction *action) {
-            (void)action;
+        if (destination == tpk_launchDestination()) title = [@"✓  " stringByAppendingString:title];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             tpk_setLaunchDestination(destination);
-            TPKReloadSectionWithoutJump(self.tableView, TPKTabBarSettingsSectionOptions);
+            [self tpk_reloadTabs];
         }]];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-    sheet.popoverPresentationController.sourceView = control;
-    sheet.popoverPresentationController.sourceRect = control.bounds;
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel") style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = anchor;
+    sheet.popoverPresentationController.sourceRect = anchor.bounds;
     TPKPresentAlert(self, sheet);
 }
 
-// ── Onglets ───────────────────────────────────────────
-
-// L'interrupteur porte la visibilité : allumé = onglet visible.
-- (void)tpk_applyTabSwitch:(UISwitch *)sw forItem:(TPKTabItem)item {
-    BOOL hide = !sw.isOn;
-    if (hide && tpk_tabVisibleCount() <= 1) {
-        sw.on = YES;
-        TPKShowAlert(self, L(@"section_tab_bar"), L(@"alert_tab_bar_min_message"));
-        return;
-    }
-    tpk_setTabItemHidden(item, hide);
-    // La destination suit le masquage au lieu de retomber ailleurs en silence.
-    if (hide &&
-        tpk_launchDestinationTab(tpk_launchDestination()) == (NSInteger)item) {
-        TPKLaunchDestination replacement = TPKNearestVisibleDestination(item);
-        tpk_setLaunchDestination(replacement);
-        TPKShowAlert(self, L(@"setting_launch_screen"),
-            [NSString stringWithFormat:L(@"alert_launch_destination_moved"),
-             TPKLaunchDestinationTitle(replacement)]);
-    }
-    // La barre ne rejoue pas son layout tant que cet écran est présenté.
-    tpk_tabVisibilityApplyNow();
-    // Le repère de départ, la mention « masqué » et les sous-pages ont pu bouger.
-    TPKReloadSectionWithoutJump(self.tableView, TPKTabBarSettingsSectionOptions);
+- (BOOL)tableView:(UITableView *)tv canEditRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == TPKTabBarSettingsSectionVisible && self.visibleTabs.count <= 1) return NO;
+    return ip.section != TPKTabBarSettingsSectionLaunch;
 }
 
-- (void)toggleTabSwitch:(UISwitch *)sw {
-    [self tpk_applyTabSwitch:sw forItem:(TPKTabItem)sw.tag];
+- (BOOL)tableView:(UITableView *)tv shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath *)ip {
+    return ip.section != TPKTabBarSettingsSectionLaunch;
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tv editingStyleForRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == TPKTabBarSettingsSectionVisible) return UITableViewCellEditingStyleDelete;
+    if (ip.section == TPKTabBarSettingsSectionHidden) return UITableViewCellEditingStyleInsert;
+    return UITableViewCellEditingStyleNone;
+}
+
+- (NSString *)tableView:(UITableView *)tv titleForDeleteConfirmationButtonForRowAtIndexPath:(NSIndexPath *)ip {
+    return L(@"tab_bar_hide");
+}
+
+- (void)tableView:(UITableView *)tv commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == TPKTabBarSettingsSectionLaunch) return;
+    BOOL hide = ip.section == TPKTabBarSettingsSectionVisible;
+    if (hide && tpk_tabVisibleCount() <= 1) return;
+    TPKTabItem item = (TPKTabItem)(hide ? self.visibleTabs : self.hiddenTabs)[ip.row].integerValue;
+    tpk_setTabItemHidden(item, hide);
+    if (hide && tpk_launchDestinationTab(tpk_launchDestination()) == item) {
+        TPKLaunchDestination replacement = TPKNearestVisibleDestination(item);
+        tpk_setLaunchDestination(replacement);
+    }
+    tpk_tabVisibilityApplyNow();
+    [self tpk_reloadTabs];
+}
+
+- (BOOL)tableView:(UITableView *)tv canMoveRowAtIndexPath:(NSIndexPath *)ip {
+    return ip.section == TPKTabBarSettingsSectionVisible;
+}
+
+- (NSIndexPath *)tableView:(UITableView *)tv targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)source
+      toProposedIndexPath:(NSIndexPath *)proposed {
+    if (proposed.section == TPKTabBarSettingsSectionVisible) return proposed;
+    NSInteger row = proposed.section < TPKTabBarSettingsSectionVisible ? 0 : self.visibleTabs.count - 1;
+    return [NSIndexPath indexPathForRow:row inSection:TPKTabBarSettingsSectionVisible];
+}
+
+- (void)tableView:(UITableView *)tv moveRowAtIndexPath:(NSIndexPath *)source toIndexPath:(NSIndexPath *)destination {
+    NSMutableArray *visible = [self.visibleTabs mutableCopy];
+    NSNumber *item = visible[source.row];
+    [visible removeObjectAtIndex:source.row];
+    [visible insertObject:item atIndex:destination.row];
+    NSMutableArray *order = [tpk_tabItemOrder() mutableCopy];
+    NSUInteger index = 0;
+    for (NSUInteger i = 0; i < order.count; i++)
+        if (!tpk_tabItemHidden((TPKTabItem)[order[i] integerValue])) order[i] = visible[index++];
+    tpk_setTabItemOrder(order);
+    [self tpk_readTabs];
+    tpk_tabVisibilityApplyNow();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [UIView performWithoutAnimation:^{ [self tpk_reloadTabs]; }];
+    });
 }
 
 @end
@@ -5609,7 +5462,7 @@ typedef NS_ENUM(NSInteger, TPKLogsRow) {
     TPKLogsRowFirstCat = 3,
 };
 
-#define TPK_LOGS_CAT_COUNT       4
+#define TPK_LOGS_CAT_COUNT       TPK_LOG_CATEGORY_COUNT
 
 // Log detail rows are visible only when logging is enabled.
 - (NSArray<NSNumber *> *)tpk_visibleLogsRows {
@@ -5884,23 +5737,28 @@ typedef NS_ENUM(NSInteger, TPKLogsRow) {
         NSArray<NSString *> *titles = @[
             L(@"log_cat_errors"), L(@"log_cat_chat_custom"),
             L(@"log_cat_channel_points"), L(@"log_cat_tap"),
+            L(@"log_cat_channel_resolver"),
         ];
         NSArray<NSString *> *icons = @[
             @"exclamationmark.triangle.fill", @"hammer.fill", @"gift.fill",
             @"hand.tap.fill",
+            @"arrow.triangle.branch",
         ];
         // Couleurs correspondantes.
         NSArray<UIColor *> *colors = @[
             UIColor.systemRedColor, UIColor.systemOrangeColor, UIColor.systemYellowColor,
             UIColor.systemGreenColor,
+            UIColor.systemPurpleColor,
         ];
         NSArray<NSNumber *> *values = @[
             @(mgr.logErrors), @(mgr.logChatCustom), @(mgr.logChannelPoints),
             @(mgr.logTap),
+            @(mgr.logChannelResolver),
         ];
         NSArray *selectors = @[
             @"toggleLogErrors:", @"toggleLogChatCustom:", @"toggleLogChannelPoints:",
             @"toggleLogTap:",
+            @"toggleLogChannelResolver:",
         ];
 
         UITableViewCell *cell = TPKSwitchCell(titles[catIdx],
@@ -6168,5 +6026,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 - (void)toggleLogChatCustom:(UISwitch *)sw       { [TPKManager sharedManager].logChatCustom       = sw.isOn; }
 - (void)toggleLogChannelPoints:(UISwitch *)sw    { [TPKManager sharedManager].logChannelPoints    = sw.isOn; }
 - (void)toggleLogTap:(UISwitch *)sw              { [TPKManager sharedManager].logTap              = sw.isOn; }
+- (void)toggleLogChannelResolver:(UISwitch *)sw  { [TPKManager sharedManager].logChannelResolver  = sw.isOn; }
 
 @end

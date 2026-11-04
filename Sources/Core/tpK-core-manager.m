@@ -299,6 +299,7 @@ static const CGFloat kTPKMenuHeight = 520.0;
         _logChatCustom     = NO;    // Désactivé par défaut
         _logChannelPoints  = NO;    // OFF par défaut
         _logTap            = NO;    // OFF par défaut (verbeux)
+        _logChannelResolver = NO;
 
         _globalEmotes      = @{};
         _channelEmotes     = @{};
@@ -408,6 +409,7 @@ static const CGFloat kTPKMenuHeight = 520.0;
     if ([prefs objectForKey:@"tpk_log_chat_custom"]   != nil) _logChatCustom         = [prefs boolForKey:@"tpk_log_chat_custom"];
     if ([prefs objectForKey:@"tpk_log_channel_points"] != nil) _logChannelPoints     = [prefs boolForKey:@"tpk_log_channel_points"];
     if ([prefs objectForKey:@"tpk_log_tap"]           != nil) _logTap               = [prefs boolForKey:@"tpk_log_tap"];
+    if ([prefs objectForKey:@"tpk_log_channel_resolver"] != nil) _logChannelResolver = [prefs boolForKey:@"tpk_log_channel_resolver"];
 
     // Supprimer les anciennes préférences de logs.
     for (NSString *key in @[
@@ -456,6 +458,7 @@ static const CGFloat kTPKMenuHeight = 520.0;
     [prefs setBool:self.logChatCustom        forKey:@"tpk_log_chat_custom"];
     [prefs setBool:self.logChannelPoints     forKey:@"tpk_log_channel_points"];
     [prefs setBool:self.logTap               forKey:@"tpk_log_tap"];
+    [prefs setBool:self.logChannelResolver   forKey:@"tpk_log_channel_resolver"];
     [prefs synchronize];
 }
 
@@ -576,6 +579,7 @@ static const CGFloat kTPKMenuHeight = 520.0;
 - (void)setLogChatCustom:(BOOL)v      { _logChatCustom = v;      [self savePreferences]; }
 - (void)setLogChannelPoints:(BOOL)v   { _logChannelPoints = v;   [self savePreferences]; }
 - (void)setLogTap:(BOOL)v             { _logTap = v;             [self savePreferences]; }
+- (void)setLogChannelResolver:(BOOL)v { _logChannelResolver = v; [self savePreferences]; }
 
 
 // ============================================================
@@ -1004,6 +1008,10 @@ static NSString *TPKNormalizedTwitchBearerToken(NSString *value) {
 // Seuls les marqueurs explicites sont reconnus.
 static BOOL tpk_categoryForMessage(NSString *msg, TPKLogCategory *outCategory) {
     if (!msg.length || !outCategory) return NO;
+    if ([msg hasPrefix:@"[ChannelResolver]"]) {
+        *outCategory = TPKLogCategoryChannelResolver;
+        return YES;
+    }
 
     // Marqueurs explicites uniquement.
     if ([msg rangeOfString:@"[ChannelPoints]"].location != NSNotFound) {
@@ -1037,6 +1045,7 @@ static BOOL tpk_categoryForMessage(NSString *msg, TPKLogCategory *outCategory) {
         case TPKLogCategoryChatCustom:    return self.logChatCustom;
         case TPKLogCategoryChannelPoints: return self.logChannelPoints;
         case TPKLogCategoryTap:           return self.logTap;
+        case TPKLogCategoryChannelResolver: return self.logChannelResolver;
     }
     return NO;
 }
@@ -1220,7 +1229,7 @@ static NSString *tpk_ircTargetChannel(NSString *ircLine) {
             NSCharacterSet.whitespaceAndNewlineCharacterSet];
     NSSet<NSString *> *commands = [NSSet setWithArray:@[
         @"PRIVMSG", @"USERNOTICE", @"CLEARCHAT", @"CLEARMSG",
-        @"NOTICE"
+        @"NOTICE", @"ROOMSTATE"
     ]];
     for (NSUInteger index = 0; index + 1 < parts.count; index++) {
         NSString *part = parts[index];
@@ -1363,6 +1372,10 @@ static BOOL tpk_acceptIncomingIRCLine(NSString *ircLine) {
 }
 
 - (void)handleIncomingChatWebSocketText:(NSString *)text {
+    [self handleIncomingChatWebSocketText:text sourceObject:self];
+}
+
+- (void)handleIncomingChatWebSocketText:(NSString *)text sourceObject:(id)sourceObject {
     if (!text.length) return;
     NSArray<id<TPKEmoteProvider>> *providers = tpk_chatEmoteProviders();
     BOOL addedMessage = NO;
@@ -1385,6 +1398,19 @@ static BOOL tpk_acceptIncomingIRCLine(NSString *ircLine) {
         NSString *ircLine = [rawLine stringByTrimmingCharactersInSet:
                              NSCharacterSet.newlineCharacterSet];
         if (!ircLine.length) continue;
+        if ([ircLine containsString:@" ROOMSTATE #"] || [ircLine hasPrefix:@"ROOMSTATE #"]) {
+            NSString *commandLine = ircLine;
+            if ([commandLine hasPrefix:@"@"]) {
+                NSRange space = [commandLine rangeOfString:@" "];
+                commandLine = space.location == NSNotFound ? @"" : [commandLine substringFromIndex:space.location + 1];
+            }
+            if ([commandLine hasPrefix:@":"]) {
+                NSRange space = [commandLine rangeOfString:@" "];
+                commandLine = space.location == NSNotFound ? @"" : [commandLine substringFromIndex:space.location + 1];
+            }
+            if ([commandLine hasPrefix:@"ROOMSTATE #"])
+                TPKChannelResolverNoteChatRoom(tpk_ircTargetChannel(ircLine), tpk_ircRoomID(ircLine), sourceObject);
+        }
         // "USERSTATE" couvre aussi GLOBALUSERSTATE, qui se termine par ce mot.
         if ([ircLine containsString:@"USERSTATE"]) [self handleIRCUserState:ircLine];
         if (!tpk_acceptIncomingIRCLine(ircLine)) continue;

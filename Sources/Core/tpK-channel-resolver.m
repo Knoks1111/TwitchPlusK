@@ -7,6 +7,35 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void tpk_resolverLog(NSString *format, ...) {
+    TPKManager *manager = TPKManager.sharedManager;
+    if (!manager.logsEnabled || !manager.logChannelResolver) return;
+    va_list arguments;
+    va_start(arguments, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:arguments];
+    va_end(arguments);
+    [manager log:@"[ChannelResolver] 🧭 %@", message];
+}
+
+static uint32_t TPKResolverParseChannelID(const char *text) {
+    if (!text || !*text) return 0;
+    uint32_t value = 0;
+    for (const char *p = text; *p; p++) {
+        if (*p < '0' || *p > '9') return 0;
+        unsigned digit = (unsigned)(*p - '0');
+        if (value > (UINT32_MAX - digit) / 10) return 0;
+        value = value * 10 + digit;
+    }
+    return value;
+}
+
+static BOOL TPKResolverCanApplyIdentity(uint32_t expectedID, uint32_t returnedID,
+                                      NSUInteger requestGeneration, NSUInteger currentGeneration,
+                                      BOOL sameSession, BOOL requestMatches) {
+    return expectedID && expectedID == returnedID && requestGeneration == currentGeneration &&
+           sameSession && requestMatches;
+}
+
 NSNotificationName const TPKChannelResolverDidChangeNotification =
     @"TPKChannelResolverDidChangeNotification";
 
@@ -60,6 +89,15 @@ static NSString *tpk_channelName(NSString *value) {
     return tpk_trimString(value).lowercaseString;
 }
 
+static BOOL tpk_isResolverLogin(NSString *login) {
+    static NSCharacterSet *invalid;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        invalid = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz0123456789_"].invertedSet;
+    });
+    return login.length && [login rangeOfCharacterFromSet:invalid].location == NSNotFound;
+}
+
 static BOOL tpk_sameString(NSString *left, NSString *right) {
     if (left == right) return YES;
     if (!left || !right) return NO;
@@ -91,6 +129,9 @@ static BOOL tpk_sameContextMetadata(TPKChannelContext *left,
 static void tpk_postContextChange(TPKChannelResolver *resolver,
                                    TPKChannelContext *context,
                                    NSUInteger generation) {
+    tpk_resolverLog(@"context id=%u login=%@ kind=%lu source=%lu generation=%lu", context.channelID,
+                   context.channelName ?: @"-", (unsigned long)context.mediaKind,
+                   (unsigned long)context.source, (unsigned long)generation);
     NSDictionary *userInfo = context
         ? @{@"context": context, @"generation": @(generation)}
         : @{@"generation": @(generation)};
@@ -178,7 +219,8 @@ static void tpk_postContextChange(TPKChannelResolver *resolver,
                                     channelName:(NSString *)channelName
                                      displayName:(NSString *)displayName
                                      sessionKey:(NSString *)sessionKey
-                                   sourceObject:(id)sourceObject {
+                                   sourceObject:(id)sourceObject
+                                expectedContext:(TPKChannelContext *)expectedContext {
     if (channelID == 0 || mediaKind == TPKChannelMediaKindUnknown) return nil;
 
     NSString *cleanName = tpk_channelName(channelName);
@@ -186,8 +228,15 @@ static void tpk_postContextChange(TPKChannelResolver *resolver,
     NSString *cleanSessionKey = tpk_trimString(sessionKey);
 
     [_lock lock];
+    if (expectedContext && !TPKResolverCanApplyIdentity(expectedContext.channelID, channelID,
+            expectedContext.generation, _currentContext.generation,
+            [_currentContext.sessionID isEqual:expectedContext.sessionID], YES)) {
+        [_lock unlock];
+        tpk_resolverLog(@"metadata ignored id=%u reason=selection-changed", channelID);
+        return nil;
+    }
 
-    // Live context only comes from Twitch's native callback.
+    // Le chat confirme la sélection ; les playlists ne fournissent que des métadonnées.
     if (mediaKind == TPKChannelMediaKindLive &&
         (_nativeActiveLiveChannelID != channelID || !sourceObject)) {
         [_lock unlock];
@@ -234,7 +283,7 @@ static void tpk_postContextChange(TPKChannelResolver *resolver,
                              channelName:channelName
                               displayName:displayName
                               sessionKey:sessionKey
-                            sourceObject:sourceObject];
+                            sourceObject:sourceObject expectedContext:nil];
 }
 
 - (TPKChannelContext *)beginReplayChannelWithID:(uint32_t)channelID
@@ -256,7 +305,7 @@ static void tpk_postContextChange(TPKChannelResolver *resolver,
                              channelName:channelName
                               displayName:displayName
                               sessionKey:sessionKey
-                            sourceObject:sourceObject];
+                            sourceObject:sourceObject expectedContext:nil];
 }
 
 - (BOOL)isCurrentContext:(TPKChannelContext *)context {
@@ -376,6 +425,11 @@ BOOL TPKChannelContextIsCurrent(TPKChannelContext *context) {
 
     NSDictionary *identity = nil;
     [_lock lock];
+    if (_currentContext.mediaKind == TPKChannelMediaKindReplay) {
+        [_lock unlock];
+        tpk_resolverLog(@"chat selection ignored id=%u reason=replay-active", channelID);
+        return;
+    }
     _nativeActiveLiveChannelID = channelID;
     identity = [_nativeConnectionIdentities[@(channelID)] copy];
     [_lock unlock];
@@ -383,7 +437,7 @@ BOOL TPKChannelContextIsCurrent(TPKChannelContext *context) {
     [self beginLiveChannelWithID:channelID
                       channelName:identity[@"channelName"]
                        displayName:identity[@"displayName"]
-                           source:TPKChannelSourceLiveMetadata
+                           source:TPKChannelSourceLiveChat
                        sessionKey:nil
                      sourceObject:sourceObject];
 }
@@ -416,20 +470,20 @@ BOOL TPKChannelContextIsCurrent(TPKChannelContext *context) {
          _currentContext.mediaKind == TPKChannelMediaKindLive);
     BOOL alreadyCurrent = _currentContext &&
         _currentContext.mediaKind == TPKChannelMediaKindLive &&
-        _currentContext.source == TPKChannelSourceLiveMetadata &&
         _currentContext.channelID == channelID &&
         tpk_sameString(_currentContext.channelName, cleanName) &&
         tpk_sameString(_currentContext.displayName, cleanDisplayName);
+    TPKChannelContext *confirmed = _currentContext;
     [_lock unlock];
 
     if (!shouldApply || (!identityChanged && alreadyCurrent)) return;
 
-    [self beginLiveChannelWithID:channelID
+    [self beginContextForChannelID:channelID mediaKind:TPKChannelMediaKindLive
+                           source:confirmed.source
                       channelName:cleanName
                        displayName:cleanDisplayName
-                           source:TPKChannelSourceLiveMetadata
                        sessionKey:nil
-                     sourceObject:sourceObject];
+                     sourceObject:confirmed.sourceObject ?: sourceObject expectedContext:confirmed];
 }
 
 - (void)tpk_clearNativeLiveChannel {
@@ -481,8 +535,14 @@ BOOL TPKChannelContextIsCurrent(TPKChannelContext *context) {
 
 @end
 
+static __weak id tpk_pendingNativeConnection;
+
 static void tpk_captureNativeConnectionIdentity(id connection) {
     if (!connection) return;
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ tpk_captureNativeConnectionIdentity(connection); });
+        return;
+    }
 
     unsigned int channelID = 0;
     NSString *channelName = nil;
@@ -505,6 +565,12 @@ static void tpk_captureNativeConnectionIdentity(id connection) {
                                   channelName:channelName
                                  displayName:displayName
                      sourceObject:connection];
+    if (connection == tpk_pendingNativeConnection && channelName.length &&
+        TPKCurrentChannelContext().mediaKind != TPKChannelMediaKindReplay) {
+        tpk_pendingNativeConnection = nil;
+        tpk_resolverLog(@"native chat confirms id=%u source=%@", channelID, NSStringFromClass([connection class]));
+        [TPKChannelResolver.sharedResolver tpk_setNativeActiveLiveChannelID:channelID sourceObject:connection];
+    }
 }
 
 static uint32_t tpk_vodChannelIDFromInformationDelegate(id delegate) {
@@ -552,9 +618,28 @@ static void tpk_captureVODChannelIDFromInformationDelegate(id delegate,
                      sourceObject:sourceObject ?: delegate];
 }
 
-// Secours usher → Helix : le login est visible sur les playlists live
-// (.../channel/hls/<login>.m3u8), l'ID vient de Helix users?login=.
-// Cache par login ; un seul fetch à la fois ; silencieux hors TEMP.
+void TPKChannelResolverNoteChatRoom(NSString *login, NSString *roomID, id sourceObject) {
+    NSString *clean = tpk_channelName(login);
+    uint32_t channelID = [roomID isKindOfClass:NSString.class] ? TPKResolverParseChannelID(roomID.UTF8String) : 0;
+    if (!channelID || !tpk_isResolverLogin(clean) || !sourceObject) {
+        tpk_resolverLog(@"chat identity ignored reason=invalid-identity");
+        return;
+    }
+    TPKChannelResolver *resolver = TPKChannelResolver.sharedResolver;
+    TPKChannelContext *current = resolver.currentContext;
+    if (current.mediaKind == TPKChannelMediaKindReplay) {
+        tpk_resolverLog(@"chat identity ignored id=%u reason=replay-active", channelID);
+        return;
+    }
+    if (current.mediaKind == TPKChannelMediaKindLive && current.channelID == channelID &&
+        [current.channelName isEqualToString:clean]) return;
+    tpk_resolverLog(@"chat confirms id=%u login=%@ source=%@ previous=%u", channelID, clean,
+                   NSStringFromClass([sourceObject class]), current.channelID);
+    [resolver tpk_updateNativeIdentityForChannelID:channelID channelName:clean
+                                     displayName:nil sourceObject:sourceObject];
+    [resolver tpk_setNativeActiveLiveChannelID:channelID sourceObject:sourceObject];
+}
+
 static void tpk_requestResolverHookRefresh(void);
 static NSMutableDictionary<NSString *, NSDictionary *> *tpk_helixLoginCache(void) {
     static NSMutableDictionary<NSString *, NSDictionary *> *cache;
@@ -563,90 +648,100 @@ static NSMutableDictionary<NSString *, NSDictionary *> *tpk_helixLoginCache(void
     return cache;
 }
 
-static NSString *tpk_helixInflightLogin = nil;
+static NSMutableDictionary<NSString *, NSUUID *> *tpk_helixRequests;
+static NSString *tpk_lastIgnoredPlaylist;
 
-static void tpk_applyHelixIdentity(NSDictionary *user) {
+static uint32_t tpk_helixUserID(NSDictionary *user) {
     id rawID = user[@"id"];
-    unsigned int cid = 0;
-    if ([rawID respondsToSelector:@selector(unsignedIntValue)]) {
-        cid = [rawID unsignedIntValue];
-    } else if ([rawID respondsToSelector:@selector(longLongValue)]) {
-        long long v = [rawID longLongValue];
-        if (v > 0) cid = (unsigned int)v;
+    return [rawID isKindOfClass:NSString.class] ? TPKResolverParseChannelID([rawID UTF8String]) : 0;
+}
+
+static void tpk_applyHelixIdentity(NSDictionary *user, TPKChannelContext *expected, BOOL requestMatches) {
+    TPKChannelResolver *resolver = TPKChannelResolver.sharedResolver;
+    TPKChannelContext *current = resolver.currentContext;
+    uint32_t channelID = tpk_helixUserID(user);
+    NSString *login = [user[@"login"] isKindOfClass:NSString.class] ? tpk_channelName(user[@"login"]) : nil;
+    BOOL valid = current.mediaKind == TPKChannelMediaKindLive &&
+        TPKResolverCanApplyIdentity(expected.channelID, channelID, expected.generation,
+                                   current.generation, [current.sessionID isEqual:expected.sessionID], requestMatches);
+    if (!valid || ![login isEqualToString:expected.channelName]) {
+        tpk_resolverLog(@"Helix ignored id=%u expected=%u generation=%lu current=%lu reason=stale-or-mismatched",
+            channelID, expected.channelID, (unsigned long)expected.generation, (unsigned long)current.generation);
+        return;
     }
-    NSString *login = [user[@"login"] isKindOfClass:NSString.class] ? user[@"login"] : nil;
     NSString *display = [user[@"display_name"] isKindOfClass:NSString.class] ? user[@"display_name"] : nil;
-    if (cid == 0 || !login.length) return;
-    TPKChannelResolver *resolver = [TPKChannelResolver sharedResolver];
-    [resolver tpk_updateNativeIdentityForChannelID:cid
-                                        channelName:login
-                                        displayName:display
-                                       sourceObject:resolver];
-    [resolver tpk_setNativeActiveLiveChannelID:cid sourceObject:resolver];
+    TPKChannelContext *applied = [resolver beginContextForChannelID:channelID mediaKind:TPKChannelMediaKindLive
+        source:current.source channelName:login displayName:display sessionKey:expected.sessionKey
+        sourceObject:expected.sourceObject expectedContext:expected];
+    if (applied) tpk_resolverLog(@"Helix metadata accepted id=%u generation=%lu", channelID, (unsigned long)current.generation);
     tpk_requestResolverHookRefresh();
 }
 
 void TPKChannelResolverNoteStreamLogin(NSString *login) {
-    NSString *clean = [[login lowercaseString] stringByTrimmingCharactersInSet:
-                       NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (!clean.length) return;
-    TPKChannelResolver *resolver = [TPKChannelResolver sharedResolver];
-    TPKChannelContext *ctx = resolver.currentContext;
-    if (ctx.mediaKind == TPKChannelMediaKindLive &&
-        [ctx.channelName caseInsensitiveCompare:clean] == NSOrderedSame) return;
-    @synchronized (tpk_helixLoginCache()) {
-        NSDictionary *cached = tpk_helixLoginCache()[clean];
-        if (cached) {
-            tpk_applyHelixIdentity(cached);
-            return;
-        }
-        if ([tpk_helixInflightLogin isEqualToString:clean]) return;
-        tpk_helixInflightLogin = [clean copy];
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ TPKChannelResolverNoteStreamLogin(login); });
+        return;
     }
-    NSDictionary<NSString *, NSString *> *credentials =
-        [[TPKManager sharedManager] tpk_twitchCredentialsSnapshot];
+    NSString *clean = tpk_channelName(login);
+    if (!tpk_isResolverLogin(clean)) return;
+    TPKChannelContext *expected = TPKCurrentChannelContext();
+    // Une playlist ne sélectionne jamais la chaîne, y compris depuis le cache Helix.
+    if (expected.mediaKind != TPKChannelMediaKindLive || !expected.channelName.length ||
+        ![expected.channelName isEqualToString:clean]) {
+        NSString *signature = [NSString stringWithFormat:@"%@/%u/%lu", clean, expected.channelID,
+                               (unsigned long)expected.generation];
+        if (![tpk_lastIgnoredPlaylist isEqualToString:signature]) {
+            tpk_lastIgnoredPlaylist = signature;
+            tpk_resolverLog(@"playlist candidate ignored login=%@ current=%u reason=no-matching-chat", clean, expected.channelID);
+        }
+        return;
+    }
+    tpk_lastIgnoredPlaylist = nil;
+    NSDictionary *cached = tpk_helixLoginCache()[clean];
+    if (cached && tpk_helixUserID(cached) == expected.channelID) {
+        tpk_applyHelixIdentity(cached, expected, YES);
+        return;
+    }
+    if (cached) [tpk_helixLoginCache() removeObjectForKey:clean];
+    if (!tpk_helixRequests) tpk_helixRequests = [NSMutableDictionary dictionary];
+    NSString *key = [NSString stringWithFormat:@"%@/%@", clean, expected.sessionID.UUIDString];
+    if (tpk_helixRequests[key]) return;
+    NSDictionary<NSString *, NSString *> *credentials = [TPKManager.sharedManager tpk_twitchCredentialsSnapshot];
     if (!credentials[@"Authorization"].length || !credentials[@"Client-ID"].length) {
-        @synchronized (tpk_helixLoginCache()) {
-            if ([tpk_helixInflightLogin isEqualToString:clean]) tpk_helixInflightLogin = nil;
-        }
+        tpk_resolverLog(@"Helix skipped id=%u reason=credentials-unavailable", expected.channelID);
         return;
     }
-    NSString *encoded = [clean stringByAddingPercentEncodingWithAllowedCharacters:
-                         NSCharacterSet.URLQueryAllowedCharacterSet];
-    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:
-                                       @"https://api.twitch.tv/helix/users?login=%@", encoded]];
-    if (!url) {
-        @synchronized (tpk_helixLoginCache()) { tpk_helixInflightLogin = nil; }
-        return;
-    }
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.timeoutInterval = 8.0;
-    [req setValue:credentials[@"Authorization"] forHTTPHeaderField:@"Authorization"];
-    [req setValue:credentials[@"Client-ID"] forHTTPHeaderField:@"Client-ID"];
-    [[NSURLSession.sharedSession dataTaskWithRequest:req
-                                   completionHandler:^(NSData *data,
-                                                       NSURLResponse *response,
-                                                       NSError *error) {
+    NSString *encoded = [clean stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet];
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://api.twitch.tv/helix/users?login=%@", encoded]];
+    if (!url) return;
+    NSUUID *requestID = NSUUID.UUID;
+    tpk_helixRequests[key] = requestID;
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.timeoutInterval = 8;
+    [request setValue:credentials[@"Authorization"] forHTTPHeaderField:@"Authorization"];
+    [request setValue:credentials[@"Client-ID"] forHTTPHeaderField:@"Client-ID"];
+    tpk_resolverLog(@"Helix requested id=%u generation=%lu", expected.channelID, (unsigned long)expected.generation);
+    [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : 0;
         NSDictionary *user = nil;
-        if (data.length && !error) {
-            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data
-                                                                 options:0
-                                                                   error:nil];
-            if ([json isKindOfClass:NSDictionary.class] &&
-                [json[@"data"] isKindOfClass:NSArray.class]) {
-                id first = ((NSArray *)json[@"data"]).firstObject;
-                if ([first isKindOfClass:NSDictionary.class]) user = first;
+        if (!error && status == 200 && data.length) {
+            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            id users = [json isKindOfClass:NSDictionary.class] ? json[@"data"] : nil;
+            id first = [users isKindOfClass:NSArray.class] ? [users firstObject] : nil;
+            if ([first isKindOfClass:NSDictionary.class]) user = first;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL matches = [tpk_helixRequests[key] isEqual:requestID];
+            if (matches) [tpk_helixRequests removeObjectForKey:key];
+            NSString *returnedLogin = [user[@"login"] isKindOfClass:NSString.class] ? tpk_channelName(user[@"login"]) : nil;
+            if (tpk_helixUserID(user) && [returnedLogin isEqualToString:clean]) {
+                tpk_helixLoginCache()[clean] = user;
+                tpk_applyHelixIdentity(user, expected, matches);
+            } else {
+                tpk_resolverLog(@"Helix failed expected=%u status=%ld error=%ld reason=invalid-response",
+                    expected.channelID, (long)status, (long)error.code);
             }
-        }
-        @synchronized (tpk_helixLoginCache()) {
-            tpk_helixInflightLogin = nil;
-            if (user) tpk_helixLoginCache()[clean] = user;
-        }
-        if (user) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                tpk_applyHelixIdentity(user);
-            });
-        }
+        });
     }] resume];
 }
 
@@ -826,9 +921,13 @@ static BOOL tpk_installVODInformationDelegateHooks(void) {
     tpk_captureNativeConnectionIdentity(self);
 }
 
+// Compat UIKit : confirmation lors de la connexion du chat natif.
 - (void)tpk_cr_connect {
     [self tpk_cr_connect];
-    tpk_captureNativeConnectionIdentity(self);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        tpk_pendingNativeConnection = self;
+        tpk_captureNativeConnectionIdentity(self);
+    });
 }
 
 @end
@@ -906,6 +1005,7 @@ void TPKChannelResolverSetup(void) {
 
 void TPKChannelResolverRefresh(void) {
     if (NSThread.isMainThread) {
+        if (tpk_pendingNativeConnection) tpk_captureNativeConnectionIdentity(tpk_pendingNativeConnection);
         if (!tpk_resolverHooksReady) {
             tpk_resolverHooksReady = tpk_installResolverHooks();
         }

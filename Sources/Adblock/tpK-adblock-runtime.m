@@ -1,8 +1,3 @@
-/*
- * Runtime integration for the TwitchAdBlock-derived proxy engine.
- * Original project: https://github.com/gunnerkidBT/TwitchAdBlock (MIT).
- */
-
 #import "Adblock/tpK-adblock-runtime.h"
 #import "Adblock/Proxy/tpK-adblock-data.h"
 #import "Adblock/Proxy/tpK-adblock-proxy.h"
@@ -17,16 +12,13 @@
 #import <objc/runtime.h>
 #import <os/log.h>
 
-// TwitchAdBlock's client-side half: Twitch stores the display/VAST managers
-// behind Swift weak references. Rebinding these two runtime functions lets us
-// clear those managers whenever the surrounding theater controller is seen.
 static void TPKAdblockRemoveAdControllers(void *pointer) {
     if (!pointer || (((uintptr_t)pointer & 0xFFFF800000000000) != 0)) return;
     id object = (__bridge id)pointer;
     Ivar theaterIvar = class_getInstanceVariable(object_getClass(object),
                                                   "theaterAdController");
     if (!theaterIvar) return;
-    // Moteur Proxy uniquement + snapshots O(1) (fix perf PR #2).
+
     if (!TPKAdblockActiveMethodUsesProxy() || !TPKAdblockEnabledFast()) return;
     id theaterController = object_getIvar(object, theaterIvar);
     if (!theaterController) return;
@@ -81,9 +73,6 @@ static BOOL TPKAdblockExchangeInstanceMethod(Class target, Class source,
     return YES;
 }
 
-// « Go Ad-Free » est une promotion Twitch Turbo dans l'en-tête Live Now de
-// l'onglet Following. Ce bloc vient de TwitchAdBlock v0.1.13 : il cible le
-// contrôle par son texte/classe, tout en protégeant l'écran d'achat Turbo.
 static BOOL TPKAdblockViewIsInTurboPurchaseScreen(UIView *view) {
     Class purchaseClass = objc_getClass("_TtC6Twitch25TurboUpsellViewController");
     if (!purchaseClass) return NO;
@@ -199,8 +188,7 @@ void TPKAdblockHideAdFreeUpsellIfNeeded(void) {
         }
     }
 
-    // Combo : VAFT possède les variantes/segments (décisions anti-pub
-    // locales). Le proxy ne réécrit que la master pour l'accès.
+    // En mode combiné, seul le manifeste maître passe par le proxy.
     if (TPKAdblockActiveMethod() != TPKAdblockMethodProxy) {
         return [self tpk_adblock_initWithURL:URL options:options];
     }
@@ -229,7 +217,7 @@ static char TPKAdblockPlayerStatusContext;
 
 - (instancetype)tpk_adblock_init {
     AVPlayer *player = [self tpk_adblock_init];
-    // Transport combo = VAFT : même observer qu'en Local.
+
     if (TPKAdblockActiveMethod() != TPKAdblockMethodProxy) {
         [player addObserver:player forKeyPath:@"status"
             options:NSKeyValueObservingOptionNew context:&TPKAdblockPlayerStatusContext];
@@ -274,7 +262,8 @@ static char TPKAdblockPlayerStatusContext;
                        dataTask:(NSURLSessionDataTask *)dataTask
                  didReceiveData:(NSData *)data {
     NSURLRequest *request = dataTask.currentRequest ?: dataTask.originalRequest;
-    NSData *filtered = TPKAdblockTransformResponseData(data, request);
+    NSData *filtered = TPKAdblockTransformResponseDataForTransport(
+        data, request, NSStringFromClass([self class]));
     [self tpk_adblock_URLSession:session dataTask:dataTask didReceiveData:filtered];
 }
 
@@ -343,6 +332,7 @@ static void TPKAdblockClearFollowingAds(id object) {
 @end
 
 static BOOL TPKAdblockLegacyGQLInstalled = NO;
+static BOOL TPKAdblockRNGQLInstalled = NO;
 static BOOL TPKAdblockFollowingInstalled = NO;
 static BOOL TPKAdblockHeadlinerInstalled = NO;
 static BOOL TPKAdblockStandardButtonDidMoveInstalled = NO;
@@ -350,16 +340,25 @@ static BOOL TPKAdblockStandardButtonLayoutInstalled = NO;
 static BOOL TPKAdblockFollowingLayoutInstalled = NO;
 
 static void TPKAdblockTryInstallLateHooks(void) {
-    // Méthode active = snapshot figé au lancement (jamais la préférence).
+
     BOOL proxyMode = TPKAdblockActiveMethodUsesProxy();
     @synchronized (TPKAdblockResourceLoader.class) {
-        // Commun : sert keepLiveFeedPlaying (les deux modes) et le filtrage
-        // GQL du Proxy (gated par méthode dans Transform*).
+
         if (!TPKAdblockLegacyGQLInstalled) {
             Class legacyClient = NSClassFromString(@"_TtC9TwitchKit18TKURLSessionClient");
             if (legacyClient) {
                 TPKAdblockLegacyGQLInstalled = TPKAdblockExchangeInstanceMethod(
                     legacyClient, NSObject.class,
+                    @selector(URLSession:dataTask:didReceiveData:),
+                    @selector(tpk_adblock_URLSession:dataTask:didReceiveData:));
+            }
+        }
+
+        if (!TPKAdblockRNGQLInstalled) {
+            Class reactClient = NSClassFromString(@"RCTHTTPRequestHandler");
+            if (reactClient) {
+                TPKAdblockRNGQLInstalled = TPKAdblockExchangeInstanceMethod(
+                    reactClient, NSObject.class,
                     @selector(URLSession:dataTask:didReceiveData:),
                     @selector(tpk_adblock_URLSession:dataTask:didReceiveData:));
             }
@@ -387,7 +386,7 @@ static void TPKAdblockTryInstallLateHooks(void) {
                     @selector(shared), @selector(tpk_adblock_shared));
             }
         }
-        // Commun : masquage Turbo upsell (réglage indépendant des moteurs).
+
         if (!TPKAdblockStandardButtonDidMoveInstalled ||
             !TPKAdblockStandardButtonLayoutInstalled) {
             Class standardButton = NSClassFromString(
@@ -407,7 +406,7 @@ static void TPKAdblockTryInstallLateHooks(void) {
                 }
             }
         }
-        // Commun : point d'appel du scan Turbo upsell.
+
         if (!TPKAdblockFollowingLayoutInstalled) {
             Class following = NSClassFromString(@"_TtC6Twitch23FollowingViewController");
             if (following) {
@@ -425,8 +424,8 @@ void TPKAdblockInstallRuntimeHooks(void) {
     dispatch_once(&once, ^{
         TPKAdblockRegisterDefaults();
         TPKAdblockRefreshRuntimeSnapshots();
-        // Snapshot de la méthode ACTIVE : une seule lecture au lancement,
-        // avant toute installation ; figé jusqu'à la fin du processus.
+
+        // La méthode reste figée jusqu'au prochain lancement.
         TPKAdblockTakeRuntimeMethodSnapshot();
         BOOL proxyMode = TPKAdblockActiveMethodUsesProxy();
 
@@ -436,7 +435,7 @@ void TPKAdblockInstallRuntimeHooks(void) {
                 TPKAdblockActiveMethod() == TPKAdblockMethodDisabled ? "disabled" : "proxy"));
 
         if (proxyMode) {
-            // ── Moteur Proxy : comportement existant inchangé ──────────
+
             TPKAdblockInstallSwiftRuntimeRebindings();
             BOOL assetHook = TPKAdblockExchangeInstanceMethod(AVURLAsset.class,
                 AVURLAsset.class, @selector(initWithURL:options:),
@@ -451,7 +450,7 @@ void TPKAdblockInstallRuntimeHooks(void) {
                    playerInitHook, playerKVOHook);
         }
         if (TPKAdblockActiveMethodUsesLocal()) {
-            // ── Moteur Local (VAFT) : upstream adapté (divergence D1/D3) ──
+
             vaft_initialize();
         }
 
@@ -462,18 +461,17 @@ void TPKAdblockInstallRuntimeHooks(void) {
                 dispatch_get_main_queue(), ^{ TPKAdblockTryInstallLateHooks(); });
         }
 
-        // Préchauffe la détection préfixe une fois le réseau établi : évite
-        // qu'une sonde à froid (timeout) empoisonne le cache au redémarrage.
-        // Sondes concurrentes (chacune bloque 3,5 s max en cas d'échec).
+        // Préchauffer la détection après établissement du réseau.
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)),
             dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
             NSMutableArray<NSString *> *addresses = [NSMutableArray array];
             if (TPKEmoteProxyIsEnabled()) {
                 [addresses addObjectsFromArray:TPKEmoteProxyEffectiveAddresses()];
             }
-            if (TPKAdblockActiveMethodUsesProxy()) {
-                [addresses addObjectsFromArray:TPKAdblockEffectiveProxyAddresses()];
+            if (TPKAdblockActiveMethod() == TPKAdblockMethodProxyPlusLocal) {
                 [addresses addObjectsFromArray:TPKAdblockComboProxyEffectiveAddresses()];
+            } else if (TPKAdblockActiveMethod() == TPKAdblockMethodProxy) {
+                [addresses addObjectsFromArray:TPKAdblockEffectiveProxyAddresses()];
             }
             for (NSString *address in addresses) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{

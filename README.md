@@ -38,6 +38,12 @@ Available in <img src="https://flagcdn.com/gb.svg" width="20"> **ENGLISH** and <
 
 Full CHANGELOG : [CHANGELOG.md](https://github.com/Knoks1111/TwitchPlusK/blob/main/CHANGELOG.md)
 
+## Tested configuration
+
+| Twitch | iOS | Device | Installation |
+| --- | --- | --- | --- |
+| 31.9 | 27.2 | iPhone 12 | Sideloaded |
+
 ## What it does
 
 ### Chat and emotes
@@ -54,13 +60,26 @@ Full CHANGELOG : [CHANGELOG.md](https://github.com/Knoks1111/TwitchPlusK/blob/ma
 
 ### App customization
 
-- Adds **OLED Mode**, launch screen controls, Stories hiding, Live Feed continuity, Orientation Lock, and more.
+- Adds **OLED Mode**, launch screen controls, Hide From Channels You Follow, Live Feed continuity, Orientation Lock, and more.
 - Includes settings export/import, automatic **Channel Points Auto Claim**, and more.
 
 ## Install
 
+### Automatic installation
+
+Add [this source](https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/update.json) in AltStore Classic, SideStore or FlareStore to install TwitchPlusK and be notified when updates are available:
+
+```text
+https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/update.json
+```
+
+The source lists the latest published IPA. The same file is used by TwitchPlusK's
+update checker. Source maintenance is documented [here](.github/scripts/README.md).
+
+### Manual installation
+
 1. [Download the latest IPA](https://github.com/Knoks1111/TwitchPlusK/releases/latest)
-2. Install it with SideStore or LiveContainer 
+2. Install it with SideStore or LiveContainer
 
 New releases follow new Twitch app versions — check the Releases page when Twitch updates.
 

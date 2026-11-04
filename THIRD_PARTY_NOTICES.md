@@ -16,10 +16,11 @@ TwitchPlusK integration changes:
 
 - Calls `vaft_initialize()` from `S7TVAdblockInstallRuntimeHooks` instead of adding a second constructor.
 - Adds an O(1) master-toggle snapshot at the three VAFT entry points.
+- Updates the NSURLProtocol HLS transport and cancellation from [Streamside](https://github.com/BananaOnGitHub/Streamside/blob/2f81a409c143644e3e2e11f016a3de970e49ef7b/src/Streamside.c), commit `2f81a409c143644e3e2e11f016a3de970e49ef7b` (Apache-2.0). Provider-image branches are excluded; the HLS session, asynchronous tasks, callback delivery and cancellation follow upstream.
 - Installs Foundation hooks only when Local mode is active.
 - Replaces VAFT settings injection with `register_log_class()` and `PORT_LOADED`; settings live in TwitchPlusK Logs.
 
-The remaining VAFT code is unchanged: functions, structures, constants, operation order, retries, TTLs, rings, locking and snapshots.
+The VAFT playlist selection, fallback strategy, retries, TTLs and per-channel contexts remain unchanged.
 
 Licensed under the Apache License, Version 2.0. A copy is available at
 http://www.apache.org/licenses/LICENSE-2.0. Unless required by applicable law
@@ -32,6 +33,19 @@ Ad-blocking, GraphQL filtering, HLS proxy/authentication, playback bypass,
 AVFoundation loading, Turbo/Stories hiding, launch handling and Live-feed
 watch-limit code are derived from [TwitchAdBlock](https://github.com/gunnerkidBT/TwitchAdBlock),
 including work by level3tjg and gunnerkidBT. Source: `Sources/Adblock/Proxy/`.
+
+Live-feed React Native watch-limit handling is adapted from commit
+`ce878d46205c7d7ed22df0cb78422ba913aef252` (`Tweak.x` and
+`NSData+TwitchAdBlock.m`): response-byte rewriting, native watch-behavior
+limits and the `awaitFeedPreload:rejecter:` bridge. TwitchPlusK uses its
+independent Keep Live Feed Playing setting. The v0.1.17 preload ad filter is
+also applied before resolving the bridge when any AdBlock method is enabled,
+independently of the watch-limit setting. Feed/UI ad filtering is shared by Proxy,
+Local VAFT and Proxy + Local; it preserves typed ad metadata fields in preloads.
+The same commit supplies Stories GraphQL shelf/access filtering and launch
+selection retries/navigation guards in `Sources/System/tpK-system-home-features.m`.
+Launch selection retains TwitchPlusK's hidden-tab mapping and existing RN tap
+selection when no native paged scroll view is available.
 
 Copyright (c) 2025 level3tjg
 

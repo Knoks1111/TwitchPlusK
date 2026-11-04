@@ -10,6 +10,7 @@
 
 #import "System/tpK-system-autoclaim.h"
 #import "Core/tpK-core-manager.h"
+#import "Core/tpK-channel-resolver.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <dispatch/dispatch.h>
@@ -19,6 +20,7 @@ static NSString *const kTPKAutoClaimPreference =
 NSString *const TPKAutoClaimRuntimeStateDidChangeNotification =
     @"TPKAutoClaimRuntimeStateDidChangeNotification";
 static const NSTimeInterval kTPKAutoClaimTickInterval = 1.0;
+static const NSUInteger kTPKAutoClaimHostInactiveTolerance = 3; // Ticks de grace.
 static const NSTimeInterval kTPKAutoClaimPostAttemptWarningDelay = 10.0;
 static char kTPKAutoClaimWatcherAssociationKey;
 
@@ -249,6 +251,8 @@ static UIGestureRecognizer *tpk_rnFindTouchHandler(UIView *view) {
 }
 
 static BOOL tpk_rnDeliverTouchToHandler(UIView *view);
+static void tpk_startAutoClaimForController(UIViewController *controller);
+static void tpk_scheduleAutoClaimRetryWave(void);
 
 BOOL TPKRNTapView(UIView *view) {
     return tpk_rnDeliverTouchToHandler(view);
@@ -298,6 +302,7 @@ static BOOL tpk_isRNChatHostController(UIViewController *controller) {
 @property (nonatomic, assign) BOOL rnWatchingBalance;
 @property (nonatomic, strong) NSDate *rnWatchDeadline;
 @property (nonatomic, assign) BOOL attemptLatched;
+@property (nonatomic, assign) NSUInteger rnHostInactiveStreak;
 @property (nonatomic, assign) BOOL diagnosticsLatchBlockedLogged;
 @property (nonatomic, assign) BOOL diagnosticsPostAttemptWarningLogged;
 @property (nonatomic, strong) NSDate *diagnosticsAttemptDate;
@@ -354,6 +359,11 @@ static void tpk_stopActiveAutoClaimWatcherWithReason(NSString *reason) {
     return self;
 }
 
+- (void)dealloc {
+    [_timer invalidate]; // Tue le timer zombie.
+    _timer = nil;
+}
+
 - (void)start {
     if (_timer || !self.controller) return;
     __weak TPKAutoClaimWatcher *weakSelf = self;
@@ -379,6 +389,7 @@ static void tpk_stopActiveAutoClaimWatcherWithReason(NSString *reason) {
     _rnChestView = nil;
     _rnChestSeen = NO;
     _attemptLatched = NO;
+    _rnHostInactiveStreak = 0;
     _rnHasKnownBalance = NO;
     _rnLastBalance = 0;
     _rnWatchingBalance = NO;
@@ -411,11 +422,19 @@ static void tpk_stopActiveAutoClaimWatcherWithReason(NSString *reason) {
         return;
     }
     if (controller != s_tpkActiveAutoClaimController || !tpk_rnHostIsActive(controller)) {
+        self.rnHostInactiveStreak++;
+        if (self.rnHostInactiveStreak < kTPKAutoClaimHostInactiveTolerance) {
+            [self logFailureOnceWithKey:@"rn-host-flap"
+                                message:@"RN chat host briefly inactive — grace tick"];
+            return;
+        }
         [self logFailureOnceWithKey:@"rn-host-inactive"
                             message:@"RN chat host inactive or untracked"];
         tpk_stopActiveAutoClaimWatcherWithReason(@"RN host inactive");
+        tpk_scheduleAutoClaimRetryWave();
         return;
     }
+    self.rnHostInactiveStreak = 0;
 
     UIView *chest = tpk_rnClaimableChestForController(controller);
     if (!self.rnHasKnownBalance) {
@@ -529,6 +548,24 @@ static void tpk_logAutoClaimControllerContext(UIViewController *controller,
         scene ? (long)scene.activationState : (long)UISceneActivationStateUnattached);
 }
 
+// Vague de redétection bornée (0,25 / 1 / 3 / 6 / 12 s), une seule à la fois.
+static void tpk_scheduleAutoClaimRetryWave(void) {
+    if (s_tpkActiveAutoClaimWatcher || !tpk_autoClaimEnabled()) return;
+    static NSDate *s_lastRetryWave = nil;
+    BOOL waveStale = !s_lastRetryWave ||
+        [[NSDate date] timeIntervalSinceDate:s_lastRetryWave] >= 15.0;
+    if (!waveStale) return;
+    s_lastRetryWave = [NSDate date];
+    for (NSNumber *delay in @[@0.25, @1.0, @3.0, @6.0, @12.0]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                      (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (s_tpkActiveAutoClaimWatcher || !tpk_autoClaimEnabled()) return;
+            tpk_startAutoClaimForController(nil);
+        });
+    }
+}
+
 static void tpk_startAutoClaimForController(UIViewController *controller) {
     if (!tpk_autoClaimEnabled()) {
         tpk_stopActiveAutoClaimWatcherWithReason(@"setting OFF");
@@ -536,28 +573,17 @@ static void tpk_startAutoClaimForController(UIViewController *controller) {
     }
     // Sans hôte RN : rien à surveiller (pas de contrôleur natif en 31.5).
     if (!controller) {
+        if (!TPKCurrentChannelContext()) { // Aucun channel : pas de scan.
+            tpk_autoClaimLog(@"no channel context — window scan skipped");
+            tpk_stopActiveAutoClaimWatcherWithReason(@"no channel context");
+            return;
+        }
         controller = tpk_findActiveRNChatHostController();
     }
     if (!controller) {
         tpk_autoClaimLog(@"watcher not started: no RN chat host");
         tpk_stopActiveAutoClaimWatcherWithReason(@"no RN chat host");
-        // Le theater RN se construit en différé : retente comme l'ancien
-        // resolver (0,25 / 1 / 3 / 6 / 12 s). Une seule vague à la fois.
-        static NSDate *s_lastRetryWave = nil;
-        BOOL waveStale = !s_lastRetryWave ||
-            [[NSDate date] timeIntervalSinceDate:s_lastRetryWave] >= 15.0;
-        if (waveStale) {
-            s_lastRetryWave = [NSDate date];
-            for (NSNumber *delay in @[@0.25, @1.0, @3.0, @6.0, @12.0]) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                              (int64_t)(delay.doubleValue *
-                                                        NSEC_PER_SEC)),
-                               dispatch_get_main_queue(), ^{
-                    if (s_tpkActiveAutoClaimWatcher || !tpk_autoClaimEnabled()) return;
-                    tpk_startAutoClaimForController(nil);
-                });
-            }
-        }
+        tpk_scheduleAutoClaimRetryWave();
         return;
     }
     if (!tpk_rnHostIsActive(controller)) {
@@ -724,6 +750,7 @@ static void tpk_installAutoClaimLifecycleHooks(void) {
 
 static id s_tpkAutoClaimWillResignObserver;
 static id s_tpkAutoClaimDidBecomeObserver;
+static id s_tpkAutoClaimChannelObserver;
 
 static void tpk_registerAutoClaimApplicationObservers(void) {
     if (s_tpkAutoClaimWillResignObserver ||
@@ -754,9 +781,29 @@ static void tpk_registerAutoClaimApplicationObservers(void) {
     }];
 }
 
+static void tpk_registerAutoClaimChannelObserver(void) {
+    if (s_tpkAutoClaimChannelObserver) return;
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    s_tpkAutoClaimChannelObserver =
+        [center addObserverForName:TPKChannelResolverDidChangeNotification
+                            object:[TPKChannelResolver sharedResolver]
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification *note) {
+        TPKChannelContext *context = note.userInfo[@"context"];
+        if (context) {
+            tpk_autoClaimLog(@"channel detected — (re)starting detection");
+            tpk_startAutoClaimForController(nil);
+        } else {
+            tpk_autoClaimLog(@"channel left — watcher stopped, no blind scan");
+            tpk_stopActiveAutoClaimWatcherWithReason(@"channel context cleared");
+        }
+    }];
+}
+
 static void tpk_setupAutoClaimOnMain(void) {
     tpk_installAutoClaimLifecycleHooks();
     tpk_registerAutoClaimApplicationObservers();
+    tpk_registerAutoClaimChannelObserver();
     tpk_reconcileAutoClaimForRuntimeState();
 }
 

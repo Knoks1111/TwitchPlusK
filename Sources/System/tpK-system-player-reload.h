@@ -7,6 +7,9 @@
 BOOL tpk_isPlayerControlsContainer(UIView *view);
 BOOL tpk_isReactPlayerControlsContainer(UIView *view);
 
+// Recherche en lecture seule, également utilisée par le diagnostic VAFT.
+id tpk_playerActivePlayerForView(UIView *view);
+
 /// Finds the stable view hosting Twitch's current player.
 UIView *tpk_playerTheaterHostForView(UIView *view);
 

@@ -72,6 +72,29 @@ static void tpk_registerChatCustomView(UIView *nativeView,
     [tpk_chatCustomViewRegistry() setObject:customView forKey:nativeView];
 }
 
+// Détachement total : natif restauré, custom retirée, nos contraintes mortes.
+static void tpk_detachChatCustomViewCompletely(TPKChatCustomView *view,
+                                               const void *associationKey) {
+    UIView *nativeView = view.tpk_nativeTranscriptView;
+    nativeView.hidden = NO;
+    UIView *parent = view.superview;
+    if ([parent isKindOfClass:UIStackView.class]) {
+        [(UIStackView *)parent removeArrangedSubview:view];
+    }
+    if (parent) {
+        NSMutableArray *drop = [NSMutableArray array];
+        for (NSLayoutConstraint *c in parent.constraints) {
+            if (c.firstItem == view || c.secondItem == view) [drop addObject:c];
+        }
+        [NSLayoutConstraint deactivateConstraints:drop];
+    }
+    [view removeFromSuperview];
+    if (nativeView) {
+        objc_setAssociatedObject(nativeView, associationKey,
+                                 nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
 static NSArray<TPKChatCustomView *> *tpk_registeredChatCustomViews(void) {
     if (!s_chatCustomViewsByNative) return @[];
 
@@ -91,6 +114,25 @@ static NSArray<TPKChatCustomView *> *tpk_liveChatCustomViews(void) {
         [views addObject:view];
     }
     return views;
+}
+
+// Compat UIKit : retirer ce détecteur après la migration complète vers RN.
+static BOOL tpk_isLegacyChatTranscriptView(UIView *view) {
+    NSString *name = NSStringFromClass(view.class);
+    return view && !tpk_isOwnChatImplementationClass(name) &&
+           [name.lowercaseString hasSuffix:@"chattranscriptview"];
+}
+
+// Sans région chat RN : fantôme (bannière recyclée), ni affichage ni élection.
+static BOOL tpk_nativeListHasChatRegion(UIView *chatView) {
+    if (tpk_isLegacyChatTranscriptView(chatView)) return YES;
+    UIView *cursor = chatView;
+    for (NSUInteger depth = 0; cursor && depth < 12;
+         depth++, cursor = cursor.superview) {
+        if ([cursor.accessibilityIdentifier
+                isEqualToString:@"chat-message-region"]) return YES;
+    }
+    return NO;
 }
 
 static NSMapTable<UIView *, TPKChatCustomView *> *tpk_vodChatCustomViewRegistry(void) {
@@ -117,12 +159,14 @@ static TPKChatCustomView *tpk_selectInteractionChatCustomView(void) {
 
     // Garder la vue visible actuelle pendant la construction SwiftUI.
     if (current && [views containsObject:current] &&
+        tpk_nativeListHasChatRegion(current.tpk_nativeTranscriptView) &&
         tpk_isChatCustomViewActuallyVisible(current)) {
         s_activeNativeChatView = current.tpk_nativeTranscriptView;
         return current;
     }
 
     for (TPKChatCustomView *view in views) {
+        if (!tpk_nativeListHasChatRegion(view.tpk_nativeTranscriptView)) continue;
         if (!tpk_isChatCustomViewActuallyVisible(view)) continue;
         s_activeChatCustomView = view;
         s_activeNativeChatView = view.tpk_nativeTranscriptView;
@@ -130,11 +174,17 @@ static TPKChatCustomView *tpk_selectInteractionChatCustomView(void) {
     }
 
     // Garder une vue vivante entre deux passes de layout.
-    if (current && [views containsObject:current]) {
+    if (current && [views containsObject:current] &&
+        tpk_nativeListHasChatRegion(current.tpk_nativeTranscriptView)) {
         s_activeNativeChatView = current.tpk_nativeTranscriptView;
         return current;
     }
-    TPKChatCustomView *fallback = views.firstObject;
+    TPKChatCustomView *fallback = nil;
+    for (TPKChatCustomView *view in views) {
+        if (!tpk_nativeListHasChatRegion(view.tpk_nativeTranscriptView)) continue;
+        fallback = view;
+        break;
+    }
     if (fallback) {
         s_activeChatCustomView = fallback;
         s_activeNativeChatView = fallback.tpk_nativeTranscriptView;
@@ -514,6 +564,7 @@ static UITableView *tpk_replayTableForView(UIView *view) {
 
 static BOOL tpk_isLiveChatMessageListView(UIView *view) {
     if (!view) return NO;
+    if (tpk_isLegacyChatTranscriptView(view)) return YES;
     NSString *className = NSStringFromClass(view.class);
     if (tpk_isOwnChatImplementationClass(className)) return NO;
     return [className isEqualToString:@"RCTScrollViewComponentView"] &&
@@ -522,6 +573,15 @@ static BOOL tpk_isLiveChatMessageListView(UIView *view) {
 
 static void tpk_installChatCustomView(UIView *chatView, BOOL isVOD) {
     if (!chatView || tpk_viewBelongsToCustomChat(chatView)) return;
+    // Native recyclée hors liste chat (scroll bannière) : masquer la custom,
+    // démasquer la native, sortir.
+    if (!isVOD && !tpk_isLiveChatMessageListView(chatView)) {
+        TPKChatCustomView *stale =
+            objc_getAssociatedObject(chatView, &kTPKChatCustomInstalledView);
+        if (stale) stale.hidden = YES;
+        chatView.hidden = NO;
+        return;
+    }
     if (!isVOD) s_activeNativeChatView = chatView;
 
     UIView *container = chatView.superview;
@@ -546,13 +606,17 @@ static void tpk_installChatCustomView(UIView *chatView, BOOL isVOD) {
         existing.tpk_nativeTranscriptView = chatView;
         [registry setObject:existing forKey:chatView];
         chatView.hidden = YES;
-        existing.hidden = NO;
+        // Fantôme (native hors région) : rester masqué.
+        existing.hidden = (!isVOD && !tpk_nativeListHasChatRegion(chatView)) ? YES : NO;
         if (isVOD) {
             s_activeVODNativeChatView = chatView;
             s_activeVODChatCustomView = existing;
         } else {
             tpk_registerChatCustomView(chatView, existing);
-            s_activeChatCustomView = existing;
+            // Région requise : sinon un fantôme éjecterait le vrai chat.
+            if (tpk_nativeListHasChatRegion(chatView)) {
+                s_activeChatCustomView = existing;
+            }
             [existing reloadMessages];
         }
         return;
@@ -569,29 +633,35 @@ static void tpk_installChatCustomView(UIView *chatView, BOOL isVOD) {
         }
     }
 
-    TPKChatCustomView *customView = [[TPKChatCustomView alloc]
-        initWithStore:store];
-    customView.delegate = [TPKReplyThreadPanel sharedPanel];
-    __weak TPKChatCustomView *weakCustomView = customView;
-    customView.onReplyTargetSelected = ^(NSString *messageID, NSString *username) {
-        TPKChatCustomView *sourceView = weakCustomView;
-        if (!sourceView) return;
-        [[TPKReplyThreadPanel sharedPanel]
-            selectReplyTargetForMessageID:messageID
-                                 username:username
-                               sourceView:sourceView];
-    };
+    // Déménager (pas recréer) : préserve animations, layout et contenu.
+    TPKChatCustomView *customView = existing;
+    if (!customView) {
+        customView = [[TPKChatCustomView alloc] initWithStore:store];
+        customView.delegate = [TPKReplyThreadPanel sharedPanel];
+        __weak TPKChatCustomView *weakCustomView = customView;
+        customView.onReplyTargetSelected = ^(NSString *messageID, NSString *username) {
+            TPKChatCustomView *sourceView = weakCustomView;
+            if (!sourceView) return;
+            [[TPKReplyThreadPanel sharedPanel]
+                selectReplyTargetForMessageID:messageID
+                                     username:username
+                                   sourceView:sourceView];
+        };
+    }
 
     if (!stack) {
         chatView.hidden = YES;
         customView.translatesAutoresizingMaskIntoConstraints = NO;
         [container insertSubview:customView aboveSubview:chatView];
-        [NSLayoutConstraint activateConstraints:@[
+        // 999 : céder à Fabric en transition, exact au repos.
+        NSArray *edges = @[
             [customView.leadingAnchor constraintEqualToAnchor:chatView.leadingAnchor],
             [customView.trailingAnchor constraintEqualToAnchor:chatView.trailingAnchor],
             [customView.topAnchor constraintEqualToAnchor:chatView.topAnchor],
             [customView.bottomAnchor constraintEqualToAnchor:chatView.bottomAnchor],
-        ]];
+        ];
+        for (NSLayoutConstraint *c in edges) c.priority = 999;
+        [NSLayoutConstraint activateConstraints:edges];
     } else {
         chatView.hidden = YES;
         [stack insertArrangedSubview:customView atIndex:stackIndex];
@@ -601,13 +671,18 @@ static void tpk_installChatCustomView(UIView *chatView, BOOL isVOD) {
                              OBJC_ASSOCIATION_RETAIN);
     customView.tpk_nativeTranscriptView = chatView;
     [registry setObject:customView forKey:chatView];
+    // Démasquer si légitime, fantôme masqué.
+    customView.hidden = (!isVOD && !tpk_nativeListHasChatRegion(chatView)) ? YES : NO;
 
     if (isVOD) {
         s_activeVODNativeChatView = chatView;
         s_activeVODChatCustomView = customView;
     } else {
         tpk_registerChatCustomView(chatView, customView);
-        s_activeChatCustomView = customView;
+        // Région requise : sinon un fantôme éjecterait le vrai chat.
+        if (tpk_nativeListHasChatRegion(chatView)) {
+            s_activeChatCustomView = customView;
+        }
     }
     [customView reloadMessages];
     if (!isVOD) {
@@ -643,16 +718,12 @@ void tpk_receiveVODMessage(TPKChatMessage *message) {
 void tpk_applyChatCustomToggle(void) {
     TPKManager *manager = [TPKManager sharedManager];
     if (!manager.chatCustomTestEnabled) {
-        // Restaurer tous les transcripts natifs connus.
+        // Masqué participe au layout : détacher + désactiver nos contraintes.
         for (TPKChatCustomView *view in tpk_registeredChatCustomViews()) {
-            UIView *nativeView = view.tpk_nativeTranscriptView;
-            nativeView.hidden = NO;
-            view.hidden = YES;
+            tpk_detachChatCustomViewCompletely(view, &kTPKChatCustomInstalledView);
         }
         for (TPKChatCustomView *view in tpk_registeredVODChatCustomViews()) {
-            UIView *nativeView = view.tpk_nativeTranscriptView;
-            nativeView.hidden = NO;
-            view.hidden = YES;
+            tpk_detachChatCustomViewCompletely(view, &kTPKVODChatCustomInstalledView);
         }
         s_activeChatCustomView = nil;
         s_activeNativeChatView = nil;
@@ -683,7 +754,12 @@ void tpk_applyChatCustomToggle(void) {
             !nativeView.superview) continue;
         tpk_installChatCustomView(nativeView, YES);
     }
-    tpk_selectInteractionChatCustomView();
+    // Single-visible : seule la custom active reste affichée.
+    TPKChatCustomView *visibleCustom = tpk_selectInteractionChatCustomView();
+    for (TPKChatCustomView *custom in tpk_registeredChatCustomViews()) {
+        if (custom != visibleCustom) custom.hidden = YES;
+    }
+    if (visibleCustom) visibleCustom.hidden = NO;
 }
 
 void tpk_handleNativeChatViewLifecycle(UIView *view) {
@@ -710,6 +786,12 @@ void tpk_handleNativeChatViewLifecycle(UIView *view) {
 
     if (!tpk_isLiveChatMessageListView(view) ||
         !view.window || !view.superview) {
+        // Native défenestrée : masquer sa custom (fantôme).
+        if (tpk_isLiveChatMessageListView(view) && !view.window) {
+            TPKChatCustomView *known =
+                objc_getAssociatedObject(view, &kTPKChatCustomInstalledView);
+            if (known) known.hidden = YES;
+        }
         return;
     }
 

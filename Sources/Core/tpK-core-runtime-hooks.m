@@ -110,12 +110,27 @@ void tpk_swizzle(Class targetClass,
 
 @interface UIView (TPKChatInputHook)
 - (void)tpk_didMoveToWindow;
+- (void)tpk_didMoveToSuperview;
 @end
 
 @implementation UIView (TPKChatInputHook)
 
 - (void)tpk_didMoveToWindow {
     [self tpk_didMoveToWindow]; // appel original
+
+    tpk_handlePlayerGesturesViewLifecycle(self);
+    tpk_handlePlayerReloadViewLifecycle(self);
+    tpk_handleTheaterControlsViewLifecycle(self);
+    tpk_handleNativeChatViewLifecycle(self);
+
+    tpk_handleChatTrayButtonLifecycle(self);
+}
+
+// Re-parents même window (invisibles à didMoveToWindow) : re-clé sur le
+// nouveau container. Détachements couverts par didMoveToWindow, skip ici.
+- (void)tpk_didMoveToSuperview {
+    [self tpk_didMoveToSuperview]; // appel original
+    if (!self.window) return;
 
     tpk_handlePlayerGesturesViewLifecycle(self);
     tpk_handlePlayerReloadViewLifecycle(self);
@@ -376,6 +391,7 @@ static void tpk_swizzle_apollo_gql(void) {
 
 @implementation NSURLSessionWebSocketTask (TPK)
 
+// Compat UIKit : réception IRC native conservée jusqu'à la migration complète RN.
 - (void)tpk_receiveMessageWithCompletionHandler:
     (void (^)(NSURLSessionWebSocketMessage *, NSError *))completionHandler {
     void (^wrappedHandler)(NSURLSessionWebSocketMessage *, NSError *) =
@@ -391,7 +407,7 @@ static void tpk_swizzle_apollo_gql(void) {
 
                 if (textToProcess) {
                     [[TPKManager sharedManager]
-                        handleIncomingChatWebSocketText:textToProcess];
+                        handleIncomingChatWebSocketText:textToProcess sourceObject:self];
                 }
             }
             completionHandler(message, error);
@@ -592,7 +608,7 @@ static void tpk_swizzle_websocket(void) {
         text = [[NSString alloc] initWithData:message encoding:NSUTF8StringEncoding];
     }
     if (!text.length) return;
-    [[TPKManager sharedManager] handleIncomingChatWebSocketText:text];
+    [[TPKManager sharedManager] handleIncomingChatWebSocketText:text sourceObject:webSocket];
 }
 
 @end
@@ -718,7 +734,6 @@ static void TwitchTPKInit(void) {
     // hooks Twitch tardifs. Les interceptions NSURLSession/Apollo restent
     // volontairement dans ce fichier afin de ne jamais les swizzler deux fois.
     TPKAdblockInstallRuntimeHooks();
-    tpk_installHomeFeatureRuntimeHooks();
 
     // Verrou d'orientation (bouton ajouté à côté de Share)
     tpk_swizzle_orientation_lock();
@@ -731,13 +746,21 @@ static void TwitchTPKInit(void) {
                  [UIView class],
                  @selector(didMoveToWindow),
                  @selector(tpk_didMoveToWindow));
+    // Re-parents même window (même routeur, détachements exclus).
+    tpk_swizzle([UIView class],
+                 [UIView class],
+                 @selector(didMoveToSuperview),
+                 @selector(tpk_didMoveToSuperview));
+
+    // Les hooks RN doivent hériter du routeur UIKit déjà installé.
+    tpk_installHomeFeatureRuntimeHooks();
 
     // Interception réponses GQL Twitch
     tpk_swizzle_token_capture();
     tpk_swizzle_session();
     tpk_swizzle_apollo_gql();
 
-    // Interception IRC WebSocket
+    // Compat UIKit : installation de la réception IRC native, à retirer après migration RN.
     tpk_swizzle_websocket();
 
     // Socket chat React Native (31.5) : observateur seul, inerte si absent.

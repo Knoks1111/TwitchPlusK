@@ -33,6 +33,10 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Validate source publication
         env:
           TPK_VERSION: ${{ inputs.twitchplusk_version }}
@@ -63,7 +67,7 @@ jobs:
           brew install ldid
           echo "✅ ldid: $(which ldid)"
 
-          pip3 install "lief==0.17.6" --quiet --break-system-packages
+          python3 -m pip install "lief==0.17.6" --only-binary=:all: --quiet
           python3 -c "import lief; print('✅ lief', lief.__version__)"
 
       - name: 📥 Fetch the .dylib

@@ -96,3 +96,9 @@ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
 CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
+
+## React Native JSI
+
+JSI headers and the Buffer/Value lifetime helpers in `Sources/Chat/` are from
+[React Native v0.86.3](https://github.com/facebook/react-native/tree/v0.86.3/packages/react-native/ReactCommon/jsi/jsi).
+Copyright Meta Platforms, Inc. and affiliates. MIT license: `Sources/Chat/JSI/LICENSE`.

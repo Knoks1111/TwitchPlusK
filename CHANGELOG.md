@@ -2,6 +2,16 @@
 
 This file keeps the cumulative release history of TwitchPlusK, with the newest release listed first.
 
+## [2.0.3] (Twitch 31.9) - 2026-11-08
+
+### Added
+
+- Added support for opening Twitch user cards by tapping usernames in custom chat.
+
+### Fixes
+
+- Fixed the emote picker button missing when Twitch’s Bits button is unavailable: it now appears directly to the left of the native emote button.
+
 ## [2.0.2] (Twitch 31.9) - 2026-11-04
 
 ### New Features

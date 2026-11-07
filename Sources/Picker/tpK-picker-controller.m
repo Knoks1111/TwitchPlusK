@@ -25,6 +25,7 @@
 
 static const char kTPKPickerHostAssociation = 5;
 static __weak UIView *tpk_pickerChatButtonNative = nil;
+static __weak UIView *tpk_pickerChatButtonEmote = nil;
 static __weak UIButton *tpk_pickerChatButtonReplacement = nil;
 
 static UIImage *TPKPickerScaledProviderLogo(UIImage *image, CGFloat pointSize);
@@ -303,7 +304,22 @@ static UIView *tpk_legacyPickerBitsForView(UIView *view) {
     return nil;
 }
 
+static BOOL tpk_isNativeEmoteButton(UIView *view) {
+    return [view.accessibilityIdentifier isEqualToString:@"chat-tray-button-emote"] ||
+        (tpk_legacyPickerInputForView(view) &&
+         [NSStringFromClass(view.class).lowercaseString containsString:@"emoticon"]);
+}
+
+static UIView *tpk_findRNTraySibling(UIView *view, NSString *identifier) {
+    UIView *cursor = view;
+    for (NSUInteger depth = 0; cursor && depth < 4; depth++, cursor = cursor.superview)
+        for (UIView *sibling in cursor.subviews)
+            if (sibling.window && [sibling.accessibilityIdentifier isEqualToString:identifier]) return sibling;
+    return nil;
+}
+
 static UIView * _Nullable tpk_findNativeEmoteButton(UIView *bitsNative) {
+    if (tpk_isNativeEmoteButton(bitsNative)) return bitsNative;
     UIView *input = tpk_legacyPickerInputForView(bitsNative);
     if (input) {
         NSMutableArray<UIView *> *views = [NSMutableArray arrayWithArray:input.subviews];
@@ -314,15 +330,7 @@ static UIView * _Nullable tpk_findNativeEmoteButton(UIView *bitsNative) {
         }
         return nil;
     }
-    UIView *cursor = bitsNative;
-    for (NSUInteger depth = 0; cursor && depth < 4; depth++, cursor = cursor.superview) {
-        for (UIView *sibling in cursor.subviews) {
-            if ([sibling.accessibilityIdentifier isEqualToString:@"chat-tray-button-emote"]) {
-                return sibling;
-            }
-        }
-    }
-    return nil;
+    return tpk_findRNTraySibling(bitsNative, @"chat-tray-button-emote");
 }
 
 // Observateur layout (modèle pastille) : addSubview seul, zéro contrainte.
@@ -350,7 +358,7 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native);
 
 static void tpk_pickerGeometryChanged(id self) {
     UIView *tracked = tpk_pickerChatButtonNative;
-    if (!tracked || self != tracked) return;
+    if (!tracked || (self != tracked && self != tpk_pickerChatButtonEmote)) return;
     tpk_attachPassivePickerButton(tracked);
 }
 
@@ -404,7 +412,8 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
     UIButton *button = tpk_pickerChatButtonReplacement;
     BOOL usable = manager.chatCustomTestEnabled && native && native.window &&
         ([native.accessibilityIdentifier isEqualToString:@"chat-tray-button-bits"] ||
-         (tpk_legacyPickerInputForView(native) && tpk_isLegacyBitsButton(native)));
+         (tpk_legacyPickerInputForView(native) && tpk_isLegacyBitsButton(native)) ||
+         tpk_isNativeEmoteButton(native));
     UIView *emote = usable ? tpk_findNativeEmoteButton(native) : nil;
     if (!usable || !emote) {
         if ([button isKindOfClass:[UIButton class]]) [button removeFromSuperview];
@@ -414,6 +423,8 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
         if (deadSlotObserver) [deadSlotObserver removeFromSuperview];
         return;
     }
+    tpk_pickerChatButtonEmote = emote;
+    BOOL replacesBits = native != emote;
     if (![button isKindOfClass:[UIButton class]]) {
         button = [UIButton buttonWithType:UIButtonTypeCustom];
         button.accessibilityLabel = L(@"label_7tv_emotes");
@@ -439,9 +450,8 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
     button.backgroundColor = TPKOLEDModeEnabled()
         ? UIColor.blackColor
         : [UIColor colorWithRed:39.0/255.0 green:38.0/255.0 blue:44.0/255.0 alpha:1.0];
-    // Coupure prouvée étape 1 (zéro layout) : bits mort, le sibling vit
-    // dans le container donc survit.
-    native.userInteractionEnabled = NO;
+    // Disable only Bits; the native emote button stays usable in fallback mode.
+    if (replacesBits) native.userInteractionEnabled = NO;
     tpk_pickerInstallGeometryHooks();
     // Sibling dans le parent (même slot, hitt-test OK) : pas enfant
     // hors-bounds (jamais hitt-testé, cf. tentative enfant-de-l'emote).
@@ -451,7 +461,10 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
         if (native) native.userInteractionEnabled = YES;
         return;
     }
-    button.frame = [native convertRect:native.bounds toView:slotParent];
+    CGRect slot = [native convertRect:native.bounds toView:slotParent];
+    // Without Bits, use an equal-size slot immediately to the left of emotes.
+    if (!replacesBits) slot.origin.x -= slot.size.width;
+    button.frame = slot;
     button.autoresizingMask = UIViewAutoresizingNone;
     TPKPickerSlotObserverView *slotObserver = tpk_pickerSlotObserver;
     if (!slotObserver || slotObserver.superview != slotParent) {
@@ -463,18 +476,18 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
         slotObserver.frame = slotParent.bounds;
         slotObserver.autoresizingMask = UIViewAutoresizingFlexibleWidth
             | UIViewAutoresizingFlexibleHeight;
-        __weak UIView *weakNative = native;
-        slotObserver.onHostLayout = ^(__unused UIView *v) {
-            UIView *strongNative = weakNative;
-            if (!strongNative) return;
-            // Lecture post-layout (frames finales, pas mi-pass).
-            dispatch_async(dispatch_get_main_queue(), ^{
-                tpk_attachPassivePickerButton(strongNative);
-            });
-        };
         [slotParent addSubview:slotObserver];
         tpk_pickerSlotObserver = slotObserver;
     }
+    __weak UIView *weakNative = native;
+    slotObserver.onHostLayout = ^(__unused UIView *v) {
+        UIView *strongNative = weakNative;
+        if (!strongNative) return;
+        // Read final frames after layout; refresh the anchor when Bits appears or disappears.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            tpk_attachPassivePickerButton(strongNative);
+        });
+    };
     if (button.superview != slotParent) {
         [slotParent addSubview:button];
     } else if (slotParent.subviews.lastObject != (UIView *)button &&
@@ -490,16 +503,24 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
 
 void tpk_handleChatTrayButtonLifecycle(UIView *view) {
     if (view == tpk_pickerChatButtonNative && !view.window) {
+        __weak UIView *remainingEmote = tpk_pickerChatButtonEmote;
         id reference = objc_getAssociatedObject(tpk_pickerChatButtonReplacement, &kTPKPickerHostAssociation);
         UIView *host = [reference isKindOfClass:TPKPickerWeakRef.class] ? ((TPKPickerWeakRef *)reference).object : nil;
         if (host) [[TPKManager sharedManager] cleanupPickerForStreamCloseIfOwnedByChatInputView:host];
         view.userInteractionEnabled = YES;
         tpk_pickerChatButtonNative = nil;
         tpk_attachPassivePickerButton(nil);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIView *emote = remainingEmote;
+            if (emote.window) tpk_handleChatTrayButtonLifecycle(emote);
+        });
         return;
     }
-    UIView *native = [view.accessibilityIdentifier isEqualToString:@"chat-tray-button-bits"] ?
-        view : tpk_legacyPickerBitsForView(view);
+    BOOL isEmote = tpk_isNativeEmoteButton(view);
+    UIView *native = [view.accessibilityIdentifier isEqualToString:@"chat-tray-button-bits"] ? view :
+        (isEmote && !tpk_legacyPickerInputForView(view) ?
+         tpk_findRNTraySibling(view, @"chat-tray-button-bits") : tpk_legacyPickerBitsForView(view));
+    if (!native.window && isEmote) native = view;
     if (!native.window) return;
     UIView *previous = tpk_pickerChatButtonNative;
     if (previous != native) previous.userInteractionEnabled = YES;

@@ -13,6 +13,7 @@
 #import "Core/tpK-core-manager.h"
 #import "Chat/tpK-chat-reply-thread-panel.h"
 #import "Chat/tpK-chat-tokenizer.h"
+#import "Chat/tpK-chat-viewer-card.h"
 #import "Emote/tpK-emote-provider.h"
 #import "Emote/tpK-emote-catalog.h"
 #import "Emote/tpK-provider-settings.h"
@@ -306,6 +307,7 @@ static UIImage *tpk_circularSharedChatAvatar(UIImage *image, NSString *cacheKey)
 // plus bas) : la cellule ne connaît pas TPKChatCustomView, juste ce
 // qu'on lui donne au moment de la configuration (voir tpk_cellForMessageID:).
 @property (nonatomic, copy, nullable) void (^onReplyBannerTap)(void);
+@property (nonatomic, copy, nullable) void (^onViewerCardTap)(NSString *userID);
 // Phase 5 — présent uniquement pour un message supprimé (collapsed OU
 // expanded). Le tap sur le corps bascule l'état avant toute détection de
 // lien/réponse : le placeholder et le contenu révélé partagent ainsi la
@@ -350,6 +352,7 @@ static UIColor *tpk_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
     [super prepareForReuse];
     [self tpk_cancelAnimationFrameRequests];
     self.onReplyBannerTap = nil;
+    self.onViewerCardTap = nil;
     self.onDeletedMessageTap = nil;
     self.animationKeys = nil;
     self.messageLabel.alpha = 1.0;
@@ -699,14 +702,7 @@ static UIColor *tpk_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
     return characterIndex < attributedText.length ? characterIndex : NSNotFound;
 }
 
-// Gère 3 choses sur le MÊME geste : ouvrir un lien tapé (comportement
-// existant), ouvrir la fiche viewer du pseudo, ET — nouveau — ouvrir le fil
-// si le message est une réponse et qu'aucun lien/fiche n'a été tapé à cet
-// endroit précis. messageLabel est ancré
-// quasi bord à bord dans la cellule (leading/trailing/top/bottom constants
-// de quelques points), donc "taper le message" revient en pratique à taper
-// messageLabel — pas besoin d'un geste séparé sur contentView (qui, lui, ne
-// se déclenchait pas de façon fiable, retiré).
+// Un seul geste distingue liens, pseudo, message supprimé et fil.
 - (void)tpk_handleTap:(UITapGestureRecognizer *)gesture {
     NSAttributedString *attributedText = self.messageLabel.attributedText;
     CGPoint tapPoint = [gesture locationInView:self.messageLabel];
@@ -719,6 +715,15 @@ static UIColor *tpk_replyTargetHighlightColor(BOOL usesMainChatOLEDStyle) {
         if (url) {
             [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
             return; // un lien tapé prend le dessus, pas d'ouverture de fil en plus
+        }
+        if ([attributedText attribute:TPKChatViewerCardUserIDAttribute atIndex:charIndex effectiveRange:NULL]) {
+            NSUInteger hit = [self tpk_characterIndexAtPointInMessageLabel:tapPoint requireGlyphHit:YES];
+            NSString *userID = hit != NSNotFound ?
+                [attributedText attribute:TPKChatViewerCardUserIDAttribute atIndex:hit effectiveRange:NULL] : nil;
+            if (userID.length && self.onViewerCardTap) {
+                self.onViewerCardTap(userID);
+                return;
+            }
         }
     }
 
@@ -1587,6 +1592,7 @@ static UIColor *tpk_announcementAccentColor(NSString *colorName) {
         // Une ancienne cellule ne doit jamais "fuir" dans la courte fenêtre
         // où un snapshot diffable et sa map de modèles se croisent.
         cell.onReplyBannerTap = nil;
+        cell.onViewerCardTap = nil;
         cell.onDeletedMessageTap = nil;
         cell.animationKeys = nil;
         cell.messageLabel.attributedText = [[NSAttributedString alloc] initWithString:@""];
@@ -1608,6 +1614,11 @@ static UIColor *tpk_announcementAccentColor(NSString *colorName) {
                                                       collectUncachedEmotes:uncachedEmotes
                                                       collectAnimatedEmotes:animatedEmotes];
     [self tpk_configureCell:cell forMessage:msg attributedText:text];
+    __weak typeof(self) weakProfileSource = self;
+    cell.onViewerCardTap = ^(NSString *userID) {
+        TPKChatCustomView *source = weakProfileSource;
+        if (source) TPKChatViewerCardOpen(userID, source);
+    };
 
     TPKChatAppearanceConfig *cfg = [TPKChatAppearanceConfig sharedConfig];
     BOOL isReply = self.showsReplyBanners && msg.replyParentUsername.length > 0;
@@ -2876,10 +2887,14 @@ static NSString *tpk_systemMonthOrdinalToken(NSInteger months) {
     UIColor *bodyColor = [UIColor colorWithWhite:0.85 alpha:1.0];
     NSString *displayName = msg.authorDisplayName.length ? msg.authorDisplayName : @"???";
 
+    NSUInteger usernameStart = result.length;
     [result appendAttributedString:[[NSAttributedString alloc]
         initWithString:displayName
             attributes:@{NSFontAttributeName: nameFont,
                          NSForegroundColorAttributeName: nameColor}]];
+    if (msg.authorUserID.length)
+        [result addAttribute:TPKChatViewerCardUserIDAttribute value:msg.authorUserID
+                       range:NSMakeRange(usernameStart, displayName.length)];
     NSMutableAttributedString *phrase = [[NSMutableAttributedString alloc]
         initWithString:[@" " stringByAppendingString:msg.systemPhrase ?: @""]
             attributes:@{NSFontAttributeName: bodyFont, NSForegroundColorAttributeName: bodyColor}];
@@ -3033,10 +3048,15 @@ static NSString *tpk_systemMonthOrdinalToken(NSInteger months) {
     }
     if (!containsGIF && msg.twitchGIFsTag.length > 0) containsGIF = YES;
     NSString *usernameSuffix = containsGIF ? @":\n" : @": ";
+    NSUInteger usernameStart = result.length;
     [result appendAttributedString:[[NSAttributedString alloc]
         initWithString:displayName
             attributes:@{NSFontAttributeName: usernameFont,
                          NSForegroundColorAttributeName: usernameColor}]];
+    if (msg.authorUserID.length) {
+        [result addAttribute:TPKChatViewerCardUserIDAttribute value:msg.authorUserID
+                       range:NSMakeRange(usernameStart, displayName.length)];
+    }
     [result appendAttributedString:[[NSAttributedString alloc]
         initWithString:usernameSuffix
             attributes:@{NSFontAttributeName: usernameFont,

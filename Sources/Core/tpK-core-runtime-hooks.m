@@ -33,6 +33,7 @@
 #import <objc/runtime.h>
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import "Chat/tpK-chat-viewer-card.h"
 #import "Core/tpK-core-manager.h"
 #import "Core/tpK-channel-resolver.h"
 #import "Settings/tpK-settings-controller.h"
@@ -728,6 +729,7 @@ static void TwitchTPKInit(void) {
     // premier écran et les en-têtes de catégories au lancement.
     TPKOLEDModeSetup();
 
+    TPKChatViewerCardSetup();
     tpk_setupChatCustomIntegration();
 
     // Adblock TwitchAdBlock-derived : AVFoundation, contrôleurs pub Swift et

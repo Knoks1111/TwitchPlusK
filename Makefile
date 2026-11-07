@@ -3,7 +3,7 @@
 # ============================================================
 
 ARCHS = arm64
-TWITCHPLUSK_VERSION = 2.0.2
+TWITCHPLUSK_VERSION = 2.0.3
 TARGET = iphone:clang:16.5:14.0
 
 include $(THEOS)/makefiles/common.mk
@@ -38,6 +38,7 @@ TwitchPlusK_FILES = \
     Sources/Chat/tpK-chat-custom-vod.m \
     Sources/Chat/tpK-chat-message.m \
     Sources/Chat/tpK-chat-reply-thread-panel.m \
+    Sources/Chat/tpK-chat-viewer-card.mm \
     Sources/Chat/tpK-chat-tokenizer.m \
     Sources/Emote/tpK-emote-animation-engine.m \
     Sources/Emote/tpK-emote-catalog.m \
@@ -67,6 +68,7 @@ TPK_LOCALIZATION_HEADER = $(THEOS_PROJECT_DIR)/.theos/localization/tpk-localizat
 
 Sources/Adblock/Vaft/TwitchAdBlock.c_CFLAGS = -fblocks
 Sources/Adblock/Vaft/TASDiagnostics.c_CFLAGS = -x objective-c -fno-objc-arc -fblocks
+Sources/Chat/tpK-chat-viewer-card.mm_CFLAGS = -std=c++17 -I$(THEOS_PROJECT_DIR)/Sources/Chat/JSI
 
 TwitchPlusK_CFLAGS := \
     -DTPK_BUILD_VERSION='"$(TWITCHPLUSK_VERSION)"' \
@@ -84,6 +86,7 @@ TwitchPlusK_LDFLAGS = \
 
 # ── Frameworks Apple ──
 TwitchPlusK_FRAMEWORKS = UIKit Foundation QuartzCore ImageIO AVFoundation MediaPlayer
+TwitchPlusK_LIBRARIES = c++
 
 include $(THEOS_MAKE_PATH)/library.mk
 

@@ -1,5 +1,5 @@
 {
-  "version": "2.0.2",
+  "version": "2.0.3",
   "name": "TwitchPlusK",
   "identifier": "com.knoks1111.twitchplusk.source",
   "sourceURL": "https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/update.json",
@@ -16,11 +16,11 @@
       "versions": [
         {
           "version": "31.9",
-          "buildVersion": "2.0.2",
-          "marketingVersion": "2.0.2 (Twitch 31.9)",
-          "date": "2026-11-04T09:58:29Z",
-          "downloadURL": "https://github.com/Knoks1111/TwitchPlusK/releases/download/twitchplusk-v2.0.2-twitch-31.9/tpK-2.0.2-Twitch-31.9.ipa",
-          "size": 196166900,
+          "buildVersion": "2.0.3",
+          "marketingVersion": "2.0.3 (Twitch 31.9)",
+          "date": "2026-11-07T23:57:13Z",
+          "downloadURL": "https://github.com/Knoks1111/TwitchPlusK/releases/download/twitchplusk-v2.0.3-twitch-31.9/tpK-2.0.3-Twitch-31.9.ipa",
+          "size": 196181408,
           "minOSVersion": "16.4"
         }
       ],

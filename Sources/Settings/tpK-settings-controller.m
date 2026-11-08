@@ -528,7 +528,8 @@ static UITableViewCell *TPKVersionsCell(void) {
 
     NSString *build = @TPK_BUILD_VERSION;
     if (!build.length) build = @"—";
-    NSString *app = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"];
+    NSString *app = NSBundle.mainBundle.infoDictionary[@"TPKOriginalTwitchVersion"] ?:
+        NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"];
     if (![app isKindOfClass:NSString.class] || !app.length) app = @"—";
     NSString *update = TPKUpdateCheckerAvailableVersion();
 

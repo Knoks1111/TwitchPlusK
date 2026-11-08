@@ -7,10 +7,13 @@ The source lists the latest published IPA only, keeping the manifest below the
 existing tweak updater's 16 KiB limit. Older iOS releases have no historical IPA
 fallback in this source.
 
-`Build IPA (final)` stamps `CFBundleVersion` in the main app and its extensions
-with the TwitchPlusK release version. Twitch's `CFBundleShortVersionString` stays
-unchanged. This allows source clients to distinguish tweak updates even when the
-Twitch version is unchanged. The generator reads the final IPA's versions, size,
+`Build IPA (final)` stamps both `CFBundleShortVersionString` and `CFBundleVersion`
+in the main app and its extensions with the TwitchPlusK release version.
+The original values are preserved as `TPKOriginalTwitchVersion` and
+`TPKOriginalTwitchBuild` for Twitch version labels, diagnostics and release naming.
+The source uses the same release version in `versions` and legacy app-level fields,
+so clients can display tweak updates even when the Twitch version is unchanged.
+The generator reads the final IPA's versions, size,
 minimum iOS version, privacy descriptions and signed entitlements, including
 extensions. A failed metadata check stops source preparation.
 

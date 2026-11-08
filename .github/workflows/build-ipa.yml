@@ -207,7 +207,7 @@ jobs:
 
           python3 .github/scripts/update_source.py stamp-build "$APP_PATH" "$TPK_VERSION"
 
-          TWITCH_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" \
+          TWITCH_VERSION=$(/usr/libexec/PlistBuddy -c "Print TPKOriginalTwitchVersion" \
             "$APP_PATH/Info.plist" 2>/dev/null || echo "unknown")
           echo "📱 Detected Twitch version: $TWITCH_VERSION"
           echo "TWITCH_VERSION=$TWITCH_VERSION" >> $GITHUB_ENV

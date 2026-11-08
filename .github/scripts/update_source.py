@@ -25,6 +25,9 @@ def stamp_build(app_path, version):
     for path in plists:
         original = path.read_bytes()
         info = plistlib.loads(original)
+        info.setdefault("TPKOriginalTwitchVersion", info["CFBundleShortVersionString"])
+        info.setdefault("TPKOriginalTwitchBuild", str(info["CFBundleVersion"]))
+        info["CFBundleShortVersionString"] = version
         info["CFBundleVersion"] = version
         fmt = plistlib.FMT_BINARY if original.startswith(b"bplist") else plistlib.FMT_XML
         path.write_bytes(plistlib.dumps(info, fmt=fmt, sort_keys=False))
@@ -69,7 +72,9 @@ def make_source(ipa, version, date, repository, ldid):
         raise ValueError("Invalid GitHub repository")
     datetime.datetime.fromisoformat(date.replace("Z", "+00:00"))
     info, permissions = ipa_metadata(ipa, ldid)
-    twitch = info["CFBundleShortVersionString"]
+    twitch = info["TPKOriginalTwitchVersion"]
+    if info["CFBundleShortVersionString"] != version or str(info["CFBundleVersion"]) != version:
+        raise ValueError("IPA version and build must match the TwitchPlusK release version")
     expected_name = f"tpK-{version}-Twitch-{twitch}.ipa"
     if Path(ipa).name != expected_name:
         raise ValueError(f"Expected IPA filename {expected_name}")
@@ -78,7 +83,7 @@ def make_source(ipa, version, date, repository, ldid):
     raw = f"https://raw.githubusercontent.com/{repository}/main"
     icon = raw + "/Assets/twitchplusk-icon.webp"
     app_version = {
-        "version": twitch,
+        "version": info["CFBundleShortVersionString"],
         "buildVersion": str(info["CFBundleVersion"]),
         "marketingVersion": f"{version} (Twitch {twitch})",
         "date": date,
@@ -101,6 +106,10 @@ def make_source(ipa, version, date, repository, ldid):
             "localizedDescription": "Twitch for iOS with customizable chat, extra emotes, ad blocking and more. Full changelog: " + base + "/blob/main/CHANGELOG.md",
             "iconURL": icon,
             "versions": [app_version],
+            "version": app_version["version"],
+            "versionDate": date,
+            "downloadURL": app_version["downloadURL"],
+            "size": app_version["size"],
             "appPermissions": permissions,
         }],
         "news": [],

@@ -217,8 +217,10 @@ static id diagnostic_report_create(void) {
     pthread_mutex_unlock(&g_diag_lock);
 
     id bundle = msg0((id)objc_getClass("NSBundle"), "mainBundle");
-    const char *app_version = utf8(msg1(bundle, "objectForInfoDictionaryKey:", nsstr("CFBundleShortVersionString")));
-    const char *app_build = utf8(msg1(bundle, "objectForInfoDictionaryKey:", nsstr("CFBundleVersion")));
+    id original_version = msg1(bundle, "objectForInfoDictionaryKey:", nsstr("TPKOriginalTwitchVersion"));
+    id original_build = msg1(bundle, "objectForInfoDictionaryKey:", nsstr("TPKOriginalTwitchBuild"));
+    const char *app_version = utf8(original_version ?: msg1(bundle, "objectForInfoDictionaryKey:", nsstr("CFBundleShortVersionString")));
+    const char *app_build = utf8(original_build ?: msg1(bundle, "objectForInfoDictionaryKey:", nsstr("CFBundleVersion")));
     char header[4096];
     snprintf(header, sizeof(header),
         "TwitchAdBlock VAFT iOS diagnostic report\n"

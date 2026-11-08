@@ -18,11 +18,21 @@ def release_version(value):
     return value
 
 
-def release_build(original, version):
+def release_offset(version):
     major, minor, patch = map(int, release_version(version).split('.'))
     if minor > 99 or patch > 99:
         raise ValueError("Release minor and patch components must not exceed 99")
-    offset = major * 10000 + minor * 100 + patch
+    return major * 10000 + minor * 100 + patch
+
+
+def ipa_version(twitch, version):
+    if not re.fullmatch(r"[0-9]+\.[0-9]+", twitch):
+        raise ValueError("Version suffix requires a two-component Twitch version")
+    return f"{twitch}.{release_offset(version)}"
+
+
+def release_build(original, version):
+    offset = release_offset(version)
     original = str(original)
     return str(int(original) + offset) if original.isdigit() else f"{original}.{offset}"
 
@@ -36,7 +46,7 @@ def stamp_build(app_path, version):
         info = plistlib.loads(original)
         info.setdefault("TPKOriginalTwitchVersion", info["CFBundleShortVersionString"])
         info.setdefault("TPKOriginalTwitchBuild", str(info["CFBundleVersion"]))
-        info["CFBundleShortVersionString"] = info["TPKOriginalTwitchVersion"]
+        info["CFBundleShortVersionString"] = ipa_version(info["TPKOriginalTwitchVersion"], version)
         info["CFBundleVersion"] = release_build(info["TPKOriginalTwitchBuild"], version)
         fmt = plistlib.FMT_BINARY if original.startswith(b"bplist") else plistlib.FMT_XML
         path.write_bytes(plistlib.dumps(info, fmt=fmt, sort_keys=False))
@@ -81,10 +91,10 @@ def make_source(ipa, version, date, repository, ldid, previous=None):
         raise ValueError("Invalid GitHub repository")
     datetime.datetime.fromisoformat(date.replace("Z", "+00:00"))
     info, permissions = ipa_metadata(ipa, ldid)
-    twitch = info["CFBundleShortVersionString"]
-    if (twitch != info["TPKOriginalTwitchVersion"] or
+    twitch = info["TPKOriginalTwitchVersion"]
+    if (info["CFBundleShortVersionString"] != ipa_version(twitch, version) or
             str(info["CFBundleVersion"]) != release_build(info["TPKOriginalTwitchBuild"], version)):
-        raise ValueError("IPA must preserve the Twitch version and match the calculated release build")
+        raise ValueError("IPA version and build must match the calculated TwitchPlusK release values")
     expected_name = f"tpK-{version}-Twitch-{twitch}.ipa"
     if Path(ipa).name != expected_name:
         raise ValueError(f"Expected IPA filename {expected_name}")

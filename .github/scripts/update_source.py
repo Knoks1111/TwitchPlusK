@@ -27,7 +27,7 @@ def stamp_build(app_path, version):
         info = plistlib.loads(original)
         info.setdefault("TPKOriginalTwitchVersion", info["CFBundleShortVersionString"])
         info.setdefault("TPKOriginalTwitchBuild", str(info["CFBundleVersion"]))
-        info["CFBundleShortVersionString"] = version
+        info["CFBundleShortVersionString"] = info["TPKOriginalTwitchVersion"]
         info["CFBundleVersion"] = version
         fmt = plistlib.FMT_BINARY if original.startswith(b"bplist") else plistlib.FMT_XML
         path.write_bytes(plistlib.dumps(info, fmt=fmt, sort_keys=False))
@@ -72,9 +72,9 @@ def make_source(ipa, version, date, repository, ldid):
         raise ValueError("Invalid GitHub repository")
     datetime.datetime.fromisoformat(date.replace("Z", "+00:00"))
     info, permissions = ipa_metadata(ipa, ldid)
-    twitch = info["TPKOriginalTwitchVersion"]
-    if info["CFBundleShortVersionString"] != version or str(info["CFBundleVersion"]) != version:
-        raise ValueError("IPA version and build must match the TwitchPlusK release version")
+    twitch = info["CFBundleShortVersionString"]
+    if twitch != info["TPKOriginalTwitchVersion"] or str(info["CFBundleVersion"]) != version:
+        raise ValueError("IPA must preserve the Twitch version and match the TwitchPlusK release build")
     expected_name = f"tpK-{version}-Twitch-{twitch}.ipa"
     if Path(ipa).name != expected_name:
         raise ValueError(f"Expected IPA filename {expected_name}")
@@ -82,10 +82,12 @@ def make_source(ipa, version, date, repository, ldid):
     base = f"https://github.com/{repository}"
     raw = f"https://raw.githubusercontent.com/{repository}/main"
     icon = raw + "/Assets/twitchplusk-icon.webp"
+    description = f"TwitchPlusK {version} for Twitch {twitch}."
     app_version = {
         "version": info["CFBundleShortVersionString"],
         "buildVersion": str(info["CFBundleVersion"]),
         "marketingVersion": f"{version} (Twitch {twitch})",
+        "localizedDescription": description,
         "date": date,
         "downloadURL": f"{base}/releases/download/{tag}/{expected_name}",
         "size": Path(ipa).stat().st_size,
@@ -108,6 +110,7 @@ def make_source(ipa, version, date, repository, ldid):
             "versions": [app_version],
             "version": app_version["version"],
             "versionDate": date,
+            "versionDescription": description,
             "downloadURL": app_version["downloadURL"],
             "size": app_version["size"],
             "appPermissions": permissions,

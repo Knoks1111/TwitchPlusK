@@ -15,19 +15,21 @@
       "iconURL": "https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/Assets/twitchplusk-icon.webp",
       "versions": [
         {
-          "version": "2.0.3",
-          "buildVersion": "2.0.3",
+          "version": "31.9",
+          "buildVersion": "263032151279137769",
           "marketingVersion": "2.0.3 (Twitch 31.9)",
-          "date": "2026-11-08T00:10:44Z",
+          "localizedDescription": "TwitchPlusK 2.0.3 for Twitch 31.9.",
+          "date": "2026-11-08T00:23:52Z",
           "downloadURL": "https://github.com/Knoks1111/TwitchPlusK/releases/download/twitchplusk-v2.0.3-twitch-31.9/tpK-2.0.3-Twitch-31.9.ipa",
-          "size": 196182525,
+          "size": 196182532,
           "minOSVersion": "16.4"
         }
       ],
-      "version": "2.0.3",
-      "versionDate": "2026-11-08T00:10:32Z",
+      "version": "31.9",
+      "versionDate": "2026-11-08T00:23:52Z",
+      "versionDescription": "TwitchPlusK 2.0.3 for Twitch 31.9.",
       "downloadURL": "https://github.com/Knoks1111/TwitchPlusK/releases/download/twitchplusk-v2.0.3-twitch-31.9/tpK-2.0.3-Twitch-31.9.ipa",
-      "size": 196182525,
+      "size": 196182532,
       "appPermissions": {
         "entitlements": [
           "com.apple.security.application-groups",

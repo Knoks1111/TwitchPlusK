@@ -10,6 +10,8 @@ This file keeps the cumulative release history of TwitchPlusK, with the newest r
 
 ### Fixes
 
+- Fixed source update detection for releases targeting the same Twitch version by adding a TwitchPlusK-specific suffix to the IPA version (e.g. 31.9.20003) and incrementing its build number.
+
 - Fixed the emote picker button missing when Twitch’s Bits button is unavailable: it now appears directly to the left of the native emote button.
 
 ## [2.0.2] (Twitch 31.9) - 2026-11-04

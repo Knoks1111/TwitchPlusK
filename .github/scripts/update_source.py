@@ -18,6 +18,15 @@ def release_version(value):
     return value
 
 
+def release_build(original, version):
+    major, minor, patch = map(int, release_version(version).split('.'))
+    if minor > 99 or patch > 99:
+        raise ValueError("Release minor and patch components must not exceed 99")
+    offset = major * 10000 + minor * 100 + patch
+    original = str(original)
+    return str(int(original) + offset) if original.isdigit() else f"{original}.{offset}"
+
+
 def stamp_build(app_path, version):
     release_version(version)
     app_path = Path(app_path)
@@ -27,8 +36,8 @@ def stamp_build(app_path, version):
         info = plistlib.loads(original)
         info.setdefault("TPKOriginalTwitchVersion", info["CFBundleShortVersionString"])
         info.setdefault("TPKOriginalTwitchBuild", str(info["CFBundleVersion"]))
-        info["CFBundleShortVersionString"] = version
-        info["CFBundleVersion"] = version
+        info["CFBundleShortVersionString"] = info["TPKOriginalTwitchVersion"]
+        info["CFBundleVersion"] = release_build(info["TPKOriginalTwitchBuild"], version)
         fmt = plistlib.FMT_BINARY if original.startswith(b"bplist") else plistlib.FMT_XML
         path.write_bytes(plistlib.dumps(info, fmt=fmt, sort_keys=False))
 
@@ -66,15 +75,16 @@ def ipa_metadata(ipa, ldid):
     return main, {"entitlements": sorted(entitlements), "privacy": dict(sorted(privacy.items()))}
 
 
-def make_source(ipa, version, date, repository, ldid):
+def make_source(ipa, version, date, repository, ldid, previous=None):
     release_version(version)
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
         raise ValueError("Invalid GitHub repository")
     datetime.datetime.fromisoformat(date.replace("Z", "+00:00"))
     info, permissions = ipa_metadata(ipa, ldid)
-    twitch = info["TPKOriginalTwitchVersion"]
-    if info["CFBundleShortVersionString"] != version or str(info["CFBundleVersion"]) != version:
-        raise ValueError("IPA version and build must match the TwitchPlusK release version")
+    twitch = info["CFBundleShortVersionString"]
+    if (twitch != info["TPKOriginalTwitchVersion"] or
+            str(info["CFBundleVersion"]) != release_build(info["TPKOriginalTwitchBuild"], version)):
+        raise ValueError("IPA must preserve the Twitch version and match the calculated release build")
     expected_name = f"tpK-{version}-Twitch-{twitch}.ipa"
     if Path(ipa).name != expected_name:
         raise ValueError(f"Expected IPA filename {expected_name}")
@@ -82,15 +92,29 @@ def make_source(ipa, version, date, repository, ldid):
     base = f"https://github.com/{repository}"
     raw = f"https://raw.githubusercontent.com/{repository}/main"
     icon = raw + "/Assets/twitchplusk-icon.webp"
+    description = f"TwitchPlusK {version} for Twitch {twitch}."
     app_version = {
         "version": info["CFBundleShortVersionString"],
         "buildVersion": str(info["CFBundleVersion"]),
         "marketingVersion": f"{version} (Twitch {twitch})",
+        "localizedDescription": description,
         "date": date,
         "downloadURL": f"{base}/releases/download/{tag}/{expected_name}",
         "size": Path(ipa).stat().st_size,
         "minOSVersion": info["MinimumOSVersion"],
     }
+    versions = []
+    if previous is not None:
+        old_apps = [app for app in previous["apps"]
+                    if app["bundleIdentifier"] == info["CFBundleIdentifier"]]
+        if len(old_apps) != 1:
+            raise ValueError("Previous source must contain exactly one matching app")
+        versions = [entry for entry in old_apps[0]["versions"]
+                    if entry["downloadURL"] != app_version["downloadURL"]]
+    versions.append(app_version)
+    versions.sort(key=lambda entry: datetime.datetime.fromisoformat(entry["date"].replace("Z", "+00:00")),
+                  reverse=True)
+    latest = versions[0]
     return {
         "version": version,
         "name": "TwitchPlusK",
@@ -105,11 +129,12 @@ def make_source(ipa, version, date, repository, ldid):
             "developerName": repository.split('/')[0],
             "localizedDescription": "Twitch for iOS with customizable chat, extra emotes, ad blocking and more. Full changelog: " + base + "/blob/main/CHANGELOG.md",
             "iconURL": icon,
-            "versions": [app_version],
-            "version": app_version["version"],
-            "versionDate": date,
-            "downloadURL": app_version["downloadURL"],
-            "size": app_version["size"],
+            "versions": versions,
+            "version": latest["version"],
+            "versionDate": latest["date"],
+            "versionDescription": latest.get("localizedDescription", ""),
+            "downloadURL": latest["downloadURL"],
+            "size": latest["size"],
             "appPermissions": permissions,
         }],
         "news": [],
@@ -140,11 +165,14 @@ def main():
     build.add_argument("--repository", default="Knoks1111/TwitchPlusK")
     build.add_argument("--ldid", default="ldid")
     build.add_argument("--output", default="update.json")
+    build.add_argument("--previous", default="update.json")
     args = parser.parse_args()
     if args.command == "stamp-build":
         stamp_build(args.app, args.version)
     else:
-        write_source(make_source(args.ipa, args.version, args.date, args.repository, args.ldid), args.output)
+        previous = Path(args.previous)
+        history = json.loads(previous.read_text(encoding="utf-8")) if previous.exists() else None
+        write_source(make_source(args.ipa, args.version, args.date, args.repository, args.ldid, history), args.output)
 
 
 if __name__ == "__main__":

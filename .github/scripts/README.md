@@ -3,16 +3,20 @@
 `update.json` serves both the tweak's update checker (`version` at the root)
 and AltStore Classic / SideStore (`apps`). Do not replace it with a version-only file.
 
-The source lists the latest published IPA only, keeping the manifest below the
-existing tweak updater's 16 KiB limit. Older iOS releases have no historical IPA
-fallback in this source.
+The source retains previous releases, replacing an entry when its IPA URL is rebuilt,
+and sorts them by release date. The latest release also populates legacy app-level
+fields. Generation refuses a manifest above the tweak updater's 16 KiB limit.
 
-`Build IPA (final)` stamps both `CFBundleShortVersionString` and `CFBundleVersion`
-in the main app and its extensions with the TwitchPlusK release version.
+`Build IPA (final)` preserves Twitch's `CFBundleShortVersionString`. It sets
+`CFBundleVersion` to the original Twitch build plus `major * 10000 + minor * 100 + patch`
+for the TwitchPlusK release (minor and patch must be at most 99). Non-numeric original
+builds receive the offset as a dotted suffix. The same calculation is applied to extensions.
 The original values are preserved as `TPKOriginalTwitchVersion` and
 `TPKOriginalTwitchBuild` for Twitch version labels, diagnostics and release naming.
-The source uses the same release version in `versions` and legacy app-level fields,
-so clients can display tweak updates even when the Twitch version is unchanged.
+The source reads the exact version/build from the final IPA and includes the tweak
+version in release descriptions and `marketingVersion`. Client support for build-based
+updates remains necessary for releases on the same Twitch version. Do not replace
+Twitch's main version with the tweak version: Twitch may demand an update at launch.
 The generator reads the final IPA's versions, size,
 minimum iOS version, privacy descriptions and signed entitlements, including
 extensions. A failed metadata check stops source preparation.

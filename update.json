@@ -1,5 +1,5 @@
 {
-  "version": "2.0.3",
+  "version": "2.0.4",
   "name": "TwitchPlusK",
   "identifier": "com.knoks1111.twitchplusk.source",
   "sourceURL": "https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/update.json",
@@ -14,6 +14,16 @@
       "localizedDescription": "Twitch for iOS with customizable chat, extra emotes, ad blocking and more. Full changelog: https://github.com/Knoks1111/TwitchPlusK/blob/main/CHANGELOG.md",
       "iconURL": "https://raw.githubusercontent.com/Knoks1111/TwitchPlusK/main/Assets/twitchplusk-icon.webp",
       "versions": [
+        {
+          "version": "32.0.20004",
+          "buildVersion": "263110145453927619",
+          "marketingVersion": "2.0.4 (Twitch 32.0)",
+          "localizedDescription": "TwitchPlusK 2.0.4 for Twitch 32.0.",
+          "date": "2026-11-17T22:02:21Z",
+          "downloadURL": "https://github.com/Knoks1111/TwitchPlusK/releases/download/twitchplusk-v2.0.4-twitch-32.0/tpK-2.0.4-Twitch-32.0.ipa",
+          "size": 196977625,
+          "minOSVersion": "16.4"
+        },
         {
           "version": "31.9.20003",
           "buildVersion": "263032151279137769",
@@ -34,11 +44,11 @@
           "minOSVersion": "16.4"
         }
       ],
-      "version": "31.9.20003",
-      "versionDate": "2026-11-08T00:23:52Z",
-      "versionDescription": "TwitchPlusK 2.0.3 for Twitch 31.9.",
-      "downloadURL": "https://github.com/Knoks1111/TwitchPlusK/releases/download/twitchplusk-v2.0.3-twitch-31.9/tpK-2.0.3-Twitch-31.9.ipa",
-      "size": 196182590,
+      "version": "32.0.20004",
+      "versionDate": "2026-11-17T22:02:21Z",
+      "versionDescription": "TwitchPlusK 2.0.4 for Twitch 32.0.",
+      "downloadURL": "https://github.com/Knoks1111/TwitchPlusK/releases/download/twitchplusk-v2.0.4-twitch-32.0/tpK-2.0.4-Twitch-32.0.ipa",
+      "size": 196977625,
       "appPermissions": {
         "entitlements": [
           "com.apple.security.application-groups",

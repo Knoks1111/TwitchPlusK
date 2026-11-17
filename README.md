@@ -42,7 +42,7 @@ Full CHANGELOG : [CHANGELOG.md](https://github.com/Knoks1111/TwitchPlusK/blob/ma
 
 ### Chat and emotes
 
-- Use **7TV, BTTV, and FFZ emotes** in native chat, including animated and Width emotes.
+- Use **7TV, BTTV, and FFZ emotes** in native chat, including animated and wide emotes.
 - Customize emote sizes and highlight first-time chatters.
 - Customize background colors for chat events.
 - Reveal deleted messages and view timeout durations or permanent ban labels.

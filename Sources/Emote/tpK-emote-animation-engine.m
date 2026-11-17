@@ -1,124 +1,19 @@
-/*
- * tpK-emote-animation-engine.m
- *
- * Voir tpK-emote-animation-engine.h pour le contexte complet (Phase 2 —
- * animation des emotes).
- */
-
 #import "Emote/tpK-emote-animation-engine.h"
-#import "Core/tpK-core-manager.h"
-#import <float.h>
 
-// Le picker peut afficher plus de 24 emotes animées distinctes en même temps,
-// auxquelles s'ajoutent celles du chat encore visible derrière lui. La limite
-// précédente gelait donc certaines cellules pourtant durablement à l'écran.
-// Les observateurs sont strictement liés aux cellules réellement visibles et
-// retirés dans didEndDisplayingCell. On peut donc couvrir tout le picker + le
-// chat derrière sans geler arbitrairement une cellule encore à l'écran.
 static const NSInteger kTPKDefaultMaxSimultaneousAnimations = 128;
-static const NSUInteger kTPKMaxRegisteredFrameSets = 32;
-static const NSUInteger kTPKMaxRegisteredFramesCost = 48 * 1024 * 1024;
-// Les GIFs Twitch sont souvent bien plus lourds que les emotes WebP. Ils ont
-// donc un budget indépendant afin qu'une série de GIFs ne puisse pas évincer
-// tout le cache animé des emotes, ni conserver plusieurs dizaines de boucles
-// complètes en mémoire.
-static const NSUInteger kTPKMaxRegisteredTwitchGIFFrameSets = 4;
-static const NSUInteger kTPKMaxRegisteredTwitchGIFFramesCost = 16 * 1024 * 1024;
-
-static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
-    NSUInteger total = 0;
-    for (UIImage *image in frames.images) {
-        CGImageRef cgImage = image.CGImage;
-        if (cgImage) total += CGImageGetBytesPerRow(cgImage) * CGImageGetHeight(cgImage);
-    }
-    return total;
-}
-
-
-// ============================================================
-// MARK: - TPKAnimatedEmoteAttachment
-// ============================================================
-
-@implementation TPKAnimatedEmoteAttachment
-
-- (nullable UIImage *)imageForBounds:(CGRect)imageBounds
-                        textContainer:(nullable NSTextContainer *)textContainer
-                       characterIndex:(NSUInteger)charIndex {
-    // Simple lookup, aucun I/O ici — sûr à appeler depuis le pipeline de
-    // dessin TextKit à chaque frame.
-    UIImage *frame = [[TPKEmoteAnimationEngine sharedEngine] currentFrameForKey:self.animationKey];
-    return frame ?: self.staticFallbackImage;
-}
-
-@end
-
-@implementation TPKAnimatedCompositeEmoteAttachment
-
-- (nullable UIImage *)imageForBounds:(CGRect)imageBounds
-                        textContainer:(nullable NSTextContainer *)textContainer
-                       characterIndex:(NSUInteger)charIndex {
-    (void)textContainer;
-    (void)charIndex;
-    NSUInteger count = MIN(self.layerAnimationKeys.count,
-                           self.layerFallbackImages.count);
-    if (count == 0) return nil;
-
-    TPKEmoteAnimationEngine *engine = [TPKEmoteAnimationEngine sharedEngine];
-    NSMutableArray<UIImage *> *images = [NSMutableArray arrayWithCapacity:count];
-    for (NSUInteger index = 0; index < count; index++) {
-        NSString *key = self.layerAnimationKeys[index];
-        UIImage *image = key.length ? [engine currentFrameForKey:key] : nil;
-        if (!image) image = self.layerFallbackImages[index];
-        if (image) [images addObject:image];
-    }
-    if (images.count == 0) return nil;
-    if (images.count == 1) return images.firstObject;
-
-    CGFloat width = CGRectGetWidth(imageBounds);
-    CGFloat height = CGRectGetHeight(imageBounds);
-    if (width <= 0.0) width = CGRectGetWidth(self.bounds);
-    if (height <= 0.0) height = CGRectGetHeight(self.bounds);
-    if (width <= 0.0 || height <= 0.0) return images.firstObject;
-
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(width, height), NO, 0.0);
-    for (UIImage *image in images) {
-        CGFloat imageHeight = height;
-        CGFloat ratio = image.size.height > 0.0
-            ? image.size.width / image.size.height : 1.0;
-        CGFloat imageWidth = imageHeight * ratio;
-        [image drawInRect:CGRectMake(0.0, (height - imageHeight) * 0.5,
-                                     imageWidth, imageHeight)
-                 blendMode:kCGBlendModeNormal alpha:1.0];
-    }
-    UIImage *composite = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return composite;
-}
-
-@end
-
-
-// ============================================================
-// MARK: - TPKEmoteAnimationEngine
-// ============================================================
 
 @interface TPKEmoteAnimationEngine ()
 @property (nonatomic, strong, nullable) CADisplayLink *displayLink;
 @property (nonatomic, assign) CFTimeInterval lastTickTimestamp;
 
 @property (nonatomic, strong) NSMutableDictionary<NSString *, TPKEmoteAnimatedFrames *> *framesByKey;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *frameIndexByKey;   // NSUInteger
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *elapsedByKey;      // CFTimeInterval accumulé
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *firstSeenAtByKey;  // CFTimeInterval, référence throttle
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastAccessByKey;   // LRU des frames inactives
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *frameCostByKey;    // octets décodés estimés
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *twitchGIFByKey;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *frameIndexByKey;   // Frame index.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *elapsedByKey;      // Elapsed time.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *firstSeenAtByKey;  // Throttle reference time.
 
-// Clé → observateurs actuellement affichés (weak — un observateur qui
-// disparaît sans appeler removeObserver: ne fuit pas indéfiniment).
+// Visible observers by animation key; weak references prevent stale views.
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSHashTable *> *observersByKey;
-// Observateur → ses clés actuelles (weak key : suit le cycle de vie réel de
-// l'observateur, filet de sécurité en plus de removeObserver: explicite).
+// Animation keys by observer; weak keys track observer lifetime.
 @property (nonatomic, strong) NSMapTable<id, NSMutableSet<NSString *> *> *keysByObserver;
 @property (nonatomic, strong) NSMapTable<id, dispatch_block_t> *redrawByObserver;
 - (void)tpk_pruneInactiveFrameSetsPreservingKey:(NSString *)protectedKey;
@@ -144,9 +39,6 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
         _frameIndexByKey   = [NSMutableDictionary dictionary];
         _elapsedByKey      = [NSMutableDictionary dictionary];
         _firstSeenAtByKey  = [NSMutableDictionary dictionary];
-        _lastAccessByKey   = [NSMutableDictionary dictionary];
-        _frameCostByKey    = [NSMutableDictionary dictionary];
-        _twitchGIFByKey    = [NSMutableDictionary dictionary];
         _observersByKey    = [NSMutableDictionary dictionary];
         _keysByObserver    = [NSMapTable weakToStrongObjectsMapTable];
         _redrawByObserver  = [NSMapTable weakToStrongObjectsMapTable];
@@ -161,40 +53,27 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
     if (!key.length || frames.images.count == 0) return;
 
     TPKEmoteAnimatedFrames *existingFrames = self.framesByKey[key];
-    // Une preview peut arriver après la boucle complète (files de décodage
-    // distinctes). Ne jamais dégrader alors l'animation déjà enregistrée.
+    // Ignore a late preview if full frames are already registered.
     if (existingFrames && !existingFrames.isPreview && frames.isPreview) {
-        self.lastAccessByKey[key] = @(CACurrentMediaTime());
         return;
     }
-    // Ne pas réinitialiser une animation déjà enregistrée quand plusieurs
-    // cellules demandent exactement le même résultat au même moment.
+    // Preserve registered state when cells request the same animation.
     if (existingFrames == frames) {
-        self.lastAccessByKey[key] = @(CACurrentMediaTime());
         return;
     }
 
     self.framesByKey[key]     = frames;
     self.frameIndexByKey[key] = @0;
     self.elapsedByKey[key]    = @0.0;
-    self.lastAccessByKey[key] = @(CACurrentMediaTime());
-    self.frameCostByKey[key]  = @(tpk_engineFramesCost(frames));
-    self.twitchGIFByKey[key]  = @(frames.isTwitchGIF);
-    // registerFrames: précède nécessairement addObserver:. Protéger cette clé
-    // pendant le prune empêche qu'elle soit considérée comme inactive puis
-    // évincée immédiatement lorsque le chat + le picker dépassent déjà la
-    // limite du cache interne.
+    // Protect newly registered frames from pruning before addObserver:.
     [self tpk_pruneInactiveFrameSetsPreservingKey:key];
 
-    // Redraw immédiat : sans ça, une clé qui vient tout juste d'être décodée
-    // n'affiche sa vraie frame 0 qu'au PROCHAIN avancement de frame (jusqu'à
-    // frameDuration plus tard) au lieu d'immédiatement — voir tpk_tick:.
+    // Redraw now so the decoded frame appears without waiting for the next tick.
     [self tpk_notifyObserversOfKey:key];
 }
 
 - (BOOL)hasFramesForKey:(NSString *)key {
     BOOL hasFrames = key.length > 0 && self.framesByKey[key] != nil;
-    if (hasFrames) self.lastAccessByKey[key] = @(CACurrentMediaTime());
     return hasFrames;
 }
 
@@ -203,7 +82,7 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
     TPKEmoteAnimatedFrames *frames = self.framesByKey[key];
     if (!frames.images.count) return nil;
     NSUInteger idx = self.frameIndexByKey[key].unsignedIntegerValue;
-    if (idx >= frames.images.count) idx = 0; // filet de sécurité, ne devrait pas arriver
+    if (idx >= frames.images.count) idx = 0; // Safety fallback.
     return frames.images[idx];
 }
 
@@ -213,10 +92,7 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
     NSAssert([NSThread isMainThread], @"TPKEmoteAnimationEngine: main thread uniquement");
     if (!observer || keys.count == 0) return;
 
-    // Rend l'API sûre même si un appelant réutilise une cellule sans faire le
-    // removeObserver: recommandé juste avant. Sans ce détachement, l'ancien
-    // key → observer restait vivant et pouvait consommer une place du throttle
-    // alors que l'emote n'était plus affichée.
+    // Detach reused cells even if callers skip removeObserver:.
     NSMutableSet<NSString *> *previousKeys = [self.keysByObserver objectForKey:observer];
     for (NSString *previousKey in previousKeys) {
         NSHashTable *previousObservers = self.observersByKey[previousKey];
@@ -232,7 +108,6 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
 
     CFTimeInterval now = CACurrentMediaTime();
     for (NSString *key in keys) {
-        self.lastAccessByKey[key] = @(now);
         NSHashTable *observers = self.observersByKey[key];
         if (!observers) {
             observers = [NSHashTable weakObjectsHashTable];
@@ -241,9 +116,7 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
         BOOL wasEmpty = (observers.count == 0);
         [observers addObject:observer];
         if (wasEmpty) {
-            // Transition 0 → 1 observateur : cette clé "apparaît" à l'écran
-            // maintenant — référence pour le throttle (voir tpk_tick:, les
-            // clés au firstSeenAt le plus ancien gèlent en premier).
+            // Record when this animation first becomes visible for throttling.
             self.firstSeenAtByKey[key] = @(now);
         }
     }
@@ -262,8 +135,7 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
         if (observers.count == 0) {
             [self.observersByKey removeObjectForKey:key];
             [self.firstSeenAtByKey removeObjectForKey:key];
-            // Les frames restent disponibles pour un retour rapide à l'écran,
-            // mais le LRU borné ci-dessous évite leur accumulation illimitée.
+            // Keep frames cached for quick reuse; the LRU bounds memory.
         }
     }
     [self.keysByObserver removeObjectForKey:observer];
@@ -276,15 +148,7 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
 - (BOOL)hasCompleteFramesForKey:(NSString *)key {
     TPKEmoteAnimatedFrames *frames = key.length > 0 ? self.framesByKey[key] : nil;
     BOOL complete = frames != nil && !frames.isPreview;
-    if (complete) self.lastAccessByKey[key] = @(CACurrentMediaTime());
     return complete;
-}
-
-- (void)setScrollingPerformanceMode:(BOOL)enabled {
-    NSAssert([NSThread isMainThread], @"TPKEmoteAnimationEngine: main thread uniquement");
-    // Conservé comme point d'entrée du picker. La visibilité stricte des
-    // cellules remplace désormais le throttle artificiel pendant le scroll.
-    (void)enabled;
 }
 
 - (void)clearAllCachedFrames {
@@ -299,102 +163,29 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
     [self.frameIndexByKey removeAllObjects];
     [self.elapsedByKey removeAllObjects];
     [self.firstSeenAtByKey removeAllObjects];
-    [self.lastAccessByKey removeAllObjects];
-    [self.frameCostByKey removeAllObjects];
-    [self.twitchGIFByKey removeAllObjects];
     [self.observersByKey removeAllObjects];
     [self.keysByObserver removeAllObjects];
     [self.redrawByObserver removeAllObjects];
 }
 
-// Le NSCache d'images est borné, mais framesByKey retenait auparavant une
-// seconde référence forte vers chaque animation jamais rencontrée. Après un
-// long scroll, cette table devenait donc un cache illimité. On garde un LRU
-// borné séparément pour les emotes et les GIFs Twitch, sans jamais évincer une
-// clé actuellement visible.
 - (void)tpk_pruneInactiveFrameSetsPreservingKey:(NSString *)protectedKey {
-    NSUInteger emoteCount = 0;
-    NSUInteger emoteCost = 0;
-    NSUInteger gifCount = 0;
-    NSUInteger gifCost = 0;
-    for (NSString *key in self.framesByKey) {
-        NSUInteger cost = self.frameCostByKey[key].unsignedIntegerValue;
-        if (self.twitchGIFByKey[key].boolValue) {
-            gifCount += 1;
-            gifCost += cost;
-        } else {
-            emoteCount += 1;
-            emoteCost += cost;
-        }
-    }
-
-    while (emoteCount > kTPKMaxRegisteredFrameSets ||
-           emoteCost > kTPKMaxRegisteredFramesCost ||
-           gifCount > kTPKMaxRegisteredTwitchGIFFrameSets ||
-           gifCost > kTPKMaxRegisteredTwitchGIFFramesCost) {
-        BOOL needGIF = gifCount > kTPKMaxRegisteredTwitchGIFFrameSets ||
-                       gifCost > kTPKMaxRegisteredTwitchGIFFramesCost;
-        BOOL needEmote = emoteCount > kTPKMaxRegisteredFrameSets ||
-                         emoteCost > kTPKMaxRegisteredFramesCost;
-        BOOL targetGIF = needGIF;
-        NSString *oldestKey = nil;
-        CFTimeInterval oldestAccess = DBL_MAX;
-        for (NSString *candidate in self.framesByKey) {
-            if ([candidate isEqualToString:protectedKey]) continue;
-            if (self.observersByKey[candidate].count > 0) continue;
-            if (self.twitchGIFByKey[candidate].boolValue != targetGIF) continue;
-            CFTimeInterval access = self.lastAccessByKey[candidate].doubleValue;
-            if (!oldestKey || access < oldestAccess) {
-                oldestKey = candidate;
-                oldestAccess = access;
-            }
-        }
-
-        // Si le budget GIF est dépassé mais que tous les GIFs sont visibles,
-        // tenter quand même de réduire le budget emote s'il est lui aussi
-        // dépassé, plutôt que de bloquer le pruneur entier.
-        if (!oldestKey && needGIF && needEmote) {
-            targetGIF = NO;
-            for (NSString *candidate in self.framesByKey) {
-                if ([candidate isEqualToString:protectedKey]) continue;
-                if (self.observersByKey[candidate].count > 0) continue;
-                if (self.twitchGIFByKey[candidate].boolValue) continue;
-                CFTimeInterval access = self.lastAccessByKey[candidate].doubleValue;
-                if (!oldestKey || access < oldestAccess) {
-                    oldestKey = candidate;
-                    oldestAccess = access;
-                }
-            }
-        }
-        if (!oldestKey) break; // toutes les clés du budget concerné sont visibles
-        NSUInteger removedCost = self.frameCostByKey[oldestKey].unsignedIntegerValue;
-        if (targetGIF) {
-            gifCount = gifCount > 0 ? gifCount - 1 : 0;
-            gifCost -= MIN(gifCost, removedCost);
-        } else {
-            emoteCount = emoteCount > 0 ? emoteCount - 1 : 0;
-            emoteCost -= MIN(emoteCost, removedCost);
-        }
-        [self.framesByKey removeObjectForKey:oldestKey];
-        [self.frameIndexByKey removeObjectForKey:oldestKey];
-        [self.elapsedByKey removeObjectForKey:oldestKey];
-        [self.lastAccessByKey removeObjectForKey:oldestKey];
-        [self.frameCostByKey removeObjectForKey:oldestKey];
-        [self.twitchGIFByKey removeObjectForKey:oldestKey];
+    // NSCache owns inactive frames; the engine retains only visible animations.
+    for (NSString *key in self.framesByKey.allKeys) {
+        if ([key isEqualToString:protectedKey] || self.observersByKey[key].count) continue;
+        [self.framesByKey removeObjectForKey:key];
+        [self.frameIndexByKey removeObjectForKey:key];
+        [self.elapsedByKey removeObjectForKey:key];
     }
 }
 
-// Les NSHashTable d'observateurs sont faibles. Si UIKit détruit une vue sans
-// envoyer didEndDisplayingCell (fermeture/transitions rapides), la table peut
-// devenir vide toute seule mais sa clé reste dans observersByKey. On purge ces
-// clés avant chaque calcul de limite afin qu'une animation hors écran ne puisse
-// jamais voler l'une des places réservées aux emotes réellement visibles.
+// Remove keys with no live observers before computing the animation limit.
 - (void)tpk_pruneEmptyObserverKeys {
     for (NSString *key in [self.observersByKey.allKeys copy]) {
         if (self.observersByKey[key].count > 0) continue;
         [self.observersByKey removeObjectForKey:key];
         [self.firstSeenAtByKey removeObjectForKey:key];
     }
+    [self tpk_pruneInactiveFrameSetsPreservingKey:nil];
 }
 
 - (void)tpk_notifyObserversOfKey:(NSString *)key {
@@ -412,16 +203,12 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
     BOOL shouldRun = self.observersByKey.count > 0;
     if (shouldRun && !self.displayLink) {
         self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(tpk_tick:)];
-        // Conserver les emotes 50/60 fps réellement fluides, tout en évitant
-        // les passages inutiles à 120 Hz sur les écrans ProMotion. Le moteur
-        // ne tourne déjà que pour les emotes dont une cellule est visible.
+        // Keep visible animations smooth without requesting unnecessary 120 Hz updates.
         self.displayLink.preferredFramesPerSecond = 60;
         self.lastTickTimestamp = 0;
         [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
     } else if (!shouldRun && self.displayLink) {
-        // Plus aucune emote animée observée à l'écran → coupe le timer
-        // plutôt que de le laisser tourner pour rien (chat custom désactivé,
-        // ou aucune emote animée dans les messages visibles actuellement).
+        // Stop the timer when no animated emotes are visible.
         [self.displayLink invalidate];
         self.displayLink = nil;
         self.lastTickTimestamp = 0;
@@ -437,26 +224,17 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
         return;
     }
 
-    // link.duration correspond à la cadence physique de l'écran. Sur un
-    // écran ProMotion 120 Hz avec un displayLink demandé à 60 Hz, elle peut
-    // donc valoir 1/120 alors que ce callback n'arrive que toutes les 1/60 s :
-    // les animations avançaient à demi-vitesse et semblaient saccader. La
-    // différence entre deux timestamps mesure la cadence réellement livrée,
-    // y compris lorsqu'une frame est ponctuellement manquée par le main thread.
+    // Timestamp deltas reflect delivered callbacks, including missed frames.
     NSTimeInterval nominalStep = link.targetTimestamp > link.timestamp
         ? (link.targetTimestamp - link.timestamp) : (1.0 / 60.0);
     NSTimeInterval elapsedStep = self.lastTickTimestamp > 0
         ? (link.timestamp - self.lastTickTimestamp) : nominalStep;
     self.lastTickTimestamp = link.timestamp;
     if (elapsedStep <= 0) elapsedStep = nominalStep;
-    // Évite une énorme boucle de rattrapage après un passage en arrière-plan,
-    // tout en absorbant largement les petites pointes de charge réelles.
+    // Cap catch-up time after backgrounding while absorbing brief delays.
     elapsedStep = MIN(elapsedStep, 0.25);
 
-    // Throttle : au-delà de maxSimultaneousAnimations clés actives, les plus
-    // anciennes (firstSeenAt le plus petit) gèlent — jamais retirées, juste
-    // pas avancées ce tick (voir header). Aucune clé n'est jamais désinscrite
-    // par le throttle lui-même.
+    // Freeze the oldest animations above the limit; throttling never unregisters them.
     NSArray<NSString *> *activeKeys = self.observersByKey.allKeys;
     NSSet<NSString *> *frozenSet = nil;
     NSInteger activeLimit = self.maxSimultaneousAnimations;
@@ -479,7 +257,7 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
         if ([frozenSet containsObject:key]) continue;
 
         TPKEmoteAnimatedFrames *frames = self.framesByKey[key];
-        if (!frames.images.count) continue; // décodage pas encore terminé pour cette clé
+        if (!frames.images.count) continue; // Frames are still decoding.
 
         NSUInteger idx = self.frameIndexByKey[key].unsignedIntegerValue;
         NSTimeInterval elapsed = self.elapsedByKey[key].doubleValue + elapsedStep;
@@ -487,10 +265,7 @@ static NSUInteger tpk_engineFramesCost(TPKEmoteAnimatedFrames *frames) {
         if (frameDuration <= 0) frameDuration = 0.1;
 
         BOOL advanced = NO;
-        // while plutôt que if : rattrape un retard important (ex: app
-        // revenue au premier plan après un long moment en arrière-plan) une
-        // frame à la fois, sans bond visuel brutal ni boucle infinie
-        // (frameDuration replanché à chaque itération).
+        // Catch up one frame at a time without a large visual jump.
         while (elapsed >= frameDuration && frames.images.count > 1) {
             elapsed -= frameDuration;
             idx = (idx + 1) % frames.images.count;

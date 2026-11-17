@@ -1,6 +1,6 @@
 /*
  * tpK-picker-cell.m
- * Extrait de tpK-core-manager.m (nettoyage picker).
+ * Extrait de tpK-core-manager.m lors du nettoyage du picker.
  */
 
 #import "Picker/tpK-picker-cell.h"
@@ -19,10 +19,7 @@
         _emoteImageView.backgroundColor = [UIColor clearColor];
         [self.contentView addSubview:_emoteImageView];
 
-        // Badge favori : petite pastille pleine (pas juste l'icône seule) à
-        // cheval sur le coin supérieur droit de la cellule, façon "notif
-        // badge" — plus lisible que l'étoile flottante de la V1 sur fond
-        // carte arrondi.
+        // Pastille pleine en haut à droite pour distinguer les favoris.
         _favoriteStarView = [[UIImageView alloc] init];
         _favoriteStarView.backgroundColor = [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0];
         _favoriteStarView.layer.cornerRadius = 6;
@@ -34,9 +31,7 @@
             imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
         _favoriteStarView.tintColor = [UIColor whiteColor];
         _favoriteStarView.hidden = YES;
-        // Ajouté à `self` (pas à contentView) : contentView a clipsToBounds=YES
-        // pour les coins arrondis, ce qui rognerait le badge qui doit déborder
-        // légèrement au-dessus du coin de la cellule.
+        // Ajouté à la cellule pour dépasser de contentView, qui masque ses bords.
         [self addSubview:_favoriteStarView];
 
         _providerBadgeLabel = [[UILabel alloc] init];
@@ -62,8 +57,7 @@
 
 - (void)tpk_applyOLEDColors {
     BOOL oled = TPKOLEDModeEnabled();
-    // OLED : carte quasi noire (un cran à peine au-dessus du fond pur) et
-    // bordure plus discrète — même langage que les capsules du picker.
+    // En mode OLED, la carte et sa bordure sont plus sombres.
     UIColor *cardColor = oled
         ? [UIColor colorWithWhite:0.05 alpha:1.0]
         : [UIColor colorWithRed:0.098 green:0.098 blue:0.110 alpha:1.0]; // #19191C
@@ -81,8 +75,7 @@
     self.providerBadgeLabel.frame = CGRectMake(2, cs.height - 12, 24, 10);
 }
 
-- (void)prepareForReuse {
-    [super prepareForReuse];
+- (void)resetContent {
     [self.animationFrameRequest cancel];
     self.animationFrameRequest = nil;
     self.imageLoadGeneration += 1;
@@ -93,11 +86,13 @@
     self.providerBadgeLabel.hidden = YES;
     self.providerBadgeLabel.text = nil;
     self.currentEmoteKey = nil;
-    // Se retire de l'engine d'animation : sans ça, une cellule recyclée pour
-    // une AUTRE emote continuerait de recevoir les redraws de l'ancienne
-    // (l'engine ne sait pas qu'elle a changé de contenu tant qu'on ne le lui
-    // dit pas explicitement).
+    // Retire la cellule de l'engine avant de la réutiliser pour une autre emote.
     [[TPKEmoteAnimationEngine sharedEngine] removeObserver:self];
+}
+
+- (void)prepareForReuse {
+    [super prepareForReuse];
+    [self resetContent];
 }
 
 @end

@@ -1,54 +1,20 @@
-/*
- * tpK-emote-image-cache.m
- *
- * Voir tpK-emote-image-cache.h pour le contexte (Phase 2).
- */
-
 #import "Emote/tpK-emote-image-cache.h"
-#import "Adblock/Emote/tpK-adblock-emote-proxy.h"
-#import "Emote/tpK-network-emote-cache.h"
-#import "Core/tpK-core-manager.h"
+#import "Emote/tpK-emote-image-transport.h"
 #import <ImageIO/ImageIO.h>
 
-typedef void (^TPKImageCompletion)(UIImage * _Nullable image);
-typedef void (^TPKFramesCompletion)(TPKEmoteAnimatedFrames * _Nullable frames);
+typedef void (^TPKImageCompletion)(UIImage *image);
+typedef void (^TPKFramesCompletion)(TPKEmoteAnimatedFrames *frames);
 typedef void (^TPKFramesPreview)(TPKEmoteAnimatedFrames *frames);
-typedef void (^TPKDataCompletion)(NSData * _Nullable data);
-
-static void *kTPKEmoteCacheSyncQueueKey = &kTPKEmoteCacheSyncQueueKey;
+enum { ImageStage = 1, PreviewStage = 2, FramesStage = 4 };
+static void *cacheQueueKey = &cacheQueueKey;
 
 static NSUInteger tpk_imageMemoryCost(UIImage *image) {
-    CGImageRef cgImage = image.CGImage;
-    if (!cgImage) return 0;
-    return CGImageGetBytesPerRow(cgImage) * CGImageGetHeight(cgImage);
+    return image.CGImage ? CGImageGetBytesPerRow(image.CGImage) * CGImageGetHeight(image.CGImage) : 0;
 }
-
 static NSUInteger tpk_framesMemoryCost(TPKEmoteAnimatedFrames *frames) {
-    NSUInteger total = 0;
-    for (UIImage *image in frames.images) total += tpk_imageMemoryCost(image);
-    return total;
-}
-
-static BOOL tpk_isTwitchGIFEmote(id<TPKResolvedEmote> emote) {
-    if (!emote || ![emote respondsToSelector:@selector(providerIdentifier)]) return NO;
-    NSString *identifier = [(id)emote providerIdentifier];
-    return [identifier caseInsensitiveCompare:@"twitch-gif"] == NSOrderedSame;
-}
-
-// The shared image cache is used by every external provider.  Validate both
-// the HTTP result and the payload before returning/storing it; otherwise a
-// cached 404/429 HTML or JSON response would be retried as an image forever.
-static BOOL tpk_isValidImageResponse(NSURLResponse *response, NSData *data) {
-    if (!data.length) return NO;
-    if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
-        NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
-        if (status < 200 || status >= 300) return NO;
-    }
-    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
-    if (!source) return NO;
-    BOOL valid = CGImageSourceGetCount(source) > 0;
-    CFRelease(source);
-    return valid;
+    NSUInteger cost = 0;
+    for (UIImage *image in frames.images) cost += tpk_imageMemoryCost(image);
+    return cost;
 }
 
 static NSTimeInterval tpk_animationFrameDuration(CGImageSourceRef source, size_t index) {
@@ -59,8 +25,7 @@ static NSTimeInterval tpk_animationFrameDuration(CGImageSourceRef source, size_t
     NSNumber *delay = webpProps[(__bridge NSString *)kCGImagePropertyWebPUnclampedDelayTime]
                     ?: webpProps[(__bridge NSString *)kCGImagePropertyWebPDelayTime];
     if (!delay) {
-        // Certaines versions d'ImageIO exposent les délais WebP sous les clés
-        // GIF. Accepter les deux conserve la vitesse réelle de l'animation.
+        // ImageIO may expose WebP delays under GIF keys.
         NSDictionary *gifProps = props[(__bridge NSString *)kCGImagePropertyGIFDictionary];
         delay = gifProps[(__bridge NSString *)kCGImagePropertyGIFUnclampedDelayTime]
               ?: gifProps[(__bridge NSString *)kCGImagePropertyGIFDelayTime];
@@ -73,7 +38,7 @@ static NSTimeInterval tpk_animationFrameDuration(CGImageSourceRef source, size_t
 @end
 
 @interface TPKEmoteFrameRequest ()
-@property (atomic, assign, getter=isCancelled) BOOL cancelled;
+@property (atomic, getter=isCancelled) BOOL cancelled;
 @property (atomic, copy) TPKFramesPreview preview;
 @property (atomic, copy) TPKFramesCompletion completion;
 @end
@@ -86,428 +51,279 @@ static NSTimeInterval tpk_animationFrameDuration(CGImageSourceRef source, size_t
 }
 @end
 
+@interface TPKEmoteImageJob : NSObject
+@property (nonatomic, copy) NSString *key;
+@property (nonatomic, strong) NSURL *url;
+@property (nonatomic) NSUInteger generation;
+@property (nonatomic) NSUInteger running;
+@property (nonatomic) NSUInteger ready;
+@property (nonatomic) BOOL fetched;
+@property (nonatomic, strong) NSURLSessionDataTask *task;
+@property (nonatomic, strong) NSData *data;
+@property (nonatomic, strong) UIImage *image;
+@property (nonatomic, strong) TPKEmoteAnimatedFrames *preview;
+@property (nonatomic, strong) TPKEmoteAnimatedFrames *frames;
+@property (nonatomic, strong) NSMutableArray<TPKImageCompletion> *images;
+@property (nonatomic, strong) NSMutableArray<TPKEmoteFrameRequest *> *requests;
+@end
+@implementation TPKEmoteImageJob
+@end
+
 @interface TPKEmoteImageCache ()
-// Images déjà décodées — countLimit borne la mémoire (exigence transverse #3).
 @property (nonatomic, strong) NSCache<NSString *, UIImage *> *decodedCache;
-// Les GIFs Twitch ne doivent ni partager le budget des emotes ni être
-// persistés par le cache HTTP. Ce cache mémoire volontairement petit est
-// évincé par NSCache sous pression.
-@property (nonatomic, strong) NSCache<NSString *, UIImage *> *gifDecodedCache;
-// URL en cours de chargement → liste des callbacks en attente. Protégé par
-// syncQueue (accès concurrent depuis plusieurs cellules en scroll rapide).
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<TPKImageCompletion> *> *pendingCallbacks;
-// Frames animées déjà décodées — countLimit plus bas que decodedCache : un
-// tableau de N frames pèse N fois plus qu'une image statique, donc la même
-// limite ferait exploser la mémoire sur une chaîne avec beaucoup d'emotes
-// animées distinctes (voir exigence transverse #3).
 @property (nonatomic, strong) NSCache<NSString *, TPKEmoteAnimatedFrames *> *animatedFramesCache;
-// Les boucles GIF sont beaucoup plus coûteuses qu'une emote animée classique.
-@property (nonatomic, strong) NSCache<NSString *, TPKEmoteAnimatedFrames *> *gifAnimatedFramesCache;
-// Même dédoublonnage que pendingCallbacks, pour le décodage animé.
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<TPKEmoteFrameRequest *> *> *pendingFrameCallbacks;
-@property (nonatomic, strong) NSMutableSet<NSString *> *pendingPreviewKeys;
-// Dédoublonnage commun au chemin statique et au chemin animé. Sans lui, une
-// même cellule pouvait lancer deux téléchargements de la même URL : un pour
-// sa miniature immédiate et un autre pour ses frames.
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<TPKDataCompletion> *> *pendingDataCallbacks;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, TPKEmoteImageJob *> *jobs;
 @property (nonatomic, strong) dispatch_queue_t syncQueue;
-// Les décodages ImageIO ne doivent jamais saturer tous les cœurs pendant un
-// scroll. Les files bornées gardent le travail hors main thread tout en
-// donnant la priorité aux miniatures visibles.
 @property (nonatomic, strong) NSOperationQueue *staticDecodeQueue;
-// File courte dédiée aux previews des cellules visibles (chat et picker). Elle
-// n'attend jamais qu'un WebP complet soit décodé avant l'emote suivante.
 @property (nonatomic, strong) NSOperationQueue *animatedPreviewDecodeQueue;
 @property (nonatomic, strong) NSOperationQueue *animatedDecodeQueue;
-// Session éphémère : aucune réponse GIF ne rejoint NSURLCache (ni son disque,
-// ni le cache mémoire global partagé avec 7TV/BTTV/FFZ).
-@property (nonatomic, strong) NSURLSession *nonPersistentSession;
-@property (atomic, assign) NSUInteger cacheGeneration;
+@property (atomic) NSUInteger cacheGeneration;
+- (TPKEmoteImageJob *)tpk_jobForURL:(NSURL *)url;
+- (BOOL)tpk_isCurrentJob:(TPKEmoteImageJob *)job;
+- (BOOL)tpk_wantsStage:(NSUInteger)stage job:(TPKEmoteImageJob *)job;
+- (void)tpk_continueJob:(TPKEmoteImageJob *)job;
+- (void)tpk_scheduleStage:(NSUInteger)stage job:(TPKEmoteImageJob *)job;
+- (void)tpk_deliverStage:(NSUInteger)stage job:(TPKEmoteImageJob *)job;
 - (nullable UIImage *)tpk_decodeFirstFrameData:(NSData *)data;
 - (nullable TPKEmoteAnimatedFrames *)tpk_decodeAnimatedWebPData:(NSData *)data
-                                                maximumFrameCount:(size_t)maximumFrameCount
-                                            preserveLeadingFrames:(BOOL)preserveLeadingFrames
-                                                   shouldContinue:(BOOL (^)(void))shouldContinue;
-- (BOOL)tpk_hasActiveFrameRequestsForKey:(NSString *)key requiringPreview:(BOOL)requiringPreview;
-- (void)tpk_publishPreviewFrames:(TPKEmoteAnimatedFrames *)frames forKey:(NSString *)key;
-- (void)tpk_schedulePreviewForKey:(NSString *)key
-                               url:(NSURL *)url
-                        generation:(NSUInteger)generation
-                    isTwitchGIF:(BOOL)isTwitchGIF;
+    maximumFrameCount:(size_t)maximumFrameCount preserveLeadingFrames:(BOOL)preserveLeadingFrames
+    shouldContinue:(BOOL (^)(void))shouldContinue;
 @end
 
 @implementation TPKEmoteImageCache
-
 + (instancetype)sharedCache {
-    static TPKEmoteImageCache *instance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        instance = [[TPKEmoteImageCache alloc] init];
-    });
-    return instance;
+    static TPKEmoteImageCache *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [self new]; });
+    return cache;
 }
-
 - (instancetype)init {
-    self = [super init];
-    if (self) {
-        _decodedCache = [[NSCache alloc] init];
-        _decodedCache.countLimit = 200; // borne mémoire, voir exigence transverse #3
+    if ((self = [super init])) {
+        _decodedCache = [NSCache new];
+        _decodedCache.countLimit = 200;
         _decodedCache.totalCostLimit = 24 * 1024 * 1024;
-        _gifDecodedCache = [[NSCache alloc] init];
-        _gifDecodedCache.countLimit = 8;
-        _gifDecodedCache.totalCostLimit = 8 * 1024 * 1024;
-        _pendingCallbacks = [NSMutableDictionary dictionary];
-        _animatedFramesCache = [[NSCache alloc] init];
-        _animatedFramesCache.countLimit = 48; // plus bas que decodedCache — voir raison en @interface
+        _animatedFramesCache = [NSCache new];
+        _animatedFramesCache.countLimit = 48;
         _animatedFramesCache.totalCostLimit = 48 * 1024 * 1024;
-        _gifAnimatedFramesCache = [[NSCache alloc] init];
-        _gifAnimatedFramesCache.countLimit = 4;
-        _gifAnimatedFramesCache.totalCostLimit = 16 * 1024 * 1024;
-        _pendingFrameCallbacks = [NSMutableDictionary dictionary];
-        _pendingPreviewKeys = [NSMutableSet set];
-        _pendingDataCallbacks = [NSMutableDictionary dictionary];
-        _syncQueue = dispatch_queue_create("tv.s7tv.emote-image-cache", DISPATCH_QUEUE_SERIAL);
-        dispatch_queue_set_specific(_syncQueue, kTPKEmoteCacheSyncQueueKey,
-                                    kTPKEmoteCacheSyncQueueKey, NULL);
+        _jobs = [NSMutableDictionary dictionary];
+        _syncQueue = dispatch_queue_create("tpk.emote-image-cache", DISPATCH_QUEUE_SERIAL);
+        dispatch_queue_set_specific(_syncQueue, cacheQueueKey, cacheQueueKey, NULL);
         _cacheGeneration = 1;
-
-        _staticDecodeQueue = [[NSOperationQueue alloc] init];
-        _staticDecodeQueue.name = @"tv.s7tv.emote-static-decode";
+        _staticDecodeQueue = [NSOperationQueue new];
+        _staticDecodeQueue.name = @"tpk.emote-static-decode";
         _staticDecodeQueue.qualityOfService = NSQualityOfServiceUserInitiated;
         _staticDecodeQueue.maxConcurrentOperationCount = 2;
-
-        _animatedPreviewDecodeQueue = [[NSOperationQueue alloc] init];
-        _animatedPreviewDecodeQueue.name = @"tv.s7tv.emote-animation-preview-decode";
+        _animatedPreviewDecodeQueue = [NSOperationQueue new];
+        _animatedPreviewDecodeQueue.name = @"tpk.emote-preview-decode";
         _animatedPreviewDecodeQueue.qualityOfService = NSQualityOfServiceUserInitiated;
         _animatedPreviewDecodeQueue.maxConcurrentOperationCount = 2;
-
-        _animatedDecodeQueue = [[NSOperationQueue alloc] init];
-        _animatedDecodeQueue.name = @"tv.s7tv.emote-animation-decode";
+        _animatedDecodeQueue = [NSOperationQueue new];
+        _animatedDecodeQueue.name = @"tpk.emote-animation-decode";
         _animatedDecodeQueue.qualityOfService = NSQualityOfServiceUserInitiated;
         _animatedDecodeQueue.maxConcurrentOperationCount = 1;
-
-        NSURLSessionConfiguration *ephemeralConfiguration =
-            [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        ephemeralConfiguration.URLCache = nil;
-        ephemeralConfiguration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
-        _nonPersistentSession = [NSURLSession sessionWithConfiguration:ephemeralConfiguration];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(tpk_memoryWarning:)
+            name:UIApplicationDidReceiveMemoryWarningNotification object:nil];
     }
     return self;
 }
-
-- (nullable UIImage *)cachedImageForResolvedEmote:(id<TPKResolvedEmote>)emote {
-    NSString *key = emote.imageURL.absoluteString;
-    if (!key.length) return nil;
-    NSCache *cache = tpk_isTwitchGIFEmote(emote) ? self.gifDecodedCache : self.decodedCache;
-    return [cache objectForKey:key];
+- (nullable UIImage *)cachedImageForURL:(NSURL *)url {
+    NSString *key = url.absoluteString;
+    return key.length ? [self.decodedCache objectForKey:key] : nil;
 }
-
-- (void)imageForResolvedEmote:(id<TPKResolvedEmote>)emote
-                    completion:(TPKImageCompletion)completion {
-    NSString *key = emote.imageURL.absoluteString;
-    if (!key.length) {
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+- (nullable TPKEmoteAnimatedFrames *)cachedFramesForURL:(NSURL *)url {
+    NSString *key = url.absoluteString;
+    return key.length ? [self.animatedFramesCache objectForKey:key] : nil;
+}
+- (void)imageForURL:(NSURL *)url completion:(TPKImageCompletion)completion {
+    NSUInteger generation = self.cacheGeneration;
+    UIImage *cached = [self cachedImageForURL:url];
+    if (!url.absoluteString.length || cached) {
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(generation == self.cacheGeneration ? cached : nil); });
         return;
     }
-
-    BOOL isTwitchGIF = tpk_isTwitchGIFEmote(emote);
-    NSCache *decodedCache = isTwitchGIF ? self.gifDecodedCache : self.decodedCache;
-    UIImage *cached = [decodedCache objectForKey:key];
-    if (cached) {
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(cached); });
-        return;
-    }
-
     dispatch_async(self.syncQueue, ^{
-        NSMutableArray<TPKImageCompletion> *callbacks = self.pendingCallbacks[key];
-        if (callbacks) {
-            // Une requête est déjà en vol pour cette URL (autre cellule qui
-            // affiche la même emote) → on rejoint la liste plutôt que de
-            // retélécharger/redécoder en double.
-            [callbacks addObject:completion];
-            return;
-        }
-        self.pendingCallbacks[key] = [NSMutableArray arrayWithObject:completion];
-        [self tpk_loadAndDecodeForKey:key url:emote.imageURL isTwitchGIF:isTwitchGIF];
+        TPKEmoteImageJob *job = [self tpk_jobForURL:url];
+        [job.images addObject:[completion copy]];
+        [self tpk_continueJob:job];
     });
 }
-
-#pragma mark - Animation (frames complètes)
-
-- (nullable TPKEmoteAnimatedFrames *)cachedFramesForResolvedEmote:(id<TPKResolvedEmote>)emote {
-    NSString *key = emote.imageURL.absoluteString;
-    if (!key.length) return nil;
-    NSCache *cache = tpk_isTwitchGIFEmote(emote)
-        ? self.gifAnimatedFramesCache : self.animatedFramesCache;
-    return [cache objectForKey:key];
-}
-
-- (TPKEmoteFrameRequest *)framesForResolvedEmote:(id<TPKResolvedEmote>)emote
-                                          preview:(TPKFramesPreview)preview
-                                       completion:(TPKFramesCompletion)completion {
+- (TPKEmoteFrameRequest *)framesForURL:(NSURL *)url animated:(BOOL)animated
+    preview:(TPKFramesPreview)preview completion:(TPKFramesCompletion)completion {
     TPKEmoteFrameRequest *request = [TPKEmoteFrameRequest new];
     request.preview = preview;
     request.completion = completion;
-
-    if (!emote.isAnimated) {
+    NSUInteger generation = self.cacheGeneration;
+    TPKEmoteAnimatedFrames *cached = [self cachedFramesForURL:url];
+    if (!animated || !url.absoluteString.length || cached) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (!request.isCancelled && request.completion) request.completion(nil);
+            TPKFramesCompletion callback = request.completion;
+            request.preview = nil; request.completion = nil;
+            if (!request.isCancelled && callback) callback(generation == self.cacheGeneration ? cached : nil);
         });
         return request;
     }
-
-    NSString *key = emote.imageURL.absoluteString;
-    if (!key.length) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (!request.isCancelled && request.completion) request.completion(nil);
-        });
-        return request;
-    }
-
-    BOOL isTwitchGIF = tpk_isTwitchGIFEmote(emote);
-    NSCache *animatedFramesCache = isTwitchGIF
-        ? self.gifAnimatedFramesCache : self.animatedFramesCache;
-    TPKEmoteAnimatedFrames *cached = [animatedFramesCache objectForKey:key];
-    if (cached) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (!request.isCancelled && request.completion) request.completion(cached);
-        });
-        return request;
-    }
-
     dispatch_async(self.syncQueue, ^{
-        NSMutableArray<TPKEmoteFrameRequest *> *requests = self.pendingFrameCallbacks[key];
-        if (requests) {
-            // Décodage déjà en vol pour cette clé (autre cellule affichant
-            // la même emote animée) → on rejoint la liste, même logique de
-            // dédoublonnage que le chemin statique ci-dessous.
-            [requests addObject:request];
-            if (request.preview) {
-                [self tpk_schedulePreviewForKey:key
-                                             url:emote.imageURL
-                                      generation:self.cacheGeneration
-                                      isTwitchGIF:isTwitchGIF];
-            }
-            return;
-        }
-        self.pendingFrameCallbacks[key] = [NSMutableArray arrayWithObject:request];
-        if (request.preview) {
-            [self tpk_schedulePreviewForKey:key
-                                         url:emote.imageURL
-                                  generation:self.cacheGeneration
-                                  isTwitchGIF:isTwitchGIF];
-        }
-        [self tpk_loadAndDecodeFramesForKey:key
-                                        url:emote.imageURL
-                                isTwitchGIF:isTwitchGIF];
+        TPKEmoteImageJob *job = [self tpk_jobForURL:url];
+        [job.requests addObject:request];
+        [self tpk_continueJob:job];
     });
     return request;
 }
 
-// YES si au moins un consommateur non annulé attend toujours cette clé. Avec
-// requiringPreview=YES, seuls les consommateurs demandant la boucle rapide
-// (cellules visibles du chat ou du picker) sont considérés.
-- (BOOL)tpk_hasActiveFrameRequestsForKey:(NSString *)key requiringPreview:(BOOL)requiringPreview {
-    __block BOOL active = NO;
-    dispatch_block_t inspect = ^{
-        NSMutableArray<TPKEmoteFrameRequest *> *requests = self.pendingFrameCallbacks[key];
-        // Pour le décodage complet, retirer réellement les demandes annulées.
-        // Si la liste devient vide, une future cellule créera un nouveau
-        // pipeline au lieu de rejoindre une opération déjà abandonnée.
-        if (!requiringPreview) {
-            NSIndexSet *cancelledIndexes = [requests indexesOfObjectsPassingTest:
-                ^BOOL(TPKEmoteFrameRequest *request, NSUInteger idx, BOOL *stop) {
-                    return request.isCancelled;
-                }];
-            if (cancelledIndexes.count) [requests removeObjectsAtIndexes:cancelledIndexes];
-            if (requests.count == 0) {
-                [self.pendingFrameCallbacks removeObjectForKey:key];
-                return;
-            }
-        }
-        for (TPKEmoteFrameRequest *request in requests) {
-            if (request.isCancelled) continue;
-            if (requiringPreview && !request.preview) continue;
-            active = YES;
-            break;
-        }
-    };
-    // Les callbacks réseau dédupliqués sont eux-mêmes délivrés sur syncQueue.
-    // Ne jamais dispatch_sync vers la file sur laquelle on se trouve déjà.
-    if (dispatch_get_specific(kTPKEmoteCacheSyncQueueKey)) inspect();
-    else dispatch_sync(self.syncQueue, inspect);
-    return active;
+// syncQueue owns job state and cache writes.
+- (TPKEmoteImageJob *)tpk_jobForURL:(NSURL *)url {
+    NSString *key = url.absoluteString;
+    TPKEmoteImageJob *job = self.jobs[key];
+    if (!job) {
+        job = [TPKEmoteImageJob new];
+        job.key = key; job.url = url; job.generation = self.cacheGeneration;
+        job.images = [NSMutableArray array]; job.requests = [NSMutableArray array];
+        job.frames = [self.animatedFramesCache objectForKey:key];
+        job.image = [self.decodedCache objectForKey:key] ?: job.frames.images.firstObject;
+        job.ready = (job.image ? ImageStage : 0) | (job.frames ? FramesStage : 0);
+        self.jobs[key] = job;
+    }
+    return job;
 }
-
-- (void)tpk_publishPreviewFrames:(TPKEmoteAnimatedFrames *)frames forKey:(NSString *)key {
-    if (!frames.images.count) return;
-    dispatch_async(self.syncQueue, ^{
-        NSArray<TPKEmoteFrameRequest *> *requests = [self.pendingFrameCallbacks[key] copy] ?: @[];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            for (TPKEmoteFrameRequest *request in requests) {
-                if (!request.isCancelled && request.preview) request.preview(frames);
-            }
-        });
-    });
+- (BOOL)tpk_isCurrentJob:(TPKEmoteImageJob *)job {
+    return self.jobs[job.key] == job && job.generation == self.cacheGeneration;
 }
-
-// Appelé depuis syncQueue. Le set empêche plusieurs cellules contenant la
-// même emote de lancer plusieurs previews. Ce chemin est indépendant du
-// décodage complet : si le chat avait demandé la clé avant l'ouverture du
-// picker, une cellule nouvellement visible obtient quand même sa preview.
-- (void)tpk_schedulePreviewForKey:(NSString *)key
-                               url:(NSURL *)url
-                        generation:(NSUInteger)generation
-                    isTwitchGIF:(BOOL)isTwitchGIF {
-    if ([self.pendingPreviewKeys containsObject:key]) return;
-    [self.pendingPreviewKeys addObject:key];
-    [self tpk_fetchDataForURL:url persistToDisk:!isTwitchGIF completion:^(NSData * _Nullable data) {
-        [self.animatedPreviewDecodeQueue addOperationWithBlock:^{
-            TPKEmoteAnimatedFrames *previewFrames = nil;
-            if (data && generation == self.cacheGeneration &&
-                [self tpk_hasActiveFrameRequestsForKey:key requiringPreview:YES]) {
-                previewFrames = [self tpk_decodeAnimatedWebPData:data
-                                                 maximumFrameCount:24
-                                            preserveLeadingFrames:YES
-                                                    shouldContinue:^BOOL{
-                    return generation == self.cacheGeneration &&
-                        [self tpk_hasActiveFrameRequestsForKey:key requiringPreview:YES];
-                }];
-                previewFrames.twitchGIF = isTwitchGIF;
-            }
-            if (previewFrames.images.count > 1 && generation == self.cacheGeneration) {
-                [self tpk_publishPreviewFrames:previewFrames forKey:key];
-            }
-            dispatch_async(self.syncQueue, ^{
-                [self.pendingPreviewKeys removeObject:key];
-            });
-        }];
-    }];
+- (BOOL)tpk_wantsStage:(NSUInteger)stage job:(TPKEmoteImageJob *)job {
+    if (stage == ImageStage) return job.images.count > 0;
+    for (TPKEmoteFrameRequest *request in job.requests)
+        if (!request.isCancelled && (stage == FramesStage || request.preview)) return YES;
+    return NO;
 }
-
-// Réutilise tpk_fetchDataForURL:completion: (cache HTTP partagé avec le
-// chemin statique). Le renderer reçoit d'abord une boucle légère via sa file
-// de preview ; le décodage complet continue séparément sans bloquer les autres
-// cellules visibles.
-- (void)tpk_loadAndDecodeFramesForKey:(NSString *)key
-                                   url:(NSURL *)url
-                           isTwitchGIF:(BOOL)isTwitchGIF {
-    NSUInteger generation = self.cacheGeneration;
-    [self tpk_fetchDataForURL:url persistToDisk:!isTwitchGIF completion:^(NSData * _Nullable data) {
-        [self.animatedDecodeQueue addOperationWithBlock:^{
-            if (generation != self.cacheGeneration ||
-                ![self tpk_hasActiveFrameRequestsForKey:key requiringPreview:NO]) return;
-            __block BOOL abandonedBecauseInvisible = NO;
-            TPKEmoteAnimatedFrames *frames = data
-                ? [self tpk_decodeAnimatedWebPData:data
-                                  maximumFrameCount:240
-                             preserveLeadingFrames:NO
-                                     shouldContinue:^BOOL{
-                    BOOL active = generation == self.cacheGeneration &&
-                        [self tpk_hasActiveFrameRequestsForKey:key requiringPreview:NO];
-                    if (!active) abandonedBecauseInvisible = YES;
-                    return active;
-                }]
-                : nil;
-
-            // Le helper a déjà retiré atomiquement la liste devenue vide.
-            // Ne surtout pas exécuter le cleanup normal : une cellule revenue
-            // entre-temps peut avoir créé un nouveau pipeline pour la même clé.
-            if (abandonedBecauseInvisible) return;
-
-            if (generation != self.cacheGeneration) frames = nil;
-            if (frames.images.count > 0) {
-                frames.twitchGIF = isTwitchGIF;
-                NSCache *animatedFramesCache = isTwitchGIF
-                    ? self.gifAnimatedFramesCache : self.animatedFramesCache;
-                [animatedFramesCache setObject:frames
-                                             forKey:key
-                                               cost:tpk_framesMemoryCost(frames)];
-                UIImage *firstFrame = frames.images.firstObject;
-                NSCache *decodedCache = isTwitchGIF ? self.gifDecodedCache : self.decodedCache;
-                if (![decodedCache objectForKey:key] && firstFrame) {
-                    [decodedCache setObject:firstFrame
-                                          forKey:key
-                                            cost:tpk_imageMemoryCost(firstFrame)];
-                }
-            } else {
-                frames = nil;
-                [[TPKManager sharedManager]
-                    log:@"⚠️ Emote animée non décodable (WebP invalide/vide): %@", url.absoluteString];
-            }
-
-            dispatch_async(self.syncQueue, ^{
-                NSArray<TPKEmoteFrameRequest *> *requests = self.pendingFrameCallbacks[key] ?: @[];
-                [self.pendingFrameCallbacks removeObjectForKey:key];
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    for (TPKEmoteFrameRequest *request in requests) {
-                        if (!request.isCancelled && request.completion) request.completion(frames);
-                        request.preview = nil;
-                        request.completion = nil;
-                    }
+- (void)tpk_continueJob:(TPKEmoteImageJob *)job {
+    if (![self tpk_isCurrentJob:job]) return;
+    for (NSUInteger i = job.requests.count; i > 0; --i)
+        if (job.requests[i - 1].isCancelled) [job.requests removeObjectAtIndex:i - 1];
+    if (job.ready & ImageStage) [self tpk_deliverStage:ImageStage job:job];
+    if (job.ready & FramesStage) [self tpk_deliverStage:FramesStage job:job];
+    BOOL wantsFrames = [self tpk_wantsStage:FramesStage job:job];
+    if (!job.images.count && !wantsFrames) {
+        [job.task cancel]; [self.jobs removeObjectForKey:job.key];
+        return;
+    }
+    if (!job.fetched) {
+        if (job.task) return;
+        NSURLRequest *request = [NSURLRequest requestWithURL:job.url
+            cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:15];
+        job.task = [TPKEmoteImageSession() dataTaskWithRequest:request
+            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+                NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? [(NSHTTPURLResponse *)response statusCode] : 200;
+                NSData *body = !error && status >= 200 && status < 300 && data.length ? data : nil;
+                dispatch_async(self.syncQueue, ^{
+                    if (![self tpk_isCurrentJob:job]) return;
+                    job.task = nil; job.fetched = YES; job.data = body;
+                    [self tpk_continueJob:job];
                 });
+            }];
+        [job.task resume];
+        return;
+    }
+    if (!job.data.length) job.ready = ImageStage | PreviewStage | FramesStage;
+    for (NSUInteger stage = ImageStage; stage <= FramesStage; stage <<= 1) {
+        if (![self tpk_wantsStage:stage job:job]) continue;
+        if (job.ready & stage) [self tpk_deliverStage:stage job:job];
+        else if (!(job.running & stage) && !(stage == PreviewStage && (job.ready & FramesStage)))
+            [self tpk_scheduleStage:stage job:job];
+    }
+    if (!job.images.count && !job.requests.count) [self.jobs removeObjectForKey:job.key];
+}
+- (void)tpk_scheduleStage:(NSUInteger)stage job:(TPKEmoteImageJob *)job {
+    job.running |= stage;
+    NSData *data = job.data;
+    NSOperationQueue *queue = stage == ImageStage ? self.staticDecodeQueue :
+        stage == PreviewStage ? self.animatedPreviewDecodeQueue : self.animatedDecodeQueue;
+    [queue addOperationWithBlock:^{
+        @autoreleasepool {
+            __block BOOL abandoned = NO;
+            BOOL (^active)(void) = ^BOOL{
+                __block BOOL wanted = NO;
+                dispatch_sync(self.syncQueue, ^{
+                    wanted = [self tpk_isCurrentJob:job] && !(job.ready & stage) &&
+                        [self tpk_wantsStage:stage job:job];
+                });
+                if (!wanted) abandoned = YES;
+                return wanted;
+            };
+            UIImage *image = nil;
+            TPKEmoteAnimatedFrames *frames = nil;
+            if (stage == ImageStage) {
+                if (active()) image = [self tpk_decodeFirstFrameData:data];
+            } else {
+                frames = [self tpk_decodeAnimatedWebPData:data maximumFrameCount:stage == PreviewStage ? 24 : 240
+                    preserveLeadingFrames:stage == PreviewStage shouldContinue:active];
+            }
+            dispatch_async(self.syncQueue, ^{
+                if (![self tpk_isCurrentJob:job]) return;
+                job.running &= ~stage;
+                if (!abandoned && !(job.ready & stage)) {
+                    job.ready |= stage;
+                    if (stage == ImageStage) job.image = image;
+                    else if (stage == PreviewStage) job.preview = frames.images.count > 1 ? frames : nil;
+                    else job.frames = frames;
+                    if (frames.images.count && stage == FramesStage) {
+                        job.ready |= ImageStage | FramesStage;
+                        job.frames = frames; job.image = job.image ?: frames.images.firstObject;
+                        [self.animatedFramesCache setObject:frames forKey:job.key cost:tpk_framesMemoryCost(frames)];
+                    }
+                    if (job.image) [self.decodedCache setObject:job.image forKey:job.key cost:tpk_imageMemoryCost(job.image)];
+                }
+                [self tpk_continueJob:job];
             });
-        }];
+        }
     }];
 }
-
-- (void)setDecodingSuspended:(BOOL)suspended {
-    self.staticDecodeQueue.suspended = suspended;
-    self.animatedPreviewDecodeQueue.suspended = suspended;
-    self.animatedDecodeQueue.suspended = suspended;
-}
-
-- (void)setScrollingPerformanceMode:(BOOL)enabled {
-    // Les previews sont volontairement conservées pendant le scroll : elles
-    // sont courtes, annulables et constituent précisément ce qui permet aux
-    // nouvelles cellules de commencer à bouger immédiatement. Le décodage
-    // complet reste borné à une tâche hors main thread dans les deux modes.
-    (void)enabled;
-    self.animatedPreviewDecodeQueue.maxConcurrentOperationCount = 2;
-    self.animatedDecodeQueue.maxConcurrentOperationCount = 1;
-}
-
-- (void)clearAllCaches {
-    self.cacheGeneration += 1;
-    self.staticDecodeQueue.suspended = NO;
-    self.animatedPreviewDecodeQueue.suspended = NO;
-    self.animatedDecodeQueue.suspended = NO;
-    [self.staticDecodeQueue cancelAllOperations];
-    [self.animatedPreviewDecodeQueue cancelAllOperations];
-    [self.animatedDecodeQueue cancelAllOperations];
-    [self.decodedCache removeAllObjects];
-    [self.gifDecodedCache removeAllObjects];
-    [self.animatedFramesCache removeAllObjects];
-    [self.gifAnimatedFramesCache removeAllObjects];
-
-    dispatch_sync(self.syncQueue, ^{
-        NSMutableArray<TPKImageCompletion> *imageCallbacks = [NSMutableArray array];
-        for (NSArray *callbacks in self.pendingCallbacks.allValues) {
-            [imageCallbacks addObjectsFromArray:callbacks];
-        }
-        NSMutableArray<TPKEmoteFrameRequest *> *frameRequests = [NSMutableArray array];
-        for (NSArray *requests in self.pendingFrameCallbacks.allValues) {
-            [frameRequests addObjectsFromArray:requests];
-        }
-        [self.pendingCallbacks removeAllObjects];
-        [self.pendingFrameCallbacks removeAllObjects];
-        [self.pendingPreviewKeys removeAllObjects];
-        [self.pendingDataCallbacks removeAllObjects];
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            for (TPKImageCompletion callback in imageCallbacks) callback(nil);
-            for (TPKEmoteFrameRequest *request in frameRequests) {
-                if (!request.isCancelled && request.completion) request.completion(nil);
+- (void)tpk_deliverStage:(NSUInteger)stage job:(TPKEmoteImageJob *)job {
+    if (stage == ImageStage ? !job.images.count : !job.requests.count) return;
+    NSArray<TPKImageCompletion> *images = stage == ImageStage ? job.images.copy : @[];
+    NSArray<TPKEmoteFrameRequest *> *requests = stage == ImageStage ? @[] : job.requests.copy;
+    if (stage == ImageStage) [job.images removeAllObjects];
+    if (stage == FramesStage) [job.requests removeAllObjects];
+    UIImage *image = job.image;
+    TPKEmoteAnimatedFrames *frames = stage == PreviewStage ? job.preview : job.frames;
+    NSUInteger generation = job.generation;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL current = generation == self.cacheGeneration;
+        for (TPKImageCompletion callback in images) callback(current ? image : nil);
+        for (TPKEmoteFrameRequest *request in requests) {
+            if (stage == PreviewStage) {
+                TPKFramesPreview callback = request.preview;
                 request.preview = nil;
-                request.completion = nil;
+                if (current && frames && !request.isCancelled && callback) callback(frames);
+            } else {
+                TPKFramesCompletion callback = request.completion;
+                request.preview = nil; request.completion = nil;
+                if (!request.isCancelled && callback) callback(current ? frames : nil);
             }
-        });
+        }
     });
 }
+- (void)tpk_memoryWarning:(NSNotification *)notification {
+    [self.decodedCache removeAllObjects];
+    [self.animatedFramesCache removeAllObjects];
+}
+- (void)clearAllCaches {
+    dispatch_block_t clear = ^{
+        [self.staticDecodeQueue cancelAllOperations];
+        [self.animatedPreviewDecodeQueue cancelAllOperations];
+        [self.animatedDecodeQueue cancelAllOperations];
+        for (TPKEmoteImageJob *job in self.jobs.allValues) {
+            [job.task cancel]; job.image = nil; job.frames = nil;
+            [self tpk_deliverStage:ImageStage job:job];
+            [self tpk_deliverStage:FramesStage job:job];
+        }
+        [self.jobs removeAllObjects];
+        [self.decodedCache removeAllObjects];
+        [self.animatedFramesCache removeAllObjects];
+        ++self.cacheGeneration;
+    };
+    if (dispatch_get_specific(cacheQueueKey)) clear();
+    else dispatch_sync(self.syncQueue, clear);
+}
 
-// Décodage WebP animé via ImageIO — préfixe fluide pour la preview ou boucle
-// complète échantillonnée à 60 fps. Chaque frame conserve sa vraie durée
-// (clés WebP, avec repli GIF selon la version d'iOS). Toujours hors main.
 - (nullable TPKEmoteAnimatedFrames *)tpk_decodeAnimatedWebPData:(NSData *)data
                                                 maximumFrameCount:(size_t)maximumFrameCount
                                             preserveLeadingFrames:(BOOL)preserveLeadingFrames
@@ -524,17 +340,9 @@ static NSTimeInterval tpk_animationFrameDuration(CGImageSourceRef source, size_t
         return nil;
     }
 
-    // Le moteur tourne à 60 Hz : les frames au-delà du nombre réellement
-    // affichable selon la durée de la boucle ne produisent aucun gain visuel,
-    // mais retardent toutes les animations suivantes sur la file série.
-    // On lit d'abord les délais (léger), puis on échantillonne uniquement si
-    // la source dépasse 60 fps. Un plafond de 240 protège aussi des WebP
-    // pathologiques sans dégrader les boucles ordinaires allant jusqu'à 4 s.
+    // Decode at most 60 fps, capped at 240 frames to protect serial workers.
     maximumFrameCount = MAX((size_t)2, maximumFrameCount);
-    // Une preview doit démarrer vite et rester fluide : lire seulement les
-    // premières frames consécutives. L'ancien échantillonnage de 12 images
-    // réparties sur toute la boucle transformait par exemple une emote de 4 s
-    // en une preview à ~3 fps jusqu'à l'arrivée du décodage complet.
+    // Consecutive leading frames keep previews smooth until full decoding finishes.
     size_t durationCount = preserveLeadingFrames ? MIN(count, maximumFrameCount) : count;
     NSMutableArray<NSNumber *> *sourceDurations =
         [NSMutableArray arrayWithCapacity:durationCount];
@@ -581,7 +389,7 @@ static NSTimeInterval tpk_animationFrameDuration(CGImageSourceRef source, size_t
 
             CGImageRef cgImage = CGImageSourceCreateThumbnailAtIndex(source, sourceIndex,
                 (__bridge CFDictionaryRef)decodeOptions);
-            if (!cgImage) continue; // frame corrompue isolée → on saute plutôt que d'abandonner toute l'emote
+            if (!cgImage) continue; // Skip a corrupt frame.
             [images addObject:[UIImage imageWithCGImage:cgImage]];
             CGImageRelease(cgImage);
 
@@ -600,58 +408,11 @@ static NSTimeInterval tpk_animationFrameDuration(CGImageSourceRef source, size_t
     TPKEmoteAnimatedFrames *frames = [TPKEmoteAnimatedFrames new];
     frames.images    = images;
     frames.durations = durations;
-    // Si toute la source tient déjà dans la passe rapide, ce résultat est en
-    // réalité complet et peut être réutilisé comme tel par le moteur.
+    // Reuse the preview as complete when it includes every source frame.
     frames.preview = preserveLeadingFrames && decodedCount < count;
     return frames;
 }
 
-// Cache-first (partagé avec le picker et le prefetch de channel — voir
-// TPKURLProtocol.sharedEmoteCache), sinon téléchargement via NSURLSession.
-// ENTIÈREMENT asynchrone — pas de blocage de thread. Une salve de dizaines
-// d'emotes demandées en même temps (chat actif, arrivée sur une chaîne) ne
-// consomme donc jamais tout le pool de threads GCD : chaque requête réseau
-// s'exécute sur son propre callback quand elle est prête, point.
-//
-// (Version précédente : bloquait un thread de la queue utility par requête
-// via dispatch_semaphore_wait le temps de la réponse réseau. Sous charge —
-// beaucoup d'emotes différentes demandées d'un coup — ça épuisait le pool de
-// threads GCD, empêchant même les réponses déjà arrivées d'être traitées à
-// temps → timeout en cascade → aucune image ne se posait, glyphe par défaut
-// affichée à la place. C'était un vrai bug introduit par ce fichier, pas lié
-// au pipeline de prefetch existant de TPKManager.)
-- (void)tpk_loadAndDecodeForKey:(NSString *)key
-                             url:(NSURL *)url
-                     isTwitchGIF:(BOOL)isTwitchGIF {
-    NSUInteger generation = self.cacheGeneration;
-    [self tpk_fetchDataForURL:url persistToDisk:!isTwitchGIF completion:^(NSData * _Nullable data) {
-        [self.staticDecodeQueue addOperationWithBlock:^{
-            NSCache *decodedCache = isTwitchGIF ? self.gifDecodedCache : self.decodedCache;
-            UIImage *image = [decodedCache objectForKey:key];
-            if (!image && data) image = [self tpk_decodeFirstFrameData:data];
-            if (generation != self.cacheGeneration) image = nil;
-
-            if (image) {
-                [decodedCache setObject:image forKey:key cost:tpk_imageMemoryCost(image)];
-            } else {
-                [[TPKManager sharedManager]
-                    log:@"⚠️ Emote image introuvable/non décodable: %@", url.absoluteString];
-            }
-
-            dispatch_async(self.syncQueue, ^{
-                NSArray<TPKImageCompletion> *callbacks = self.pendingCallbacks[key] ?: @[];
-                [self.pendingCallbacks removeObjectForKey:key];
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    for (TPKImageCompletion cb in callbacks) cb(image);
-                });
-            });
-        }];
-    }];
-}
-
-// Décode uniquement la première frame et force sa décompression sur la file
-// de fond. UIImage imageWithData: pouvait conserver un backing compressé et
-// reporter le coût au premier draw de l'UIImageView sur le main thread.
 - (nullable UIImage *)tpk_decodeFirstFrameData:(NSData *)data {
     if (!data.length) return nil;
     CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
@@ -669,83 +430,6 @@ static NSTimeInterval tpk_animationFrameDuration(CGImageSourceRef source, size_t
     UIImage *image = [UIImage imageWithCGImage:cgImage];
     CGImageRelease(cgImage);
     return image;
-}
-
-- (void)tpk_fetchDataForURL:(NSURL *)url
-                persistToDisk:(BOOL)persistToDisk
-                   completion:(void (^)(NSData * _Nullable data))completion {
-    // Fetch proxifié ; l'identité (compteur/provider) reste sur l'URL d'origine.
-    NSURL *fetchURL = TPKEmoteProxyRewriteURL(url) ?: url;
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:fetchURL];
-    if (persistToDisk) {
-        req.cachePolicy = NSURLRequestReturnCacheDataDontLoad;
-        NSCachedURLResponse *cachedResponse =
-            [[TPKURLProtocol sharedEmoteCache] cachedResponseForRequest:req];
-        if (cachedResponse.data.length &&
-            tpk_isValidImageResponse(cachedResponse.response, cachedResponse.data)) {
-            [TPKURLProtocol noteCachedEmoteImageURL:url];
-            completion(cachedResponse.data);
-            return;
-        }
-        if (cachedResponse) {
-            // Remove stale error bodies left by older builds before going to the
-            // network, so a later cache-only lookup cannot report a false hit.
-            [[TPKURLProtocol sharedEmoteCache] removeCachedResponseForRequest:req];
-        }
-    } else {
-        req.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
-        [req setValue:@"no-store" forHTTPHeaderField:@"Cache-Control"];
-    }
-
-    NSString *key = url.absoluteString;
-    if (!key.length) {
-        completion(nil);
-        return;
-    }
-
-    dispatch_async(self.syncQueue, ^{
-        NSMutableArray<TPKDataCompletion> *callbacks = self.pendingDataCallbacks[key];
-        if (callbacks) {
-            [callbacks addObject:completion];
-            return;
-        }
-        self.pendingDataCallbacks[key] = [NSMutableArray arrayWithObject:completion];
-        NSUInteger generation = self.cacheGeneration;
-        // The custom cache is consulted above explicitly. Once it misses (or
-        // an invalid body was evicted), bypass NSURLCache as well so a stale
-        // 404/429 response from an older session cannot mask a fresh CDN
-        // response.
-        NSMutableURLRequest *networkRequest = [req mutableCopy];
-        networkRequest.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
-
-        NSURLSession *session = persistToDisk
-            ? [NSURLSession sharedSession] : self.nonPersistentSession;
-        NSURLSessionDataTask *task = [session
-            dataTaskWithRequest:networkRequest
-          completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-            if (generation != self.cacheGeneration) data = nil;
-            if (data.length && response && !error &&
-                tpk_isValidImageResponse(response, data)) {
-                if (persistToDisk) {
-                    NSCachedURLResponse *toCache = [[NSCachedURLResponse alloc]
-                        initWithResponse:response data:data];
-                    [[TPKURLProtocol sharedEmoteCache]
-                        storeCachedResponse:toCache forRequest:req];
-                    [TPKURLProtocol noteCachedEmoteImageURL:url];
-                }
-            } else {
-                // Do not let callers decode an HTTP error or malformed body.
-                data = nil;
-            }
-            dispatch_async(self.syncQueue, ^{
-                if (generation != self.cacheGeneration) return;
-                NSArray<TPKDataCompletion> *waiting = self.pendingDataCallbacks[key] ?: @[];
-                [self.pendingDataCallbacks removeObjectForKey:key];
-                for (TPKDataCompletion callback in waiting) callback(data);
-            });
-        }];
-        [task resume];
-    });
 }
 
 @end

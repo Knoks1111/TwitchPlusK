@@ -43,7 +43,7 @@ static UIButton *tpk_orientationLockButtonForControls(UIView *controls) {
 
     UIButton *associated = objc_getAssociatedObject(
         controls, &kTPKOrientationLockButtonKey);
-    if (associated && associated.superview) return associated;
+    if (associated && [associated isDescendantOfView:controls]) return associated;
     if (associated) {
         objc_setAssociatedObject(controls, &kTPKOrientationLockButtonKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -113,7 +113,7 @@ static void tpk_removeOrientationButtonFromHitTesting(UIView *controls,
     }
 }
 
-static void tpk_removeOrientationLockButton(UIView *controls) {
+void tpk_removeOrientationLockButton(UIView *controls) {
     if (!controls) return;
     UIButton *button = tpk_orientationLockButtonForControls(controls);
     if (!button) {
@@ -134,7 +134,7 @@ static void tpk_removeOrientationLockButton(UIView *controls) {
     if (s_activeControlsView == controls) s_activeControlsView = nil;
 }
 
-void tpk_handleTheaterControlsViewLifecycle(UIView *view) {
+void tpk_trackPlayerHostViewLifecycle(UIView *view) {
     if (!view) return;
 
     UIView *playerHost = tpk_playerTheaterHostForView(view);
@@ -145,12 +145,13 @@ void tpk_handleTheaterControlsViewLifecycle(UIView *view) {
             s_activePlayerHostView = nil;
         }
     }
+}
+
+void tpk_handleTheaterControlsViewLifecycle(UIView *view) {
+    if (!view) return;
     if (!tpk_orientationLockButtonEnabled() ||
         !tpk_isPlayerControlsContainer(view) || !view.window) return;
     if (tpk_orientationLockButtonForControls(view)) {
-        if (tpk_isReactPlayerControlsContainer(view)) {
-            tpk_playerReactControlsButtonStack(view);
-        }
         s_activeControlsView = view;
         tpk_refreshOrientationPolicySuspension();
         return;

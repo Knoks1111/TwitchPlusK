@@ -1,6 +1,5 @@
 #import "System/tpK-system-home-features.h"
 #import "System/tpK-system-tab-visibility.h"
-#import "System/tpK-system-autoclaim.h"
 #import "Adblock/tpK-adblock-runtime.h"
 #import "Adblock/tpK-adblock-settings.h"
 #import "Adblock/Proxy/tpK-adblock-data.h"
@@ -16,6 +15,7 @@
 static NSString *const TPKLaunchDestinationKey = @"tpk_launch_destination";
 static NSString *const TPKKeepLiveFeedPlayingKey = @"tpk_keep_live_feed_playing";
 static NSString *const TPKHideFollowedRecapsKey = @"tpk_hide_followed_recaps";
+static TPKLaunchDestination TPKNativeLaunchDestination;
 static void TPKRefreshFollowedRecaps(void);
 
 static NSUserDefaults *TPKHomeFeatureDefaults(void) {
@@ -103,26 +103,6 @@ NSInteger tpk_launchDestinationTab(TPKLaunchDestination destination) {
     return -1;
 }
 
-static NSInteger TPKLaunchDestinationSubTab(TPKLaunchDestination destination) {
-    switch (destination) {
-        case TPKLaunchDestinationHomeFollowing:       return 0;
-        case TPKLaunchDestinationHomeLive:            return 1;
-        case TPKLaunchDestinationHomeClips:           return 2;
-        case TPKLaunchDestinationBrowseCategories:    return 0;
-        case TPKLaunchDestinationBrowseLiveChannels:  return 1;
-        default:                                       return -1;
-    }
-}
-
-static BOOL TPKLaunchDestinationParts(TPKLaunchDestination destination,
-                                       NSInteger *tab, NSInteger *subTab) {
-    NSInteger resolvedTab = tpk_launchDestinationTab(destination);
-    if (tab) *tab = resolvedTab;
-    if (subTab) *subTab = TPKLaunchDestinationSubTab(destination);
-    return resolvedTab >= 0;
-}
-
-static BOOL TPKUserPickedLaunchTab = NO;
 
 @interface TPKFollowedRecapState : NSObject
 @property (nonatomic, weak) UIView *shelf;
@@ -242,141 +222,53 @@ static void TPKRefreshFollowedRecaps(void) {
 }
 
 @interface NSObject (TPKHomeFeaturesRuntime)
+- (UIView *)tpk_home_viewWithModuleName:(NSString *)moduleName initialProperties:(NSDictionary *)properties;
+- (void)tpk_home_tabBarViewDidAppear:(BOOL)animated;
+- (void)tpk_home_browseViewDidAppear:(BOOL)animated;
 - (void)tpk_home_recapComponentLayout;
 - (void)tpk_home_recapComponentMoved;
 - (void)tpk_home_recapComponentHidden:(BOOL)hidden;
 - (void)tpk_home_recapScrollLayout;
 - (void)tpk_home_recapOffset:(CGPoint)offset;
 - (void)tpk_home_recapOffset:(CGPoint)offset animated:(BOOL)animated;
-- (void)tpk_home_tabBarViewDidAppear:(BOOL)animated;
-- (void)tpk_home_tabBar:(UITabBar *)tabBar didSelectItem:(UITabBarItem *)item;
 - (void)tpk_home_tabBarViewDidLayoutSubviews;
 - (void)tpk_home_discoveryViewDidLayoutSubviews;
-- (void)tpk_home_browseViewDidAppear:(BOOL)animated;
 @end
 
-static NSString *TPKFeedTabAccIDForSubTab(NSInteger subTab) {
-    switch (subTab) {
-        case 0: return @"feed-tabs-following";
-        case 1: return @"feed-tabs-live";
-        case 2: return @"feed-tabs-clips";
-        default: return nil;
-    }
-}
-
-static UIView *TPKFindHomeFeedSegment(UIWindow *window, NSString *accID) {
-    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:window];
-    NSUInteger visited = 0;
-    while (queue.count > 0 && visited < 8000) {
-        UIView *view = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        visited++;
-        if (accID.length &&
-            [accID isEqualToString:view.accessibilityIdentifier] &&
-            view.window && !view.hidden && view.alpha > 0.0) {
-            return view;
-        }
-        [queue addObjectsFromArray:view.subviews];
-    }
-    return nil;
-}
-
-static void TPKApplyHomeFeedSubTab(NSInteger subTab, NSUInteger attempt) {
-    if (TPKUserPickedLaunchTab || subTab < 0 || attempt >= 30) return;
-    NSString *accID = TPKFeedTabAccIDForSubTab(subTab);
-    if (!accID.length) return;
-    BOOL tapped = NO;
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
-        if (window.hidden || window.alpha <= 0.0) continue;
-        UIView *segment = TPKFindHomeFeedSegment(window, accID);
-        if (segment) {
-            tapped = TPKRNTapView(segment);
-            break;
-        }
-    }
-    if (tapped) return;
-    if (attempt + 1 >= 30) return;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        TPKApplyHomeFeedSubTab(subTab, attempt + 1);
-    });
-}
-
-static void TPKApplyLaunchTab(UITabBarController *controller) {
-    if (TPKUserPickedLaunchTab) return;
-    NSInteger stockTab = -1;
-    if (!TPKLaunchDestinationParts(tpk_launchDestination(), &stockTab, NULL)) return;
-    NSUInteger index = tpk_tabVisibilityIndexForStockIndex((NSUInteger)stockTab);
-    if (index == NSNotFound || index >= controller.viewControllers.count) return;
-    if (controller.selectedIndex != index) controller.selectedIndex = index;
-}
-
-static UIScrollView *TPKFindPagedScrollView(UIView *root) {
-    if (!root) return nil;
-    if ([root isKindOfClass:[UIScrollView class]]) {
-        UIScrollView *sv = (UIScrollView *)root;
-        if (sv.contentSize.width > sv.bounds.size.width + 1) return sv;
-    }
-    for (UIView *sub in root.subviews) {
-        UIScrollView *found = TPKFindPagedScrollView(sub);
-        if (found) return found;
-    }
-    return nil;
-}
-
-static Ivar TPKFindLaunchIvar(id obj, const char *name) {
-    Class cls = object_getClass(obj);
-    while (cls && cls != [NSObject class]) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) return iv;
-        cls = class_getSuperclass(cls);
-    }
-    return NULL;
-}
-
-static BOOL TPKApplyHomeSubTab(id self, NSString *when) {
-    static BOOL userSwiped = NO;
-    if (userSwiped) return YES;
-    if (TPKUserPickedLaunchTab) return YES;
-    NSInteger tab = -1;
-    NSInteger sub = -1;
-    if (!TPKLaunchDestinationParts(tpk_launchDestination(), &tab, &sub) || tab != TPKTabItemHome) return YES;
-    if (sub < 0) return YES;
-
-    UIView *view = ((UIViewController *)self).view;
-    UIScrollView *sv = TPKFindPagedScrollView(view);
-    if (!sv) {
-
-        // Une seule tentative ici ; les réessais sont planifiés par l’appelant.
-        TPKApplyHomeFeedSubTab(sub, 29);
-        return NO;
-    }
-
-    if (sv.isTracking || sv.isDragging || sv.isDecelerating) {
-        userSwiped = YES;
-        return YES;
-    }
-    CGFloat pageWidth = sv.bounds.size.width;
-    if (pageWidth <= 0) return NO;
-    CGFloat desired = pageWidth * (CGFloat)sub;
-    CGFloat currentX = sv.contentOffset.x;
-    if (fabs(currentX - desired) < 1.0) return YES;
-
-    os_log(OS_LOG_DEFAULT,
-        "[TPK-Home] sub-tab %{public}@: sub=%ld pageWidth=%.0f currentX=%.0f desired=%.0f contentSize=%{public}@",
-        when, (long)sub, pageWidth, currentX, desired, NSStringFromCGSize(sv.contentSize));
-    [sv setContentOffset:CGPointMake(desired, 0) animated:NO];
-
-    // Synchroniser l’indicateur de sous-onglet avec la page affichée.
-    Ivar iv = TPKFindLaunchIvar((id)self, "selectedContentViewControllerIndex");
-    if (iv) {
-        NSInteger *p = (NSInteger *)((char *)(__bridge void *)self + ivar_getOffset(iv));
-        *p = sub;
-    }
-    return NO;
-}
 
 @implementation NSObject (TPKHomeFeaturesRuntime)
+
+- (UIView *)tpk_home_viewWithModuleName:(NSString *)moduleName initialProperties:(NSDictionary *)properties {
+    if (![moduleName isEqualToString:@"TwitchRNDiscoveryFeed"] ||
+        ![properties isKindOfClass:NSDictionary.class]) {
+        return [self tpk_home_viewWithModuleName:moduleName initialProperties:properties];
+    }
+
+    __block NSDictionary *initialProperties = properties;
+    static dispatch_once_t firstHome;
+    dispatch_once(&firstHome, ^{
+        if (![properties[@"isAppLaunchDestination"] isEqual:@YES] ||
+            [properties[@"isFromDeeplink"] isEqual:@YES] ||
+            tpk_tabVisibilityIndexForStockIndex(TPKTabItemHome) == NSNotFound) return;
+        for (NSString *key in @[@"subfeedSlug", @"clipSlug", @"seedClipSlug"]) {
+            id value = properties[key];
+            if ([value isKindOfClass:NSString.class] && [value length]) return;
+        }
+
+        NSString *tab;
+        switch (tpk_launchDestination()) {
+            case TPKLaunchDestinationHomeFollowing: tab = @"following"; break;
+            case TPKLaunchDestinationHomeLive:      tab = @"live"; break;
+            case TPKLaunchDestinationHomeClips:     tab = @"clips"; break;
+            default: return;
+        }
+        // Twitch initialise lui-même la page et ses données avant le premier affichage.
+        NSMutableDictionary *updated = [properties mutableCopy];
+        updated[@"subfeedTab"] = tab;
+        initialProperties = updated;
+    });
+    return [self tpk_home_viewWithModuleName:moduleName initialProperties:initialProperties];
+}
 
 - (void)tpk_home_recapComponentLayout {
     [self tpk_home_recapComponentLayout];
@@ -417,32 +309,31 @@ static BOOL TPKApplyHomeSubTab(id self, NSString *when) {
 - (void)tpk_home_recapOffset:(CGPoint)offset animated:(BOOL)animated {
     [self tpk_home_recapOffset:TPKRecapAllowedOffset((UIScrollView *)self, offset) animated:animated];
 }
+
 - (void)tpk_home_tabBarViewDidAppear:(BOOL)animated {
     [self tpk_home_tabBarViewDidAppear:animated];
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        NSInteger tab = tpk_launchDestinationTab(TPKNativeLaunchDestination);
+        if (tab < 0 || tab == TPKTabItemHome) return;
+        NSUInteger index = tpk_tabVisibilityIndexForStockIndex((NSUInteger)tab);
         UITabBarController *controller = (UITabBarController *)self;
-        TPKApplyLaunchTab(controller);
-        NSInteger tab = -1;
-        NSInteger subTab = -1;
-        if (TPKLaunchDestinationParts(tpk_launchDestination(), &tab, &subTab) &&
-            tab == TPKTabItemHome && subTab >= 0) {
-            TPKApplyHomeFeedSubTab(subTab, 0);
-        }
-        __weak UITabBarController *weakController = controller;
-        for (NSNumber *milliseconds in @[@500, @1500, @3000]) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                milliseconds.longLongValue * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-                UITabBarController *strongController = weakController;
-                if (strongController) TPKApplyLaunchTab(strongController);
-            });
-        }
+        if (index != NSNotFound && index < controller.viewControllers.count)
+            controller.selectedIndex = index;
     });
 }
 
-- (void)tpk_home_tabBar:(UITabBar *)tabBar didSelectItem:(UITabBarItem *)item {
-    TPKUserPickedLaunchTab = YES;
-    [self tpk_home_tabBar:tabBar didSelectItem:item];
+- (void)tpk_home_browseViewDidAppear:(BOOL)animated {
+    [self tpk_home_browseViewDidAppear:animated];
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (TPKNativeLaunchDestination != TPKLaunchDestinationBrowseCategories &&
+            TPKNativeLaunchDestination != TPKLaunchDestinationBrowseLiveChannels) return;
+        SEL select = NSSelectorFromString(@"selectViewControllerAtIndex:animated:");
+        if ([self respondsToSelector:select])
+            ((void (*)(id, SEL, NSInteger, BOOL))objc_msgSend)(self, select,
+                TPKNativeLaunchDestination == TPKLaunchDestinationBrowseLiveChannels ? 1 : 0, NO);
+    });
 }
 
 - (void)tpk_home_tabBarViewDidLayoutSubviews {
@@ -453,53 +344,33 @@ static BOOL TPKApplyHomeSubTab(id self, NSString *when) {
 - (void)tpk_home_discoveryViewDidLayoutSubviews {
     [self tpk_home_discoveryViewDidLayoutSubviews];
 
-    TPKAdblockHideAdFreeUpsellIfNeeded();
-    static int attempts = 0;
-    if (attempts >= 5) return;
-    attempts++;
-    TPKApplyHomeSubTab(self, [NSString stringWithFormat:@"layout %d", attempts]);
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        __weak id weakSelf = self;
-        for (NSNumber *milliseconds in @[@500, @1500, @3000]) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                milliseconds.longLongValue * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-                id strongSelf = weakSelf;
-                if (strongSelf) TPKApplyHomeSubTab(strongSelf,
-                    [NSString stringWithFormat:@"+%@ms", milliseconds]);
-            });
-        }
-    });
-}
-
-- (void)tpk_home_browseViewDidAppear:(BOOL)animated {
-    [self tpk_home_browseViewDidAppear:animated];
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        NSInteger tab = -1;
-        NSInteger subTab = -1;
-        if (!TPKLaunchDestinationParts(tpk_launchDestination(), &tab, &subTab) ||
-            tab != 1 || subTab < 0) return;
-        SEL selector = NSSelectorFromString(@"selectViewControllerAtIndex:animated:");
-        if ([self respondsToSelector:selector]) {
-            ((void (*)(id, SEL, NSInteger, BOOL))objc_msgSend)(
-                self, selector, subTab, NO);
-        }
-    });
+    TPKAdblockHideAdFreeUpsellIfNeeded(((UIViewController *)self).viewIfLoaded);
 }
 
 @end
 
-static BOOL TPKLaunchTabHookInstalled = NO;
-static BOOL TPKLaunchTabSelectionHookInstalled = NO;
 static BOOL TPKTabLayoutHookInstalled = NO;
 static BOOL TPKDiscoveryHookInstalled = NO;
-static BOOL TPKBrowseHookInstalled = NO;
+static BOOL TPKHomeRootHookInstalled = NO;
+static BOOL TPKLaunchTabHookInstalled = NO, TPKBrowseLaunchHookInstalled = NO;
 static BOOL TPKRecapComponentLayoutInstalled, TPKRecapComponentMovedInstalled, TPKRecapComponentHiddenInstalled;
 static BOOL TPKRecapScrollLayoutInstalled, TPKRecapOffsetInstalled, TPKRecapAnimatedOffsetInstalled;
 
 static void TPKTryInstallHomeFeatureHooks(void) {
     @synchronized (NSObject.class) {
+        if (!TPKHomeRootHookInstalled)
+            TPKHomeRootHookInstalled = TPKHomeExchangeInstanceMethod(
+                NSClassFromString(@"RCTRootViewFactory"), NSObject.class,
+                @selector(viewWithModuleName:initialProperties:),
+                @selector(tpk_home_viewWithModuleName:initialProperties:));
+        if (!TPKLaunchTabHookInstalled)
+            TPKLaunchTabHookInstalled = TPKHomeExchangeInstanceMethod(
+                NSClassFromString(@"_TtC6Twitch16TabBarController"), NSObject.class,
+                @selector(viewDidAppear:), @selector(tpk_home_tabBarViewDidAppear:));
+        if (!TPKBrowseLaunchHookInstalled)
+            TPKBrowseLaunchHookInstalled = TPKHomeExchangeInstanceMethod(
+                NSClassFromString(@"_TtC6Twitch20BrowseViewController"), NSObject.class,
+                @selector(viewDidAppear:), @selector(tpk_home_browseViewDidAppear:));
         Class component = NSClassFromString(@"RCTViewComponentView");
         Class scroll = NSClassFromString(@"RCTEnhancedScrollView");
         if (!TPKRecapComponentLayoutInstalled)
@@ -520,22 +391,6 @@ static void TPKTryInstallHomeFeatureHooks(void) {
         if (!TPKRecapAnimatedOffsetInstalled)
             TPKRecapAnimatedOffsetInstalled = TPKHomeExchangeInstanceMethod(scroll, NSObject.class,
                 @selector(setContentOffset:animated:), @selector(tpk_home_recapOffset:animated:));
-        if (!TPKLaunchTabHookInstalled) {
-            Class target = NSClassFromString(@"_TtC6Twitch16TabBarController");
-            if (target) {
-                TPKLaunchTabHookInstalled = TPKHomeExchangeInstanceMethod(
-                    target, NSObject.class, @selector(viewDidAppear:),
-                    @selector(tpk_home_tabBarViewDidAppear:));
-            }
-        }
-        if (!TPKLaunchTabSelectionHookInstalled) {
-            Class target = NSClassFromString(@"_TtC6Twitch16TabBarController");
-            if (target) {
-                TPKLaunchTabSelectionHookInstalled = TPKHomeExchangeInstanceMethod(
-                    target, NSObject.class, @selector(tabBar:didSelectItem:),
-                    @selector(tpk_home_tabBar:didSelectItem:));
-            }
-        }
         if (!TPKTabLayoutHookInstalled) {
             Class target = NSClassFromString(@"_TtC6Twitch16TabBarController");
             if (target) {
@@ -551,14 +406,6 @@ static void TPKTryInstallHomeFeatureHooks(void) {
                 TPKDiscoveryHookInstalled = TPKHomeExchangeInstanceMethod(
                     target, NSObject.class, @selector(viewDidLayoutSubviews),
                     @selector(tpk_home_discoveryViewDidLayoutSubviews));
-            }
-        }
-        if (!TPKBrowseHookInstalled) {
-            Class target = NSClassFromString(@"_TtC6Twitch20BrowseViewController");
-            if (target) {
-                TPKBrowseHookInstalled = TPKHomeExchangeInstanceMethod(
-                    target, NSObject.class, @selector(viewDidAppear:),
-                    @selector(tpk_home_browseViewDidAppear:));
             }
         }
     }
@@ -658,6 +505,7 @@ void tpk_installHomeFeatureRuntimeHooks(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         tpk_registerHomeFeatureDefaults();
+        TPKNativeLaunchDestination = tpk_launchDestination();
         TPKInstallFeedPreloadHooks();
         TPKTryInstallHomeFeatureHooks();
         for (NSNumber *delay in @[@0.5, @2.0, @5.0, @10.0]) {

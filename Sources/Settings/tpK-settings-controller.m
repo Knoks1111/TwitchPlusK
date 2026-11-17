@@ -1,19 +1,20 @@
+#import "Chat/tpK-chat-runtime.h"
 // TwitchPlusK settings UI.
 
 #import "Settings/tpK-settings-controller.h"
 #import "Core/tpK-core-manager.h"
 #import "Core/tpK-channel-resolver.h"
-#import "Logs/tpK-logs-controller.h"
-#import "Emote/tpK-network-emote-cache.h"
+#import "Settings/tpK-logs-controller.h"
+#import "Emote/tpK-emote-image-transport.h"
 #import "Emote/tpK-emote-image-cache.h"
 #import "Emote/tpK-emote-catalog.h"
-#import "Emote/tpK-provider-settings.h"
-#import "Picker/tpK-picker-resolved-emote.h"
+#import "Picker/tpK-picker-settings.h"
 #import "UI/7tv-ui-logo.h"
 #import "UI/tpK-ui-logo.h"
 #import "UI/bttv-ui-logo.h"
 #import "UI/ffz-ui-logo.h"
-#import "Chat/tpK-chat-appearance-config.h"
+#import "Settings/tpK-chat-appearance-config.h"
+#import "Chat/Appearance/tpK-chat-event-appearance.h"
 #import "Localization/tpK-localization-manager.h"
 #import "System/tpK-system-native-behavior-hooks.h"
 #import "System/tpK-system-player-gestures.h"
@@ -130,40 +131,20 @@ static void TPKReloadSection(UITableView *tableView, NSInteger section) {
     TPKReloadSectionWithoutJump(tableView, section);
 }
 
-@interface TPKSettingsResolvedEmote : NSObject <TPKResolvedEmote>
-@property (nonatomic, copy) NSString *emoteID;
-@property (nonatomic, assign) CGSize nativeSize;
-@property (nonatomic, assign) BOOL isAnimated;
-@property (nonatomic, strong) NSURL *imageURL;
-+ (instancetype)emoteWithID:(NSString *)emoteID;
-@end
-
-@implementation TPKSettingsResolvedEmote
-+ (instancetype)emoteWithID:(NSString *)emoteID {
-    TPKSettingsResolvedEmote *emote = [TPKSettingsResolvedEmote new];
-    emote.emoteID = emoteID;
-    emote.nativeSize = CGSizeMake(32.0, 32.0);
-    emote.isAnimated = NO; // Les réglages n'affichent que la première frame.
-    NSInteger resolution = [TPKChatAppearanceConfig sharedConfig].emoteImageResolution;
-    resolution = MIN(4, MAX(1, resolution));
-    emote.imageURL = [NSURL URLWithString:[NSString stringWithFormat:
-        @"https://cdn.7tv.app/emote/%@/%ldx.webp", emoteID, (long)resolution]];
-    return emote;
-}
-@end
-
 static void TPKLoadSettingsEmoteImage(NSString *emoteID, UIImageView *imageView) {
     if (!emoteID.length || !imageView) return;
     imageView.accessibilityIdentifier = emoteID;
     imageView.image = nil;
-    TPKSettingsResolvedEmote *emote = [TPKSettingsResolvedEmote emoteWithID:emoteID];
-    UIImage *cached = [[TPKEmoteImageCache sharedCache] cachedImageForResolvedEmote:emote];
+    NSInteger resolution = MIN(4, MAX(1, [TPKChatAppearanceConfig sharedConfig].emoteImageResolution));
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:
+        @"https://cdn.7tv.app/emote/%@/%ldx.webp", emoteID, (long)resolution]];
+    UIImage *cached = [[TPKEmoteImageCache sharedCache] cachedImageForURL:url];
     if (cached) {
         imageView.image = cached;
         return;
     }
     __weak UIImageView *weakImageView = imageView;
-    [[TPKEmoteImageCache sharedCache] imageForResolvedEmote:emote completion:^(UIImage *image) {
+    [[TPKEmoteImageCache sharedCache] imageForURL:url completion:^(UIImage *image) {
         UIImageView *strongImageView = weakImageView;
         if ([strongImageView.accessibilityIdentifier isEqualToString:emoteID]) {
             strongImageView.image = image;
@@ -203,23 +184,6 @@ static NSString *TPKSettingsCanonicalFavoriteKey(NSString *key) {
     return nil;
 }
 
-// Settings adapter for provider-specific CDN URLs and resolutions.
-@interface TPKSettingsCatalogResolvedEmote : NSObject <TPKResolvedEmote>
-@property (nonatomic, strong) TPKEmoteDescriptor *descriptor;
-@end
-
-@implementation TPKSettingsCatalogResolvedEmote
-- (NSString *)emoteID {
-    return TPKEmoteFavoriteKey(self.descriptor.provider, self.descriptor.emoteID);
-}
-- (CGSize)nativeSize { return self.descriptor.nativeSize; }
-- (BOOL)isAnimated { return self.descriptor.animated; }
-- (NSURL *)imageURL {
-    return [self.descriptor imageURLForResolution:
-        [TPKChatAppearanceConfig sharedConfig].emoteImageResolution];
-}
-@end
-
 static void TPKLoadSettingsCatalogEmoteImage(TPKEmoteDescriptor *descriptor,
                                                UIImageView *imageView) {
     if (!descriptor || !descriptor.emoteID.length || !imageView) return;
@@ -227,16 +191,15 @@ static void TPKLoadSettingsCatalogEmoteImage(TPKEmoteDescriptor *descriptor,
     imageView.accessibilityIdentifier = key;
     imageView.image = nil;
 
-    TPKSettingsCatalogResolvedEmote *resolved = [TPKSettingsCatalogResolvedEmote new];
-    resolved.descriptor = descriptor;
+    NSURL *url = [descriptor imageURLForResolution:[TPKChatAppearanceConfig sharedConfig].emoteImageResolution];
     UIImage *cached = [[TPKEmoteImageCache sharedCache]
-        cachedImageForResolvedEmote:resolved];
+        cachedImageForURL:url];
     if (cached) {
         imageView.image = cached;
         return;
     }
     __weak UIImageView *weakImageView = imageView;
-    [[TPKEmoteImageCache sharedCache] imageForResolvedEmote:resolved
+    [[TPKEmoteImageCache sharedCache] imageForURL:url
         completion:^(UIImage *image) {
         UIImageView *strongImageView = weakImageView;
         if ([strongImageView.accessibilityIdentifier isEqualToString:key])
@@ -889,6 +852,7 @@ static UIView *TPKSectionHeader(NSString *title, BOOL withLogo, NSString *infoKe
 // MARK: - Méthode utilitaire commune pour styleTableView
 
 static void TPKStyleTableView(UITableView *tv) {
+    tv.tintColor         = TPKAccent();
     tv.backgroundColor   = TPKBg();
     tv.separatorColor    = TPKSeparatorColor();
     tv.separatorInset    = UIEdgeInsetsMake(0, 52, 0, 0);
@@ -1026,6 +990,35 @@ static CGFloat tpk_settingsHeaderHeight(id self, SEL cmd, UITableView *tableView
     return implementation(self, original, tableView, tpk_settingsOriginalSection(section));
 }
 
+static UIImage *tpk_settingsNativeLogo(void) {
+    static UIImage *logo;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSData *data = [[NSData alloc]
+            initWithBase64EncodedString:kTPKTwitchPlusKLogoBase64
+                                options:NSDataBase64DecodingIgnoreUnknownCharacters];
+        UIImage *source = [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
+        if (!source) return;
+
+        CGFloat side = 24.0;
+        CGFloat scale = MIN(22.0 / MAX(source.size.width, 1.0),
+                            22.0 / MAX(source.size.height, 1.0));
+        CGSize size = CGSizeMake(source.size.width * scale, source.size.height * scale);
+        UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+        format.opaque = NO;
+        format.scale = UIScreen.mainScreen.scale;
+        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
+            initWithSize:CGSizeMake(side, side) format:format];
+        UIImage *centered = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+            [source drawInRect:CGRectMake((side - size.width) / 2.0,
+                                         (side - size.height) / 2.0,
+                                         size.width, size.height)];
+        }];
+        logo = [centered imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    });
+    return logo;
+}
+
 static UITableViewCell *tpk_settingsCell(id self, SEL cmd, UITableView *tableView,
                                           NSIndexPath *indexPath) {
     if (indexPath.section != 0) {
@@ -1055,12 +1048,7 @@ static UITableViewCell *tpk_settingsCell(id self, SEL cmd, UITableView *tableVie
     }
     cell.textLabel.text = L(@"title_7tv_settings");
     cell.textLabel.numberOfLines = 0;
-    // TwitchPlusK logo.
-    NSData *logoData = [[NSData alloc]
-        initWithBase64EncodedString:kTPKTwitchPlusKLogoBase64
-                            options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    UIImage *logo = [UIImage imageWithData:logoData scale:6.0];
-    if (logo) cell.imageView.image = logo;
+    cell.imageView.image = tpk_settingsNativeLogo();
     return cell;
 }
 
@@ -1238,7 +1226,7 @@ typedef NS_ENUM(NSInteger, TPKHomeSection) {
         UILabel *lbl = [[UILabel alloc] init];
         lbl.text = badgeText;
         lbl.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
-        lbl.textColor = TPKAccent();
+        lbl.textColor = UIColor.whiteColor;
         lbl.translatesAutoresizingMaskIntoConstraints = NO;
 
         [tv addSubview:iv]; [tv addSubview:lbl];
@@ -2943,22 +2931,34 @@ typedef NS_ENUM(NSInteger, TPKAdblockGeneralRow) {
 @end
 
 
-// MARK: - TPKAppearancePageController  (ex-TPKEmotesPageController)
-// Emote animation and CDN resolution settings.
+// MARK: - TPKAppearancePageController
 typedef NS_ENUM(NSInteger, TPKAppearanceSection) {
-    TPKAppearanceSectionIntro = 0,
-    TPKAppearanceSectionInterface = 1,
-    TPKAppearanceSectionEmotes = 2,
+    TPKAppearanceSectionInterface = 0,
+    TPKAppearanceSectionEmotes,
+    TPKAppearanceSectionDeletedMessages,
+    TPKAppearanceSectionEvents,
+    TPKAppearanceSectionPicker,
+    TPKAppearanceSectionCount,
 };
 
 //    Rows logiques de la section Émotes.
 typedef NS_ENUM(NSInteger, TPKAppearanceEmoteRow) {
     TPKAppearanceEmoteRowResolution = 0,
     TPKAppearanceEmoteRowPickerAnimations = 1,
-    TPKAppearanceEmoteRowProviders = 2,
-    TPKAppearanceEmoteRowProviderPriority = 3,
+    TPKAppearanceEmoteRowSize = 2,
     TPKAppearanceEmoteRowPickerOpening = 4,
     TPKAppearanceEmoteRowMixedPicker = 5,
+    TPKAppearanceEmoteRowDeletedMode = 6,
+    TPKAppearanceEmoteRowDeletedStyle = 7,
+    TPKAppearanceEmoteRowPickerHeightPortrait = 8,
+    TPKAppearanceEmoteRowPickerHeightLandscape = 9,
+    TPKAppearanceEmoteRowPickerScalePortrait = 10,
+    TPKAppearanceEmoteRowPickerScaleLandscape = 11,
+    TPKAppearanceEmoteRowFirstEnabled = 12,
+    TPKAppearanceEmoteRowDeletedOpacity = 13,
+    TPKAppearanceEmoteRowChatEnabled = 14,
+    TPKAppearanceEmoteRowPickerButton = 15,
+    TPKAppearanceEmoteRowPickerDimensions = 16,
 };
 
 // Rows logiques de la section Interface (affichage, onglets).
@@ -2966,6 +2966,39 @@ typedef NS_ENUM(NSInteger, TPKAppearanceInterfaceRow) {
     TPKAppearanceInterfaceRowTheme = 0,        // mode OLED
     TPKAppearanceInterfaceRowTabBar = 1,
 };
+
+static UIColor *TPKAppearanceOptionColor(TPKAppearanceEmoteRow row) {
+    switch (row) {
+        case TPKAppearanceEmoteRowChatEnabled: return UIColor.systemPurpleColor;
+        case TPKAppearanceEmoteRowPickerButton: return UIColor.systemBlueColor;
+        case TPKAppearanceEmoteRowPickerDimensions: return UIColor.systemTealColor;
+        case TPKAppearanceEmoteRowSize: return UIColor.systemOrangeColor;
+        case TPKAppearanceEmoteRowResolution: return UIColor.systemTealColor;
+        case TPKAppearanceEmoteRowPickerOpening: return UIColor.systemIndigoColor;
+        case TPKAppearanceEmoteRowMixedPicker: return UIColor.systemPurpleColor;
+        case TPKAppearanceEmoteRowPickerAnimations: return UIColor.systemYellowColor;
+        case TPKAppearanceEmoteRowPickerHeightPortrait: return UIColor.systemBlueColor;
+        case TPKAppearanceEmoteRowPickerHeightLandscape: return UIColor.systemTealColor;
+        case TPKAppearanceEmoteRowPickerScalePortrait: return UIColor.systemOrangeColor;
+        case TPKAppearanceEmoteRowPickerScaleLandscape: return UIColor.systemYellowColor;
+        case TPKAppearanceEmoteRowFirstEnabled: return UIColor.systemGreenColor;
+        case TPKAppearanceEmoteRowDeletedMode: return UIColor.systemRedColor;
+        case TPKAppearanceEmoteRowDeletedStyle: return UIColor.systemIndigoColor;
+        case TPKAppearanceEmoteRowDeletedOpacity: return UIColor.systemBrownColor;
+    }
+    return TPKAccent();
+}
+
+static NSString *TPKAppearanceSizeKey(TPKAppearanceEmoteRow row) {
+    switch (row) {
+        case TPKAppearanceEmoteRowPickerHeightPortrait: return @"pickerHeightPortrait";
+        case TPKAppearanceEmoteRowPickerHeightLandscape: return @"pickerHeightLandscape";
+        case TPKAppearanceEmoteRowPickerScalePortrait: return @"pickerEmoteScalePortrait";
+        case TPKAppearanceEmoteRowPickerScaleLandscape: return @"pickerEmoteScaleLandscape";
+        case TPKAppearanceEmoteRowDeletedOpacity: return @"deletedMessageTextOpacity";
+        default: return nil;
+    }
+}
 
 static NSString *TPKPickerOpeningModeTitle(NSString *mode) {
     if ([mode isEqualToString:TPKEmotePickerOpeningModeTPKChannel]) return L(@"picker_opening_7tv_channel");
@@ -2975,201 +3008,8 @@ static NSString *TPKPickerOpeningModeTitle(NSString *mode) {
     return L(@"picker_opening_favorites");
 }
 
-static NSArray<NSNumber *> *TPKExternalProviderValues(void) {
-    return @[
-        @(TPKExternalEmoteProvider7TV),
-        @(TPKExternalEmoteProviderBTTV),
-        @(TPKExternalEmoteProviderFFZ),
-    ];
-}
-
-static NSString *TPKExternalProviderDisplayName(TPKExternalEmoteProvider provider) {
-    switch (provider) {
-        case TPKExternalEmoteProviderBTTV: return @"BetterTTV";
-        case TPKExternalEmoteProviderFFZ: return @"FrankerFaceZ";
-        case TPKExternalEmoteProvider7TV:
-        default: return @"7TV";
-    }
-}
-
-static UIImage *TPKExternalProviderLogo(TPKExternalEmoteProvider provider) {
-    NSString *base64 = nil;
-    switch (provider) {
-        case TPKExternalEmoteProviderBTTV: base64 = kTPKBTTVLogoBase64; break;
-        case TPKExternalEmoteProviderFFZ: base64 = kTPKFFZLogoBase64; break;
-        case TPKExternalEmoteProvider7TV:
-        default: base64 = kTPKLogoBase64; break;
-    }
-    if (!base64.length) return nil;
-    NSData *data = [[NSData alloc]
-        initWithBase64EncodedString:base64
-                             options:NSDataBase64DecodingIgnoreUnknownCharacters];
-    if (!data.length) return nil;
-    // Use each provider asset's native scale to normalize logo sizes.
-    CGFloat logicalScale = provider == TPKExternalEmoteProvider7TV ? 3.5 : 16.0;
-    UIImage *image = [UIImage imageWithData:data scale:logicalScale];
-    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-}
-
-static NSString *TPKEnabledExternalProviderSummary(void) {
-    NSMutableArray<NSString *> *names = [NSMutableArray array];
-    for (NSNumber *value in TPKExternalProviderValues()) {
-        TPKExternalEmoteProvider provider = (TPKExternalEmoteProvider)value.integerValue;
-        if ([TPKEmoteProviderSettings isProviderEnabled:provider])
-            [names addObject:TPKExternalProviderDisplayName(provider)];
-    }
-    return names.count > 0
-        ? [names componentsJoinedByString:@" · "]
-        : L(@"setting_emote_providers_none");
-}
-
-// Reusable multi-selection screen used by providers and chat elements.
-@interface TPKMultiSelectionOption : NSObject
-@property (nonatomic, copy) NSString *identifier;
-@property (nonatomic, copy) NSString *title;
-@property (nonatomic, strong, nullable) UIImage *image;
-@property (nonatomic, copy) BOOL (^isEnabled)(void);
-@property (nonatomic, copy) void (^setEnabled)(BOOL enabled);
-@end
-
-@implementation TPKMultiSelectionOption
-@end
-
-static NSArray<TPKMultiSelectionOption *> *TPKExternalProviderSelectionOptions(void) {
-    NSMutableArray<TPKMultiSelectionOption *> *options = [NSMutableArray arrayWithCapacity:3];
-    for (NSNumber *value in TPKExternalProviderValues()) {
-        TPKExternalEmoteProvider provider =
-            (TPKExternalEmoteProvider)value.integerValue;
-        TPKExternalEmoteProvider selectedProvider = provider;
-        TPKMultiSelectionOption *option = [TPKMultiSelectionOption new];
-        option.identifier = TPKEmoteProviderIdentifier(provider);
-        option.title = TPKExternalProviderDisplayName(provider);
-        option.image = TPKExternalProviderLogo(provider);
-        option.isEnabled = ^BOOL {
-            return [TPKEmoteProviderSettings isProviderEnabled:selectedProvider];
-        };
-        option.setEnabled = ^(BOOL enabled) {
-            [TPKEmoteProviderSettings setProvider:selectedProvider enabled:enabled];
-        };
-        [options addObject:option];
-    }
-    return options;
-}
-
-
-@interface TPKMultiSelectionController : UITableViewController
-@property (nonatomic, copy, nullable) void (^onFinish)(void);
-- (instancetype)initWithTitle:(NSString *)title
-                       options:(NSArray<TPKMultiSelectionOption *> *)options;
-@end
-
-@interface TPKMultiSelectionController ()
-@property (nonatomic, copy) NSString *selectionTitle;
-@property (nonatomic, copy) NSArray<TPKMultiSelectionOption *> *options;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *enabledByIdentifier;
-@end
-
-@implementation TPKMultiSelectionController
-
-- (instancetype)initWithTitle:(NSString *)title
-                       options:(NSArray<TPKMultiSelectionOption *> *)options {
-    self = [super initWithStyle:UITableViewStyleInsetGrouped];
-    if (self) {
-        _selectionTitle = [title copy];
-        _options = [options copy];
-        _enabledByIdentifier = [NSMutableDictionary dictionaryWithCapacity:options.count];
-        for (TPKMultiSelectionOption *option in _options) {
-            _enabledByIdentifier[option.identifier] = @(option.isEnabled());
-        }
-    }
-    return self;
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = self.selectionTitle;
-    TPKStyleTableView(self.tableView);
-    self.view.tintColor = TPKAccent();
-    self.tableView.tintColor = TPKAccent();
-    self.navigationController.navigationBar.tintColor = TPKAccent();
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
-                             target:self
-                             action:@selector(tpk_cancel)];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                             target:self
-                             action:@selector(tpk_finish)];
-    TPKRegisterOLEDObserver(self);
-}
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
-- (void)tpk_oledModeDidChange {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        TPKApplyOLEDStyle(self);
-    });
-}
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    (void)tableView;
-    return 1;
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    (void)tableView;
-    (void)section;
-    return self.options.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView
-         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    (void)tableView;
-    if (indexPath.row >= (NSInteger)self.options.count)
-        return [[UITableViewCell alloc] init];
-    TPKMultiSelectionOption *option = self.options[indexPath.row];
-    UITableViewCell *cell = [[UITableViewCell alloc]
-        initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-    cell.backgroundColor = TPKCellBg();
-    cell.textLabel.text = option.title;
-    cell.textLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightRegular];
-    cell.textLabel.textColor = UIColor.whiteColor;
-    // Let long option titles wrap to multiple lines instead of truncating.
-    cell.textLabel.numberOfLines = 0;
-    cell.textLabel.lineBreakMode = NSLineBreakByWordWrapping;
-    cell.imageView.image = option.image;
-    cell.accessoryType = [self.enabledByIdentifier[option.identifier] boolValue]
-        ? UITableViewCellAccessoryCheckmark
-        : UITableViewCellAccessoryNone;
-    return cell;
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.row >= (NSInteger)self.options.count) return;
-    TPKMultiSelectionOption *option = self.options[indexPath.row];
-    BOOL enabled = [self.enabledByIdentifier[option.identifier] boolValue];
-    self.enabledByIdentifier[option.identifier] = @(!enabled);
-    [tableView reloadRowsAtIndexPaths:@[indexPath]
-                     withRowAnimation:UITableViewRowAnimationNone];
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-}
-
-- (void)tpk_cancel {
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-- (void)tpk_finish {
-    for (TPKMultiSelectionOption *option in self.options) {
-        BOOL oldValue = option.isEnabled();
-        BOOL newValue = [self.enabledByIdentifier[option.identifier] boolValue];
-        if (oldValue != newValue) option.setEnabled(newValue);
-    }
-    void (^finish)(void) = self.onFinish;
-    [self dismissViewControllerAnimated:YES completion:finish];
-}
-
+@interface TPKAppearancePageController ()
+@property (nonatomic) BOOL pickerDimensionsOnly;
 @end
 
 @implementation TPKAppearancePageController
@@ -3181,7 +3021,7 @@ static NSArray<TPKMultiSelectionOption *> *TPKExternalProviderSelectionOptions(v
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = L(@"title_apparence");
+    self.title = L(self.pickerDimensionsOnly ? @"picker_dimensions" : @"title_apparence");
     TPKStyleTableView(self.tableView);
     TPKRegisterOLEDObserver(self);
 }
@@ -3196,36 +3036,43 @@ static NSArray<TPKMultiSelectionOption *> *TPKExternalProviderSelectionOptions(v
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-// Visible emote rows; legacy animation preferences remain compatible.
-- (NSArray<NSNumber *> *)tpk_visibleEmoteRows {
-    return TPKVisibleRowIndexes(@[
-        @(TPKAppearanceEmoteRowResolution),
-        @(TPKAppearanceEmoteRowPickerAnimations),
-        @(TPKAppearanceEmoteRowProviders),
-        @(TPKAppearanceEmoteRowProviderPriority),
-        @(TPKAppearanceEmoteRowPickerOpening),
-        @(TPKAppearanceEmoteRowMixedPicker),
-    ], @{});
+// One row map shared by rendering and selection.
+- (NSArray<NSNumber *> *)tpk_rowsForSection:(NSInteger)section {
+    if (self.pickerDimensionsOnly) {
+        return section == 0 ? @[@(TPKAppearanceEmoteRowPickerHeightPortrait), @(TPKAppearanceEmoteRowPickerScalePortrait)] :
+            @[@(TPKAppearanceEmoteRowPickerHeightLandscape), @(TPKAppearanceEmoteRowPickerScaleLandscape)];
+    }
+    static NSArray<NSArray<NSNumber *> *> *groups;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        groups = @[
+            @[@(TPKAppearanceInterfaceRowTheme), @(TPKAppearanceInterfaceRowTabBar)],
+            @[@(TPKAppearanceEmoteRowChatEnabled), @(TPKAppearanceEmoteRowSize), @(TPKAppearanceEmoteRowResolution)],
+            @[@(TPKAppearanceEmoteRowDeletedMode), @(TPKAppearanceEmoteRowDeletedStyle), @(TPKAppearanceEmoteRowDeletedOpacity)],
+            @[@(TPKAppearanceEmoteRowFirstEnabled), @(TPKChatEventGroupDeleted), @0, @1, @2, @3, @4, @5, @6, @7],
+            @[@(TPKAppearanceEmoteRowPickerButton), @(TPKAppearanceEmoteRowPickerOpening),
+              @(TPKAppearanceEmoteRowMixedPicker), @(TPKAppearanceEmoteRowPickerAnimations), @(TPKAppearanceEmoteRowPickerDimensions)],
+        ];
+    });
+    return section >= 0 && section < (NSInteger)groups.count ? groups[section] : @[];
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return self.pickerDimensionsOnly ? 2 : TPKAppearanceSectionCount; }
 
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    if (s == TPKAppearanceSectionIntro) return 1;
-    if (s == TPKAppearanceSectionEmotes) return [self tpk_visibleEmoteRows].count;
-    if (s == TPKAppearanceSectionInterface) return 2;
-    return 0;
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
+    return [self tpk_rowsForSection:section].count;
 }
 
-- (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s {
-    return (s == TPKAppearanceSectionIntro) ? 8 : 44;
+- (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)section {
+    return 44;
 }
 
-- (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
-    if (s == TPKAppearanceSectionIntro) return [[UIView alloc] init];
-    if (s == TPKAppearanceSectionEmotes) return TPKSectionHeader(L(@"section_emotes"), NO, nil);
-    if (s == TPKAppearanceSectionInterface) return TPKSectionHeader(L(@"section_interface"), NO, nil);
-    return [[UIView alloc] init];
+- (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)section {
+    if (self.pickerDimensionsOnly)
+        return TPKSectionHeader(L(section == 0 ? @"picker_orientation_portrait" : @"picker_orientation_landscape"), NO, nil);
+    NSArray<NSString *> *titles = @[@"section_interface", @"section_emotes", @"sizes_moderation_section_title",
+        @"event_backgrounds_section", @"appearance_picker_section"];
+    return TPKSectionHeader(L(titles[section]), NO, nil);
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)s {
@@ -3240,14 +3087,55 @@ static NSArray<TPKMultiSelectionOption *> *TPKExternalProviderSelectionOptions(v
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
-    if (ip.section == TPKAppearanceSectionIntro) {
-        // Chat settings are available from the picker ("Aa").
-        return TPKDescriptionCell(@"desc_chat_custom_location");
+    if (!self.pickerDimensionsOnly && ip.section == TPKAppearanceSectionEvents && ip.row > 0) {
+        TPKChatEventGroup group = (TPKChatEventGroup)[self tpk_rowsForSection:ip.section][ip.row].integerValue;
+        UITableViewCell *cell = TPKSwitchCell([TPKChatEventAppearance titleForGroup:group],
+            [TPKChatEventAppearance iconForGroup:group], [TPKChatEventAppearance tintForGroup:group],
+            [TPKChatEventAppearance enabledForGroup:group], TPKChatEventAppearance.class, @selector(toggleGroup:), nil);
+        [TPKChatEventAppearance configureCell:cell forGroup:group];
+        return cell;
     }
-    if (ip.section == TPKAppearanceSectionEmotes) {
-        NSArray<NSNumber *> *visible = [self tpk_visibleEmoteRows];
+    if (self.pickerDimensionsOnly || ip.section != TPKAppearanceSectionInterface) {
+        NSArray<NSNumber *> *visible = [self tpk_rowsForSection:ip.section];
         if (ip.row >= (NSInteger)visible.count) return [[UITableViewCell alloc] init];
+        UIColor *color = TPKAppearanceOptionColor((TPKAppearanceEmoteRow)visible[ip.row].integerValue);
         switch (visible[ip.row].integerValue) {
+            case TPKAppearanceEmoteRowChatEnabled:
+                return [self tpk_configSwitch:@"native_chat_emotes_toggle" icon:@"face.smiling" key:@"nativeEmotesEnabled" color:color];
+            case TPKAppearanceEmoteRowPickerDimensions:
+                return TPKNavCell(L(@"picker_dimensions"), nil, @"arrow.up.left.and.arrow.down.right", color, nil);
+            case TPKAppearanceEmoteRowPickerButton:
+                return [self tpk_configSwitch:@"native_picker_button_toggle" icon:@"keyboard" key:@"pickerButtonEnabled" color:color];
+            case TPKAppearanceEmoteRowSize:
+                return TPKNavCell(L(@"native_emote_size"), [NSString stringWithFormat:@"%.0f pt", TPKNativeEmoteHeight()], @"textformat.size", color, nil);
+            case TPKAppearanceEmoteRowFirstEnabled: {
+                UITableViewCell *cell = [self tpk_configSwitch:@"sizes_first_message_row_label" icon:@"person.badge.plus" key:@"showFirstMessageBadge" color:color];
+                TPKChatAttachColorControl(cell, TPKChatAppearanceConfig.sharedConfig.firstMessageHighlightColor,
+                    self, @selector(tpk_firstColorChanged:));
+                return cell;
+            }
+            case TPKAppearanceEmoteRowPickerHeightPortrait:
+            case TPKAppearanceEmoteRowPickerHeightLandscape:
+            case TPKAppearanceEmoteRowPickerScalePortrait:
+            case TPKAppearanceEmoteRowPickerScaleLandscape:
+            case TPKAppearanceEmoteRowDeletedOpacity: {
+                NSString *key = TPKAppearanceSizeKey((TPKAppearanceEmoteRow)visible[ip.row].integerValue);
+                BOOL scale = [key hasPrefix:@"pickerEmoteScale"], opacity = [key isEqualToString:@"deletedMessageTextOpacity"];
+                NSString *label = opacity ? L(@"sizes_deleted_opacity_label") :
+                    L(scale ? @"size_label_picker_emote_size" : @"size_label_picker_height");
+                CGFloat value = [[TPKChatAppearanceConfig.sharedConfig valueForKey:key] doubleValue];
+                NSString *detail = opacity ? [NSString stringWithFormat:@"%.0f%%", value * 100] :
+                    [NSString stringWithFormat:scale ? @"%.1fx" : @"%.0f pt", value];
+                return TPKNavCell(label, detail, @"arrow.up.and.down", color, nil);
+            }
+            case TPKAppearanceEmoteRowDeletedMode:
+                return TPKNavCell(L(@"sizes_moderation_section_title"),
+                    L(@[@"sizes_deleted_preview_disabled", @"sizes_deleted_preview_tap", @"sizes_deleted_preview_revealed"]
+                        [TPKChatAppearanceConfig.sharedConfig.deletedMessageRevealMode]), @"text.bubble", color, nil);
+            case TPKAppearanceEmoteRowDeletedStyle:
+                return TPKNavCell(L(@"sizes_deleted_style_label"),
+                    L(@[@"sizes_deleted_style_dimmed", @"sizes_deleted_style_struck", @"sizes_deleted_style_both"]
+                        [TPKChatAppearanceConfig.sharedConfig.deletedMessageStyle]), @"textformat", color, nil);
             case TPKAppearanceEmoteRowPickerAnimations:
                 return TPKNavCell(L(@"switch_animations_picker"),
                     TPKValueWithDefaultMark(
@@ -3255,43 +3143,19 @@ static NSArray<TPKMultiSelectionOption *> *TPKExternalProviderSelectionOptions(v
                             TPKCurrentPickerAnimationsMode()),
                         TPKCurrentPickerAnimationsMode() ==
                             TPKPickerAnimationsModeEnabled),
-                    @"sparkles", TPKAccent(), nil);
+                    @"sparkles", color, nil);
             case TPKAppearanceEmoteRowPickerOpening: {
                 NSString *mode = [TPKEmoteProviderSettings pickerOpeningMode];
                 return TPKNavCell(L(@"setting_emote_picker_opening"),
                     TPKPickerOpeningModeTitle(mode),
-                    @"rectangle.portrait.and.arrow.forward", TPKAccent(), nil);
+                    @"rectangle.portrait.and.arrow.forward", color, nil);
             }
             case TPKAppearanceEmoteRowMixedPicker: {
                 UITableViewCell *cell = TPKSwitchCell(L(@"setting_emote_picker_mixed"),
-                    @"square.stack.3d.up.fill", UIColor.systemPurpleColor,
+                    @"square.stack.3d.up.fill", color,
                     [TPKEmoteProviderSettings mixedPickerEnabled],
                     self, @selector(toggleMixedPicker:), nil);
-                // Logo TwitchPlusK à la place du symbole.
-                NSData *tpkData = [[NSData alloc]
-                    initWithBase64EncodedString:kTPKTwitchPlusKLogoBase64
-                                        options:NSDataBase64DecodingIgnoreUnknownCharacters];
-                UIImage *tpkImg = [UIImage imageWithData:tpkData scale:2.0];
-                if (tpkImg) {
-                    for (UIView *subview in cell.contentView.subviews) {
-                        if ([subview isKindOfClass:UIImageView.class]) {
-                            ((UIImageView *)subview).image =
-                                [tpkImg imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-                            break;
-                        }
-                    }
-                }
                 return cell;
-            }
-            case TPKAppearanceEmoteRowProviders:
-                return TPKNavCell(L(@"setting_emote_providers"),
-                    TPKEnabledExternalProviderSummary(),
-                    @"person.3.fill", TPKAccent(), nil);
-            case TPKAppearanceEmoteRowProviderPriority: {
-                NSArray *priority = [TPKEmoteProviderSettings providerPriority];
-                NSString *subtitle = [priority componentsJoinedByString:@" > "];
-                return TPKNavCell(L(@"setting_emote_provider_priority"), subtitle,
-                    @"arrow.up.arrow.down.circle", TPKAccent(), nil);
             }
             case TPKAppearanceEmoteRowResolution:
             default: {
@@ -3302,7 +3166,7 @@ static NSArray<TPKMultiSelectionOption *> *TPKExternalProviderSelectionOptions(v
                     TPKValueWithDefaultMark(
                         [NSString stringWithFormat:@"%ldx", (long)current],
                         current == kTPKDefaultEmoteResolution),
-                    @"photo.stack.fill", TPKAccent(),
+                    @"photo.stack.fill", color,
                     @"setting_resolution_clears_cache");
             }
         }
@@ -3318,7 +3182,7 @@ static NSArray<TPKMultiSelectionOption *> *TPKExternalProviderSelectionOptions(v
             case TPKAppearanceInterfaceRowTabBar:
                 // Les deux réglages sont liés : ils se règlent sur l'écran dédié.
                 return TPKNavCell(L(@"section_tab_bar"), nil,
-                    @"rectangle.split.3x1.fill", TPKAccent(), @"desc_tab_bar");
+                    @"rectangle.split.3x1.fill", UIColor.systemBlueColor, @"desc_tab_bar");
             default:
                 break;
         }
@@ -3328,40 +3192,100 @@ static NSArray<TPKMultiSelectionOption *> *TPKExternalProviderSelectionOptions(v
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section == TPKAppearanceSectionInterface) {
+    if (!self.pickerDimensionsOnly && ip.section == TPKAppearanceSectionEvents) return;
+    if (!self.pickerDimensionsOnly && ip.section == TPKAppearanceSectionInterface) {
         if (ip.row == TPKAppearanceInterfaceRowTabBar) {
             [self.navigationController pushViewController:
                 [[TPKTabBarSettingsController alloc] init] animated:YES];
         }
         return;
     }
-    if (ip.section != TPKAppearanceSectionEmotes) return;
-    NSArray<NSNumber *> *visible = [self tpk_visibleEmoteRows];
+    NSArray<NSNumber *> *visible = [self tpk_rowsForSection:ip.section];
     if (ip.row >= (NSInteger)visible.count) return;
     UITableViewCell *anchor = [tv cellForRowAtIndexPath:ip];
-    if (visible[ip.row].integerValue == TPKAppearanceEmoteRowPickerAnimations) {
+    NSString *sizeKey = TPKAppearanceSizeKey((TPKAppearanceEmoteRow)visible[ip.row].integerValue);
+    if (visible[ip.row].integerValue == TPKAppearanceEmoteRowPickerDimensions) {
+        TPKAppearancePageController *dimensions = [[TPKAppearancePageController alloc] init];
+        dimensions.pickerDimensionsOnly = YES;
+        [self.navigationController pushViewController:dimensions animated:YES];
+    } else if (sizeKey) {
+        [self tpk_presentNumberSetting:sizeKey title:L([sizeKey isEqualToString:@"deletedMessageTextOpacity"] ? @"sizes_deleted_opacity_label" : [sizeKey hasPrefix:@"pickerEmoteScale"] ? @"size_label_picker_emote_size" : @"size_label_picker_height")];
+    } else if (visible[ip.row].integerValue == TPKAppearanceEmoteRowSize) {
+        [self tpk_presentNumberSetting:@"nativeEmoteHeight" title:L(@"native_emote_size")];
+    } else if (visible[ip.row].integerValue == TPKAppearanceEmoteRowDeletedMode || visible[ip.row].integerValue == TPKAppearanceEmoteRowDeletedStyle) {
+        [self tpk_presentDeletedOptions:(visible[ip.row].integerValue == TPKAppearanceEmoteRowDeletedStyle) anchor:anchor];
+    } else if (visible[ip.row].integerValue == TPKAppearanceEmoteRowPickerAnimations) {
         [self presentPickerAnimationsPickerFromCell:anchor];
     } else if (visible[ip.row].integerValue == TPKAppearanceEmoteRowResolution) {
         [self presentResolutionPickerFromCell:anchor];
-    } else if (visible[ip.row].integerValue == TPKAppearanceEmoteRowProviders) {
-        TPKMultiSelectionController *providers =
-            [[TPKMultiSelectionController alloc]
-                initWithTitle:L(@"setting_emote_providers")
-                       options:TPKExternalProviderSelectionOptions()];
-        __weak typeof(self) weakSelf = self;
-        providers.onFinish = ^{
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            TPKReloadCellWithoutJump(strongSelf.tableView, anchor);
-        };
-        UINavigationController *navigation = [[UINavigationController alloc]
-            initWithRootViewController:providers];
-        navigation.modalPresentationStyle = UIModalPresentationPageSheet;
-        [self presentViewController:navigation animated:YES completion:nil];
-    } else if (visible[ip.row].integerValue == TPKAppearanceEmoteRowProviderPriority) {
-        [self presentProviderPriorityPickerFromCell:anchor];
     } else if (visible[ip.row].integerValue == TPKAppearanceEmoteRowPickerOpening) {
         [self presentPickerOpeningPickerFromCell:anchor];
     }
+}
+
+- (UITableViewCell *)tpk_configSwitch:(NSString *)title icon:(NSString *)icon key:(NSString *)key color:(UIColor *)color {
+    UITableViewCell *cell = TPKSwitchCell(L(title), icon, color,
+        [[TPKChatAppearanceConfig.sharedConfig valueForKey:key] boolValue], self, @selector(tpk_configSwitchChanged:), nil);
+    for (UIView *view in cell.contentView.subviews) {
+        if ([view isKindOfClass:UISwitch.class]) view.accessibilityIdentifier = key;
+    }
+    return cell;
+}
+
+- (void)tpk_configSwitchChanged:(UISwitch *)toggle {
+    [TPKChatAppearanceConfig.sharedConfig setValue:@(toggle.isOn) forKey:toggle.accessibilityIdentifier];
+    [TPKChatAppearanceConfig.sharedConfig save];
+}
+
+- (void)tpk_presentNumberSetting:(NSString *)key title:(NSString *)title {
+    BOOL opacity = [key isEqualToString:@"deletedMessageTextOpacity"];
+    BOOL nativeSize = [key isEqualToString:@"nativeEmoteHeight"];
+    CGFloat minimum = nativeSize ? 14 : opacity ? 25 : TPKPickerOptionMinForKey(key);
+    CGFloat maximum = nativeSize ? 56 : opacity ? 100 : TPKPickerOptionMaxForKey(key);
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+        message:[NSString stringWithFormat:@"%g–%g", (double)minimum, (double)maximum] preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.keyboardType = UIKeyboardTypeDecimalPad;
+        CGFloat value = nativeSize ? TPKNativeEmoteHeight() : [[TPKChatAppearanceConfig.sharedConfig valueForKey:key] doubleValue];
+        field.text = [NSString stringWithFormat:@"%g", (double)(opacity ? value * 100 : value)];
+    }];
+    __weak UIAlertController *weakAlert = alert;
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"common_ok") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        NSString *input = [weakAlert.textFields.firstObject.text stringByReplacingOccurrencesOfString:@"," withString:@"."];
+        CGFloat value = input.doubleValue;
+        if (isfinite(value) && value >= minimum && value <= maximum) {
+            if (nativeSize) TPKNativeSetEmoteHeight(value);
+            else if (opacity) {
+                TPKChatAppearanceConfig.sharedConfig.deletedMessageTextOpacity = value / 100;
+                [TPKChatAppearanceConfig.sharedConfig save];
+            } else [TPKChatAppearanceConfig.sharedConfig setValue:value forSizeKey:key];
+            [weakSelf.tableView reloadData];
+        }
+    }]];
+    TPKPresentAlert(self, alert);
+}
+- (void)tpk_firstColorChanged:(UIColorWell *)well {
+    [TPKChatAppearanceConfig.sharedConfig setColor:well.selectedColor forColorKey:@"firstMessageHighlightColor"];
+}
+- (void)tpk_presentDeletedOptions:(BOOL)style anchor:(UIView *)anchor {
+    NSArray *keys = style ? @[@"sizes_deleted_style_dimmed", @"sizes_deleted_style_struck", @"sizes_deleted_style_both"] :
+        @[@"sizes_deleted_preview_disabled", @"sizes_deleted_preview_tap", @"sizes_deleted_preview_revealed"];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:L(style ? @"sizes_deleted_style_label" : @"sizes_deleted_preview_label") message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSUInteger index = 0; index < keys.count; index++) {
+        [sheet addAction:[UIAlertAction actionWithTitle:L(keys[index]) style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            TPKChatAppearanceConfig *config = TPKChatAppearanceConfig.sharedConfig;
+            if (style) config.deletedMessageStyle = (TPKDeletedMessageStyle)index;
+            else config.deletedMessageRevealMode = (TPKDeletedMessageRevealMode)index;
+            [config save];
+            [self.tableView reloadData];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel") style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = anchor;
+    sheet.popoverPresentationController.sourceRect = anchor.bounds;
+    TPKPresentAlert(self, sheet);
 }
 
 - (void)toggleOLEDMode:(UISwitch *)sw {
@@ -3464,50 +3388,7 @@ static NSArray<TPKMultiSelectionOption *> *TPKExternalProviderSelectionOptions(v
     TPKPresentAlert(self, sheet);
 }
 
-- (void)presentProviderPriorityPickerFromCell:(UIView *)anchor {
-    NSArray<NSString *> *current = [TPKEmoteProviderSettings providerPriority];
-    UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:L(@"setting_emote_provider_priority")
-                         message:L(@"setting_emote_provider_priority_message")
-                  preferredStyle:UIAlertControllerStyleActionSheet];
-    sheet.view.tintColor = TPKAccent();
-    NSArray<NSString *> *labels = @[@"7TV", @"BetterTTV", @"FrankerFaceZ"];
-    // Use explicit presets for VoiceOver compatibility.
-    NSArray<NSArray<NSString *> *> *orders = @[
-        @[@"7tv", @"bttv", @"ffz"],
-        @[@"bttv", @"7tv", @"ffz"],
-        @[@"ffz", @"7tv", @"bttv"],
-        @[@"7tv", @"ffz", @"bttv"],
-        @[@"bttv", @"ffz", @"7tv"],
-        @[@"ffz", @"bttv", @"7tv"],
-    ];
-    for (NSUInteger index = 0; index < orders.count; index++) {
-        NSArray *order = orders[index];
-        NSString *title = @"";
-        // Keep provider names explicit and ordered.
-        NSMutableArray *names = [NSMutableArray array];
-        for (NSString *identifier in order) {
-            TPKExternalEmoteProvider p = TPKEmoteProviderFromIdentifier(identifier);
-            [names addObject:labels[p]];
-        }
-        title = [names componentsJoinedByString:@" > "];
-        if ([order isEqualToArray:current]) title = [title stringByAppendingString:@" ✓"];
-        __weak typeof(self) weakSelf = self;
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
-            handler:^(UIAlertAction *action) {
-                (void)action;
-                [TPKEmoteProviderSettings setProviderPriority:order];
-                TPKReloadCellWithoutJump(weakSelf.tableView, anchor);
-            }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:L(@"common_cancel")
-                                              style:UIAlertActionStyleCancel handler:nil]];
-    if (anchor) {
-        sheet.popoverPresentationController.sourceView = anchor;
-        sheet.popoverPresentationController.sourceRect = anchor.bounds;
-    }
-    TPKPresentAlert(self, sheet);
-}
+
 
 // Emote-resolution choice sheet; clear the cache when the value changes.
 - (void)presentResolutionPickerFromCell:(UIView *)anchor {
@@ -4019,7 +3900,7 @@ static NSArray<NSString *> *TPKTPKIDsFromPCFavorites(NSArray *rawFavorites) {
     UILabel *countLbl = [[UILabel alloc] init];
     countLbl.text = [NSString stringWithFormat:@"%lu", (unsigned long)favs.count];
     countLbl.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightRegular];
-    countLbl.textColor = [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0];
+    countLbl.textColor = TPKAccent();
     countLbl.translatesAutoresizingMaskIntoConstraints = NO;
 
     // Integrated import uses the existing file picker.
@@ -4029,7 +3910,7 @@ static NSArray<NSString *> *TPKTPKIDsFromPCFavorites(NSArray *rawFavorites) {
     [importBtn setImage:[UIImage systemImageNamed:@"square.and.arrow.down"
                          withConfiguration:importCfg]
                forState:UIControlStateNormal];
-    importBtn.tintColor = [UIColor colorWithRed:0.60 green:0.35 blue:1.0 alpha:1.0];
+    importBtn.tintColor = TPKAccent();
     importBtn.accessibilityLabel = L(@"action_import_from_pc");
     importBtn.showsTouchWhenHighlighted = YES;
     importBtn.translatesAutoresizingMaskIntoConstraints = NO;
@@ -5206,6 +5087,9 @@ forRowAtIndexPath:(NSIndexPath *)ip {
 
     if (!enabled) {
         status = L(@"diagnostics_inactive");
+    } else if ([item[@"partial"] boolValue]) {
+        status = [NSString stringWithFormat:L(@"diagnostics_api_partial_count"), (long)count];
+        statusColor = UIColor.systemOrangeColor;
     } else {
         switch (state) {
             case TPKEmoteProviderStateLoading:
@@ -5409,6 +5293,7 @@ static NSArray<NSURL *> *TPKAdvancedKnownEmoteImageURLs(void) {
 }
 
 - (void)tpk_cacheCountDidChange:(NSNotification *)notification {
+    self.displayedCachedEmoteCount = [TPKURLProtocol cachedEmoteCount];
     if (!self.isViewLoaded || !self.view.window) return;
     NSIndexPath *cacheRow = [NSIndexPath indexPathForRow:0 inSection:0];
     [self.tableView reloadRowsAtIndexPaths:@[cacheRow]
@@ -5425,23 +5310,15 @@ static NSArray<NSURL *> *TPKAdvancedKnownEmoteImageURLs(void) {
     void (^applyCount)(NSInteger) = ^(NSInteger count) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
-        strongSelf.displayedCachedEmoteCount = count;
+        strongSelf.displayedCachedEmoteCount = [TPKURLProtocol cachedEmoteCount];
         if (strongSelf.isViewLoaded && strongSelf.view.window) {
             NSIndexPath *cacheRow = [NSIndexPath indexPathForRow:0 inSection:0];
             [strongSelf.tableView reloadRowsAtIndexPaths:@[cacheRow]
                                         withRowAnimation:UITableViewRowAnimationNone];
         }
     };
-    [TPKURLProtocol refreshCachedEmoteCountWithCompletion:^(NSInteger count) {
-        applyCount(count);
-
-        // Backfill older cache entries without replacing known identities.
-        NSArray<NSURL *> *knownImageURLs = TPKAdvancedKnownEmoteImageURLs();
-        if (knownImageURLs.count) {
-            [TPKURLProtocol refreshCachedEmoteCountForImageURLs:knownImageURLs
-                                                          completion:applyCount];
-        }
-    }];
+    [TPKURLProtocol refreshCachedEmoteCountForImageURLs:TPKAdvancedKnownEmoteImageURLs()
+                                          completion:applyCount];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
@@ -5481,7 +5358,7 @@ typedef NS_ENUM(NSInteger, TPKLogsRow) {
     switch (s) {
         case TPK_SECTION_TOOLS:    return 2;
         case TPK_SECTION_TRANSFER: return 2;
-        case TPK_SECTION_OPTIONS:  return 2;
+        case TPK_SECTION_OPTIONS:  return 1;
         case TPK_SECTION_LOGS:     return [self tpk_visibleLogsRows].count + 4; /* + bloc Diagnostics VAFT */
         default: return 0;
     }
@@ -5565,13 +5442,6 @@ typedef NS_ENUM(NSInteger, TPKLogsRow) {
     }
 
     if (ip.section == TPK_SECTION_OPTIONS) {
-        if (ip.row == 0) {
-        return TPKSwitchCell(L(@"switch_chat_custom"),
-                    @"message.badge.filled.fill",
-                    TPKAccent(),
-                    mgr.chatCustomTestEnabled,
-                    self, @selector(toggleChatCustom:), nil);
-        }
         return TPKSwitchCell(L(@"switch_floating_button"),
                     @"circle.grid.2x1.fill",
                     UIColor.systemOrangeColor,
@@ -5752,12 +5622,12 @@ typedef NS_ENUM(NSInteger, TPKLogsRow) {
             UIColor.systemPurpleColor,
         ];
         NSArray<NSNumber *> *values = @[
-            @(mgr.logErrors), @(mgr.logChatCustom), @(mgr.logChannelPoints),
+            @(mgr.logErrors), @(mgr.logChat), @(mgr.logChannelPoints),
             @(mgr.logTap),
             @(mgr.logChannelResolver),
         ];
         NSArray *selectors = @[
-            @"toggleLogErrors:", @"toggleLogChatCustom:", @"toggleLogChannelPoints:",
+            @"toggleLogErrors:", @"toggleLogChat:", @"toggleLogChannelPoints:",
             @"toggleLogTap:",
             @"toggleLogChannelResolver:",
         ];
@@ -5955,6 +5825,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
 
     TPKChatAppearanceConfig *chatConfig = [TPKChatAppearanceConfig sharedConfig];
     [chatConfig reloadFromDefaults];
+    [TPKChatEventAppearance reload];
     [[NSNotificationCenter defaultCenter]
         postNotificationName:TPKChatAppearanceConfigDidChangeNotification object:chatConfig];
     TPKOLEDModeReloadFromDefaults();
@@ -6020,11 +5891,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     TPKPresentAlert(self, alert);
 }
 - (void)toggleDebug:(UISwitch *)sw                  { [TPKManager sharedManager].debugLogging        = sw.isOn; }
-- (void)toggleChatCustom:(UISwitch *)sw             { [TPKManager sharedManager].chatCustomTestEnabled = sw.isOn; }
+
 - (void)toggleFloatingButton:(UISwitch *)sw         { [TPKManager sharedManager].showFloatingButton  = sw.isOn; }
 
 - (void)toggleLogErrors:(UISwitch *)sw           { [TPKManager sharedManager].logErrors           = sw.isOn; }
-- (void)toggleLogChatCustom:(UISwitch *)sw       { [TPKManager sharedManager].logChatCustom       = sw.isOn; }
+- (void)toggleLogChat:(UISwitch *)sw       { [TPKManager sharedManager].logChat       = sw.isOn; }
 - (void)toggleLogChannelPoints:(UISwitch *)sw    { [TPKManager sharedManager].logChannelPoints    = sw.isOn; }
 - (void)toggleLogTap:(UISwitch *)sw              { [TPKManager sharedManager].logTap              = sw.isOn; }
 - (void)toggleLogChannelResolver:(UISwitch *)sw  { [TPKManager sharedManager].logChannelResolver  = sw.isOn; }

@@ -2,6 +2,98 @@
 
 This file keeps the cumulative release history of TwitchPlusK, with the newest release listed first.
 
+## [2.0.4] (Twitch 32.0) - 2026-11-17
+
+The custom chat has been completely removed in favor of Twitch's native chat, with TwitchPlusK features integrated directly for a cleaner, more efficient experience. 7TV, BTTV, and FFZ emotes, the emote picker, first-time chatter highlighting, deleted-message display, and customizable event backgrounds alongside Twitch's built-in chat features.
+
+### Added
+
+- Added 7TV, BTTV, and FFZ emotes to React Native live chat, legacy live chat, and VOD chat, including wide and animated emotes.
+
+- Added first-time chatter highlighting for the first message only, with a customizable color.
+
+- Added separate switches for third-party chat emotes and the emote picker button in Appearance settings.
+
+- Added the ability to read deleted messages directly in chat, with timeout durations, permanent ban labels, tap-to-reveal or always-visible content, and customizable dimming, strikethrough, and opacity.
+
+- Added subtle OLED backgrounds to distinguish chat events, including subscriptions, gifts, raids, announcements, Cheers, watch streaks, and custom channel point rewards.
+
+- Added customizable chat-event backgrounds by category.
+
+- Added an optional custom background color for deleted messages.
+
+- Added adjustable emote sizes, with a default height of 28 points.
+
+- Added synchronized playback for repeated animated custom emotes in native chat.
+
+### Changed
+
+- Replaced the logo with a cleaner white design and refined its settings layout.
+
+- Simplified emote loading, catalog management, and favorites handling while preserving existing behavior.
+
+- Combined color selection and toggles on the same row for chat events and first-time chatter highlighting.
+
+- Simplified Appearance settings and grouped portrait and landscape picker dimensions into a dedicated screen.
+
+- Switched to Twitch's native chat on Twitch 32.0, keeping the TwitchPlusK emote picker and its button.
+
+- Moved emote sizes, picker dimensions, first-message color, and deleted-message options to Appearance settings.
+
+- Emote providers use a fixed 7TV > BTTV > FFZ priority.
+
+- Reduced repeated emote lookups, unnecessary text allocations, and chat redraws.
+
+- Improved emote caching and shared downloads to reduce repeated requests and speed up loading in chat and the picker.
+
+- Reduced retained chat data and released inactive picker animations, with bounded caches and memory-pressure cleanup.
+
+- Kept moderation data separate for each chat session, including messages delayed by Twitch.
+
+- Simplified the emote pipeline and removed unused custom-renderer code.
+
+- Renamed the Custom Chat diagnostic log category to Chat.
+
+- Reduced UI scanning when hiding Twitch Turbo.
+
+- Matched custom chat-event background transparency to first-time chatter highlighting.
+
+### Fixes
+
+- Fixed channel detection in VODs and legacy live chat.
+
+- Fixed misleading emote-provider availability statuses in Diagnostics and updated the hook checklist for the current native chat and React Native integrations.
+
+- Fixed inaccurate cached-emote counts and delayed counter updates in Advanced settings.
+
+- Fixed a picker crash on keyboard frame changes after removing the old chat preview.
+
+- Fixed unreliable startup selection for Home's Following, Live, and Clips pages, Browse's Categories and Live Channels pages, Activity, and Profile.
+
+- Reduced excess spacing in first-time chatter highlights.
+
+- Fixed partial emote matches: emote codes now require an exact, case-sensitive word match.
+
+- Fixed wide emotes overlapping surrounding text by reserving their actual width.
+
+- Improved loading when the same emote appears multiple times.
+
+- Deleted-message status and revealed content now share one row and use Twitch's native font size.
+
+- Preserved username and badge colors when dimming deleted messages.
+
+### Deleted
+
+- Removed obsolete legacy emote-cache migration code.
+
+- Removed the custom chat renderer, its setting, dedicated reply/thread panels, and custom user-card bridge.
+
+- Removed the size panel and chat preview from the emote picker.
+
+- Removed unused translations.
+
+- Removed obsolete emote provider-selection logic.
+
 ## [2.0.3] (Twitch 31.9) - 2026-11-08
 
 ### Added

@@ -42,12 +42,12 @@ Full CHANGELOG : [CHANGELOG.md](https://github.com/Knoks1111/TwitchPlusK/blob/ma
 
 ### Chat and emotes
 
-- Customize chat sizes, spacing, and colors with a live preview.
-- Highlight mentions, first-time chatters, subscriptions, and gifts.
-- Reply to messages, view threads, and customize deleted-message display.
-- Use **7TV, BTTV, and FFZ emotes**, including animated and Zero-Width emotes.
+- Use **7TV, BTTV, and FFZ emotes** in native chat, including animated and Zero-Width emotes.
+- Customize emote sizes and highlight first-time chatters.
+- Customize background colors for chat events.
+- Reveal deleted messages and view timeout durations or permanent ban labels.
+- Access **7TV, BTTV, and FFZ emotes** through a dedicated emote picker.
 - Search emotes, manage favorites, and import favorites from PC.
-- Choose picker providers, animations, and the opening tab.
 
 ### Ad blocking
 
@@ -58,12 +58,12 @@ Full CHANGELOG : [CHANGELOG.md](https://github.com/Knoks1111/TwitchPlusK/blob/ma
 
 ### App customization
 
+- Enable **OLED Mode**.
+- Choose which page opens at launch.
+- Hide and reorder tabs with an interactive preview.
 - Swipe to adjust volume and brightness.
 - Refresh playback, reduce stream delay, and view video statistics.
 - Lock orientation automatically or manually.
-- Enable **OLED Mode**.
-- Hide and reorder tabs with an interactive preview.
-- Choose which page opens at launch.
 - Keep Live feed previews playing past Twitch's watch limit.
 - Automatically collect **Channel Points** bonuses.
 - And more...
@@ -72,7 +72,7 @@ Full CHANGELOG : [CHANGELOG.md](https://github.com/Knoks1111/TwitchPlusK/blob/ma
 
 | Twitch | iOS | Device | Installation |
 | --- | --- | --- | --- |
-| 31.9 | 27.2 | iPhone 12 | Sideloaded |
+| 32.0 | 27.2 | iPhone 12 | Sideloaded |
 
 ## Install
 

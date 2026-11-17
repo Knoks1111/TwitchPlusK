@@ -12,7 +12,6 @@ FOUNDATION_EXPORT NSString *const TPKFavoritesDidChangeNotification;
 // Les consommateurs Helix qui ont tenté trop tôt peuvent alors se relancer.
 FOUNDATION_EXPORT NSString *const TPKTwitchCredentialsDidUpdateNotification;
 
-@class TPKChatMessageStore;
 
 // ============================================================
 // CONFIGURATION - Modifie ces valeurs selon tes besoins
@@ -23,7 +22,7 @@ FOUNDATION_EXPORT NSString *const TPKTwitchCredentialsDidUpdateNotification;
 #define TPK_DEBUG 0
 
 // Préfixe utilisé pour nos faux IDs d'emotes dans Twitch
-// NE PAS MODIFIER - doit correspondre à tpK-network-emote-cache.m
+// Préfixe historique conservé pour les anciens modèles d'émotes.
 #define TPK_EMOTE_ID_PREFIX @"7tv_"
 
 // URLs de l'API 7TV
@@ -37,7 +36,6 @@ FOUNDATION_EXPORT NSString *const TPKTwitchCredentialsDidUpdateNotification;
 // TPKLogsController écoute cette notification pour se rafraîchir.
 extern NSString *const TPKLogsDidUpdateNotification;
 extern NSString *const TPKEmoteCatalogDidUpdateNotification;
-extern NSString *const TPKChatCustomToggleDidChangeNotification;
 
 // ============================================================
 // Fonctions C partagées encore définies dans tpK-core-runtime-hooks.m
@@ -53,7 +51,7 @@ void tpk_swizzle(Class targetClass, Class sourceClass, SEL original, SEL swizzle
 // Catégories indépendantes du journal général.
 typedef NS_ENUM(NSInteger, TPKLogCategory) {
     TPKLogCategoryError = 0,        // 🚨 Erreurs / Avertissements (❌ ⚠️)
-    TPKLogCategoryChatCustom,       // 🏗 Chat Custom
+    TPKLogCategoryChat,       // Chat
     TPKLogCategoryChannelPoints,    // 🎁 Channel Points
     TPKLogCategoryTap,              // 👆 Tap Logger (diagnostic au tap)
     TPKLogCategoryChannelResolver,  // 🧭 Channel Resolver
@@ -85,8 +83,6 @@ typedef NS_ENUM(NSInteger, TPKLogCategory) {
 + (instancetype)sharedManager;
 
 // --- Configuration ---
-@property (nonatomic, assign) BOOL isEnabled;             // 7TV activé/désactivé
-@property (nonatomic, assign) BOOL showAnimated;          // Afficher les emotes animées dans le chat
 @property (nonatomic, assign) BOOL showPickerAnimations;  // Animer les emotes dans le picker
 // Sous-option de showPickerAnimations : quand YES, seules les emotes de la
 // section Favoris du picker sont animées (le reste reste statique). Sans
@@ -94,10 +90,6 @@ typedef NS_ENUM(NSInteger, TPKLogCategory) {
 // l'autre — voir TPKSettingsController pour le grisage correspondant).
 @property (nonatomic, assign) BOOL showPickerAnimationsFavoritesOnly;
 @property (nonatomic, assign) BOOL showFloatingButton;    // Afficher/masquer le bouton flottant 7TV
-// Kill switch Phase 0 (plan chat custom) : quand ON, cache la vraie
-// ChatTranscriptView et pose une vue flashy à sa place dans son UIStackView
-// parent — test de validation du point d'insertion. OFF par défaut.
-@property (nonatomic, assign) BOOL chatCustomTestEnabled;
 @property (nonatomic, assign) BOOL debugLogging;          // NSLog console activé (mirroring Console.app)
 
 // --- Logs : interrupteur global ---
@@ -108,7 +100,7 @@ typedef NS_ENUM(NSInteger, TPKLogCategory) {
 
 // --- Logs : catégories (chacune indépendante) ---
 @property (nonatomic, assign) BOOL logErrors;            // 🚨 Erreurs / Avertissements — ON par défaut
-@property (nonatomic, assign) BOOL logChatCustom;           // 🏗 Chat Custom
+@property (nonatomic, assign) BOOL logChat;           // Chat
 @property (nonatomic, assign) BOOL logChannelPoints;         // 🎁 Channel Points
 @property (nonatomic, assign) BOOL logTap;                   // 👆 Tap Logger — OFF par défaut
 @property (nonatomic, assign) BOOL logChannelResolver;
@@ -134,16 +126,13 @@ typedef NS_ENUM(NSInteger, TPKLogCategory) {
 // dispatch_barrier_async(mgr.emoteQueue, ^{ ... }) pour écrire.
 @property (nonatomic, strong, readonly) dispatch_queue_t emoteQueue;
 
-// --- Chat custom (Phase 1a+) ---
-// Store des messages du chat en cours.
-@property (nonatomic, strong, readonly) TPKChatMessageStore *chatMessageStore;
 
 // --- Initialisation ---
 - (void)setup;
 
 // Relit les préférences déjà présentes dans NSUserDefaults sans les réécrire.
 // Utilisé après l'import d'une sauvegarde pour appliquer immédiatement les
-// réglages généraux, le bouton flottant, le chat custom et les favoris.
+// réglages généraux, le bouton flottant et les favoris.
 - (void)reloadPreferencesFromDefaults;
 
 // --- Chargement des emotes ---
@@ -152,7 +141,7 @@ typedef NS_ENUM(NSInteger, TPKLogCategory) {
 - (void)loadEmotesForChannelTwitchID:(NSString *)twitchUserID;
 
 // --- Token Twitch (intercepté depuis les requêtes GQL) ---
-// Stocké ici pour être réutilisé par TPKBadgeProvider (API Helix badges).
+// Partagé avec le fournisseur d'avatars du picker.
 @property (nonatomic, copy, readonly) NSString *twitchToken;
 @property (nonatomic, copy, readonly) NSString *twitchClientID;
 - (void)saveTwitchToken:(NSString *)token clientID:(NSString *)clientID;
@@ -226,9 +215,7 @@ typedef NS_ENUM(NSInteger, TPKLogCategory) {
 @end
 
 // Historique récent, appelé explicitement par le futur resolver de chaîne.
-@interface TPKManager (RecentChatHistory)
-- (void)initializeRecentHistoryForChannel:(NSString *)channel force:(BOOL)force;
-@end
+
 
 @interface TPKManager (IRCSessionState)
 - (void)handleIncomingChatWebSocketText:(NSString *)text;

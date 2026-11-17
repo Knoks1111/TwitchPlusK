@@ -1,4 +1,5 @@
 #import "UI/tpK-oled-mode.h"
+#import "Chat/Appearance/tpK-chat-event-appearance.h"
 #import "Core/tpK-core-manager.h"
 #import <UIKit/UIKit.h>
 #import <mach-o/dyld.h>
@@ -20,11 +21,13 @@ static NSString *const kTPKNativeThemeDidChangeNotification =
 
 typedef UIColor *(*TPKOLEDColorRedIMP)(id, SEL, CGFloat, CGFloat, CGFloat, CGFloat);
 typedef void (*TPKOLEDViewBackgroundIMP)(id, SEL, UIColor *);
+typedef void (*TPKOLEDViewIdentifierIMP)(id, SEL, NSString *);
 typedef void (*TPKOLEDViewDidAppearIMP)(id, SEL, BOOL);
 
 typedef struct {
     Class targetClass;
     TPKOLEDViewBackgroundIMP original;
+    TPKOLEDViewIdentifierIMP originalIdentifier;
 } TPKOLEDReactBackgroundHook;
 
 static const NSUInteger kTPKOLEDMaxReactBackgroundHooks = 4;
@@ -39,6 +42,7 @@ static uintptr_t tpk_oledTwitchImageEnd = 0;
 static TPKOLEDColorRedIMP tpk_oledOriginalColorWithRed = NULL;
 static TPKOLEDColorRedIMP tpk_oledOriginalInitWithRed = NULL;
 static TPKOLEDViewBackgroundIMP tpk_oledNativeSetBackgroundColor = NULL;
+static TPKOLEDViewIdentifierIMP tpk_oledNativeSetIdentifier = NULL;
 static TPKOLEDViewDidAppearIMP tpk_oledOriginalViewDidAppear = NULL;
 static id tpk_lastThemeManager = nil;
 static const char kTPKOLEDOriginalReactBackgroundKey = 0;
@@ -146,14 +150,20 @@ static BOOL tpk_oledReactBackgroundView(UIView *view) {
     return componentClass && [view isKindOfClass:componentClass];
 }
 
+static BOOL tpk_oledChatEventCard(UIView *view) {
+    return TPKChatEventGroupForIdentifier(view.accessibilityIdentifier.UTF8String) != TPKChatEventGroupNone;
+}
+
 static BOOL tpk_oledReactBackgroundColor(UIColor *color) {
     if (!color) return NO;
     CGFloat red = 0.0;
     CGFloat green = 0.0;
     CGFloat blue = 0.0;
     CGFloat alpha = 1.0;
-    if (![color getRed:&red green:&green blue:&blue alpha:&alpha] &&
-        ![color getWhite:&red alpha:&alpha]) return NO;
+    if (![color getRed:&red green:&green blue:&blue alpha:&alpha]) {
+        if (![color getWhite:&red alpha:&alpha]) return NO;
+        green = blue = red;
+    }
     if (alpha < 0.95) return NO;
     CGFloat maximum = MAX(red, MAX(green, blue));
     CGFloat minimum = MIN(red, MIN(green, blue));
@@ -176,13 +186,15 @@ static void tpk_oledSetReactBackgroundColor(id self, SEL _cmd, UIColor *color) {
         tpk_oledReactBackgroundHookForReceiver(self);
     UIView *view = (UIView *)self;
     UIColor *effectiveColor = color;
+    TPKChatEventGroup group = TPKChatEventGroupForIdentifier(view.accessibilityIdentifier.UTF8String);
+    UIColor *eventColor = [TPKChatEventAppearance backgroundForGroup:group oled:tpk_oledApplyEnabled()];
     BOOL eligible = tpk_oledReactBackgroundView(view) &&
         tpk_oledReactBackgroundColor(color);
 
-    if (eligible && tpk_oledApplyEnabled()) {
+    if (eventColor || (eligible && tpk_oledApplyEnabled())) {
         objc_setAssociatedObject(view, &kTPKOLEDOriginalReactBackgroundKey,
-                                 color, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        effectiveColor = UIColor.blackColor;
+                                 color ?: UIColor.clearColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        effectiveColor = eventColor ?: UIColor.blackColor;
     } else {
         objc_setAssociatedObject(view, &kTPKOLEDOriginalReactBackgroundKey,
                                  nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -192,6 +204,21 @@ static void tpk_oledSetReactBackgroundColor(id self, SEL _cmd, UIColor *color) {
         hook->original(self, _cmd, effectiveColor);
     } else if (tpk_oledNativeSetBackgroundColor) {
         tpk_oledNativeSetBackgroundColor(self, _cmd, effectiveColor);
+    }
+}
+
+static void tpk_oledSetReactIdentifier(id self, SEL _cmd, NSString *identifier) {
+    UIView *view = (UIView *)self;
+    BOOL wasCard = tpk_oledChatEventCard(view);
+    const TPKOLEDReactBackgroundHook *hook = tpk_oledReactBackgroundHookForReceiver(self);
+    TPKOLEDViewIdentifierIMP original = hook ? hook->originalIdentifier : NULL;
+    if (!original) original = tpk_oledNativeSetIdentifier;
+    if (original) original(self, _cmd, identifier);
+    // Fabric peut affecter l'identifiant après le fond, ou recycler le conteneur.
+    if (wasCard || tpk_oledChatEventCard(view)) {
+        UIColor *color = objc_getAssociatedObject(view, &kTPKOLEDOriginalReactBackgroundKey)
+            ?: view.backgroundColor;
+        tpk_oledSetReactBackgroundColor(view, @selector(setBackgroundColor:), color);
     }
 }
 
@@ -218,10 +245,22 @@ static BOOL tpk_oledInstallReactBackgroundHook(Class targetClass) {
         return NO;
     }
 
+    SEL identifierSelector = @selector(setAccessibilityIdentifier:);
+    Method identifierMethod = class_getInstanceMethod(targetClass, identifierSelector);
+    TPKOLEDViewIdentifierIMP identifierOriginal = identifierMethod
+        ? (TPKOLEDViewIdentifierIMP)method_getImplementation(identifierMethod) : NULL;
+    if (identifierOriginal && identifierOriginal != tpk_oledSetReactIdentifier) {
+        Method declaredIdentifier = tpk_oledMethodDeclaredOnClass(targetClass, identifierSelector);
+        if (declaredIdentifier) method_setImplementation(declaredIdentifier, (IMP)tpk_oledSetReactIdentifier);
+        else class_addMethod(targetClass, identifierSelector, (IMP)tpk_oledSetReactIdentifier,
+                             method_getTypeEncoding(identifierMethod));
+    } else identifierOriginal = NULL;
+
     tpk_oledReactBackgroundHooks[tpk_oledReactBackgroundHookCount++] =
         (TPKOLEDReactBackgroundHook){
             .targetClass = targetClass,
             .original = (TPKOLEDViewBackgroundIMP)currentImplementation,
+            .originalIdentifier = identifierOriginal,
         };
     return YES;
 }
@@ -233,8 +272,10 @@ static void tpk_oledInstallReactBackgroundHooks(void) {
 
 static void tpk_oledApplyReactBackgrounds(UIView *view) {
     if (!view) return;
-    UIColor *color = view.backgroundColor;
-    if (tpk_oledReactBackgroundView(view) && tpk_oledReactBackgroundColor(color)) {
+    UIColor *color = objc_getAssociatedObject(view, &kTPKOLEDOriginalReactBackgroundKey)
+        ?: view.backgroundColor;
+    if (tpk_oledReactBackgroundView(view) &&
+        (tpk_oledChatEventCard(view) || tpk_oledReactBackgroundColor(color))) {
         tpk_oledSetReactBackgroundColor(view, @selector(setBackgroundColor:), color);
     }
     for (UIView *subview in view.subviews) {
@@ -271,6 +312,7 @@ static void tpk_oledRefreshReactBackgrounds(void) {
                 tpk_oledApplyReactBackgrounds(window);
             } else {
                 tpk_oledRestoreReactBackgrounds(window);
+                if ([TPKChatEventAppearance hasCustomBackgrounds]) tpk_oledApplyReactBackgrounds(window);
             }
         }
     };
@@ -282,7 +324,7 @@ static void tpk_oledViewDidAppear(id self, SEL _cmd, BOOL animated) {
     if (tpk_oledOriginalViewDidAppear) {
         tpk_oledOriginalViewDidAppear(self, _cmd, animated);
     }
-    if (!tpk_oledApplyEnabled()) return;
+    if (!tpk_oledApplyEnabled() && ![TPKChatEventAppearance hasCustomBackgrounds]) return;
     __weak UIViewController *controller = (UIViewController *)self;
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *strongController = controller;
@@ -348,6 +390,10 @@ static void tpk_oledInstallRuntimeHooks(void) {
         tpk_oledNativeSetBackgroundColor =
             (TPKOLEDViewBackgroundIMP)method_getImplementation(backgroundMethod);
     }
+
+    Method identifierMethod = class_getInstanceMethod(UIView.class, @selector(setAccessibilityIdentifier:));
+    if (identifierMethod) tpk_oledNativeSetIdentifier =
+        (TPKOLEDViewIdentifierIMP)method_getImplementation(identifierMethod);
 
     tpk_oledInstallReactBackgroundHooks();
     tpk_oledInstallViewControllerHook();
@@ -419,6 +465,17 @@ void TPKOLEDModeSetup(void) {
                     usingBlock:^(NSNotification *note) {
             if (note.object) tpk_lastThemeManager = note.object;
         }];
+        [TPKChatEventAppearance reload];
+        [[NSNotificationCenter defaultCenter] addObserverForName:TPKChatEventAppearanceDidChangeNotification
+            object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
+                static BOOL refreshScheduled = NO;
+                if (refreshScheduled) return;
+                refreshScheduled = YES;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    refreshScheduled = NO;
+                    tpk_oledRefreshReactBackgrounds();
+                });
+            }];
         tpk_oledInstallRuntimeHooks();
     });
 }

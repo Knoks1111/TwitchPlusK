@@ -33,12 +33,15 @@ static char kTPKPlayerStatsLastUpdateTimeKey;
 static char kTPKPlayerButtonsStackKey;
 static char kTPKPlayerReloadStyledHeightKey;
 static char kTPKPlayerReloadVODStateKey;
+static char kTPKPlayerViewerAnchorKey, kTPKPlayerMuteAnchorKey;
 
 static const CGFloat kTPKPlayerStatsPanelWidth = 238.0;
 static const CGFloat kTPKPlayerStatsPanelHeight = 200.0;
 
 static IMP tpk_playerReactOriginalMountChild;
 static IMP tpk_playerReactOriginalPrepareForRecycle;
+static IMP tpk_playerReactOriginalUnmountChild;
+static IMP tpk_playerReactOriginalWindow, tpk_playerNativeOriginalWindow;
 
 static UIButton *tpk_reloadButtonInControls(UIView *controls);
 static void tpk_reloadInstallButton(UIView *controls);
@@ -114,11 +117,14 @@ static BOOL tpk_playerInstallReactHook(Class cls, SEL selector,
     if (*original) return YES;
     Method method = class_getInstanceMethod(cls, selector);
     if (!method) return NO;
+    class_addMethod(cls, selector, method_getImplementation(method), method_getTypeEncoding(method));
+    method = class_getInstanceMethod(cls, selector);
     *original = method_setImplementation(method, replacement);
     return *original != NULL;
 }
 
 static void tpk_playerReactControlsDidMountChild(UIView *controls) {
+    if (objc_getAssociatedObject(controls, &kTPKPlayerButtonsStackKey)) return;
     if (!tpk_isReactPlayerControlsContainer(controls) || !controls.window)
         return;
     if (tpk_playerToolsEnabled() &&
@@ -149,6 +155,7 @@ static void tpk_playerReactCleanupRecycledControls(UIView *controls) {
         controls, &kTPKPlayerReloadTimerKey);
     if (!stack && !reloadButton && !statsButton && !timer) return;
 
+    tpk_removeOrientationLockButton(controls);
     [timer invalidate];
     [stack removeFromSuperview];
     objc_setAssociatedObject(controls, &kTPKPlayerReloadButtonKey, nil,
@@ -159,14 +166,38 @@ static void tpk_playerReactCleanupRecycledControls(UIView *controls) {
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(controls, &kTPKPlayerButtonsStackKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controls, &kTPKPlayerViewerAnchorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controls, &kTPKPlayerMuteAnchorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void tpk_playerControlsWindow(UIView *view, SEL selector, IMP original) {
+    ((void (*)(id, SEL))original)(view, selector);
+    tpk_handlePlayerReloadViewLifecycle(view);
+    tpk_handleTheaterControlsViewLifecycle(view);
+}
+
+static void tpk_playerReactWindow(id self, SEL selector) {
+    tpk_playerControlsWindow(self, selector, tpk_playerReactOriginalWindow);
+}
+
+static void tpk_playerNativeWindow(id self, SEL selector) {
+    tpk_playerControlsWindow(self, selector, tpk_playerNativeOriginalWindow);
+}
+
+static void tpk_playerReactUnmountChild(id self, SEL selector, UIView *child, NSInteger index) {
+    UIView *viewer = objc_getAssociatedObject(self, &kTPKPlayerViewerAnchorKey);
+    UIView *mute = objc_getAssociatedObject(self, &kTPKPlayerMuteAnchorKey);
+    if ([viewer isDescendantOfView:child] || [mute isDescendantOfView:child])
+        tpk_playerReactCleanupRecycledControls(self);
+    ((void (*)(id, SEL, id, NSInteger))tpk_playerReactOriginalUnmountChild)(self, selector, child, index);
 }
 
 static void tpk_playerReactPrepareForRecycle(id self, SEL selector) {
+    tpk_playerReactCleanupRecycledControls(self);
     if (tpk_playerReactOriginalPrepareForRecycle) {
         ((void (*)(id, SEL))tpk_playerReactOriginalPrepareForRecycle)(
             self, selector);
     }
-    tpk_playerReactCleanupRecycledControls(self);
 }
 
 static void tpk_playerReactInstallHooks(void) {
@@ -186,6 +217,10 @@ static void tpk_playerReactInstallHooks(void) {
             cls, NSSelectorFromString(@"prepareForRecycle"),
             (IMP)tpk_playerReactPrepareForRecycle,
             &tpk_playerReactOriginalPrepareForRecycle);
+        tpk_playerInstallReactHook(cls, NSSelectorFromString(@"unmountChildComponentView:index:"),
+            (IMP)tpk_playerReactUnmountChild, &tpk_playerReactOriginalUnmountChild);
+        tpk_playerInstallReactHook(cls, @selector(didMoveToWindow),
+            (IMP)tpk_playerReactWindow, &tpk_playerReactOriginalWindow);
     }
 }
 UIStackView *tpk_playerReactControlsButtonStack(UIView *view) {
@@ -194,7 +229,6 @@ UIStackView *tpk_playerReactControlsButtonStack(UIView *view) {
     UIStackView *stack = objc_getAssociatedObject(
         view, &kTPKPlayerButtonsStackKey);
     if (stack && stack.superview == view) {
-        [view bringSubviewToFront:stack];
         return stack;
     }
     if (stack) [stack removeFromSuperview];
@@ -206,7 +240,6 @@ UIStackView *tpk_playerReactControlsButtonStack(UIView *view) {
             stack = (UIStackView *)candidate;
             objc_setAssociatedObject(view, &kTPKPlayerButtonsStackKey, stack,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [view bringSubviewToFront:stack];
             return stack;
         }
     }
@@ -237,6 +270,8 @@ UIStackView *tpk_playerReactControlsButtonStack(UIView *view) {
     ]];
     objc_setAssociatedObject(view, &kTPKPlayerButtonsStackKey, stack,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, &kTPKPlayerViewerAnchorKey, viewerStats, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, &kTPKPlayerMuteAnchorKey, muteButton, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [view bringSubviewToFront:stack];
     return stack;
 }
@@ -300,6 +335,8 @@ static BOOL tpk_reloadLooksLikePlayer(id object) {
 }
 
 void tpk_setupPlayerReloadRuntimeHooks(void) {
+    tpk_playerInstallReactHook(tpk_playerReloadControlsClass(), @selector(didMoveToWindow),
+        (IMP)tpk_playerNativeWindow, &tpk_playerNativeOriginalWindow);
     tpk_playerReactInstallHooks();
 }
 
@@ -1446,9 +1483,6 @@ static void tpk_reloadInstallButton(UIView *controls) {
 }
 
 void tpk_handlePlayerReloadViewLifecycle(UIView *view) {
-    // React Native can load after startup, so retry its hooks here.
-    tpk_playerReactInstallHooks();
-
     if (!tpk_playerReloadIsControlsView(view)) return;
     if (!tpk_playerToolsEnabled()) {
         tpk_reloadSetToolsEnabledForControls(view, NO);
@@ -1460,6 +1494,10 @@ void tpk_handlePlayerReloadViewLifecycle(UIView *view) {
         [timer invalidate];
         objc_setAssociatedObject(view, &kTPKPlayerReloadTimerKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    if (tpk_reloadButtonInControls(view)) {
+        tpk_reloadStartTimer(view, tpk_reloadButtonInControls(view));
         return;
     }
     tpk_reloadInstallButton(view);

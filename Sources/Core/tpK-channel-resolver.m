@@ -1,5 +1,7 @@
 #import "Core/tpK-channel-resolver.h"
 #import "Core/tpK-core-manager.h"
+#import "System/tpK-system-player-reload.h"
+#import <objc/message.h>
 
 #import <dispatch/dispatch.h>
 #import <objc/runtime.h>
@@ -518,13 +520,6 @@ BOOL TPKChannelContextIsCurrent(TPKChannelContext *context) {
 
 @interface NSObject (TPKChannelResolverRuntimeHooks)
 
-- (void)tpk_cr_setInformationDelegate:(id)delegate;
-- (id)tpk_cr_informationDelegate;
-- (id)tpk_cr_messageString:(id)string
-    requestsBitsImageDataForPrefix:(id)prefix
-                           quantity:(unsigned long long)quantity;
-- (id)tpk_cr_currentChannelUnlockedFollowerEmotesForMessageString:(id)string;
-- (id)tpk_cr_currentChannelUnlockedSubscriberEmotesForMessageString:(id)string;
 - (void)tpk_cr_setChannelName:(id)name;
 - (void)tpk_cr_setChannelDisplayName:(id)name;
 - (void)tpk_cr_addMessages:(id)messages;
@@ -573,56 +568,25 @@ static void tpk_captureNativeConnectionIdentity(id connection) {
     }
 }
 
-static uint32_t tpk_vodChannelIDFromInformationDelegate(id delegate) {
-    if (!delegate) return 0;
 
-    Class delegateClass = object_getClass(delegate);
-    NSString *className = NSStringFromClass(delegateClass);
-    if ([className rangeOfString:
-            @"VODCommentViewDefaultMessageStringInformationDelegate"].location
-            == NSNotFound) {
-        return 0;
-    }
 
-    // Prefer the runtime ivar offset; keep the verified 0x10 fallback.
-    Ivar channelIvar = class_getInstanceVariable(delegateClass, "vodChannelID");
-    ptrdiff_t offset = channelIvar ? ivar_getOffset(channelIvar) : 0x10;
-    size_t instanceSize = class_getInstanceSize(delegateClass);
-    if (offset < (ptrdiff_t)sizeof(void *) ||
-        (size_t)offset > instanceSize ||
-        instanceSize - (size_t)offset < sizeof(uint32_t)) {
-        offset = 0x10;
-        if ((size_t)offset > instanceSize ||
-            instanceSize - (size_t)offset < sizeof(uint32_t)) {
-            return 0;
-        }
-    }
 
-    uint32_t channelID = 0;
-    const uint8_t *bytes = (const uint8_t *)(__bridge const void *)delegate;
-    memcpy(&channelID, bytes + offset, sizeof(channelID));
-    return channelID;
-}
-
-static void tpk_captureVODChannelIDFromInformationDelegate(id delegate,
-                                                             id sourceObject) {
-    uint32_t channelID = tpk_vodChannelIDFromInformationDelegate(delegate);
-    if (channelID == 0) return;
-
-    [[TPKChannelResolver sharedResolver]
-        beginReplayChannelWithID:channelID
-                      channelName:nil
-                       displayName:nil
-                           source:TPKChannelSourceReplayComment
-                       sessionKey:nil
-                     sourceObject:sourceObject ?: delegate];
-}
+static uint32_t tpk_openedChannelID;
+static NSString *tpk_openedChannelLogin;
+static __weak UIView *tpk_openedLegacyView;
 
 void TPKChannelResolverNoteChatRoom(NSString *login, NSString *roomID, id sourceObject) {
     NSString *clean = tpk_channelName(login);
     uint32_t channelID = [roomID isKindOfClass:NSString.class] ? TPKResolverParseChannelID(roomID.UTF8String) : 0;
     if (!channelID || !tpk_isResolverLogin(clean) || !sourceObject) {
         tpk_resolverLog(@"chat identity ignored reason=invalid-identity");
+        return;
+    }
+    if ([sourceObject isKindOfClass:NSURLSessionWebSocketTask.class]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (tpk_openedChannelID && channelID != tpk_openedChannelID)
+                tpk_resolverLog(@"legacy room ignored id=%u expected=%u", channelID, tpk_openedChannelID);
+        });
         return;
     }
     TPKChannelResolver *resolver = TPKChannelResolver.sharedResolver;
@@ -638,6 +602,225 @@ void TPKChannelResolverNoteChatRoom(NSString *login, NSString *roomID, id source
     [resolver tpk_updateNativeIdentityForChannelID:channelID channelName:clean
                                      displayName:nil sourceObject:sourceObject];
     [resolver tpk_setNativeActiveLiveChannelID:channelID sourceObject:sourceObject];
+}
+
+static void tpk_noteOpenedChannel(id login, id identifier, id source) {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ tpk_noteOpenedChannel(login, identifier, source); });
+        return;
+    }
+    NSString *name = [login isKindOfClass:NSString.class] ? tpk_channelName(login) : nil;
+    uint32_t channelID = [identifier isKindOfClass:NSString.class] ? TPKResolverParseChannelID([identifier UTF8String]) : 0;
+    tpk_openedLegacyView = nil;
+    tpk_openedChannelID = tpk_isResolverLogin(name) ? channelID : 0;
+    tpk_openedChannelLogin = tpk_openedChannelID ? name : nil;
+    tpk_resolverLog(@"navigation opens id=%u login=%@", tpk_openedChannelID, tpk_openedChannelLogin ?: @"-");
+    if (!tpk_openedChannelID) return;
+    TPKChannelResolverNoteReplayView(nil, NO);
+    TPKChannelResolver *resolver = TPKChannelResolver.sharedResolver;
+    [resolver tpk_updateNativeIdentityForChannelID:channelID channelName:name displayName:nil sourceObject:source];
+    [resolver beginLiveChannelWithID:channelID channelName:name displayName:nil
+        source:TPKChannelSourceLiveChat sessionKey:nil sourceObject:source];
+    [resolver tpk_setNativeActiveLiveChannelID:channelID sourceObject:source];
+}
+
+static __weak UIView *tpk_replayView;
+static NSString *tpk_replayVideoID;
+static NSCache *tpk_videoOwners(void) {
+    static NSCache *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [NSCache new]; cache.countLimit = 32; });
+    return cache;
+}
+
+static NSString *tpk_ownerRequestVideo;
+static NSURLSessionDataTask *tpk_ownerRequestTask;
+static NSUUID *tpk_ownerRequestToken;
+static void tpk_applyReplayVideo(void);
+
+static void tpk_requestReplayOwner(NSString *videoID) {
+    if ([tpk_ownerRequestVideo isEqual:videoID]) return;
+    NSDictionary *credentials = [TPKManager.sharedManager tpk_twitchCredentialsSnapshot];
+    if (![credentials[@"Client-ID"] length]) return;
+    [tpk_ownerRequestTask cancel];
+    tpk_ownerRequestVideo = [videoID copy];
+    NSUUID *token = NSUUID.UUID;
+    tpk_ownerRequestToken = token;
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://gql.twitch.tv/gql"]];
+    request.HTTPMethod = @"POST";
+    request.timeoutInterval = 12;
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:credentials[@"Client-ID"] forHTTPHeaderField:@"Client-ID"];
+    if ([credentials[@"Authorization"] length]) [request setValue:credentials[@"Authorization"] forHTTPHeaderField:@"Authorization"];
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{
+        @"operationName":@"TPKVideoOwner", @"variables":@{@"id":videoID},
+        @"query":@"query TPKVideoOwner($id: ID!) { video(id: $id) { id owner { userID: id name: login displayName } } }"
+    } options:0 error:nil];
+    tpk_resolverLog(@"VOD owner requested video=%@", videoID);
+    tpk_ownerRequestTask = [NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+        id json = !error && status == 200 && data.length && data.length <= 65536
+            ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        id root = [json isKindOfClass:NSDictionary.class] ? json[@"data"] : nil;
+        id video = [root isKindOfClass:NSDictionary.class] ? root[@"video"] : nil;
+        id owner = [video isKindOfClass:NSDictionary.class] ? video[@"owner"] : nil;
+        BOOL valid = [video isKindOfClass:NSDictionary.class] && [video[@"id"] isEqual:videoID] &&
+            [owner isKindOfClass:NSDictionary.class] && [owner[@"userID"] isKindOfClass:NSString.class] &&
+            TPKResolverParseChannelID([owner[@"userID"] UTF8String]) && [owner[@"name"] isKindOfClass:NSString.class] &&
+            tpk_isResolverLogin(tpk_channelName(owner[@"name"]));
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (![tpk_ownerRequestToken isEqual:token]) return;
+            tpk_ownerRequestTask = nil;
+            if (valid) {
+                [tpk_videoOwners() setObject:[owner copy] forKey:videoID];
+                tpk_resolverLog(@"VOD owner received video=%@", videoID);
+                tpk_applyReplayVideo();
+            } else tpk_resolverLog(@"VOD owner failed status=%ld error=%ld valid=0", (long)status, (long)error.code);
+        });
+    }];
+    [tpk_ownerRequestTask resume];
+}
+
+static NSString *tpk_videoIDFromURL(NSURL *url) {
+    if (![url isKindOfClass:NSURL.class] || ![url.host.lowercaseString isEqual:@"usher.ttvnw.net"]) return nil;
+    NSArray *parts = url.pathComponents;
+    if (parts.count != 3 || ![parts[1] isEqual:@"vod"] || ![parts[2] hasSuffix:@".m3u8"]) return nil;
+    NSString *value = [parts[2] stringByDeletingPathExtension];
+    if (!value.length || value.length > 20 ||
+        [value rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789"].invertedSet].location != NSNotFound) return nil;
+    return value;
+}
+
+static id tpk_replayObjectGetter(id object, SEL selector) {
+    Method method = object ? class_getInstanceMethod(object_getClass(object), selector) : NULL;
+    if (!method || method_getNumberOfArguments(method) != 2) return nil;
+    char type[16] = {0};
+    method_getReturnType(method, type, sizeof(type));
+    return type[0] == '@' ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
+}
+
+
+static NSString *tpk_visibleReplayVideo(UIView *view) {
+    if (!view.window || view.hidden) return nil;
+    for (UIView *parent = view; parent; parent = parent.superview)
+        if (parent.hidden || parent.alpha <= 0) return nil;
+    UIView *theater = tpk_playerTheaterHostForView(view);
+    if (!theater) { tpk_resolverLog(@"VOD path check: theater missing"); return nil; }
+    Class playerView = NSClassFromString(@"IVSPlayerView");
+    if (!playerView) return nil;
+    NSMutableArray *pending = [NSMutableArray arrayWithObject:theater];
+    NSString *selected = nil;
+    NSUInteger players = 0;
+    for (NSUInteger index = 0; index < pending.count; ++index) {
+        if (index >= 512 || pending.count > 1024) return nil;
+        UIView *candidate = pending[index];
+        if (candidate.hidden || candidate.alpha <= 0 || !candidate.window) continue;
+        if ([candidate isKindOfClass:playerView]) {
+            ++players;
+            id player = tpk_replayObjectGetter(candidate, @selector(player));
+            id path = tpk_replayObjectGetter(player, @selector(path));
+            NSString *video = tpk_videoIDFromURL(path);
+            if (!video) {
+                BOOL url = [path isKindOfClass:NSURL.class];
+                tpk_resolverLog(@"VOD path check: player=%@ pathType=%@ usher=%d components=%lu",
+                    player ? NSStringFromClass([player class]) : @"none",
+                    path ? NSStringFromClass([path class]) : @"none",
+                    url && [[path host] isEqual:@"usher.ttvnw.net"],
+                    (unsigned long)(url ? [[path pathComponents] count] : 0));
+            }
+            if (video && selected && ![selected isEqual:video]) return nil;
+            if (video) selected = video;
+        }
+        [pending addObjectsFromArray:candidate.subviews];
+    }
+    if (!players) tpk_resolverLog(@"VOD path check: IVSPlayerView missing");
+    return selected;
+}
+
+static void tpk_applyReplayVideo(void) {
+    static __weak UIView *unavailableView;
+    static NSString *awaitingVideo;
+    UIView *view = tpk_replayView;
+    NSString *videoID = tpk_visibleReplayVideo(view);
+    if (!videoID) {
+        if (view.window && unavailableView != view) {
+            tpk_resolverLog(@"VOD player path unavailable");
+            unavailableView = view;
+        }
+        TPKChannelContext *previous = TPKCurrentChannelContext();
+        if (view && previous.mediaKind == TPKChannelMediaKindReplay && previous.sourceObject == view)
+            [TPKChannelResolver.sharedResolver invalidateIfCurrentContext:previous];
+        tpk_replayVideoID = nil;
+        return;
+    }
+    unavailableView = nil;
+    if (![tpk_replayVideoID isEqual:videoID]) {
+        tpk_replayVideoID = videoID;
+        tpk_resolverLog(@"VOD player confirmed video=%@", videoID);
+        TPKChannelContext *previous = TPKCurrentChannelContext();
+        if (previous.mediaKind == TPKChannelMediaKindReplay)
+            [TPKChannelResolver.sharedResolver invalidateIfCurrentContext:previous];
+    }
+    NSDictionary *owner = [tpk_videoOwners() objectForKey:videoID];
+    uint32_t channelID = [owner[@"userID"] isKindOfClass:NSString.class] ? TPKResolverParseChannelID([owner[@"userID"] UTF8String]) : 0;
+    NSString *login = [owner[@"name"] isKindOfClass:NSString.class] ? tpk_channelName(owner[@"name"]) : nil;
+    if (!channelID || !tpk_isResolverLogin(login)) {
+        if (![awaitingVideo isEqual:videoID]) {
+            awaitingVideo = videoID;
+            tpk_resolverLog(@"VOD awaiting metadata video=%@", videoID);
+        }
+        tpk_requestReplayOwner(videoID);
+        return;
+    }
+    awaitingVideo = nil;
+    TPKChannelContext *current = TPKCurrentChannelContext();
+    if (current.mediaKind == TPKChannelMediaKindReplay && current.channelID == channelID &&
+        [current.sessionKey isEqual:videoID] && [current.channelName isEqual:login]) return;
+    tpk_resolverLog(@"VOD metadata accepted video=%@ id=%u", videoID, channelID);
+    [TPKChannelResolver.sharedResolver beginReplayChannelWithID:channelID channelName:login
+        displayName:[owner[@"displayName"] isKindOfClass:NSString.class] ? owner[@"displayName"] : login
+        source:TPKChannelSourceReplayComment sessionKey:videoID sourceObject:view];
+}
+
+void TPKChannelResolverNoteReplayView(UIView *view, BOOL replay) {
+    if (!NSThread.isMainThread) return;
+    if (!replay) {
+        tpk_openedLegacyView = view && [NSStringFromClass(view.class).lowercaseString hasSuffix:@"chattranscriptview"] ? view : nil;
+        tpk_replayView = nil; tpk_replayVideoID = nil;
+        [tpk_ownerRequestTask cancel]; tpk_ownerRequestTask = nil; tpk_ownerRequestVideo = nil; tpk_ownerRequestToken = nil;
+        return;
+    }
+    tpk_openedLegacyView = nil;
+    tpk_openedChannelID = 0;
+    tpk_openedChannelLogin = nil;
+    if (view != tpk_replayView) {
+        [tpk_ownerRequestTask cancel]; tpk_ownerRequestTask = nil; tpk_ownerRequestVideo = nil; tpk_ownerRequestToken = nil;
+        tpk_replayVideoID = nil;
+        TPKChannelContext *previous = TPKCurrentChannelContext();
+        if (previous.mediaKind == TPKChannelMediaKindReplay)
+            [TPKChannelResolver.sharedResolver invalidateIfCurrentContext:previous];
+        tpk_resolverLog(@"VOD view observed");
+        if (TPKManager.sharedManager.logsEnabled && TPKManager.sharedManager.logChannelResolver) {
+            UIView *parent = view;
+            for (NSUInteger depth = 0; parent && depth < 12; ++depth, parent = parent.superview)
+                tpk_resolverLog(@"VOD hierarchy %lu: %@", (unsigned long)depth, NSStringFromClass(parent.class));
+        }
+    }
+    tpk_replayView = view;
+    tpk_applyReplayVideo();
+}
+
+void TPKChannelResolverNoteVideoMetadata(NSDictionary *video, NSString *requestedID) {
+    if (![video isKindOfClass:NSDictionary.class] || ![requestedID isKindOfClass:NSString.class] ||
+        !requestedID.length || ![video[@"id"] isEqual:requestedID]) return;
+    id owner = video[@"owner"];
+    if (![owner isKindOfClass:NSDictionary.class]) return;
+    NSDictionary *snapshot = [owner copy];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        tpk_resolverLog(@"VOD metadata observed video=%@", requestedID);
+        [tpk_videoOwners() setObject:snapshot forKey:requestedID];
+        tpk_applyReplayVideo();
+    });
 }
 
 static void tpk_requestResolverHookRefresh(void);
@@ -690,7 +873,7 @@ void TPKChannelResolverNoteStreamLogin(NSString *login) {
         ![expected.channelName isEqualToString:clean]) {
         NSString *signature = [NSString stringWithFormat:@"%@/%u/%lu", clean, expected.channelID,
                                (unsigned long)expected.generation];
-        if (![tpk_lastIgnoredPlaylist isEqualToString:signature]) {
+        if (!tpk_openedLegacyView.window && ![tpk_lastIgnoredPlaylist isEqualToString:signature]) {
             tpk_lastIgnoredPlaylist = signature;
             tpk_resolverLog(@"playlist candidate ignored login=%@ current=%u reason=no-matching-chat", clean, expected.channelID);
         }
@@ -743,6 +926,60 @@ void TPKChannelResolverNoteStreamLogin(NSString *login) {
             }
         });
     }] resume];
+}
+
+static void (*tpk_originalOpenChannel)(id, SEL, id, id, BOOL, long long, long long, BOOL, id, id);
+static void (*tpk_originalOpenAttributedChannel)(id, SEL, id, id, BOOL, long long, long long, BOOL, id, id, id, id);
+
+static void tpk_openChannel(id self, SEL selector, id login, id identifier, BOOL dual, long long height,
+                            long long width, BOOL encrypted, id medium, id content) {
+    tpk_noteOpenedChannel(login, identifier, self);
+    tpk_originalOpenChannel(self, selector, login, identifier, dual, height, width, encrypted, medium, content);
+}
+
+static void tpk_openAttributedChannel(id self, SEL selector, id login, id identifier, BOOL dual,
+    long long height, long long width, BOOL encrypted, id medium, id content, id session, id raid) {
+    tpk_noteOpenedChannel(login, identifier, self);
+    tpk_originalOpenAttributedChannel(self, selector, login, identifier, dual, height, width, encrypted, medium, content, session, raid);
+}
+
+static BOOL tpk_navigationSignature(Method method, unsigned count) {
+    if (!method || method_getNumberOfArguments(method) != count) return NO;
+    char type[32];
+    method_getReturnType(method, type, sizeof(type));
+    if (type[0] != 'v') return NO;
+    const char *expected = "@:@@BqqB@@@@";
+    for (unsigned i = 0; i < count; ++i) {
+        method_getArgumentType(method, i, type, sizeof(type));
+        if (type[0] != expected[i]) return NO;
+    }
+    return YES;
+}
+
+static void tpk_installNavigationHooks(void) {
+    Class cls = NSClassFromString(@"TwitchRNHostNavigation");
+    SEL open = NSSelectorFromString(@"openChannel:channelId:isDualFormat:videoHeight:videoWidth:isEncrypted:medium:content:");
+    SEL attributed = NSSelectorFromString(@"openChannelWithAttribution:channelId:isDualFormat:videoHeight:videoWidth:isEncrypted:medium:content:originalPlaySessionId:raidId:");
+    @synchronized (TPKChannelResolver.class) {
+        Method method = class_getInstanceMethod(cls, open);
+        if (!tpk_originalOpenChannel && tpk_navigationSignature(method, 10)) {
+            class_addMethod(cls, open, method_getImplementation(method), method_getTypeEncoding(method));
+            tpk_originalOpenChannel = (void *)method_getImplementation(class_getInstanceMethod(cls, open));
+            method_setImplementation(class_getInstanceMethod(cls, open), (IMP)tpk_openChannel);
+        }
+        method = class_getInstanceMethod(cls, attributed);
+        if (!tpk_originalOpenAttributedChannel && tpk_navigationSignature(method, 12)) {
+            class_addMethod(cls, attributed, method_getImplementation(method), method_getTypeEncoding(method));
+            tpk_originalOpenAttributedChannel = (void *)method_getImplementation(class_getInstanceMethod(cls, attributed));
+            method_setImplementation(class_getInstanceMethod(cls, attributed), (IMP)tpk_openAttributedChannel);
+        }
+        static NSInteger reported = -1;
+        NSInteger status = (tpk_originalOpenChannel ? 1 : 0) | (tpk_originalOpenAttributedChannel ? 2 : 0);
+        if (status != reported) {
+            reported = status;
+            tpk_resolverLog(@"navigation hooks open=%d attributed=%d", tpk_originalOpenChannel != NULL, tpk_originalOpenAttributedChannel != NULL);
+        }
+    }
 }
 
 static BOOL tpk_resolverHooksReady = NO;
@@ -818,78 +1055,14 @@ static BOOL tpk_installResolverHook(Class targetClass,
     return NO;
 }
 
-static BOOL tpk_installVODInformationDelegateHooks(void) {
-    unsigned int classCount = objc_getClassList(NULL, 0);
-    if (classCount == 0) return NO;
-
-    Class *classes = (Class *)malloc(sizeof(Class) * classCount);
-    if (!classes) return NO;
-
-    BOOL ready = NO;
-
-    unsigned int actualCount = objc_getClassList(classes, classCount);
-    for (unsigned int index = 0; index < actualCount; index++) {
-        const char *className = class_getName(classes[index]);
-        if (!className ||
-            !strstr(className,
-                    "VODCommentViewDefaultMessageStringInformationDelegate")) {
-            continue;
-        }
-
-        Class delegateClass = classes[index];
-        BOOL messageStringReady = tpk_installResolverHook(
-            delegateClass,
-            @selector(messageString:requestsBitsImageDataForPrefix:quantity:),
-            @selector(tpk_cr_messageString:requestsBitsImageDataForPrefix:quantity:));
-        BOOL followerEmotesReady = tpk_installResolverHook(
-            delegateClass,
-            @selector(currentChannelUnlockedFollowerEmotesForMessageString:),
-            @selector(tpk_cr_currentChannelUnlockedFollowerEmotesForMessageString:));
-        BOOL subscriberEmotesReady = tpk_installResolverHook(
-            delegateClass,
-            @selector(currentChannelUnlockedSubscriberEmotesForMessageString:),
-            @selector(tpk_cr_currentChannelUnlockedSubscriberEmotesForMessageString:));
-        ready |= messageStringReady && followerEmotesReady && subscriberEmotesReady;
-    }
-
-    free(classes);
-    return ready;
-}
 
 @implementation NSObject (TPKChannelResolverRuntimeHooks)
 
-- (void)tpk_cr_setInformationDelegate:(id)delegate {
-    [self tpk_cr_setInformationDelegate:delegate];
-    tpk_captureVODChannelIDFromInformationDelegate(delegate, self);
-}
 
-- (id)tpk_cr_informationDelegate {
-    id delegate = [self tpk_cr_informationDelegate];
-    tpk_captureVODChannelIDFromInformationDelegate(delegate, self);
-    return delegate;
-}
 
-- (id)tpk_cr_messageString:(id)string
-    requestsBitsImageDataForPrefix:(id)prefix
-                           quantity:(unsigned long long)quantity {
-    id result = [self tpk_cr_messageString:string
-           requestsBitsImageDataForPrefix:prefix
-                                  quantity:quantity];
-    tpk_captureVODChannelIDFromInformationDelegate(self, nil);
-    return result;
-}
 
-- (id)tpk_cr_currentChannelUnlockedFollowerEmotesForMessageString:(id)string {
-    id result = [self tpk_cr_currentChannelUnlockedFollowerEmotesForMessageString:string];
-    tpk_captureVODChannelIDFromInformationDelegate(self, nil);
-    return result;
-}
 
-- (id)tpk_cr_currentChannelUnlockedSubscriberEmotesForMessageString:(id)string {
-    id result = [self tpk_cr_currentChannelUnlockedSubscriberEmotesForMessageString:string];
-    tpk_captureVODChannelIDFromInformationDelegate(self, nil);
-    return result;
-}
+
 
 - (void)tpk_cr_setChannelName:(id)name {
     [self tpk_cr_setChannelName:name];
@@ -933,6 +1106,7 @@ static BOOL tpk_installVODInformationDelegateHooks(void) {
 @end
 
 static BOOL tpk_installResolverHooks(void) {
+    tpk_installNavigationHooks();
     BOOL connectionReady = NO;
     for (NSString *className in @[
         @"Twitch.ChannelChatConnectionController",
@@ -965,23 +1139,7 @@ static BOOL tpk_installResolverHooks(void) {
             prependLogReady && connectReady;
     }
 
-    BOOL messageStringReady = NO;
-    for (NSString *className in @[
-        @"Twitch.MessageString",
-        @"_TtC6Twitch13MessageString"
-    ]) {
-        Class messageStringClass = NSClassFromString(className);
-        BOOL delegateSetterReady = tpk_installResolverHook(messageStringClass,
-                                  @selector(setInformationDelegate:),
-                                  @selector(tpk_cr_setInformationDelegate:));
-        BOOL delegateGetterReady = tpk_installResolverHook(messageStringClass,
-                                  @selector(informationDelegate),
-                                  @selector(tpk_cr_informationDelegate));
-        messageStringReady |= delegateSetterReady && delegateGetterReady;
-    }
-
-    BOOL vodReady = tpk_installVODInformationDelegateHooks();
-    return connectionReady && messageStringReady && vodReady;
+    return connectionReady;
 }
 
 void TPKChannelResolverSetup(void) {
@@ -1005,6 +1163,7 @@ void TPKChannelResolverSetup(void) {
 
 void TPKChannelResolverRefresh(void) {
     if (NSThread.isMainThread) {
+        tpk_applyReplayVideo();
         if (tpk_pendingNativeConnection) tpk_captureNativeConnectionIdentity(tpk_pendingNativeConnection);
         if (!tpk_resolverHooksReady) {
             tpk_resolverHooksReady = tpk_installResolverHooks();

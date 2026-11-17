@@ -5,13 +5,18 @@ and AltStore Classic / SideStore (`apps`). Do not replace it with a version-only
 
 The source retains previous releases, replacing an entry when its IPA URL is rebuilt,
 and sorts them by release date. The latest release also populates legacy app-level
-fields. Generation refuses a manifest above the tweak updater's 16 KiB limit.
+fields. Generation refuses a manifest above the tweak updater's 1 MiB limit.
+Previously released tweak versions still have a 16 KiB limit until upgraded.
 
 `Build IPA (final)` sets the actual `CFBundleShortVersionString` to
-`<original Twitch major.minor>.<major * 10000 + minor * 100 + patch>` using
-the TwitchPlusK release version, for example `31.9.20003` for Twitch 31.9 / TwitchPlusK 2.0.3.
-The generator requires a two-component original Twitch version and reads this exact
-stamped version into the source's `version` field. The IPA filename and release tag
+`<Twitch major>.<Twitch minor>.<Twitch patch * 1000000 + release offset>`,
+where the release offset is `major * 10000 + minor * 100 + patch` from the TwitchPlusK
+version and must be below 1000000. Twitch versions accept one to three numeric
+components; missing minor and patch components are zero. Examples with TwitchPlusK
+2.0.4: `32` and `32.0` become `32.0.20004`, while `31.9.5` becomes `31.9.5020004`.
+Existing two-component versions keep their format, such as `31.9.20003` for
+Twitch 31.9 / TwitchPlusK 2.0.3. The generator reads this exact stamped version
+into the source's `version` field. The IPA filename and release tag
 still use the original Twitch version, allowing a rebuild to replace the same release asset.
 It sets
 `CFBundleVersion` to the original Twitch build plus `major * 10000 + minor * 100 + patch`

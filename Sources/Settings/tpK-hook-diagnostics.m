@@ -6,8 +6,8 @@
 #import "Settings/tpK-hook-diagnostics.h"
 #import "Adblock/tpK-adblock-settings.h"
 #import "Emote/tpK-emote-catalog.h"
-#import "Emote/tpK-provider-settings.h"
 #import "Picker/tpK-picker-controller.h"
+#import "Settings/tpK-chat-appearance-config.h"
 #import <objc/runtime.h>
 #import <os/log.h>
 
@@ -222,9 +222,15 @@ void TPKHookDiagnosticsRegisterKnownTargets(void) {
               @"_TtC6Twitch31ChannelChatConnectionController"], nil, NO,
             TPKHookDiagnosticGroupTwitchPlusK);
         TPKHookDiagnosticRegister(
-            @"[TwitchPlusK] Twitch.MessageString (VOD chat)",
+            @"[TwitchPlusK] Twitch.MessageString (legacy/VOD chat)",
             @[@"Twitch.MessageString", @"_TtC6Twitch13MessageString"], nil, NO,
             TPKHookDiagnosticGroupTwitchPlusK);
+        for (NSString *selector in @[@"openChannel:channelId:isDualFormat:videoHeight:videoWidth:isEncrypted:medium:content:",
+                                      @"openChannelWithAttribution:channelId:isDualFormat:videoHeight:videoWidth:isEncrypted:medium:content:originalPlaySessionId:raidId:"]) {
+            TPKHookDiagnosticRegister(
+                [NSString stringWithFormat:@"[TwitchPlusK] TwitchRNHostNavigation -%@ (channel)", selector],
+                @[@"TwitchRNHostNavigation"], selector, NO, TPKHookDiagnosticGroupTwitchPlusK);
+        }
 
         TPKHookDiagnosticRegister(
             @"[TwitchPlusK] TabBarController -viewDidAppear:",
@@ -237,11 +243,6 @@ void TPKHookDiagnosticsRegisterKnownTargets(void) {
         TPKHookDiagnosticRegister(
             @"[TwitchPlusK] DiscoveryFeedTabViewController -viewDidLayoutSubviews",
             @[@"_TtC6Twitch30DiscoveryFeedTabViewController"],
-            @"viewDidLayoutSubviews", NO,
-            TPKHookDiagnosticGroupTwitchPlusK);
-        TPKHookDiagnosticRegister(
-            @"[TwitchPlusK] DiscoveryFeedShelfContainerViewController -viewDidLayoutSubviews",
-            @[@"_TtC6Twitch41DiscoveryFeedShelfContainerViewController"],
             @"viewDidLayoutSubviews", NO,
             TPKHookDiagnosticGroupTwitchPlusK);
         TPKHookDiagnosticRegister(
@@ -278,6 +279,11 @@ void TPKHookDiagnosticsRegisterKnownTargets(void) {
             @"[TwitchPlusK] _TtC9TwitchKit18TKURLSessionClient -URLSession:dataTask:didReceiveData:",
             @[@"_TtC9TwitchKit18TKURLSessionClient"],
             @"URLSession:dataTask:didReceiveData:", NO,
+            TPKHookDiagnosticGroupTwitchPlusK);
+        TPKHookDiagnosticRegister(
+            @"[TwitchPlusK] _TtC9TwitchKit18TKURLSessionClient -URLSession:task:didCompleteWithError: (VOD chat)",
+            @[@"_TtC9TwitchKit18TKURLSessionClient"],
+            @"URLSession:task:didCompleteWithError:", NO,
             TPKHookDiagnosticGroupTwitchPlusK);
         TPKHookDiagnosticRegister(
             @"[TwitchPlusK] Apollo.URLSessionClient -URLSession:dataTask:didReceiveData:",
@@ -327,16 +333,31 @@ void TPKHookDiagnosticsRegisterKnownTargets(void) {
             @"[TwitchPlusK] UIView -didMoveToWindow (chat/picker)",
             @[@"UIView"], @"didMoveToWindow", NO,
             TPKHookDiagnosticGroupTwitchPlusK);
-        // These views are observed through UIView.didMoveToWindow, then used
-        // as the concrete insertion points for custom chat and picker.
-        TPKHookDiagnosticRegister(
-            @"[TwitchPlusK] Twitch.ChatTranscriptView (chat custom)",
-            @[@"Twitch.ChatTranscriptView"], nil, NO,
-            TPKHookDiagnosticGroupTwitchPlusK);
         TPKHookDiagnosticRegister(
             @"[TwitchPlusK] RCTWebSocketModule -webSocket:didReceiveMessage:",
             @[@"RCTWebSocketModule"], @"webSocket:didReceiveMessage:", NO,
             TPKHookDiagnosticGroupTwitchPlusK);
+
+        for (NSString *selector in @[@"_start", @"_loadScriptFromSource:",
+                                      @"invalidate", @"callFunctionOnBufferedRuntimeExecutor:"]) {
+            TPKHookDiagnosticRegister(
+                [NSString stringWithFormat:@"[TwitchPlusK] RCTInstance -%@ (native chat)", selector],
+                @[@"RCTInstance"], selector, NO, TPKHookDiagnosticGroupTwitchPlusK);
+        }
+        TPKHookDiagnosticRegister(
+            @"[TwitchPlusK] RCTRootViewFactory -viewWithModuleName:initialProperties: (launch)",
+            @[@"RCTRootViewFactory"], @"viewWithModuleName:initialProperties:", NO,
+            TPKHookDiagnosticGroupTwitchPlusK);
+        for (NSString *selector in @[@"layoutSubviews", @"didMoveToWindow", @"setHidden:"]) {
+            TPKHookDiagnosticRegister(
+                [NSString stringWithFormat:@"[TwitchPlusK] RCTViewComponentView -%@ (Home feed)", selector],
+                @[@"RCTViewComponentView"], selector, NO, TPKHookDiagnosticGroupTwitchPlusK);
+        }
+        for (NSString *selector in @[@"layoutSubviews", @"setContentOffset:", @"setContentOffset:animated:"]) {
+            TPKHookDiagnosticRegister(
+                [NSString stringWithFormat:@"[TwitchPlusK] RCTEnhancedScrollView -%@ (Home feed)", selector],
+                @[@"RCTEnhancedScrollView"], selector, NO, TPKHookDiagnosticGroupTwitchPlusK);
+        }
 
         // Orientation : les trois swizzles sont installés à la demande au
         // premier verrouillage, mais leurs vrais points d'accroche restent
@@ -370,6 +391,11 @@ void TPKHookDiagnosticsRegisterKnownTargets(void) {
             @"[TwitchPlusK] RNSScreenContentWrapper -setBackgroundColor: (OLED)",
             @[@"RNSScreenContentWrapper"], @"setBackgroundColor:", NO,
             TPKHookDiagnosticGroupTwitchPlusK);
+        for (NSString *className in @[@"RCTViewComponentView", @"RNSScreenContentWrapper"]) {
+            TPKHookDiagnosticRegister(
+                [NSString stringWithFormat:@"[TwitchPlusK] %@ -setAccessibilityIdentifier: (OLED/events)", className],
+                @[className], @"setAccessibilityIdentifier:", NO, TPKHookDiagnosticGroupTwitchPlusK);
+        }
     });
 }
 
@@ -392,9 +418,9 @@ NSArray<NSDictionary<NSString *, id> *> *TPKHookDiagnosticItems(void) {
         }];
     }
     [items addObject:@{
-        @"name": @"[TwitchPlusK] Picker chat button (chat-tray-button-bits)",
+        @"name": @"[TwitchPlusK] Picker button (visible in chat)",
         @"group": @(TPKHookDiagnosticGroupTwitchPlusK),
-        @"applicable": @YES,
+        @"applicable": @(TPKChatAppearanceConfig.sharedConfig.pickerButtonEnabled && TPKPickerChatButtonReady()),
         @"present": @(TPKPickerChatButtonReady()),
     }];
     return items.copy;
@@ -415,22 +441,28 @@ NSArray<NSDictionary<NSString *, id> *> *TPKEmoteProviderDiagnosticItems(void) {
             (TPKEmoteProviderID)providerNumber.integerValue;
         TPKEmoteProviderSnapshot *snapshot =
             [catalog snapshotForProvider:provider];
-        TPKExternalEmoteProvider settingsProvider =
-            (TPKExternalEmoteProvider)provider;
-        BOOL enabled =
-            [TPKEmoteProviderSettings isProviderEnabled:settingsProvider];
-        NSUInteger count = [catalog allEmotesForProvider:provider].count;
+        NSMutableSet<NSString *> *identifiers = [NSMutableSet set];
+        BOOL available = NO;
+        NSString *error = snapshot.errorMessage;
+        for (TPKEmoteSection *section in snapshot.sections) {
+            available |= section.loaded;
+            if (!error.length && section.errorMessage.length) error = section.errorMessage;
+            for (TPKEmoteDescriptor *emote in section.emotes) [identifiers addObject:emote.emoteID];
+        }
+        NSUInteger count = identifiers.count;
+        available |= count > 0;
 
         NSMutableDictionary<NSString *, id> *item = [@{
             @"name": [NSString stringWithFormat:@"%@ API",
                       TPKEmoteProviderName(provider)],
             @"provider": providerNumber,
-            @"enabled": @(enabled),
+            @"enabled": @YES,
             @"state": @(snapshot.state),
             @"count": @(count),
+            @"partial": @(available && (snapshot.state == TPKEmoteProviderStateError || error.length)),
         } mutableCopy];
-        if (snapshot.errorMessage.length) {
-            item[@"errorMessage"] = snapshot.errorMessage;
+        if (error.length) {
+            item[@"errorMessage"] = error;
         }
         [items addObject:item.copy];
     }

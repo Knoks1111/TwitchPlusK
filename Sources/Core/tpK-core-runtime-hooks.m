@@ -1,47 +1,16 @@
-/*
- * tpK-core-runtime-hooks.m  —  Substrate-FREE version
- *
- * Point d'entrée bas niveau du tweak : installe les swizzles UIKit/réseau,
- * transmet leurs événements aux modules spécialisés, puis initialise les
- * intégrations. Le rendu, le picker, l'état IRC et les comportements natifs
- * vivent dans leurs fichiers respectifs.
- *
- * Note : l'ancien pipeline de resize/ratio pour le rendu natif du chat
- * (hooks CoreText, displayLayer:, willDisplayCell BFS, NetworkImageRequester...)
- * a été retiré. Il est devenu inutile suite au passage prévu à un rendu de
- * chat maison qui connaît les dimensions des emotes dès la construction
- * (voir plan.txt). Le picker, les données 7TV et l'IRC restent inchangés.
- *
- * Note : la redirection CDN (TPKURLProtocol) et son enregistrement ont
- * aussi été retirés d'ici — ce mécanisme ne se déclenchait que via le tag
- * emotes= injecté dans les messages IRC, injection elle-même supprimée.
- * TPKURLProtocol reste utilisé ailleurs (TPKManager) comme simple
- * utilitaire de cache/prefetch, plus comme intercepteur.
- *
- * Note : tout le diagnostic de reverse-engineering du picker natif Twitch
- * (sniffer NSURLProtocol bas niveau, dump des opérations GQL, introspection
- * générique propriétés/ivars/méthodes, énumération de toutes les fenêtres,
- * watcher/heartbeat périodique, détection événementielle du picker natif) a
- * été retiré. Cette piste (exploiter le picker natif de Twitch) est
- * abandonnée : le picker 7TV personnalisé est désormais entièrement
- * indépendant du picker natif.
- *
- * Le Tap Logger, lui, a été remis en place indépendamment du picker : il
- * logue la vue touchée, son contrôleur et sa hiérarchie à chaque tap.
- */
+// Installs runtime hooks and routes events to the native chat, picker and player modules.
 
 #import <objc/runtime.h>
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import "Chat/tpK-chat-viewer-card.h"
+#import "Chat/tpK-chat-runtime.h"
+#import "Chat/Emote/tpK-chat-emotes.h"
+#import "Chat/Emote/UIKit/VOD/tpK-chat-vod-emotes.h"
+#import "Emote/tpK-emote-image-transport.h"
 #import "Core/tpK-core-manager.h"
 #import "Core/tpK-channel-resolver.h"
 #import "Settings/tpK-settings-controller.h"
-#import "Chat/tpK-chat-message.h"
-#import "Chat/tpK-chat-custom-view.h"
-#import "Chat/tpK-chat-integration.h"
 #import "Emote/tpK-emote-catalog.h"
-#import "Emote/tpK-badge-provider.h"
 #import "Picker/tpK-picker-controller.h"
 #import "System/tpK-system-native-behavior-hooks.h"
 #import "System/tpK-system-autoclaim.h"
@@ -97,17 +66,38 @@ void tpk_swizzle(Class targetClass,
 
 
 // ────────────────────────────────────────────────────────────
-// MARK: - Pont métadonnées Channel Points GQL → chat custom
-// ────────────────────────────────────────────────────────────
-//
-// Parsing robuste : tags malformés ou absents → valeurs par défaut, jamais
-// de crash (exigence Phase 1a). Tokenisation via TPKChatTokenizer
-// (Phase 2) — emotes Twitch natives pas encore branchées (point d'extension
-// naturel : parser le tag emotes= que Twitch envoie déjà tel quel côté
-// serveur, jamais lu pour l'instant).
-
-// ────────────────────────────────────────────────────────────
 // MARK: - Routeur UIKit vers les modules UI
+
+// Preserve native chat identity and Live/VOD player state independently of rendering.
+static void tpk_observeNativeChatLifecycle(UIView *view) {
+    if (!view.window || !view.superview) return;
+    NSString *name = NSStringFromClass(view.class);
+    BOOL live = [name.lowercaseString hasSuffix:@"chattranscriptview"] ||
+        ([name isEqualToString:@"RCTScrollViewComponentView"] &&
+         [view.accessibilityIdentifier isEqualToString:@"chat-message-list"]);
+    BOOL replay = NO;
+    if ([view isKindOfClass:UITableView.class]) {
+        UIResponder *responder = view;
+        for (NSUInteger depth = 0; responder && depth < 16; depth++, responder = responder.nextResponder) {
+            NSString *className = NSStringFromClass(responder.class);
+            if ([className isEqualToString:@"Twitch.ChatReplayTableViewController"] ||
+                [className isEqualToString:@"Twitch.ChatReplayViewController"] ||
+                [className isEqualToString:@"Twitch.ChatReplayListViewController"]) {
+                replay = YES;
+                break;
+            }
+        }
+    }
+    if (!live && !replay) return;
+    TPKChannelResolverNoteReplayView(view, replay);
+    if (live && !replay) {
+        TPKChannelContext *context = TPKCurrentChannelContext();
+        if (context.mediaKind == TPKChannelMediaKindReplay)
+            [TPKChannelResolver.sharedResolver invalidateIfCurrentContext:context];
+    }
+    tpk_setPlayerReloadVODState(view, replay);
+    TPKChannelResolverRefresh();
+}
 
 @interface UIView (TPKChatInputHook)
 - (void)tpk_didMoveToWindow;
@@ -120,10 +110,9 @@ void tpk_swizzle(Class targetClass,
     [self tpk_didMoveToWindow]; // appel original
 
     tpk_handlePlayerGesturesViewLifecycle(self);
-    tpk_handlePlayerReloadViewLifecycle(self);
-    tpk_handleTheaterControlsViewLifecycle(self);
-    tpk_handleNativeChatViewLifecycle(self);
+    tpk_trackPlayerHostViewLifecycle(self);
 
+    tpk_observeNativeChatLifecycle(self);
     tpk_handleChatTrayButtonLifecycle(self);
 }
 
@@ -134,10 +123,9 @@ void tpk_swizzle(Class targetClass,
     if (!self.window) return;
 
     tpk_handlePlayerGesturesViewLifecycle(self);
-    tpk_handlePlayerReloadViewLifecycle(self);
-    tpk_handleTheaterControlsViewLifecycle(self);
-    tpk_handleNativeChatViewLifecycle(self);
+    tpk_trackPlayerHostViewLifecycle(self);
 
+    tpk_observeNativeChatLifecycle(self);
     tpk_handleChatTrayButtonLifecycle(self);
 }
 
@@ -215,6 +203,7 @@ static void tpk_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
         return [self tpk_dataTaskWithRequest:request];
     }
     tpk_captureTwitchCredentialsFromGQLRequest(request);
+    request = TPKChatEmotesImageRequest(request);
     BOOL blocked = NO;
     request = TPKAdblockPrepareRequest(request, &blocked);
     if (blocked) return nil;
@@ -224,6 +213,8 @@ static void tpk_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
     tpk_try_swizzle_apollo_gql();
     NSURLSessionDataTask *task = TPKAdblockCreateConnectTaskIfNeeded(self, request);
     if (!task) task = [self tpk_dataTaskWithRequest:request];
+    TPKVODEmotesTrack(task, request);
+    TPKVODEmotesNoteSession(task, self);
     return task;
 }
 - (NSURLSessionDataTask *)tpk_dataTaskWithRequest:(NSURLRequest *)request
@@ -232,6 +223,7 @@ static void tpk_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
         return [self tpk_dataTaskWithRequest:request completionHandler:completionHandler];
     }
     tpk_captureTwitchCredentialsFromGQLRequest(request);
+    request = TPKChatEmotesImageRequest(request);
     BOOL blocked = NO;
     request = TPKAdblockPrepareRequest(request, &blocked);
     if (blocked) return nil;
@@ -240,7 +232,7 @@ static void tpk_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
             ^(NSData *data, NSURLResponse *response, NSError *error) {
                 NSData *filteredData = data && !error
                     ? TPKAdblockTransformResponseData(data, request) : data;
-                completionHandler(filteredData, response, error);
+                completionHandler(!error ? TPKVODEmotesTransform(filteredData, request) : filteredData, response, error);
             };
         return [self tpk_dataTaskWithRequest:request completionHandler:wrapped];
     }
@@ -253,6 +245,9 @@ static void tpk_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
 
 - (NSURLSessionDataTask *)tpk_dataTaskWithURL:(NSURL *)url
                              completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    NSURLRequest *imageRequest = TPKChatEmotesImageRequest([NSURLRequest requestWithURL:url]);
+    if (![imageRequest.URL isEqual:url])
+        return [self dataTaskWithRequest:imageRequest completionHandler:completionHandler];
     if (TPKAdblockIsEnabled() &&
         (TPKAdblockIsAdHost(url.host) || TPKAdblockIsMasterPlaylistHost(url.host))) {
         return [self dataTaskWithRequest:[NSURLRequest requestWithURL:url]
@@ -312,12 +307,17 @@ static void tpk_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
     NSData *filteredData = [host isEqualToString:@"gql.twitch.tv"]
         ? TPKAdblockTransformResponseData(data, request) : data;
     // Pass the transformed data to Apollo's original delegate implementation.
-    [self tpk_apolloURLSession:session dataTask:dataTask didReceiveData:filteredData];
+    BOOL buffered = TPKVODEmotesReceive(dataTask, filteredData, ^(NSData *prefix) {
+        [self tpk_apolloURLSession:session dataTask:dataTask didReceiveData:prefix];
+    });
+    if (!buffered) [self tpk_apolloURLSession:session dataTask:dataTask didReceiveData:filteredData];
 }
 
 - (void)tpk_apolloURLSession:(NSURLSession *)session
                           task:(NSURLSessionTask *)task
           didCompleteWithError:(NSError *)error {
+    NSData *data = TPKVODEmotesComplete(task, error);
+    if (data) [self tpk_apolloURLSession:session dataTask:(NSURLSessionDataTask *)task didReceiveData:data];
     [self tpk_apolloURLSession:session task:task didCompleteWithError:error];
 }
 
@@ -330,8 +330,45 @@ static void tpk_captureTwitchCredentialsFromGQLRequest(NSURLRequest *request) {
 // normale, instanciée directement par Apollo).
 static BOOL s_tpkApolloGQLSwizzled = NO;
 
+@interface NSObject (TPKVODNativeDelegate)
+- (void)tpk_vodTKSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data;
+- (void)tpk_vodTKSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error;
+@end
+
+@implementation NSObject (TPKVODNativeDelegate)
+- (void)tpk_vodTKSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
+    BOOL buffered = TPKVODEmotesReceive(task, data, ^(NSData *prefix) {
+        [self tpk_vodTKSession:session dataTask:task didReceiveData:prefix];
+    });
+    if (!buffered) [self tpk_vodTKSession:session dataTask:task didReceiveData:data];
+}
+- (void)tpk_vodTKSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+    NSData *data = TPKVODEmotesComplete(task, error);
+    if (data) [self tpk_vodTKSession:session dataTask:(NSURLSessionDataTask *)task didReceiveData:data];
+    [self tpk_vodTKSession:session task:task didCompleteWithError:error];
+}
+@end
+
+static void tpk_installVODNativeDelegate(void) {
+    static BOOL installed;
+    if (installed) return;
+    Class cls = NSClassFromString(@"_TtC9TwitchKit18TKURLSessionClient");
+    SEL data = @selector(URLSession:dataTask:didReceiveData:);
+    SEL completion = @selector(URLSession:task:didCompleteWithError:);
+    Method dataMethod = class_getInstanceMethod(cls, data);
+    Method completionMethod = class_getInstanceMethod(cls, completion);
+    if (!dataMethod || !completionMethod) return;
+    // Keep inherited callbacks on this class before exchanging implementations.
+    class_addMethod(cls, data, method_getImplementation(dataMethod), method_getTypeEncoding(dataMethod));
+    class_addMethod(cls, completion, method_getImplementation(completionMethod), method_getTypeEncoding(completionMethod));
+    tpk_swizzle(cls, NSObject.class, data, @selector(tpk_vodTKSession:dataTask:didReceiveData:));
+    tpk_swizzle(cls, NSObject.class, completion, @selector(tpk_vodTKSession:task:didCompleteWithError:));
+    installed = YES;
+}
+
 static BOOL tpk_try_swizzle_apollo_gql(void) {
     @synchronized ([TPKManager class]) {
+        tpk_installVODNativeDelegate();
         if (s_tpkApolloGQLSwizzled) return YES;
 
         Class apolloClass = NSClassFromString(@"Apollo.URLSessionClient");
@@ -411,7 +448,7 @@ static void tpk_swizzle_apollo_gql(void) {
                         handleIncomingChatWebSocketText:textToProcess sourceObject:self];
                 }
             }
-            completionHandler(message, error);
+            completionHandler(message && !error ? TPKChatEmotesReceiveLegacy(self, message) : message, error);
         };
     [self tpk_receiveMessageWithCompletionHandler:wrappedHandler];
 }
@@ -591,8 +628,7 @@ static void tpk_swizzle_websocket(void) {
 // ────────────────────────────────────────────────────────────
 // MARK: - Socket chat React Native (RCTWebSocketModule)
 // ────────────────────────────────────────────────────────────
-// Observateur seul : relaie le texte IRC vers le parser existant,
-// sans altérer le chat natif. Inerte si la classe est absente (31.0.2).
+// Enrich native emote ranges before RN receives the IRC frame.
 
 @interface NSObject (TPKRNChatSocket)
 - (void)tpk_rnChatWebSocket:(id)webSocket didReceiveMessage:(id)message;
@@ -601,13 +637,13 @@ static void tpk_swizzle_websocket(void) {
 @implementation NSObject (TPKRNChatSocket)
 
 - (void)tpk_rnChatWebSocket:(id)webSocket didReceiveMessage:(id)message {
-    [self tpk_rnChatWebSocket:webSocket didReceiveMessage:message];
     NSString *text = nil;
     if ([message isKindOfClass:NSString.class]) {
         text = message;
     } else if ([message isKindOfClass:NSData.class]) {
         text = [[NSString alloc] initWithData:message encoding:NSUTF8StringEncoding];
     }
+    [self tpk_rnChatWebSocket:webSocket didReceiveMessage:TPKChatEmotesReceive(webSocket, message)];
     if (!text.length) return;
     [[TPKManager sharedManager] handleIncomingChatWebSocketText:text sourceObject:webSocket];
 }
@@ -658,14 +694,8 @@ static void tpk_applyResolvedChannelContext(TPKChannelContext *context) {
          [s_tpkBoundChannelName caseInsensitiveCompare:channelName] == NSOrderedSame);
     if (sameSession && sameChannelName) return;
 
-    // Le contexte peut d'abord arriver avec l'ID seul, puis être complété
-    // par la cible IRC. Dans ce cas, conserver le même contexte mais lancer
-    // l'historique dès que le nom devient disponible.
     if (sameSession) {
         s_tpkBoundChannelName = [channelName copy];
-        if (context.mediaKind == TPKChannelMediaKindLive && channelName.length) {
-            [manager initializeRecentHistoryForChannel:channelName force:YES];
-        }
         return;
     }
 
@@ -674,26 +704,14 @@ static void tpk_applyResolvedChannelContext(TPKChannelContext *context) {
     s_tpkBoundGeneration = context.generation;
     s_tpkBoundChannelName = [channelName copy];
 
-    [[TPKBadgeProvider sharedProvider] resetChannelBadges];
     dispatch_barrier_async(manager.emoteQueue, ^{
         manager.channelEmotes = @{};
     });
-    BOOL isLiveContext = context.mediaKind == TPKChannelMediaKindLive;
-    if (isLiveContext && channelName.length) {
-        // Cette méthode vide le store puis charge l'historique récent. Elle
-        // possède aussi son propre garde-fou de génération contre les
-        // réponses HTTP d'une ancienne chaîne.
-        [manager initializeRecentHistoryForChannel:channelName force:YES];
-    } else {
-        [manager.chatMessageStore replaceAllMessages:@[] completion:nil];
-    }
-
     if (!channelID.length) {
         [[TPKEmoteCatalog sharedCatalog] clearActiveChannelScope];
         return;
     }
     [manager loadEmotesForChannelTwitchID:channelID];
-    [[TPKBadgeProvider sharedProvider] loadBadgesForChannelID:channelID];
 }
 
 static void tpk_setupChannelResolverBindings(void) {
@@ -723,14 +741,14 @@ static void TwitchTPKInit(void) {
 
     // Gestes du lecteur.
     tpk_playerGesturesSetup();
-    tpk_setupPlayerReloadRuntimeHooks();
 
     // Doit être installé avant toute création de vue Twitch, notamment le
     // premier écran et les en-têtes de catégories au lancement.
     TPKOLEDModeSetup();
 
-    TPKChatViewerCardSetup();
-    tpk_setupChatCustomIntegration();
+    TPKChatRuntimeSetup();
+    TPKEmoteImageTransportSetup();
+    TPKPickerSetup();
 
     // Adblock TwitchAdBlock-derived : AVFoundation, contrôleurs pub Swift et
     // hooks Twitch tardifs. Les interceptions NSURLSession/Apollo restent
@@ -755,6 +773,7 @@ static void TwitchTPKInit(void) {
                  @selector(tpk_didMoveToSuperview));
 
     // Les hooks RN doivent hériter du routeur UIKit déjà installé.
+    tpk_setupPlayerReloadRuntimeHooks();
     tpk_installHomeFeatureRuntimeHooks();
 
     // Interception réponses GQL Twitch
@@ -797,7 +816,6 @@ static void TwitchTPKInit(void) {
         [[TPKManager sharedManager] setup];
         TPKUpdateCheckerSetup();
         // Catalogue global.
-        [TPKBadgeProvider setup];
 
         dispatch_after(
             dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),

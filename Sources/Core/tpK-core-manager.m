@@ -23,23 +23,16 @@
 
 #import "Core/tpK-core-manager.h"
 #import "Core/tpK-channel-resolver.h"
-#import "Chat/tpK-chat-message.h"
 #import "Settings/tpK-settings-controller.h"
-#import "Emote/tpK-network-emote-cache.h"
+#import "Emote/tpK-emote-image-transport.h"
 #import "UI/7tv-ui-logo.h"
 #import "UI/tpK-ui-logo.h"
 #import "Localization/tpK-localization-manager.h"
-#import "Emote/tpK-badge-provider.h"
-#import "Chat/tpK-chat-appearance-config.h"
+#import "Settings/tpK-chat-appearance-config.h"
 #import "Emote/tpK-emote-image-cache.h"
 #import "Emote/tpK-emote-animation-engine.h"
 #import "Picker/tpK-picker-controller.h"
-#import "Emote/tpK-emote-provider.h"
 #import "Emote/tpK-emote-catalog.h"
-#import "Emote/tpK-provider-settings.h"
-#import "Chat/tpK-chat-custom-view.h"
-#import "Chat/tpK-chat-integration.h"
-#import "Chat/tpK-chat-reply-thread-panel.h"
 #import <objc/runtime.h>
 
 // ============================================================
@@ -47,7 +40,6 @@
 // ============================================================
 NSString *const TPKLogsDidUpdateNotification = @"TPKLogsDidUpdateNotification";
 NSString *const TPKEmoteCatalogDidUpdateNotification = @"TPKEmoteCatalogDidUpdateNotification";
-NSString *const TPKChatCustomToggleDidChangeNotification = @"TPKChatCustomToggleDidChangeNotification";
 NSString *const TPKFavoritesDidChangeNotification = @"TPKFavoritesDidChangeNotification";
 NSString *const TPKTwitchCredentialsDidUpdateNotification = @"TPKTwitchCredentialsDidUpdateNotification";
 
@@ -80,7 +72,6 @@ static TPKEmote *TPKLegacyEmoteFromDescriptor(TPKEmoteDescriptor *descriptor) {
 
 // File de dispatch pour la thread-safety des données d'emotes
 @property (nonatomic, strong, readwrite) dispatch_queue_t emoteQueue;
-@property (nonatomic, strong, readwrite) TPKChatMessageStore *chatMessageStore;
 
 // Bouton flottant des paramètres
 @property (nonatomic, weak)   UIButton *settingsButton;
@@ -93,7 +84,6 @@ static TPKEmote *TPKLegacyEmoteFromDescriptor(TPKEmoteDescriptor *descriptor) {
 // instancié paresseusement. Le manager ne garde que la façade publique
 // (toggleEmotePickerForChatInputView:/cleanupPickerForStreamClose) + la
 // donnée persistée (favoriteEmoteIDs ci-dessous) : tout le reste de l'UI du
-// picker (grille, onglets, panneau des tailles) vit dans le picker lui-même.
 @property (nonatomic, strong) TPKEmotePickerController *pickerController;
 
 // Favoris : IDs 7TV des emotes mise en favoris (persisté dans NSUserDefaults)
@@ -220,6 +210,11 @@ static const CGFloat kTPKMenuHeight = 520.0;
 
 @implementation TPKSettingsNavController
 
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.tintColor = TPKAccent();
+}
+
 - (instancetype)initWithRootViewController:(UIViewController *)root {
     self = [super initWithRootViewController:root];
     if (self) {
@@ -286,17 +281,14 @@ static const CGFloat kTPKMenuHeight = 520.0;
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _isEnabled             = YES;
-        _showAnimated          = YES;
         _showPickerAnimations  = YES;  // Activé par défaut
         _showPickerAnimationsFavoritesOnly = NO;
-        _chatCustomTestEnabled = YES;  // Activé par défaut — c'est le mode de rendu du chat désormais
         _debugLogging          = (TPK_DEBUG == 1);
 
         // Valeurs par défaut des logs.
         _logsEnabled       = YES;
         _logErrors         = YES;   // Erreurs/Avertissements visibles par défaut
-        _logChatCustom     = NO;    // Désactivé par défaut
+        _logChat     = NO;    // Désactivé par défaut
         _logChannelPoints  = NO;    // OFF par défaut
         _logTap            = NO;    // OFF par défaut (verbeux)
         _logChannelResolver = NO;
@@ -305,7 +297,6 @@ static const CGFloat kTPKMenuHeight = 520.0;
         _channelEmotes     = @{};
 
         _emoteQueue  = dispatch_queue_create("tv.s7tv.emote-queue",  DISPATCH_QUEUE_CONCURRENT);
-        _chatMessageStore = [[TPKChatMessageStore alloc] init];
 
         // Cache image RAM : 40 MB max — environ 1000 emotes statiques 40×40pt décompressées.
         // NSCache évicte automatiquement sous pression mémoire → jamais de crash OOM.
@@ -394,19 +385,16 @@ static const CGFloat kTPKMenuHeight = 520.0;
 
 - (void)loadPreferences {
     NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    if ([prefs objectForKey:@"tpk_enabled"]           != nil) _isEnabled            = [prefs boolForKey:@"tpk_enabled"];
-    if ([prefs objectForKey:@"tpk_animated"]          != nil) _showAnimated          = [prefs boolForKey:@"tpk_animated"];
     if ([prefs objectForKey:@"tpk_picker_anim"]       != nil) _showPickerAnimations  = [prefs boolForKey:@"tpk_picker_anim"];
     if ([prefs objectForKey:@"tpk_picker_anim_favs"]  != nil) _showPickerAnimationsFavoritesOnly = [prefs boolForKey:@"tpk_picker_anim_favs"];
     if ([prefs objectForKey:@"tpk_debug"]             != nil) _debugLogging          = [prefs boolForKey:@"tpk_debug"];
     if ([prefs objectForKey:@"tpk_floating_btn"]      != nil) _showFloatingButton     = [prefs boolForKey:@"tpk_floating_btn"];
     else _showFloatingButton = NO; // désactivé par défaut
-    if ([prefs objectForKey:@"tpk_chat_custom_test"]  != nil) _chatCustomTestEnabled  = [prefs boolForKey:@"tpk_chat_custom_test"];
 
     // --- Logs : interrupteur global + catégories ---
     if ([prefs objectForKey:@"tpk_logs_enabled"]      != nil) _logsEnabled           = [prefs boolForKey:@"tpk_logs_enabled"];
     if ([prefs objectForKey:@"tpk_log_errors"]        != nil) _logErrors             = [prefs boolForKey:@"tpk_log_errors"];
-    if ([prefs objectForKey:@"tpk_log_chat_custom"]   != nil) _logChatCustom         = [prefs boolForKey:@"tpk_log_chat_custom"];
+    if ([prefs objectForKey:@"tpk_log_chat_custom"]   != nil) _logChat         = [prefs boolForKey:@"tpk_log_chat_custom"];
     if ([prefs objectForKey:@"tpk_log_channel_points"] != nil) _logChannelPoints     = [prefs boolForKey:@"tpk_log_channel_points"];
     if ([prefs objectForKey:@"tpk_log_tap"]           != nil) _logTap               = [prefs boolForKey:@"tpk_log_tap"];
     if ([prefs objectForKey:@"tpk_log_channel_resolver"] != nil) _logChannelResolver = [prefs boolForKey:@"tpk_log_channel_resolver"];
@@ -438,24 +426,21 @@ static const CGFloat kTPKMenuHeight = 520.0;
         // session Twitch déjà ouverte.
         self.floatingWindow.hidden = !self.showFloatingButton;
         [[NSNotificationCenter defaultCenter]
-            postNotificationName:TPKChatCustomToggleDidChangeNotification object:self];
+            postNotificationName:TPKChatAppearanceConfigDidChangeNotification object:self];
     });
     [self tpk_notifyFavoritesChanged];
 }
 
 - (void)savePreferences {
     NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    [prefs setBool:self.isEnabled            forKey:@"tpk_enabled"];
-    [prefs setBool:self.showAnimated         forKey:@"tpk_animated"];
     [prefs setBool:self.showPickerAnimations forKey:@"tpk_picker_anim"];
     [prefs setBool:self.showPickerAnimationsFavoritesOnly forKey:@"tpk_picker_anim_favs"];
     [prefs setBool:self.debugLogging         forKey:@"tpk_debug"];
     [prefs setBool:self.showFloatingButton   forKey:@"tpk_floating_btn"];
-    [prefs setBool:self.chatCustomTestEnabled forKey:@"tpk_chat_custom_test"];
 
     [prefs setBool:self.logsEnabled          forKey:@"tpk_logs_enabled"];
     [prefs setBool:self.logErrors            forKey:@"tpk_log_errors"];
-    [prefs setBool:self.logChatCustom        forKey:@"tpk_log_chat_custom"];
+    [prefs setBool:self.logChat        forKey:@"tpk_log_chat_custom"];
     [prefs setBool:self.logChannelPoints     forKey:@"tpk_log_channel_points"];
     [prefs setBool:self.logTap               forKey:@"tpk_log_tap"];
     [prefs setBool:self.logChannelResolver   forKey:@"tpk_log_channel_resolver"];
@@ -524,14 +509,6 @@ static const CGFloat kTPKMenuHeight = 520.0;
     });
 }
 
-- (void)setIsEnabled:(BOOL)v              {
-    _isEnabled = v;
-    [self savePreferences];
-    // Keep the legacy 7TV kill switch and the provider-aware setting in sync.
-    // Existing settings screens still write isEnabled, while the tokenizer
-    // reads the common provider registry.
-    [TPKEmoteProviderSettings setProvider:TPKExternalEmoteProvider7TV enabled:v];
-}
 - (NSString *)currentChannelName {
     if (_currentChannelName.length) return _currentChannelName;
 
@@ -541,7 +518,6 @@ static const CGFloat kTPKMenuHeight = 520.0;
 - (void)setCurrentChannelTwitchID:(NSString *)channelID {
     _currentChannelTwitchID = [channelID copy];
 }
-- (void)setShowAnimated:(BOOL)v           { _showAnimated          = v; [self savePreferences]; }
 - (void)setShowPickerAnimations:(BOOL)v   { _showPickerAnimations  = v; [self savePreferences]; }
 - (void)setShowPickerAnimationsFavoritesOnly:(BOOL)v { _showPickerAnimationsFavoritesOnly = v; [self savePreferences]; }
 - (void)setShowFloatingButton:(BOOL)v {
@@ -552,16 +528,7 @@ static const CGFloat kTPKMenuHeight = 520.0;
         self.floatingWindow.hidden = !v;
     });
 }
-- (void)setChatCustomTestEnabled:(BOOL)v {
-    _chatCustomTestEnabled = v;
-    [self savePreferences];
-    [self log:@"[ChatCustom] 🏗 Test chat custom %@", v ? @"ACTIVÉ" : @"désactivé"];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter]
-            postNotificationName:TPKChatCustomToggleDidChangeNotification
-                          object:self];
-    });
-}
+
 - (void)setDebugLogging:(BOOL)v {
     _debugLogging  = v;
     [self savePreferences];
@@ -576,7 +543,7 @@ static const CGFloat kTPKMenuHeight = 520.0;
 
 // --- Logs : catégories ---
 - (void)setLogErrors:(BOOL)v         { _logErrors = v;         [self savePreferences]; }
-- (void)setLogChatCustom:(BOOL)v      { _logChatCustom = v;      [self savePreferences]; }
+- (void)setLogChat:(BOOL)v      { _logChat = v;      [self savePreferences]; }
 - (void)setLogChannelPoints:(BOOL)v   { _logChannelPoints = v;   [self savePreferences]; }
 - (void)setLogTap:(BOOL)v             { _logTap = v;             [self savePreferences]; }
 - (void)setLogChannelResolver:(BOOL)v { _logChannelResolver = v; [self savePreferences]; }
@@ -587,9 +554,6 @@ static const CGFloat kTPKMenuHeight = 520.0;
 // ============================================================
 
 - (void)loadGlobalEmotes {
-    if (![TPKEmoteProviderSettings isProviderEnabled:TPKExternalEmoteProvider7TV]) {
-        return;
-    }
     [[TPKEmoteCatalog sharedCatalog]
         loadProvider:TPKEmoteProviderIDTPK
              global:YES
@@ -605,7 +569,7 @@ static const CGFloat kTPKMenuHeight = 520.0;
 - (void)loadEmotesForChannelTwitchID:(NSString *)twitchUserID {
     if (!twitchUserID.length) return;
     // The provider catalogue owns channel cancellation, cache-first loading,
-    // parsing and publication for all enabled providers.
+    // parsing and publication for all three providers.
     [[TPKEmoteCatalog sharedCatalog]
         loadChannelProvidersForTwitchID:twitchUserID];
 }
@@ -735,8 +699,6 @@ static NSString *TPKNormalizedTwitchBearerToken(NSString *value) {
     if (!credentialsChanged) return;
     [[NSNotificationCenter defaultCenter]
         postNotificationName:TPKTwitchCredentialsDidUpdateNotification object:self];
-    // Déclencher le chargement des badges maintenant qu'on a le token
-    [[TPKBadgeProvider sharedProvider] loadGlobalBadges];
 }
 
 
@@ -776,9 +738,7 @@ static NSString *TPKNormalizedTwitchBearerToken(NSString *value) {
 // ============================================================
 // MARK: - Picker d'emotes 7TV (délégué à TPKEmotePickerController)
 //
-// Toute l'UI du picker (grille, onglets, recherche, panneau des tailles) vit
-// désormais dans TPKEmotePickerController (+ TPKPickerSizesPanel en
-// composant enfant) — voir ces fichiers. Le manager garde uniquement la
+// désormais dans TPKEmotePickerController  — voir ces fichiers. Le manager garde uniquement la
 // donnée persistée (favoriteEmoteIDs, cf. plus haut) et cette façade, pour
 // que tpK-core-runtime-hooks.m n'ait rien à changer.
 // ============================================================
@@ -1018,8 +978,8 @@ static BOOL tpk_categoryForMessage(NSString *msg, TPKLogCategory *outCategory) {
         *outCategory = TPKLogCategoryChannelPoints;
         return YES;
     }
-    if ([msg rangeOfString:@"[ChatCustom]"].location != NSNotFound) {
-        *outCategory = TPKLogCategoryChatCustom;
+    if ([msg rangeOfString:@"[Chat]"].location != NSNotFound) {
+        *outCategory = TPKLogCategoryChat;
         return YES;
     }
     if ([msg rangeOfString:@"❌"].location != NSNotFound ||
@@ -1042,7 +1002,7 @@ static BOOL tpk_categoryForMessage(NSString *msg, TPKLogCategory *outCategory) {
 - (BOOL)tpk_isCategoryEnabled:(TPKLogCategory)cat {
     switch (cat) {
         case TPKLogCategoryError:         return self.logErrors;
-        case TPKLogCategoryChatCustom:    return self.logChatCustom;
+        case TPKLogCategoryChat:    return self.logChat;
         case TPKLogCategoryChannelPoints: return self.logChannelPoints;
         case TPKLogCategoryTap:           return self.logTap;
         case TPKLogCategoryChannelResolver: return self.logChannelResolver;
@@ -1151,16 +1111,9 @@ static BOOL tpk_categoryForMessage(NSString *msg, TPKLogCategory *outCategory) {
     dispatch_group_t clearing = dispatch_group_create();
 
     dispatch_group_enter(clearing);
-    void (^clearRawCache)(void) = ^{
-        [TPKURLProtocol clearAllEmoteCachesWithCompletion:^(NSUInteger ignoredCount) {
-            dispatch_group_leave(clearing);
-        }];
-    };
-    if (self->_pickerController) {
-        [self->_pickerController cancelPendingImageLoadsWithCompletion:clearRawCache];
-    } else {
-        clearRawCache();
-    }
+    [TPKURLProtocol clearAllEmoteCachesWithCompletion:^(NSUInteger ignoredCount) {
+        dispatch_group_leave(clearing);
+    }];
 
     // 1) Dictionnaires d'emotes en mémoire — écriture protégée par
     // dispatch_barrier_async sur emoteQueue (même convention que le reste
@@ -1202,390 +1155,35 @@ static BOOL tpk_categoryForMessage(NSString *msg, TPKLogCategory *outCategory) {
 
 
 // ============================================================
-// MARK: - Session IRC (USERSTATE / modération)
-// ============================================================
-
-static NSString *tpk_ircRoomID(NSString *ircLine) {
-    if (!ircLine.length || ![ircLine hasPrefix:@"@"]) return nil;
-    NSRange firstSpace = [ircLine rangeOfString:@" "];
-    if (firstSpace.location == NSNotFound) return nil;
-    NSDictionary<NSString *, NSString *> *tags = tpk_parseIRCTags(
-        [ircLine substringWithRange:NSMakeRange(1, firstSpace.location - 1)]);
-    NSString *roomID = tpk_tagValue(tags, @"room-id", @"");
-    return roomID.length ? roomID : nil;
-}
-
-static NSString *tpk_ircTargetChannel(NSString *ircLine) {
-    if (!ircLine.length) return nil;
-    NSString *withoutTags = ircLine;
-    if ([withoutTags hasPrefix:@"@"]) {
-        NSRange firstSpace = [withoutTags rangeOfString:@" "];
-        if (firstSpace.location == NSNotFound) return nil;
-        withoutTags = [withoutTags substringFromIndex:firstSpace.location + 1];
-    }
-
-    NSArray<NSString *> *parts = [withoutTags
-        componentsSeparatedByCharactersInSet:
-            NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSSet<NSString *> *commands = [NSSet setWithArray:@[
-        @"PRIVMSG", @"USERNOTICE", @"CLEARCHAT", @"CLEARMSG",
-        @"NOTICE", @"ROOMSTATE"
-    ]];
-    for (NSUInteger index = 0; index + 1 < parts.count; index++) {
-        NSString *part = parts[index];
-        if (![commands containsObject:part]) continue;
-        NSString *target = parts[index + 1];
-        if (![target hasPrefix:@"#"] || target.length <= 1) return nil;
-        return [[target substringFromIndex:1] lowercaseString];
-    }
+// MARK: - Channel context from native IRC
+static NSString *tpk_roomID(NSString *line) {
+    if (![line hasPrefix:@"@"]) return nil;
+    NSRange end = [line rangeOfString:@" "];
+    if (end.location == NSNotFound) return nil;
+    NSString *tags = [line substringWithRange:NSMakeRange(1, end.location - 1)];
+    for (NSString *tag in [tags componentsSeparatedByString:@";"])
+        if ([tag hasPrefix:@"room-id="]) return [tag substringFromIndex:8];
     return nil;
 }
-
-static BOOL tpk_acceptIncomingIRCLine(NSString *ircLine) {
-    TPKChannelContext *context = TPKCurrentChannelContext();
-    if (!context) {
-        // Sans contexte natif, ne jamais accepter un message de chat : son
-        // canal est inconnu et il pourrait provenir de l'ancienne connexion.
-        return [ircLine rangeOfString:@" PRIVMSG "].location == NSNotFound &&
-            [ircLine rangeOfString:@" USERNOTICE "].location == NSNotFound &&
-            [ircLine rangeOfString:@" CLEARCHAT "].location == NSNotFound &&
-            [ircLine rangeOfString:@" CLEARMSG "].location == NSNotFound;
-    }
-    // IRC is only a live source. Never let a delayed live packet contaminate
-    // a replay context.
-    if (context.mediaKind != TPKChannelMediaKindLive) return NO;
-
-    NSString *expectedID = [NSString stringWithFormat:@"%u", context.channelID];
-    NSString *roomID = tpk_ircRoomID(ircLine);
-    if (roomID.length) return [roomID isEqualToString:expectedID];
-
-    // Fallback for Twitch lines without room-id.
-    NSString *target = tpk_ircTargetChannel(ircLine);
-    if (target.length && context.channelName.length) {
-        return [target caseInsensitiveCompare:context.channelName] == NSOrderedSame;
-    }
-    // Un paquet de chat sans room-id ni cible exploitable ne peut pas être
-    // attribué de façon fiable après un changement de chaîne.
-    if ([ircLine containsString:@" PRIVMSG "] ||
-        [ircLine containsString:@" USERNOTICE "] ||
-        [ircLine containsString:@" CLEARCHAT "] ||
-        [ircLine containsString:@" CLEARMSG "]) {
-        return NO;
-    }
-    return YES;
-}
-
 @implementation TPKManager (IRCSessionState)
-
-- (void)handleIRCUserState:(NSString *)ircLine {
-    if (![ircLine hasPrefix:@"@"]) return;
-    NSRange firstSpace = [ircLine rangeOfString:@" "];
-    if (firstSpace.location == NSNotFound) return;
-    NSDictionary<NSString *, NSString *> *tags = tpk_parseIRCTags(
-        [ircLine substringWithRange:NSMakeRange(1, firstSpace.location - 1)]);
-    NSString *displayName = tpk_tagValue(tags, @"display-name", @"");
-    if (!displayName.length || [displayName isEqualToString:self.currentViewerDisplayName]) return;
-    self.currentViewerDisplayName = displayName;
-}
-
-- (BOOL)tpk_handleIRCModerationEvent:(NSString *)ircLine {
-    BOOL isClearMessage = [ircLine containsString:@" CLEARMSG "];
-    BOOL isClearChat = [ircLine containsString:@" CLEARCHAT "];
-    if (!isClearMessage && !isClearChat) return NO;
-
-    NSDictionary<NSString *, NSString *> *tags = @{};
-    NSString *rest = ircLine;
-    if ([ircLine hasPrefix:@"@"]) {
-        NSRange firstSpace = [ircLine rangeOfString:@" "];
-        if (firstSpace.location != NSNotFound) {
-            tags = tpk_parseIRCTags([ircLine substringWithRange:
-                                      NSMakeRange(1, firstSpace.location - 1)]);
-            rest = [ircLine substringFromIndex:firstSpace.location + 1];
-        }
-    }
-
-    NSString *command = isClearMessage ? @"CLEARMSG" : @"CLEARCHAT";
-    NSRange commandRange = [rest rangeOfString:command];
-    if (commandRange.location == NSNotFound) return YES;
-    NSString *afterCommand = [[rest substringFromIndex:NSMaxRange(commandRange)]
-        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (!afterCommand.length) {
-        [self log:@"[ChatCustom] ⚠️ Modération %@ ignorée (channel absent)", command];
-        return YES;
-    }
-
-    NSRange channelEnd = [afterCommand rangeOfCharacterFromSet:
-                          NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSString *trailing = channelEnd.location == NSNotFound
-        ? @"" : [afterCommand substringFromIndex:channelEnd.location + 1];
-    trailing = [trailing stringByTrimmingCharactersInSet:
-                NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if ([trailing hasPrefix:@":"]) trailing = [trailing substringFromIndex:1];
-
-    TPKChatMessageStore *store = self.chatMessageStore;
-    if (isClearMessage) {
-        NSString *targetMessageID = tpk_tagValue(tags, @"target-msg-id", @"");
-        if (!targetMessageID.length) {
-            [self log:@"[ChatCustom] ⚠️ CLEARMSG ignoré (target-msg-id absent)"];
-            return YES;
-        }
-        [store markMessageDeletedByID:targetMessageID completion:^{
-            [self log:@"[ChatCustom] 🛡 CLEARMSG appliqué (message id=%@)", targetMessageID];
-            tpk_applyModerationStateToRetainedMessage(
-                targetMessageID, TPKChatMessageStateDeletedCollapsed,
-                TPKChatModerationKindMessageDeleted, 0);
-            tpk_reloadActiveChatMessage(targetMessageID);
-        }];
-        return YES;
-    }
-
-    NSString *targetUserID = tpk_tagValue(tags, @"target-user-id", @"");
-    if (targetUserID.length) {
-        NSString *rawBanDuration = tags[@"ban-duration"];
-        BOOL isTimeout = rawBanDuration != nil;
-        NSInteger durationSeconds = isTimeout ? MAX(0, rawBanDuration.integerValue) : 0;
-        TPKChatModerationKind kind = isTimeout
-            ? TPKChatModerationKindTimeout : TPKChatModerationKindPermanentBan;
-        [store markAllMessagesDeletedForUserID:targetUserID
-                                moderationKind:kind
-                               durationSeconds:durationSeconds
-                                     completion:^{
-            tpk_applyModerationToRetainedMessagesForUser(
-                targetUserID, trailing, kind, durationSeconds);
-            [self log:@"[ChatCustom] 🛡 CLEARCHAT utilisateur appliqué (user-id=%@, login=%@, %@)",
-                targetUserID, trailing.length ? trailing : @"inconnu",
-                isTimeout ? [NSString stringWithFormat:@"timeout=%lds", (long)durationSeconds]
-                          : @"ban permanent"];
-            tpk_reloadActiveChatCustomViewAnimated();
-        }];
-    } else if (trailing.length) {
-        [self log:@"[ChatCustom] ⚠️ CLEARCHAT ciblé ignoré (target-user-id absent, login=%@)",
-            trailing];
-    } else {
-        [store markAllMessagesDeletedWithCompletion:^{
-            tpk_applyModerationToAllRetainedMessages();
-            [self log:@"[ChatCustom] 🛡 CLEARCHAT global appliqué"];
-            tpk_reloadActiveChatCustomViewAnimated();
-        }];
-    }
-    return YES;
-}
-
 - (void)handleIncomingChatWebSocketText:(NSString *)text {
-    [self handleIncomingChatWebSocketText:text sourceObject:self];
+    [self handleIncomingChatWebSocketText:text sourceObject:nil];
 }
-
 - (void)handleIncomingChatWebSocketText:(NSString *)text sourceObject:(id)sourceObject {
-    if (!text.length) return;
-    NSArray<id<TPKEmoteProvider>> *providers = tpk_chatEmoteProviders();
-    BOOL addedMessage = NO;
-    TPKChannelContext *context = TPKCurrentChannelContext();
-    BOOL acceptsLiveData = !context ||
-        context.mediaKind == TPKChannelMediaKindLive;
-
-    // Les notifications PubSub sont des enveloppes JSON, pas des lignes IRC.
-    // Le store déduplique les abonnements Twitch grâce à redemption.id.
-    if (acceptsLiveData) {
-        for (TPKChatMessage *rewardMessage in
-             tpk_channelPointMessagesFromWebSocketText(text, providers)) {
-            [self.chatMessageStore addMessage:rewardMessage];
-            addedMessage = YES;
+    for (NSString *line in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSString *commandLine = line;
+        if ([commandLine hasPrefix:@"@"]) {
+            NSRange end = [commandLine rangeOfString:@" "];
+            commandLine = end.location == NSNotFound ? @"" : [commandLine substringFromIndex:end.location + 1];
         }
-    }
-
-    for (NSString *rawLine in [text componentsSeparatedByCharactersInSet:
-                               NSCharacterSet.newlineCharacterSet]) {
-        NSString *ircLine = [rawLine stringByTrimmingCharactersInSet:
-                             NSCharacterSet.newlineCharacterSet];
-        if (!ircLine.length) continue;
-        if ([ircLine containsString:@" ROOMSTATE #"] || [ircLine hasPrefix:@"ROOMSTATE #"]) {
-            NSString *commandLine = ircLine;
-            if ([commandLine hasPrefix:@"@"]) {
-                NSRange space = [commandLine rangeOfString:@" "];
-                commandLine = space.location == NSNotFound ? @"" : [commandLine substringFromIndex:space.location + 1];
-            }
-            if ([commandLine hasPrefix:@":"]) {
-                NSRange space = [commandLine rangeOfString:@" "];
-                commandLine = space.location == NSNotFound ? @"" : [commandLine substringFromIndex:space.location + 1];
-            }
-            if ([commandLine hasPrefix:@"ROOMSTATE #"])
-                TPKChannelResolverNoteChatRoom(tpk_ircTargetChannel(ircLine), tpk_ircRoomID(ircLine), sourceObject);
+        if ([commandLine hasPrefix:@":"]) {
+            NSRange end = [commandLine rangeOfString:@" "];
+            commandLine = end.location == NSNotFound ? @"" : [commandLine substringFromIndex:end.location + 1];
         }
-        // "USERSTATE" couvre aussi GLOBALUSERSTATE, qui se termine par ce mot.
-        if ([ircLine containsString:@"USERSTATE"]) [self handleIRCUserState:ircLine];
-        if (!tpk_acceptIncomingIRCLine(ircLine)) continue;
-        if ([self tpk_handleIRCModerationEvent:ircLine]) continue;
-
-        TPKChatMessage *chatMessage = tpk_parseChatMessage(ircLine, providers);
-        if (!chatMessage) {
-            continue;
-        }
-        if (chatMessage.channelPointRewardID.length) {
-            // PubSub et IRC arrivent presque simultanément, parfois dans
-            // l'ordre inverse. Seul le PRIVMSG de récompense attend 350 ms.
-            TPKChatMessage *pendingCompanion = chatMessage;
-            TPKChatMessageStore *rewardStore = self.chatMessageStore;
-            NSUInteger storeGeneration = rewardStore.generation;
-            TPKChannelContext *messageContext = TPKCurrentChannelContext();
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                           (int64_t)(0.35 * NSEC_PER_SEC)),
-                           dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                // Un JOIN intervenu entre-temps a reconstruit le store.
-                if (rewardStore.generation != storeGeneration) return;
-                if (messageContext && !TPKChannelContextIsCurrent(messageContext)) return;
-                if (tpk_shouldSuppressChannelPointCompanion(pendingCompanion)) {
-                    [rewardStore mergeChannelPointCompanionMessage:pendingCompanion
-                        completion:^(NSString *mergedID) {
-                        if (mergedID.length) {
-                            tpk_reloadActiveChatMessage(mergedID);
-                        } else if (rewardStore.generation == storeGeneration) {
-                            [rewardStore addMessage:pendingCompanion];
-                            tpk_scheduleChatCustomReload();
-                        }
-                    }];
-                    return;
-                }
-                [rewardStore addMessage:pendingCompanion];
-                tpk_scheduleChatCustomReload();
-            });
-            continue;
-        }
-        [self.chatMessageStore addMessage:chatMessage];
-        addedMessage = YES;
-    }
-    if (addedMessage) tpk_scheduleChatCustomReload();
-}
-
-@end
-
-
-// ============================================================
-// MARK: - Historique récent au JOIN
-// ============================================================
-
-static NSUInteger tpk_recentHistoryGeneration = 0;
-static NSString *tpk_recentHistoryInitializedChannel = nil;
-
-static BOOL tpk_recentHistoryRequestIsCurrent(NSString *channel,
-                                                NSUInteger generation) {
-    TPKManager *manager = [TPKManager sharedManager];
-    TPKChannelContext *context = TPKCurrentChannelContext();
-    @synchronized (manager) {
-        return generation == tpk_recentHistoryGeneration && channel.length &&
-            context && context.mediaKind == TPKChannelMediaKindLive &&
-            [channel caseInsensitiveCompare:context.channelName ?: @""] == NSOrderedSame &&
-            [channel caseInsensitiveCompare:manager.currentChannelName ?: @""] == NSOrderedSame;
+        if (![commandLine hasPrefix:@"ROOMSTATE #"]) continue;
+        NSString *tail = [commandLine substringFromIndex:11];
+        NSString *channel = [[tail componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] firstObject];
+        if (channel.length) TPKChannelResolverNoteChatRoom(channel, tpk_roomID(line), sourceObject);
     }
 }
-
-static void tpk_fetchRecentHistory(NSString *channel, NSUInteger generation) {
-    if (!tpk_recentHistoryRequestIsCurrent(channel, generation)) return;
-    NSString *urlString = [NSString stringWithFormat:
-        @"https://recent-messages.robotty.de/api/v2/recent-messages/%@?limit=50&hideModerationMessages=true&hideModeratedMessages=true",
-        channel.lowercaseString];
-    NSMutableURLRequest *request = [NSMutableURLRequest
-        requestWithURL:[NSURL URLWithString:urlString]];
-    request.timeoutInterval = 8.0;
-    [request setValue:@"TwitchPlusK/1.0" forHTTPHeaderField:@"User-Agent"];
-
-    [[[NSURLSession sharedSession] dataTaskWithRequest:request
-        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (!tpk_recentHistoryRequestIsCurrent(channel, generation)) return;
-        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class]
-            ? (NSHTTPURLResponse *)response : nil;
-        if (error || http.statusCode < 200 || http.statusCode >= 300 || !data.length) {
-            [[TPKManager sharedManager]
-                log:@"[ChatCustom] ⚠️ Historique récent indisponible pour %@ (%@, HTTP %ld)",
-                channel, error.localizedDescription ?: @"réponse vide", (long)http.statusCode];
-            return;
-        }
-
-        NSError *jsonError = nil;
-        NSDictionary *payload = [NSJSONSerialization JSONObjectWithData:data
-                                                                 options:0
-                                                                   error:&jsonError];
-        NSArray *rawMessages = [payload isKindOfClass:NSDictionary.class]
-            ? payload[@"messages"] : nil;
-        if (jsonError || ![rawMessages isKindOfClass:NSArray.class]) {
-            [[TPKManager sharedManager]
-                log:@"[ChatCustom] ⚠️ Historique récent invalide pour %@: %@",
-                channel, jsonError.localizedDescription ?: @"champ messages absent"];
-            return;
-        }
-
-        NSMutableArray<TPKChatMessage *> *history =
-            [NSMutableArray arrayWithCapacity:rawMessages.count];
-        for (id value in rawMessages) {
-            if (![value isKindOfClass:NSString.class]) continue;
-            NSString *ircLine = [(NSString *)value stringByTrimmingCharactersInSet:
-                NSCharacterSet.newlineCharacterSet];
-            TPKChatMessage *message = tpk_parseChatMessage(
-                ircLine, tpk_chatEmoteProviders());
-            if (!message) continue;
-            message.isHistorical = YES;
-            [history addObject:message];
-        }
-        [history sortUsingComparator:^NSComparisonResult(TPKChatMessage *left,
-                                                          TPKChatMessage *right) {
-            return [left.timestamp compare:right.timestamp];
-        }];
-
-        if (!tpk_recentHistoryRequestIsCurrent(channel, generation)) return;
-        [[TPKManager sharedManager].chatMessageStore
-            prependHistoricalMessages:history
-            ifCurrent:^BOOL{
-                return tpk_recentHistoryRequestIsCurrent(channel, generation);
-            }
-            completion:^{
-                if (!tpk_recentHistoryRequestIsCurrent(channel, generation)) return;
-                [[TPKManager sharedManager]
-                    log:@"[ChatCustom] 🕘 %lu messages historiques chargés pour %@",
-                    (unsigned long)history.count, channel];
-                tpk_scheduleChatCustomReload();
-            }];
-    }] resume];
-}
-
-static void tpk_beginRecentHistory(NSString *channel, NSUInteger generation) {
-    if (!channel.length) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[TPKReplyThreadPanel sharedPanel] hide];
-    });
-
-    NSDate *now = NSDate.date;
-    TPKChatMessage *welcome = [[TPKChatMessage alloc]
-        initWithMessageID:[NSString stringWithFormat:@"s7tv-history-welcome-%lu",
-                                                    (unsigned long)generation]
-                timestamp:now authorUserID:@"" authorDisplayName:@"" rawText:channel];
-    welcome.type = TPKChatMessageTypeHistoryWelcome;
-    TPKChatMessage *divider = [[TPKChatMessage alloc]
-        initWithMessageID:[NSString stringWithFormat:@"s7tv-history-divider-%lu",
-                                                    (unsigned long)generation]
-                timestamp:now authorUserID:@"" authorDisplayName:@"" rawText:@""];
-    divider.type = TPKChatMessageTypeHistoryDivider;
-
-    TPKManager *manager = [TPKManager sharedManager];
-    [manager.chatMessageStore replaceAllMessages:@[welcome, divider] completion:^{
-        if (!tpk_recentHistoryRequestIsCurrent(channel, generation)) return;
-        [manager log:@"[ChatCustom] 🏗 Chat initialisé pour %@ (historique en cours)", channel];
-        tpk_scheduleChatCustomReload();
-        tpk_fetchRecentHistory(channel, generation);
-    }];
-}
-
-@implementation TPKManager (RecentChatHistory)
-
-- (void)initializeRecentHistoryForChannel:(NSString *)channel force:(BOOL)force {
-    if (!channel.length) return;
-    NSUInteger generation = 0;
-    @synchronized (self) {
-        BOOL alreadyInitialized = tpk_recentHistoryInitializedChannel.length &&
-            [tpk_recentHistoryInitializedChannel caseInsensitiveCompare:channel] == NSOrderedSame;
-        if (!force && alreadyInitialized) return;
-        tpk_recentHistoryInitializedChannel = channel.lowercaseString;
-        generation = ++tpk_recentHistoryGeneration;
-    }
-    tpk_beginRecentHistory(channel, generation);
-}
-
 @end

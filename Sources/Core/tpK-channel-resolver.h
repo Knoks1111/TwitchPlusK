@@ -82,5 +82,8 @@ FOUNDATION_EXPORT void TPKChannelResolverNoteChatRoom(NSString * _Nullable login
 
 FOUNDATION_EXPORT TPKChannelContext * _Nullable TPKCurrentChannelContext(void);
 FOUNDATION_EXPORT BOOL TPKChannelContextIsCurrent(TPKChannelContext * _Nullable context);
+@class UIView;
+FOUNDATION_EXPORT void TPKChannelResolverNoteReplayView(UIView * _Nullable view, BOOL replay);
+FOUNDATION_EXPORT void TPKChannelResolverNoteVideoMetadata(NSDictionary *video, NSString *requestedID);
 
 NS_ASSUME_NONNULL_END

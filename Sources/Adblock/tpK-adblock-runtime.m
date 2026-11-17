@@ -124,27 +124,75 @@ static void TPKAdblockHideAdFreeView(UIView *view) {
     width.active = height.active = YES;
 }
 
-static void TPKAdblockScanForAdFreeView(UIView *root) {
-    if (!root) return;
-    NSString *className = NSStringFromClass(root.class);
-    BOOL matchingControlText = [root isKindOfClass:UIControl.class] &&
-        TPKAdblockIsAdFreeText(TPKAdblockVisibleViewText(root));
-    if ((TPKAdblockStringContains(className, @"Upsell") ||
-         TPKAdblockStringContains(className, @"AdFree") ||
-         matchingControlText) && !root.hidden) {
-        TPKAdblockHideAdFreeView(root);
+@interface TPKTurboScanState : NSObject
+@property (nonatomic, weak) UIView *root;
+@property (nonatomic, strong) NSPointerArray *pending;
+@property (nonatomic) NSUInteger cursor;
+@property (nonatomic) NSTimeInterval startedAt;
+@property (nonatomic) BOOL queued;
+@property (nonatomic) BOOL changedWhileScanning;
+@end
+
+@implementation TPKTurboScanState
+@end
+
+static char TPKTurboScanStateKey;
+
+static void TPKAdblockRunTurboScan(TPKTurboScanState *state) {
+    UIView *root = state.root;
+    if (!TPKAdblockHideAdFreeButtonEnabledFast() || !root.window ||
+        root.window.hidden || root.hidden || root.alpha <= 0) {
+        state.pending = nil;
+        state.cursor = 0;
+        state.queued = NO;
         return;
     }
-    for (UIView *subview in root.subviews.copy) {
-        TPKAdblockScanForAdFreeView(subview);
+    if (!state.pending) {
+        state.pending = NSPointerArray.weakObjectsPointerArray;
+        [state.pending addPointer:(__bridge void *)root];
+        state.startedAt = NSProcessInfo.processInfo.systemUptime;
+        state.changedWhileScanning = NO;
     }
+    // Borner chaque passage et laisser la file principale traiter les images entre les lots.
+    for (NSUInteger visited = 0; visited < 256 && state.cursor < state.pending.count; visited++) {
+        UIView *view = (__bridge UIView *)[state.pending pointerAtIndex:state.cursor++];
+        if (!view || view.hidden || view.alpha <= 0 || ![view isDescendantOfView:root]) continue;
+        NSString *className = NSStringFromClass(view.class);
+        BOOL matchingText = [view isKindOfClass:UIControl.class] &&
+            TPKAdblockIsAdFreeText(TPKAdblockVisibleViewText(view));
+        if (TPKAdblockStringContains(className, @"Upsell") ||
+            TPKAdblockStringContains(className, @"AdFree") || matchingText) {
+            TPKAdblockHideAdFreeView(view);
+            continue;
+        }
+        for (UIView *child in view.subviews) [state.pending addPointer:(__bridge void *)child];
+    }
+    if (state.cursor < state.pending.count) {
+        dispatch_async(dispatch_get_main_queue(), ^{ TPKAdblockRunTurboScan(state); });
+        return;
+    }
+    state.pending = nil;
+    state.cursor = 0;
+    state.queued = NO;
+    if (state.changedWhileScanning) TPKAdblockHideAdFreeUpsellIfNeeded(root);
 }
 
-void TPKAdblockHideAdFreeUpsellIfNeeded(void) {
-    if (!TPKAdblockHideAdFreeButtonEnabledFast()) return;
-    for (UIWindow *window in UIApplication.sharedApplication.windows.copy) {
-        TPKAdblockScanForAdFreeView(window);
+void TPKAdblockHideAdFreeUpsellIfNeeded(UIView *root) {
+    if (!TPKAdblockHideAdFreeButtonEnabledFast() || !root.window || root.hidden || root.alpha <= 0) return;
+    TPKTurboScanState *state = objc_getAssociatedObject(root, &TPKTurboScanStateKey);
+    if (!state) {
+        state = [TPKTurboScanState new];
+        state.root = root;
+        objc_setAssociatedObject(root, &TPKTurboScanStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    if (state.queued) {
+        if (state.pending) state.changedWhileScanning = YES;
+        return;
+    }
+    state.queued = YES;
+    NSTimeInterval delay = MAX(0, 0.5 - (NSProcessInfo.processInfo.systemUptime - state.startedAt));
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ TPKAdblockRunTurboScan(state); });
 }
 
 @interface AVURLAsset (TPKAdblockRuntime)
@@ -326,7 +374,7 @@ static void TPKAdblockClearFollowingAds(id object) {
 
 - (void)tpk_adblock_followingViewDidLayoutSubviews {
     [self tpk_adblock_followingViewDidLayoutSubviews];
-    TPKAdblockHideAdFreeUpsellIfNeeded();
+    TPKAdblockHideAdFreeUpsellIfNeeded(((UIViewController *)self).viewIfLoaded);
 }
 
 @end

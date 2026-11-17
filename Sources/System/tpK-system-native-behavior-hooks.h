@@ -25,6 +25,8 @@ BOOL tpk_isOrientationLocked(void);
 
 // Called when Twitch.TheaterPlayerControlsView enters a window.
 void tpk_handleTheaterControlsViewLifecycle(UIView *view);
+void tpk_trackPlayerHostViewLifecycle(UIView *view);
+void tpk_removeOrientationLockButton(UIView *controls);
 
 // Restores the auto-lock observer at launch when enabled.
 void tpk_swizzle_orientation_lock(void);

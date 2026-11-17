@@ -26,9 +26,15 @@ def release_offset(version):
 
 
 def ipa_version(twitch, version):
-    if not re.fullmatch(r"[0-9]+\.[0-9]+", twitch):
-        raise ValueError("Version suffix requires a two-component Twitch version")
-    return f"{twitch}.{release_offset(version)}"
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", twitch):
+        raise ValueError("Twitch version must have one to three numeric components")
+    components = list(map(int, twitch.split('.')))
+    components += [0] * (3 - len(components))
+    major, minor, patch = components
+    offset = release_offset(version)
+    if offset >= 1000000:
+        raise ValueError("TwitchPlusK version offset must be below 1000000")
+    return f"{major}.{minor}.{patch * 1000000 + offset}"
 
 
 def release_build(original, version):
@@ -153,8 +159,8 @@ def make_source(ipa, version, date, repository, ldid, previous=None):
 
 def write_source(source, output):
     data = (json.dumps(source, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    if len(data) > 16384:
-        raise ValueError("Source exceeds the existing tweak updater's 16 KiB limit")
+    if len(data) > 1024 * 1024:
+        raise ValueError("Source exceeds the tweak updater's 1 MiB limit")
     output = Path(output)
     temporary = output.with_suffix(output.suffix + ".tmp")
     temporary.write_bytes(data)

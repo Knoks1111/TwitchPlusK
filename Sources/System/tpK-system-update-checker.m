@@ -78,7 +78,7 @@ static void TPKCheckForUpdate(void) {
     [[session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         id manifest = nil;
         if (!error && [response isKindOfClass:NSHTTPURLResponse.class] &&
-            ((NSHTTPURLResponse *)response).statusCode == 200 && data.length && data.length <= 16384) {
+            ((NSHTTPURLResponse *)response).statusCode == 200 && data.length && data.length <= 1024 * 1024) {
             manifest = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
         }
         dispatch_async(dispatch_get_main_queue(), ^{

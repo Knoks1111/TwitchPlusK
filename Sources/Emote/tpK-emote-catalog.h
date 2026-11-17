@@ -1,10 +1,4 @@
-/*
- * tpK-emote-catalog.h
- *
- * Provider-agnostic emote catalogue.  The legacy TPKManager remains the
- * compatibility facade for existing 7TV callers; this catalogue is the
- * shared data layer used by the multi-provider picker/chat implementation.
- */
+// Shared provider-agnostic emote catalogue; TPKManager remains the 7TV facade.
 
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -33,14 +27,14 @@ typedef NS_ENUM(NSInteger, TPKEmoteProviderState) {
 };
 
 FOUNDATION_EXPORT NSString *const TPKProviderCatalogDidUpdateNotification;
+FOUNDATION_EXPORT TPKEmoteProviderID TPKEmoteProviderFromIdentifier(
+    NSString * _Null_unspecified identifier);
 FOUNDATION_EXPORT NSString *TPKEmoteProviderName(TPKEmoteProviderID provider);
 FOUNDATION_EXPORT NSString *TPKEmoteProviderKey(TPKEmoteProviderID provider);
 FOUNDATION_EXPORT NSString *TPKEmoteFavoriteKey(TPKEmoteProviderID provider,
                                                   NSString *emoteID);
 
-// One emote independently of the API which supplied it.  imageURLs is keyed
-// by NSNumber scales (1, 2, 3, 4).  The model keeps modifier metadata ready
-// for the effects phase, while v1 only uses zeroWidth.
+// Provider-neutral emote; imageURLs uses scale keys and modifiers are reserved for v2.
 @interface TPKEmoteDescriptor : NSObject <NSCopying>
 @property (nonatomic, assign, readonly) TPKEmoteProviderID provider;
 @property (nonatomic, copy, readonly) NSString *providerIdentifier;
@@ -74,7 +68,6 @@ FOUNDATION_EXPORT NSString *TPKEmoteFavoriteKey(TPKEmoteProviderID provider,
                          imageURLs:(NSDictionary<NSNumber *, NSString *> *)imageURLs;
 
 - (nullable NSURL *)imageURLForResolution:(NSInteger)resolution;
-- (BOOL)matchesName:(NSString *)name;
 @end
 
 @interface TPKEmoteSection : NSObject <NSCopying>
@@ -108,29 +101,23 @@ FOUNDATION_EXPORT NSString *TPKEmoteFavoriteKey(TPKEmoteProviderID provider,
 @interface TPKEmoteCatalog : NSObject
 + (instancetype)sharedCatalog;
 
-@property (nonatomic, copy) NSArray<NSNumber *> *providerPriority;
-@property (nonatomic, copy) NSDictionary<NSNumber *, NSNumber *> *providerEnabled;
+@property (nonatomic, copy, readonly) NSArray<NSNumber *> *providerPriority;
 
 - (TPKEmoteProviderSnapshot *)snapshotForProvider:(TPKEmoteProviderID)provider;
 - (NSArray<TPKEmoteSection *> *)sectionsForProvider:(TPKEmoteProviderID)provider;
 - (NSArray<TPKEmoteDescriptor *> *)allEmotesForProvider:(TPKEmoteProviderID)provider;
-// Resolve within one provider without scanning every emote for each chat
-// token.  The catalogue keeps a name/alias index for this path; matching is
-// still exact and case-sensitive, just like TPKEmoteDescriptor.
+// Resolve exact, case-sensitive names and aliases within one provider.
 - (nullable TPKEmoteDescriptor *)resolveEmoteNamed:(NSString *)name
                                            provider:(TPKEmoteProviderID)provider;
 // Resolve according to the configured cross-provider priority.
 - (nullable TPKEmoteDescriptor *)resolveEmoteNamed:(NSString *)name;
 
-// Cache-first loads. Completion is delivered on the main queue and is
-// provider-local: one provider failing does not affect the other snapshots.
+// Load from cache first; completion runs on main and failures stay provider-local.
 - (void)loadGlobalProviders;
 - (void)loadChannelProvidersForTwitchID:(NSString *)twitchID;
 // Remove the active channel scope while keeping provider-global emotes.
 - (void)clearActiveChannelScope;
-// Loads one optional 7TV set on demand. The channel/user payload advertises
-// set IDs before their emotes are needed; the picker calls this when a set
-// section is expanded (or its retry button is pressed).
+// Load an optional 7TV set when its picker section expands or retries.
 - (void)loadTPKEmoteSetWithID:(NSString *)setID
                             global:(BOOL)global
                            channel:(nullable NSString *)twitchID;
@@ -144,32 +131,21 @@ FOUNDATION_EXPORT NSString *TPKEmoteFavoriteKey(TPKEmoteProviderID provider,
          completion:(nullable void (^)(TPKEmoteProviderSnapshot *snapshot))completion;
 - (void)cancelLoadsForChannel:(NSString *)twitchID;
 
-// Clear provider JSON snapshots and in-flight catalogue requests.  The
-// completion is delivered on the main queue after the serial state/cache
-// work has finished, so a manual cache reset can safely start fresh loads.
+// Clear provider snapshots and requests; complete on main after cache work finishes.
 - (void)clearCachedDataWithCompletion:(nullable dispatch_block_t)completion;
 
-// Provider-aware favorites. The old tpk_favorites array is migrated lazily
-// into these qualified keys and remains untouched for legacy callers.
+// Provider-aware favorites; legacy tpk_favorites data is migrated lazily.
 - (BOOL)isEmoteFavorited:(TPKEmoteDescriptor *)emote;
 - (void)setEmote:(TPKEmoteDescriptor *)emote favorited:(BOOL)favorited;
 - (void)setLegacyTPKFavoriteID:(NSString *)emoteID favorited:(BOOL)favorited;
 - (void)replaceLegacyTPKFavoriteIDs:(NSArray<NSString *> *)emoteIDs;
 - (void)setFavoriteKey:(NSString *)favoriteKey favorited:(BOOL)favorited;
 - (NSArray<NSString *> *)favoriteKeysSnapshot;
-// Provider-aware favorite descriptors are backed by a small metadata store.
-// They remain available in the Favorites picker/settings screen when the
-// channel that supplied them is no longer the active one or the network is
-// offline.  A loaded provider snapshot transparently refreshes the metadata.
+// Stored metadata keeps favorites available offline or outside their source channel.
 - (NSArray<TPKEmoteDescriptor *> *)favoriteDescriptorsSnapshot;
 
-// A Zero-Width composition is a single chat gesture but contains several
-// provider-qualified favorites.  Keep the exact text sequence separately so
-// selecting either member from the picker can reproduce the composition.
+// Store Zero-Width text sequences so selecting any member restores the composition.
 - (nullable NSString *)favoriteCompositionTextForEmoteKey:(NSString *)emoteKey;
-- (void)setFavoriteCompositionText:(nullable NSString *)text
-                  forBaseEmoteKey:(NSString *)baseEmoteKey
-                        memberKeys:(NSArray<NSString *> *)memberKeys;
 @end
 
 NS_ASSUME_NONNULL_END

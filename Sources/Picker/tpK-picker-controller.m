@@ -1,20 +1,17 @@
-// Extrait de tpK-core-manager.m : picker d'emotes 7TV indépendant du picker natif Twitch.
+// Extrait de tpK-core-manager.m : picker 7TV indépendant du picker Twitch.
 
 #import "Picker/tpK-picker-controller.h"
 #import "Core/tpK-core-manager.h"
 #import "Settings/tpK-settings-controller.h"
-#import "Picker/tpK-picker-settings-panel.h"
 #import "Localization/tpK-localization-manager.h"
 #import "Picker/tpK-picker-resolved-emote.h"
 #import "Picker/tpK-picker-cell.h"
-#import "Chat/tpK-chat-custom-view.h"
-#import "Chat/tpK-chat-appearance-config.h"
-#import "Emote/tpK-badge-provider.h"
+#import "Settings/tpK-chat-appearance-config.h"
+#import "Picker/tpK-picker-channel-avatar.h"
 #import "Emote/tpK-emote-image-cache.h"
 #import "Emote/tpK-emote-catalog.h"
-#import "Emote/tpK-provider-settings.h"
+#import "Picker/tpK-picker-settings.h"
 #import "Emote/tpK-emote-animation-engine.h"
-#import "Emote/tpK-network-emote-cache.h"
 #import "UI/7tv-ui-logo.h"
 #import "UI/tpK-ui-logo.h"
 #import "UI/bttv-ui-logo.h"
@@ -31,7 +28,7 @@ static __weak UIButton *tpk_pickerChatButtonReplacement = nil;
 static UIImage *TPKPickerScaledProviderLogo(UIImage *image, CGFloat pointSize);
 static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth, CGFloat maxHeight);
 
-// Logos décodés une fois en fond (sinon 20-60ms main à la 1ère ouverture).
+// Décode les logos en arrière-plan avant la première ouverture.
 static UIImage *s_tpkPickerTabLogo = nil;
 static UIImage *s_tpkPickerBTTVLogo = nil;
 static UIImage *s_tpkPickerFFZLogo = nil;
@@ -81,7 +78,7 @@ static UIImage *tpk_pickerLogoImage(CGFloat targetHeight) {
 }
 
 // ── Palette du picker (mode normal / OLED) ───────────────────────────────
-// bgColor=fond le plus sombre, cardColor=cartes, sepColor=séparateurs ; OLED=noir profond, contraste juste.
+// Palette du picker, avec un fond noir en mode OLED.
 static UIColor *tpk_pickerBgColor(void) {
     return TPKOLEDModeEnabled()
         ? UIColor.blackColor
@@ -101,12 +98,10 @@ static UIColor *tpk_pickerAccentColor(void) {
     return [UIColor colorWithRed:0.35 green:0.13 blue:0.86 alpha:1.0];
 }
 
-// Cellules créées avant d'avoir une UIWindow → signal à l'attachement du clavier, pas dispatch_async.
+// Attend l'attachement à la fenêtre avant de créer les cellules.
 @interface TPKPickerContainerView : UIView
 @property (nonatomic, copy) dispatch_block_t didAttachToWindow;
-// UIKit impose sa frame à l'inputView : la seule hauteur qu'il respecte est
-// celle annoncée en Auto Layout. D'où translatesAutoresizingMaskIntoConstraints
-// à NO et une preferredHeight explicite.
+// L'inputView respecte la hauteur Auto Layout annoncée par preferredHeight.
 @property (nonatomic, assign) CGFloat preferredHeight;
 @end
 
@@ -128,8 +123,7 @@ static UIColor *tpk_pickerAccentColor(void) {
 }
 
 - (CGSize)intrinsicContentSize {
-    // Jamais 0 : une hauteur nulle ferait disparaître le picker.
-    // CGFLOAT_MAX = "aucune contrainte" sur le sens horizontal (UIViewNoMetric).
+    // Garde une hauteur non nulle et laisse la largeur sans contrainte.
     return CGSizeMake(CGFLOAT_MAX,
                       _preferredHeight > 0 ? _preferredHeight
                                            : CGRectGetHeight(self.bounds));
@@ -154,7 +148,7 @@ static UIColor *tpk_pickerAccentColor(void) {
 }
 @end
 
-// Section de catalogue distincte de l'array plat : sous-catégorie choisie sans casser le pipeline.
+// Section du catalogue affichée séparément de la liste aplatie.
 @interface TPKPickerDisplaySection : NSObject
 @property (nonatomic, assign) TPKEmoteProviderID provider;
 @property (nonatomic, assign) TPKEmoteSectionKind kind;
@@ -170,7 +164,7 @@ static UIColor *tpk_pickerAccentColor(void) {
 @implementation TPKPickerDisplaySection
 @end
 
-// En-tête léger : bouton transparent sur toute la ligne, une seule cible VoiceOver/tap.
+// En-tête avec une seule cible VoiceOver et tactile.
 @interface TPKPickerSectionHeaderView : UICollectionReusableView
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *countLabel;
@@ -189,7 +183,7 @@ static UIColor *tpk_pickerAccentColor(void) {
     _toggleButton.frame = self.bounds;
     _toggleButton.autoresizingMask = UIViewAutoresizingFlexibleWidth |
         UIViewAutoresizingFlexibleHeight;
-    // Button spans the whole row for tappability, but keep its chevron trailing, not centered.
+    // Garde le chevron aligné à droite du bouton pleine largeur.
     _toggleButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
     _toggleButton.contentEdgeInsets = UIEdgeInsetsMake(0, 0, 0, 8.0);
     _toggleButton.accessibilityTraits = UIAccessibilityTraitButton;
@@ -251,6 +245,7 @@ static UIColor *tpk_pickerAccentColor(void) {
 
 @implementation TPKManager (TPKChatBarButton)
 - (void)tpk_emoteButtonTappedForButton:(UIButton *)sender {
+    if (!TPKChatAppearanceConfig.sharedConfig.pickerButtonEnabled) return;
     id association = objc_getAssociatedObject(sender, &kTPKPickerHostAssociation);
     UIView *chatInputView = [association isKindOfClass:TPKPickerWeakRef.class]
         ? ((TPKPickerWeakRef *)association).object : association;
@@ -275,10 +270,8 @@ BOOL TPKPickerChatButtonReady(void) {
         replacement.superview != nil && !replacement.hidden;
 }
 
-// Enfant hors-bounds jamais hitt-testé : le bouton vit en sibling dans le
-// container (slot bits), suivi par observer + events. Interaction coupée sur
-// bits (dispatch bloqué), ni hidden ni contraintes.
-// Compat UIKit : retirer ces cibles ChatInputView/BitsButton après la migration RN.
+// Le bouton est un sibling dans le container pour rester hittable hors bounds.
+// Retire les anciennes cibles UIKit après la migration RN.
 static UIView *tpk_legacyPickerInputForView(UIView *view) {
     for (UIView *cursor = view; cursor; cursor = cursor.superview)
         if ([NSStringFromClass(cursor.class) isEqualToString:@"Twitch.ChatInputView"]) return cursor;
@@ -333,8 +326,7 @@ static UIView * _Nullable tpk_findNativeEmoteButton(UIView *bitsNative) {
     return tpk_findRNTraySibling(bitsNative, @"chat-tray-button-emote");
 }
 
-// Observateur layout (modèle pastille) : addSubview seul, zéro contrainte.
-// Resynchronise le sibling à chaque layout du container (continu, sans timer).
+// Synchronise la pastille avec le container à chaque layout.
 @interface TPKPickerSlotObserverView : UIView
 @property (nonatomic, copy, nullable) void (^onHostLayout)(UIView *view);
 @end
@@ -347,9 +339,7 @@ static UIView * _Nullable tpk_findNativeEmoteButton(UIView *bitsNative) {
 
 static __weak TPKPickerSlotObserverView *tpk_pickerSlotObserver = nil;
 
-// Glissements sans événement (sortie fullscreen : même window, même
-// superview, pas de layout) : intercepter tout set géométrique direct RN.
-// Garde pointeur+weak, sans registration : aucun risque teardown/recyclage.
+// Suit aussi les déplacements RN qui ne déclenchent pas de layout.
 static IMP s_tpkPickerOrigSetFrame = NULL;
 static IMP s_tpkPickerOrigSetBounds = NULL;
 static IMP s_tpkPickerOrigSetCenter = NULL;
@@ -410,7 +400,7 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
     if (native && native != tpk_pickerChatButtonNative) return;
     TPKManager *manager = [TPKManager sharedManager];
     UIButton *button = tpk_pickerChatButtonReplacement;
-    BOOL usable = manager.chatCustomTestEnabled && native && native.window &&
+    BOOL usable = TPKChatAppearanceConfig.sharedConfig.pickerButtonEnabled && native && native.window &&
         ([native.accessibilityIdentifier isEqualToString:@"chat-tray-button-bits"] ||
          (tpk_legacyPickerInputForView(native) && tpk_isLegacyBitsButton(native)) ||
          tpk_isNativeEmoteButton(native));
@@ -450,11 +440,10 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
     button.backgroundColor = TPKOLEDModeEnabled()
         ? UIColor.blackColor
         : [UIColor colorWithRed:39.0/255.0 green:38.0/255.0 blue:44.0/255.0 alpha:1.0];
-    // Disable only Bits; the native emote button stays usable in fallback mode.
+    // Keep the native emote button usable when disabling Bits.
     if (replacesBits) native.userInteractionEnabled = NO;
     tpk_pickerInstallGeometryHooks();
-    // Sibling dans le parent (même slot, hitt-test OK) : pas enfant
-    // hors-bounds (jamais hitt-testé, cf. tentative enfant-de-l'emote).
+    // Use a hittable sibling in the parent, not an out-of-bounds child.
     UIView *slotParent = emote.superview ?: native.superview;
     if (!slotParent) {
         if ([button isKindOfClass:[UIButton class]]) [button removeFromSuperview];
@@ -462,7 +451,7 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
         return;
     }
     CGRect slot = [native convertRect:native.bounds toView:slotParent];
-    // Without Bits, use an equal-size slot immediately to the left of emotes.
+    // Reserve the same slot beside the emote button when Bits is absent.
     if (!replacesBits) slot.origin.x -= slot.size.width;
     button.frame = slot;
     button.autoresizingMask = UIViewAutoresizingNone;
@@ -483,7 +472,7 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
     slotObserver.onHostLayout = ^(__unused UIView *v) {
         UIView *strongNative = weakNative;
         if (!strongNative) return;
-        // Read final frames after layout; refresh the anchor when Bits appears or disappears.
+        // Refresh the anchor after layout when Bits changes visibility.
         dispatch_async(dispatch_get_main_queue(), ^{
             tpk_attachPassivePickerButton(strongNative);
         });
@@ -499,6 +488,20 @@ static void tpk_attachPassivePickerButton(UIView * _Nullable native) {
     objc_setAssociatedObject(button, &kTPKPickerHostAssociation,
                              [TPKPickerWeakRef refWithObject:host],
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+void TPKPickerSetup(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        __block BOOL previous = TPKChatAppearanceConfig.sharedConfig.pickerButtonEnabled;
+        [NSNotificationCenter.defaultCenter addObserverForName:TPKChatAppearanceConfigDidChangeNotification
+            object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
+                BOOL enabled = TPKChatAppearanceConfig.sharedConfig.pickerButtonEnabled;
+                if (previous == enabled) return;
+                previous = enabled;
+                tpk_attachPassivePickerButton(tpk_pickerChatButtonNative);
+            }];
+    });
 }
 
 void tpk_handleChatTrayButtonLifecycle(UIView *view) {
@@ -530,58 +533,51 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
 
 @interface TPKEmotePickerController ()
 
-// Panneau des tailles — composant enfant, créé paresseusement (voir -sizesPanel)
-@property (nonatomic, strong) TPKPickerSizesPanel *sizesPanel;
 
 // Picker d'emotes inline (affiché au-dessus de la barre de saisie)
 @property (nonatomic, strong) UIView              *emotePickerView;
-// FORT (pas weak) — doit rester valide jusqu'au tap : un weak deviendrait nil si Twitch recycle la vue.
+// Strong reference keeps the input view alive until selection.
 @property (nonatomic, weak)   UIView              *emotePickerTextField;
-// Forte sur le TextEntryView (firstResponder) : nécessaire pour TextDidEndEditing et l'aperçu.
+// Strong reference to observe TextDidEndEditing.
 @property (nonatomic, strong) UITextView          *emotePickerTextEntryView;
 @property (nonatomic, strong) UICollectionView    *emoteCollectionView;
 @property (nonatomic, strong) UITextField         *emoteSearchField;
 @property (nonatomic, strong) NSArray<TPKEmote *> *emotePickerEmotes;
 @property (nonatomic, strong, readwrite) NSArray<TPKEmote *> *emotePickerAllEmotes;
-// L'alerte de recherche vole le first responder : TextDidEndEditing pendant ce transfert = fausse fermeture.
+// Ignore TextDidEndEditing while the search alert takes focus.
 @property (nonatomic, assign) BOOL pickerSearchAlertActive;
 
-// Arrays filtrés pour l'affichage dans le picker (3 sections)
+// Filtered arrays shown in the picker.
 @property (nonatomic, strong) NSArray<TPKEmote *> *emotePickerFavoriteEmotes;
 @property (nonatomic, strong) NSArray<TPKEmote *> *emotePickerChannelEmotes;
 @property (nonatomic, strong, readwrite) NSArray<TPKEmote *> *emotePickerGlobalEmotes;
 @property (nonatomic, strong) NSArray<TPKEmote *> *emotePickerOtherEmotes; // compatibilité
-// Arrays provider-aware (TPKEmoteCatalog) ; les anciens servent encore aux previews et au code historique.
+// Catalogue par fournisseur.
 @property (nonatomic, strong) NSDictionary<NSNumber *, NSArray<TPKEmote *> *> *pickerProviderEmotes;
 @property (nonatomic, strong) NSArray<TPKEmote *> *pickerCatalogFavorites;
 @property (nonatomic, copy) NSSet<NSString *> *pickerFavoriteKeySet;
-// Sections Channel/Global en wrappers TPKEmote : partage cellules/animations avec le chemin legacy.
+// Channel/Global wrappers reuse the legacy cell and animation path.
 @property (nonatomic, strong) NSDictionary<NSNumber *, NSArray<TPKPickerDisplaySection *> *> *pickerProviderSections;
 @property (nonatomic, strong) NSArray<TPKPickerDisplaySection *> *pickerDisplaySections;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *pickerCollapsedSections;
-// Search expands sections temporarily; keep prior collapse choices aside so clearing search restores them.
+// Restore section collapse choices when search is cleared.
 @property (nonatomic, copy) NSDictionary<NSString *, NSNumber *> *pickerCollapseStateBeforeSearch;
 @property (nonatomic, assign) BOOL pickerCatalogSearchActive;
 @property (nonatomic, assign) BOOL pickerUsesCatalogSections;
 
-// Bouton ⚙️ du panneau des tailles (chrome du picker — logique dans TPKPickerSizesPanel)
-@property (nonatomic, weak) UIButton *pickerSizesToggleBtn;
-// Bouton réglages collé aux tailles — ouvre le même écran que le flottant 7TV (presentSettingsMenu).
+// Ouvre les paramètres du tweak.
 @property (nonatomic, weak) UIButton *pickerSettingsBtn;
-// Capsule pilule commune aux 2 boutons (même langage que pickerTabCapsuleView) au lieu de 2 pastilles séparées.
+// Capsule du bouton de paramètres.
 @property (nonatomic, weak) UIView   *pickerToolsCapsuleView;
-@property (nonatomic, assign) BOOL   pickerSizesPanelVisible;
 
-// Faux chat sur la key window (pas emotePickerView, c'est l'inputView) ; retenu pour le retirer à la fermeture.
-@property (nonatomic, strong) UIView *pickerFakeChatPreviewView;
 
 // ── Refonte tabbed + refonte visuelle du picker (style 7TV PC) ──────────
-// Onglet actif : Favoris/Tous/7TV/BTTV/FFZ. « Tous » = pseudo-provider purement visuel, jamais en requêtes.
+// Tabs: Favorites, All, 7TV, BTTV, and FFZ. All combines enabled providers.
 @property (nonatomic, assign) NSInteger pickerActiveTab;
-// Onglet avant recherche, restauré quand le champ se vide (la recherche bascule Favoris→Channel→Globales).
+// Restore the selected tab when search is cleared.
 @property (nonatomic, assign) BOOL      pickerIsSearching;
 @property (nonatomic, assign) NSInteger pickerPreSearchTab;
-// Pas de header ni de dock : tout flotte au-dessus de la grille (capsules provider et Channel/Global).
+// Provider and Channel/Global capsules float over the grid.
 @property (nonatomic, weak) UIView    *pickerSubcategoryCapsuleView;
 @property (nonatomic, weak) UIButton  *pickerSubcategoryChannelBtn;
 @property (nonatomic, weak) UIButton  *pickerSubcategoryGlobalBtn;
@@ -591,18 +587,18 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
 @property (nonatomic, weak) UIView    *pickerTabIndicatorView;       // pastille violette qui glisse entre les 5 boutons
 @property (nonatomic, weak) UIView    *pickerSearchCapsuleView;      // bas, pleine largeur (recherche)
 @property (nonatomic, weak) UIButton  *pickerSearchClearBtn;         // petite croix à droite du champ, visible si texte non vide
-// En drag, chaque cellule visible demande une preview annulable ; sa sortie coupe observation/décodage.
+// Drag previews are cancellable when a cell leaves the screen.
 @property (nonatomic, assign) BOOL pickerScrollInProgress;
 @property (nonatomic, assign) BOOL pickerCatalogReloadPending;
-// Coalescing rafale : dernier apply + flush armé (1 apply au lieu de N).
+// Coalesce rapid updates into one pending refresh.
 @property (nonatomic, assign) CFTimeInterval pickerCatalogLastApplyTime;
 @property (nonatomic, assign) BOOL pickerCatalogCoalesceFlushArmed;
 @property (nonatomic, assign) NSUInteger pickerOrientationGeneration;
-// 1re ouverture : bascule vers le 1er provider non vide si le défaut est vide ; tap onglet = désactivé.
+// On first open, select the first nonempty provider unless the user chose a tab.
 @property (nonatomic, assign) BOOL pickerInitialProviderSelectionPending;
-// Snapshots coûteux à aplatir : wrappers reconstruits seulement sur notif, pas à chaque ouverture.
+// Rebuild flattened wrappers only when catalogue snapshots change.
 @property (nonatomic, assign) BOOL pickerCatalogArraysDirty;
-// Choix explicite des réglages jamais remplacé par la sélection auto du premier provider.
+// Keep an explicit settings choice over automatic tab selection.
 @property (nonatomic, assign) BOOL pickerOpeningLocationExplicit;
 
 - (void)_tpk_reloadCatalogSnapshotReloadCollection:(BOOL)reloadCollection;
@@ -628,7 +624,6 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
 - (void)_tpk_applyOLEDColors;
 - (void)_tpk_relayoutPickerForSize:(CGSize)size;
 - (CGFloat)_tpk_resolvedGridHeight;
-- (void)_showFakeChatPreviewAboveInputView;
 - (void)_tpk_deactivateVisiblePickerAnimations;
 - (void)_tpk_activateVisiblePickerAnimations;
 - (void)_tpk_scheduleAnimationForPickerCell:(TPKEmotePickerCell *)cell
@@ -636,7 +631,8 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
 - (void)_tpk_scheduleStaticImageForPickerCell:(TPKEmotePickerCell *)cell
                                     atIndexPath:(NSIndexPath *)indexPath;
 - (BOOL)_tpk_configureAnimatedPickerCell:(TPKEmotePickerCell *)cell
-                             resolvedEmote:(TPKPickerResolvedEmote *)resolved
+                                      URL:(NSURL *)imageURL
+                                animated:(BOOL)animated
                                        key:(NSString *)key
                                 generation:(NSUInteger)generation
                                allowDecode:(BOOL)allowDecode;
@@ -647,7 +643,7 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
 
 @implementation TPKEmotePickerController
 
-// Valeurs par défaut de l'ancien -[TPKManager setup] : onglet Favoris, Channel, boutons prêts.
+// Preserve the defaults from -[TPKManager setup].
 - (instancetype)init {
     self = [super init];
     if (self) {
@@ -670,6 +666,8 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
         _pickerInitialProviderSelectionPending = NO;
         _pickerCatalogArraysDirty = YES;
         _pickerOpeningLocationExplicit = NO;
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(_tpk_appearanceDidChange:)
+            name:TPKChatAppearanceConfigDidChangeNotification object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(_tpk_emoteCatalogDidUpdate:)
                                                       name:TPKEmoteCatalogDidUpdateNotification
@@ -688,7 +686,7 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
                                                     object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(_tpk_badgesCatalogDidUpdate:)
-                                                      name:TPKBadgesCatalogUpdatedNotification
+                                                      name:TPKPickerChannelAvatarDidUpdateNotification
                                                     object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(_tpk_deviceOrientationDidChange:)
@@ -704,12 +702,11 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
                                                       name:UIKeyboardDidChangeFrameNotification
                                                     object:nil];
 
-        // Résignation sans notre bouton → inputView retiré sans _hideEmotePicker : faux chat rattrapé ici.
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                   selector:@selector(_tpk_textEntryDidEndEditing:)
                                                       name:UITextViewTextDidEndEditingNotification
                                                     object:nil];
-        // Logos décodés en fond dès l'init (1ère ouverture sans coût main).
+        // Decode logos in the background before the first open.
         tpk_pickerPrewarmProviderLogos();
     }
     return self;
@@ -732,14 +729,14 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
     self.emotePickerView.backgroundColor = backgroundColor;
     self.emoteCollectionView.backgroundColor = backgroundColor;
 
-    // Capsules flottantes : fond carte translucide, même teinte que les cellules (cohérence).
+    // Match floating capsule backgrounds to the cells.
     UIColor *capsuleColor = [cardColor colorWithAlphaComponent:0.92];
     self.pickerTabCapsuleView.backgroundColor   = capsuleColor;
     self.pickerSubcategoryCapsuleView.backgroundColor = capsuleColor;
     self.pickerToolsCapsuleView.backgroundColor = capsuleColor;
     self.pickerSearchCapsuleView.backgroundColor = capsuleColor;
 
-    // Cellules visibles : recolorer carte+bordure tout de suite ; cellForRow: fera le reste au prochain dequeue.
+    // Recolor visible cells now; reused cells update when dequeued.
     for (TPKEmotePickerCell *cell in self.emoteCollectionView.visibleCells) {
         [cell tpk_applyOLEDColors];
     }
@@ -752,17 +749,23 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
         header.backgroundColor = headerColor;
     }
 
-    // Panneau des tailles (séparateurs + capsule de catégories + segmented controls).
-    if (_sizesPanel) {
-        [_sizesPanel tpk_applyOLEDColorsWithBgColor:backgroundColor
-                                            sepColor:sepColor
-                                           cardColor:cardColor];
-    }
+
 
     // Aperçu du chat flottant.
-    self.pickerFakeChatPreviewView.backgroundColor = TPKOLEDModeEnabled()
-        ? UIColor.blackColor
-        : [UIColor colorWithWhite:0.09 alpha:0.97];
+}
+
+- (void)_tpk_keyboardFrameDidChange:(NSNotification *)notification {
+    if (tpk_pickerChatButtonNative) tpk_attachPassivePickerButton(tpk_pickerChatButtonNative);
+    UIView *pickerView = self.emotePickerView;
+    if (!pickerView.window || pickerView.hidden) return;
+    CGFloat height = [self _tpk_resolvedGridHeight];
+    if (fabs(pickerView.bounds.size.height - height) >= 0.5) {
+        CGRect frame = pickerView.frame;
+        frame.size.height = height;
+        pickerView.frame = frame;
+        [self _tpk_relayoutPickerForSize:frame.size];
+        [self.emoteCollectionView setContentOffset:CGPointZero animated:NO];
+    }
 }
 
 - (void)_tpk_textEntryDidEndEditing:(NSNotification *)note {
@@ -770,29 +773,17 @@ void tpk_handleChatTrayButtonLifecycle(UIView *view) {
     if (!self.emotePickerView || self.emotePickerView.hidden) return; // picker déjà fermé, rien à faire
     if (self.pickerSearchAlertActive) return; // focus prêté à l'alerte de recherche
 
-    // Pas de resign/reloadInputViews ici : la résignation vient déjà de UIKit, on remet juste notre état à plat.
+    // UIKit already resigned the input view; reset picker state only.
     [self _tpk_deactivateVisiblePickerAnimations];
-    [[TPKEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
-    [[TPKEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
-    [[TPKEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
     self.pickerCatalogReloadPending = NO;
-    // Invalider les relayouts d'orientation prévus : sinon le faux chat réapparaît après fermeture.
     self.pickerOrientationGeneration += 1;
     self.emotePickerTextEntryView = nil;
     self.emotePickerTextField = nil;
     self.emotePickerView.hidden = YES;
-    [self _hideFakeChatPreview];
 }
 
-// Panneau des tailles — composant enfant créé à la demande (toggle ⚙️ ou construction du picker).
-- (TPKPickerSizesPanel *)sizesPanel {
-    if (!_sizesPanel) {
-        _sizesPanel = [[TPKPickerSizesPanel alloc] init];
-        _sizesPanel.picker = self;
-    }
-    return _sizesPanel;
-}
+
 
 static NSString *const kEmoteCellID = @"TPKEmoteCell";
 
@@ -800,7 +791,7 @@ static NSString *const kEmoteCellID = @"TPKEmoteCell";
 static const CGFloat kCellSize = 40.0;
 
 // ── Onglets du picker refondu (style 7TV PC) ──────────────────────────────
-// 5 valeurs : Favoris/Tous/7TV/BTTV/FFZ — « Tous » agrège Channel/Shared/Sets + Global des providers activés.
+// Tabs: Favorites, All, 7TV, BTTV, and FFZ; All aggregates enabled providers.
 typedef NS_ENUM(NSInteger, TPKPickerTab) {
     TPKPickerTabFavorites = 0,
     TPKPickerTabAll       = 1,
@@ -810,120 +801,21 @@ typedef NS_ENUM(NSInteger, TPKPickerTab) {
 };
 
 // ── Dimensions du picker refondu ────────────────────────────────────────
-// Grille = 100% du picker, tout flotte ; sectionInset réserve haut/bas pour les cellules.
+// The grid fills the picker; section insets reserve space for floating controls.
 static const CGFloat kTPKPickerFloatSize    = 28.0; // diamètre/hauteur des pastilles flottantes (fermer, onglets, sous-choix, ⚙️)
 static const CGFloat kTPKPickerFloatMargin  = 8.0;  // marge entre une pastille et le bord du picker
 static const CGFloat kTPKPickerFloatGap     = 6.0;  // écart vertical entre 2 rangées de pastilles flottantes
 static const CGFloat kTPKPickerSubcategoryGap = 4.0; // écart preview entre Channel/Global et les providers
 static const CGFloat kTPKPickerSearchH      = 38.0; // hauteur de la capsule de recherche
-// sectionInset.bottom = marge + onglets + écart + recherche + marge : aucune cellule cachée sous les flottants.
+// Reserve bottom inset space so floating controls never cover cells.
 static const CGFloat kTPKPickerBottomZoneH  =
     kTPKPickerFloatMargin + kTPKPickerFloatSize + kTPKPickerFloatGap + kTPKPickerSearchH + kTPKPickerFloatMargin;
 
-// Hauteur utile minimale : la zone basse (88 pt) plus une rangée d'emotes.
+// Minimum height fits the bottom controls and one emote row.
 static const CGFloat kTPKPickerMinUsableH = 120.0;
-// Place réservée au-dessus du picker (safe area + chat bar).
+// Space reserved above the picker for the safe area and chat bar.
 static const CGFloat kTPKPickerChromeReserveH = 120.0;
 // (annulation lors du recyclage)
-- (NSURLSession *)pickerImageSession {
-    static NSURLSession *s = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        // ephemeral = isolation du sharedURLCache (videable par Twitch) → cache dédié ; @[] = pas de boucle.
-        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        cfg.URLCache                      = [TPKURLProtocol sharedEmoteCache];
-        cfg.requestCachePolicy            = NSURLRequestReturnCacheDataElseLoad;
-        cfg.protocolClasses               = @[];
-        cfg.HTTPMaximumConnectionsPerHost = 6;
-        s = [NSURLSession sessionWithConfiguration:cfg];
-    });
-    return s;
-}
-
-// ── Queue série pour le décodage des animations ───────────────────────────────
-// CRITIQUE : queue SÉRIE (pas globale) — frame WebP 4x ≈ 160 Ko, 30×20 frames = spike ~100 Mo → OOM.
-- (dispatch_queue_t)_animationDecodeQueue {
-    static dispatch_queue_t q = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        q = dispatch_queue_create("tv.s7tv.anim-decode", DISPATCH_QUEUE_SERIAL);
-    });
-    return q;
-}
-
-// ── Décodage image pour le picker ─────────────────────────────────────────────
-// wantsAnimated + showPickerAnimations → UIImage animée, sinon frame 0 seule (rapide, économe en RAM).
-// ── Force-decode hors thread principal ─────────────────────────────────────
-// Image "lazy" décompressée au 1er rendu (MAIN THREAD) → freeze : on redessine ici en bitmap.
-- (UIImage *)_forceDecodedImage:(UIImage *)img {
-    if (!img || img.size.width < 1 || img.size.height < 1) return img;
-    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
-    fmt.opaque = NO;
-    fmt.scale  = img.scale;
-    UIGraphicsImageRenderer *renderer =
-        [[UIGraphicsImageRenderer alloc] initWithSize:img.size format:fmt];
-    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-        [img drawAtPoint:CGPointZero];
-    }];
-}
-
-- (UIImage *)decodePickerImageData:(NSData *)data wantsAnimated:(BOOL)wantsAnimated {
-    if (!data) return nil;
-
-    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
-    if (!src) return [self _forceDecodedImage:[UIImage imageWithData:data]];
-
-    // ── Animé : décoder toutes les frames ──────────────────────────────────
-    if (wantsAnimated) {
-        NSUInteger count = CGImageSourceGetCount(src);
-        if (count > 1) {
-            // Cap 24 frames — au-delà, gains nuls et RAM explose (frame 4x ≈ 160 Ko décompressés).
-            NSUInteger maxFrames = MIN(count, 24);
-            NSMutableArray<UIImage *> *frames = [NSMutableArray arrayWithCapacity:maxFrames];
-            NSTimeInterval duration = 0.0;
-
-            for (NSUInteger i = 0; i < maxFrames; i++) {
-                // @autoreleasepool : libère le CGImage après chaque itération → pic mémoire = 1 frame, pas N.
-                @autoreleasepool {
-                    CGImageRef cgImg = CGImageSourceCreateImageAtIndex(src, i, NULL);
-                    if (!cgImg) continue;
-
-                    UIImage *frame = [UIImage imageWithCGImage:cgImg];
-                    CGImageRelease(cgImg);
-                    [frames addObject:[self _forceDecodedImage:frame]];
-
-                    NSDictionary *props = CFBridgingRelease(
-                        CGImageSourceCopyPropertiesAtIndex(src, i, NULL));
-                    NSDictionary *gifProps  = props[@"{GIF}"];
-                    NSDictionary *webpProps = props[@"{WebP}"];
-                    NSNumber *delay = gifProps[@"UnclampedDelayTime"]
-                                   ?: gifProps[@"DelayTime"]
-                                   ?: webpProps[@"DelayTime"];
-                    duration += (delay && delay.doubleValue > 0.01)
-                                ? delay.doubleValue : 0.1;
-                }
-            }
-
-            CFRelease(src);
-
-            if (frames.count > 1) {
-                return [UIImage animatedImageWithImages:frames
-                                              duration:MAX(duration, 0.5)];
-            }
-            return frames.firstObject;
-        }
-    }
-
-    // ── Statique : frame 0 uniquement ──────────────────────────────────────
-    CGImageRef cgImg = CGImageSourceCreateImageAtIndex(src, 0, NULL);
-    UIImage *img = nil;
-    if (cgImg) { img = [UIImage imageWithCGImage:cgImg]; CGImageRelease(cgImg); }
-    CFRelease(src);
-    img = img ?: [UIImage imageWithData:data];
-    return [self _forceDecodedImage:img];
-}
-
-// À CHAQUE ouverture : applique l'avatar en cache ou lance le fetch — filet de sécurité si la chaîne a changé.
 - (void)_tpk_refreshChannelAvatarIfNeeded {
     NSString *channelID = [TPKManager sharedManager].currentChannelTwitchID;
     if (!channelID.length) {
@@ -931,16 +823,16 @@ static const CGFloat kTPKPickerChromeReserveH = 120.0;
         return;
     }
 
-    // Source unique = TPKBadgeProvider (Helix, dédup, retry, cache) : plus de client Helix parallèle ici.
-    id<TPKResolvedEmote> avatar = [[TPKBadgeProvider sharedProvider]
-        resolvedChannelAvatarForChannelID:channelID];
-    if (!avatar) {
+    // Load the shared Channel-tab avatar.
+    NSURL *avatarURL = [[TPKPickerChannelAvatarProvider sharedProvider]
+        channelAvatarURLForChannelID:channelID];
+    if (!avatarURL) {
         [self _tpk_resetChannelButtonToPlaceholder];
-        return; // le provider publiera TPKBadgesCatalogUpdatedNotification
+        return; // The avatar update notification refreshes this view.
     }
 
     TPKEmoteImageCache *imageCache = [TPKEmoteImageCache sharedCache];
-    UIImage *cached = [imageCache cachedImageForResolvedEmote:avatar];
+    UIImage *cached = [imageCache cachedImageForURL:avatarURL];
     if (cached) {
         [self _tpk_applyChannelAvatarImage:cached];
         return;
@@ -949,17 +841,17 @@ static const CGFloat kTPKPickerChromeReserveH = 120.0;
     [self _tpk_resetChannelButtonToPlaceholder];
     NSString *requestedChannelID = [channelID copy];
     __weak typeof(self) weakSelf = self;
-    [imageCache imageForResolvedEmote:avatar completion:^(UIImage * _Nullable image) {
+    [imageCache imageForURL:avatarURL completion:^(UIImage * _Nullable image) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf || !image) return;
-        // Réponse tardive d'une ancienne chaîne ne doit pas remplacer l'avatar du salon courant.
+        // Ignore stale avatar responses from a previous channel.
         if (![[TPKManager sharedManager].currentChannelTwitchID
               isEqualToString:requestedChannelID]) return;
         [strongSelf _tpk_applyChannelAvatarImage:image];
     }];
 }
 
-// Ouvert avant la 1re GQL → premier Helix sans credentials : relancer à leur capture évite de rouvrir le picker.
+// Retry avatar loading when credentials arrive after the picker opens.
 - (void)_tpk_twitchCredentialsDidUpdate:(__unused NSNotification *)notification {
     self.pickerCatalogArraysDirty = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -968,7 +860,7 @@ static const CGFloat kTPKPickerChromeReserveH = 120.0;
     });
 }
 
-// URL Helix d'avatar dispo → on résout l'objet, puis le cache image partagé télécharge et décode.
+// Resolve the Helix avatar URL through the shared image cache.
 - (void)_tpk_badgesCatalogDidUpdate:(__unused NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.pickerSubcategoryChannelBtn) return;
@@ -985,7 +877,7 @@ static const CGFloat kTPKPickerChromeReserveH = 120.0;
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf || generation != strongSelf.pickerOrientationGeneration ||
             !strongSelf.emotePickerView || strongSelf.emotePickerView.hidden) return;
-        // inputView perdu sans _hideEmotePicker : ne jamais relancer un aperçu flottant orphelin sur rotation.
+        // Don't restore a floating preview after rotation if inputView was lost.
         BOOL pickerAttachedAsInputView = strongSelf.emotePickerTextEntryView &&
             strongSelf.emotePickerTextEntryView.window &&
             strongSelf.emotePickerTextEntryView.inputView == strongSelf.emotePickerView;
@@ -1002,7 +894,7 @@ static const CGFloat kTPKPickerChromeReserveH = 120.0;
             strongSelf.emotePickerTextEntryView.inputView == strongSelf.emotePickerView;
         CGFloat originY = 0;
         if (!attachedAsInputView && strongSelf.emotePickerView.superview == hostWindow) {
-            // Fallback = vraie sous-vue de la fenêtre, pas un inputView : conserver l'ancrage bas après rotation.
+            // Keep the fallback view anchored to the bottom after rotation.
             originY = MAX(hostWindow.safeAreaInsets.top,
                 hostWindow.bounds.size.height - targetHeight - 56.0);
         }
@@ -1012,15 +904,11 @@ static const CGFloat kTPKPickerChromeReserveH = 120.0;
             strongSelf.emotePickerTextEntryView.inputView == strongSelf.emotePickerView) {
             [strongSelf.emotePickerTextEntryView reloadInputViews];
         }
-        if (strongSelf.pickerSizesPanelVisible) {
-            [strongSelf _showFakeChatPreviewAboveInputView];
-            // Le réglage affiché doit suivre l'orientation qui vient de changer.
-            [strongSelf.sizesPanel tpk_syncPickerSizeRow];
-        }
+
     });
 }
 
-// Cercle de `diameter` pts : en frame-based, UIButton ne redimensionne pas l'image (avatar 300x300).
+// Crops the source image to a circle of the requested diameter.
 - (UIImage *)_tpk_circularAvatarFromImage:(UIImage *)source diameter:(CGFloat)diameter {
     if (!source || source.size.width <= 0 || source.size.height <= 0) return nil;
     CGSize targetSize = CGSizeMake(diameter, diameter);
@@ -1029,7 +917,7 @@ static const CGFloat kTPKPickerChromeReserveH = 120.0;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:targetSize format:fmt];
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, diameter, diameter)] addClip];
-        // Aspect-fill : centre le plus petit côté de la source sur le cadre cible.
+        // Aspect-fill and center-crop the source image.
         CGFloat scale = MAX(diameter / source.size.width, diameter / source.size.height);
         CGFloat drawW = source.size.width  * scale;
         CGFloat drawH = source.size.height * scale;
@@ -1038,7 +926,7 @@ static const CGFloat kTPKPickerChromeReserveH = 120.0;
     }];
 }
 
-// 22pt au lieu de 28 : marge cohérente avec le placeholder (14pt) et le logo voisin ; 30pt collait aux bords.
+// Keep the provider logo clear of the capsule edges.
 static const CGFloat kTPKPickerAvatarDiameter = 22.0;
 
 - (void)_tpk_applyChannelAvatarImage:(UIImage *)image {
@@ -1063,10 +951,10 @@ static const CGFloat kTPKPickerAvatarDiameter = 22.0;
 }
 
 - (void)toggleEmotePickerForChatInputView:(UIView *)chatInputView {
-    // Appel synchrone (déjà main thread) : dispatch_async laissait UIKit résigner avant reloadInputViews.
+    // Run synchronously so UIKit doesn't resign before reloadInputViews.
 
     // ── Invalider le cache si le TextEntryView n'est plus dans une fenêtre ──
-    // Changement de channel = hiérarchie reconstruite : vue orpheline, BFS skippé → picker jamais affiché.
+    // A channel change rebuilds the hierarchy, so discard orphaned input views.
     if (self.emotePickerTextEntryView && !self.emotePickerTextEntryView.window) {
         [[TPKManager sharedManager] log:@"⚠️ emotePickerTextEntryView orphelin (window=nil) → reset cache"];
         self.emotePickerTextEntryView = nil;
@@ -1087,7 +975,7 @@ static const CGFloat kTPKPickerAvatarDiameter = 22.0;
     }
 
     // ── Basculer : picker déjà affiché → retirer ────────────────────────────
-    // GUARD emotePickerView non-nil : sans lui, 1er tap → _hideEmotePicker avant création → bug d'ouverture.
+    // Only hide an existing picker; otherwise the first tap cannot open it.
     BOOL pickerAttachedAsInputView = self.emotePickerView &&
         self.emotePickerTextEntryView &&
         self.emotePickerTextEntryView.inputView == self.emotePickerView;
@@ -1105,18 +993,15 @@ static const CGFloat kTPKPickerAvatarDiameter = 22.0;
 
 - (void)_hideEmotePicker {
     self.pickerSearchAlertActive = NO;
-    // Toute relayout différée (rotation) devient obsolète dès que le picker est fermé.
+    // Ignore deferred layout work after the picker closes.
     self.pickerOrientationGeneration += 1;
     [self _tpk_deactivateVisiblePickerAnimations];
-    [[TPKEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
-    [[TPKEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
-    [[TPKEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
     self.pickerCatalogReloadPending = NO;
     UITextView *tv = self.emotePickerTextEntryView;
     if (tv) {
         @try {
-            // Nettoyer inputView même sans window ; resign/reload sans fenêtre → UIKit crashe.
+            // Clear inputView without resigning when there is no window.
             tv.inputView = nil;
             tv.inputAccessoryView = nil;
             if (tv.window) {
@@ -1128,21 +1013,17 @@ static const CGFloat kTPKPickerAvatarDiameter = 22.0;
     self.emotePickerTextEntryView = nil;
     self.emotePickerTextField = nil;
     self.emotePickerView.hidden = YES;
-    [self _hideFakeChatPreview];
 }
 - (void)cleanupPickerForStreamClose {
     self.pickerSearchAlertActive = NO;
     self.pickerOrientationGeneration += 1;
     [self _tpk_deactivateVisiblePickerAnimations];
-    [[TPKEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
-    [[TPKEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
-    [[TPKEmoteImageCache sharedCache] setDecodingSuspended:NO];
     self.pickerScrollInProgress = NO;
     self.pickerCatalogReloadPending = NO;
     UITextView *tv = self.emotePickerTextEntryView;
     if (tv) {
         @try {
-            // Pas de window → ne pas toucher au responder chain.
+            // Avoid changing the responder chain without a window.
             tv.inputView = nil;
             tv.inputAccessoryView = nil;
         } @catch (...) {}
@@ -1150,26 +1031,17 @@ static const CGFloat kTPKPickerAvatarDiameter = 22.0;
     self.emotePickerTextEntryView = nil;
     self.emotePickerTextField = nil;
     self.emotePickerView.hidden = YES;
-    [self _hideFakeChatPreview];
 }
 
 - (void)cleanupPickerForStreamCloseIfOwnedByChatInputView:(UIView *)chatInputView {
-    // Ancienne ChatInputView survivante : son didMoveToWindow:nil ne doit pas fermer le picker de la nouvelle chaîne.
+    // Ignore detach events from a previous channel's input view.
     if (self.emotePickerTextField && self.emotePickerTextField != chatInputView) return;
     [self cleanupPickerForStreamClose];
 }
 
-// Compatibility hook for older builds: sorting now comes from the provider-aware catalogue.
+// Compatibility hook; sorting now uses the provider-aware catalogue.
 - (void)invalidateSortCache {
-    // No legacy emote cache remains to invalidate.
-}
-
-- (void)cancelPendingImageLoadsWithCompletion:(void (^)(void))completion {
-    [[self pickerImageSession] getAllTasksWithCompletionHandler:
-        ^(NSArray<__kindof NSURLSessionTask *> *tasks) {
-            for (NSURLSessionTask *task in tasks) [task cancel];
-            if (completion) dispatch_async(dispatch_get_main_queue(), completion);
-        }];
+    // There is no legacy emote cache to clear.
 }
 
 - (void)favoritesDidChange {
@@ -1194,7 +1066,7 @@ static NSString *TPKPickerStableEmoteKey(TPKEmote *emote) {
     return TPKEmoteFavoriteKey(TPKEmoteProviderIDTPK, emote.emoteID);
 }
 
-// Tri historique : emotes carrées d'abord, puis aire croissante, puis nom ; aucun champ provider dans l'onglet agrégé.
+// Legacy order: square emotes, smaller area, then name.
 static NSComparisonResult TPKPickerCompareEmotes(id firstObject,
                                                    id secondObject,
                                                    BOOL includeProviderTieBreak) {
@@ -1259,7 +1131,7 @@ static NSComparator TPKPickerMixedEmoteSizeComparator = ^NSComparisonResult(
     return TPKPickerCompareEmotes(firstObject, secondObject, NO);
 };
 
-// Logos 400px : rasterize at the 28pt slot size, else BTTV/FFZ look bigger than 7TV/star.
+// Rasterize large logos to the 28pt slot size.
 static UIImage *TPKPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) {
     if (!image || pointSize <= 0) return image;
     CGFloat scale = UIScreen.mainScreen.scale > 0 ? UIScreen.mainScreen.scale : 2.0;
@@ -1274,7 +1146,7 @@ static UIImage *TPKPickerScaledProviderLogo(UIImage *image, CGFloat pointSize) {
     return [scaled imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
 }
 
-// Logos larges : inscrit sans étirer (letterbox transparent).
+// Fit wide logos without stretching them.
 static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth, CGFloat maxHeight) {
     if (!image || maxWidth <= 0 || maxHeight <= 0) return image;
     CGSize src = image.size;
@@ -1297,26 +1169,12 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
 
 - (void)_tpk_applyProviderCatalogArrays {
     TPKEmoteCatalog *catalog = [TPKEmoteCatalog sharedCatalog];
-    // Sync UI prefs (text ids) with the catalogue (numeric enum) before building the grid.
-    NSDictionary *enabledSettings = @{
-        @(TPKEmoteProviderIDTPK): @([TPKEmoteProviderSettings isProviderEnabled:TPKExternalEmoteProvider7TV]),
-        @(TPKEmoteProviderIDBTTV): @([TPKEmoteProviderSettings isProviderEnabled:TPKExternalEmoteProviderBTTV]),
-        @(TPKEmoteProviderIDFFZ): @([TPKEmoteProviderSettings isProviderEnabled:TPKExternalEmoteProviderFFZ]),
-    };
-    if (![catalog.providerEnabled isEqualToDictionary:enabledSettings])
-        catalog.providerEnabled = enabledSettings;
-    NSArray<NSString *> *priority = [TPKEmoteProviderSettings providerPriority];
-    NSMutableArray *numericPriority = [NSMutableArray array];
-    for (NSString *identifier in priority)
-        [numericPriority addObject:@(TPKEmoteProviderFromIdentifier(identifier))];
-    if (![catalog.providerPriority isEqualToArray:numericPriority])
-        catalog.providerPriority = numericPriority;
     NSMutableDictionary *providerArrays = [NSMutableDictionary dictionary];
     NSMutableDictionary *providerSections = [NSMutableDictionary dictionary];
     NSMutableArray *favorites = [NSMutableArray array];
     NSMutableSet *seenFavoriteKeys = [NSMutableSet set];
     NSMutableSet *currentCatalogKeys = [NSMutableSet set];
-    // Favoris lus une seule fois : l'ancien appel par émote relisait UserDefaults à chaque emote et bloquait le thread principal.
+    // Read favorites once instead of querying UserDefaults for every emote.
     NSSet<NSString *> *favoriteKeySet = [NSSet setWithArray:[catalog favoriteKeysSnapshot]];
     self.pickerFavoriteKeySet = favoriteKeySet;
     BOOL hasSyntheticProviderState = NO;
@@ -1330,12 +1188,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
         BOOL providerLoading = snapshot.state == TPKEmoteProviderStateLoading;
         NSString *providerError = snapshot.state == TPKEmoteProviderStateError
             ? snapshot.errorMessage : nil;
-        if (![catalog.providerEnabled[@(provider)] boolValue]) {
-            providerArrays[@(provider)] = @[];
-            providerSections[@(provider)] = @[];
-            continue;
-        }
-        // Idle -> Loading runs on a serial queue: show a local loading section so the first open isn't the flat 7TV grid or an empty picker.
+        // Show loading sections while the initial catalogue request runs.
         if (snapshot.state == TPKEmoteProviderStateIdle &&
             snapshot.sections.count == 0) {
             TPKPickerDisplaySection *initialLoading = [TPKPickerDisplaySection new];
@@ -1380,7 +1233,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
                 }
             }
             [sectionItems sortUsingComparator:TPKPickerEmoteSizeComparator];
-            // Loaded empty sections are hidden; loading/error ones stay visible so the user can retry without changing tab or scrolling.
+            // Hide loaded empty sections; keep loading and error sections visible.
             if (!sectionItems.count && section.loaded && !section.loading && !section.errorMessage.length)
                 continue;
             TPKPickerDisplaySection *display = [TPKPickerDisplaySection new];
@@ -1390,7 +1243,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
             display.title = section.title.length ? section.title : @"Emotes";
             display.items = sectionItems.copy;
             display.loaded = section.loaded;
-            // A provider snapshot can fail while a cached section remains: keep it visible, state exposed in the header, retry not hidden.
+            // Keep cached sections visible after a failed refresh and show their state.
             display.loading = section.loading || providerLoading;
             display.empty = NO;
             display.errorMessage = section.errorMessage ?: providerError;
@@ -1400,9 +1253,8 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
         providerArrays[@(provider)] = items.copy;
         providerSections[@(provider)] = displaySections.copy;
     }
-    // Skip favorites absent from the current snapshots: an old channel emote can't render here; current global emotes stay eligible.
+    // Skip stale channel favorites but keep current global favorites.
     for (TPKEmoteDescriptor *descriptor in [catalog favoriteDescriptorsSnapshot]) {
-        if (![catalog.providerEnabled[@(descriptor.provider)] boolValue]) continue;
         NSString *stableKey = TPKEmoteFavoriteKey(descriptor.provider, descriptor.emoteID);
         if (![currentCatalogKeys containsObject:stableKey]) continue;
         if (!stableKey.length || [seenFavoriteKeys containsObject:stableKey]) continue;
@@ -1423,20 +1275,12 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
             [catalog snapshotForProvider:(TPKEmoteProviderID)provider].state;
         if (state != TPKEmoteProviderStateIdle) { hasProviderState = YES; break; }
     }
-    // Keep provider tabs active even with no emotes yet; if the catalogue hasn't started, don't pass legacy 7TV cache as BTTV/FFZ.
-    BOOL hasDisabledProvider = NO;
-    for (NSInteger provider = TPKEmoteProviderIDTPK;
-         provider <= TPKEmoteProviderIDFFZ; provider++) {
-        if (![catalog.providerEnabled[@(provider)] boolValue]) {
-            hasDisabledProvider = YES;
-            break;
-        }
-    }
-    BOOL useProviderCatalog = hasProviderEmotes || hasProviderState || hasDisabledProvider;
+    // Keep provider tabs available while loading; never show 7TV cache under BTTV or FFZ.
+    BOOL useProviderCatalog = hasProviderEmotes || hasProviderState;
     self.pickerProviderEmotes = useProviderCatalog ? providerArrays.copy : @{};
     self.pickerProviderSections = useProviderCatalog ? providerSections.copy : @{};
     self.pickerCatalogFavorites = favorites.copy;
-    // Keep the legacy favorite array in sync: a favorite removed while open must not leave a stale item pinning the Favorites tab.
+    // Keep legacy favorites in sync so removed items leave the Favorites tab.
     if (useProviderCatalog) self.emotePickerFavoriteEmotes = favorites.copy;
     self.pickerCatalogArraysDirty = NO;
     [self _tpk_normalizeActivePickerTab];
@@ -1466,7 +1310,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     // Les snapshots provider-aware sont la seule source de vérité du picker.
     if (self.pickerCatalogArraysDirty || !self.pickerProviderSections.count)
         [self _tpk_applyProviderCatalogArrays];
-    // Snapshots may finish out of order: re-check the initial empty tab after each merge so BTTV/FFZ appear; no-op once a tab is chosen.
+    // Recheck the initial tab after each snapshot; preserve explicit tab choices.
     [self _tpk_selectInitialProviderIfNeeded];
     NSMutableArray *catalogAll = [NSMutableArray array];
     for (NSArray *items in self.pickerProviderEmotes.allValues)
@@ -1537,10 +1381,13 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     self.pickerCatalogReloadPending = NO;
     [self _tpk_reloadCatalogSnapshotReloadCollection:YES];
     [self _tpk_prewarmPickerViewportImages];
-    if (self.pickerSizesPanelVisible && self->_sizesPanel) {
-        [self->_sizesPanel loadRealPreviewAssetsIfNeeded];
-    }
-    // Pas de 2e layoutIfNeeded (doublon du reload ci-dessus : même état final au prochain passage).
+
+    // Avoid a duplicate layout pass; the reload already schedules one.
+}
+
+- (void)_tpk_appearanceDidChange:(NSNotification *)notification {
+    if (!TPKChatAppearanceConfig.sharedConfig.pickerButtonEnabled &&
+        self.emotePickerView && !self.emotePickerView.hidden) [self _hideEmotePicker];
 }
 
 - (void)_tpk_emoteCatalogDidUpdate:(__unused NSNotification *)notification {
@@ -1553,8 +1400,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
             self.pickerCatalogReloadPending = YES;
             return;
         }
-        // Rafale (N providers en ~400ms) : 1er appliqué de suite, les
-        // suivants coalescés en un flush unique. Même contenu final.
+        // Apply the first update immediately and coalesce the rest.
         CFTimeInterval now = CFAbsoluteTimeGetCurrent();
         if (now - self.pickerCatalogLastApplyTime < 0.3) {
             self.pickerCatalogReloadPending = YES;
@@ -1570,7 +1416,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
                     if (!strongSelf.emotePickerView || strongSelf.emotePickerView.hidden) return;
                     if (strongSelf.pickerScrollInProgress || strongSelf.emoteCollectionView.isTracking ||
                         strongSelf.emoteCollectionView.isDragging || strongSelf.emoteCollectionView.isDecelerating) {
-                        return; // reste pending : fin scroll l'appliquera
+                        return; // Apply the pending update after scrolling.
                     }
                     [strongSelf _tpk_applyCatalogUpdateNow];
                     [strongSelf _tpk_activateVisiblePickerAnimations];
@@ -1586,12 +1432,12 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
 }
 
 - (void)_buildAndShowEmotePickerForView:(UIView *)chatInputView {
-    // Une notification différée pendant un ancien scroll ne doit pas survivre à la fermeture : l'ouverture reconstruit le snapshot.
+    // Discard deferred updates on close; reopening rebuilds the snapshot.
     self.pickerCatalogReloadPending = NO;
-    // Réinitialiser l'état AVANT le premier snapshot : sinon pickerPreSearchTab restaurait l'onglet d'avant sur une requête vide.
+    // Reset state first so an empty search can't restore a stale tab.
     self.emoteSearchField.text = @"";
     self.pickerIsSearching = NO;
-    // Apply the opening choice before any provider notification; without one, keep the historical fallback (Favorites then first provider).
+    // Choose the opening tab before provider notifications arrive.
     self.pickerOpeningLocationExplicit = [self _tpk_applyConfiguredPickerOpeningLocation];
     self.pickerInitialProviderSelectionPending = !self.pickerOpeningLocationExplicit;
     if (!self.pickerOpeningLocationExplicit) {
@@ -1599,11 +1445,11 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
             ? TPKPickerTabAll : TPKPickerTabTPK;
     }
 
-    // Build the cache-first snapshot before scheduling requests: the parser can run off the state queue; layout never waits on network.
+    // Build the cached snapshot before scheduling network requests.
     TPKEmoteCatalog *catalog = [TPKEmoteCatalog sharedCatalog];
     [self _tpk_reloadCatalogSnapshotReloadCollection:NO];
 
-    // Déclencher les trois providers après le snapshot : le cache s'affiche déjà, les notifications remplacent les cellules sans bloquer.
+    // Request providers after showing the cached snapshot.
     [catalog loadGlobalProviders];
     NSString *channelID = [TPKManager sharedManager].currentChannelTwitchID;
     if (channelID.length) [catalog loadChannelProvidersForTwitchID:channelID];
@@ -1614,67 +1460,51 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
         self.pickerActiveTab = TPKPickerTabFavorites;
         self.pickerInitialProviderSelectionPending = NO;
     }
-    // Called again here for the synchronous/cache-hit path: initial selection stays deterministic before the picker view exists.
+    // Resolve the initial tab before creating the picker view.
     [self _tpk_selectInitialProviderIfNeeded];
     [self _tpk_normalizeActivePickerTab];
-    [self _updatePickerArraysForSearch:@""]; // recalcule emotePickerEmotes pour l'onglet choisi
+    [self _updatePickerArraysForSearch:@""]; // Refresh the array for the selected tab.
 
     // ── Créer le picker si besoin ─────────────────────────────────────
-    // Recalcule la taille à chaque ouverture pour s'adapter à l'orientation courante.
+    // Recalculate size for the current orientation.
     CGSize screenSz = UIScreen.mainScreen.bounds.size;
     CGFloat pickerH = [self _tpk_resolvedGridHeight];
     CGRect pickerFrame = CGRectMake(0, 0, screenSz.width, pickerH);
     if (!self.emotePickerView) {
         [self _createEmotePickerViewWithFrame:pickerFrame];
-    } else if (self.pickerSizesPanelVisible) {
-        // Picker laissé sur le panneau des tailles → retour systématique en mode grille à l'ouverture (état initial, sans animation).
-        self.pickerSizesPanelVisible = NO;
-        self.sizesPanel.panelView.hidden = YES;
-        self.emoteCollectionView.hidden = NO;
-        self.pickerSearchCapsuleView.hidden = NO;
-        self.pickerTabCapsuleView.hidden = NO;
-        self.pickerSubcategoryCapsuleView.hidden = NO;
-        [self _tpk_updatePickerTabButtonLayout];
-        self.pickerSizesToggleBtn.tintColor = [UIColor colorWithWhite:0.55 alpha:1.0];
-        // Remettre l'icône ⚙️ (pas juste la couleur) : sinon le bouton gardait la flèche "retour" du panneau des tailles.
-        UIImageSymbolConfiguration *resetCfg = [UIImageSymbolConfiguration
-            configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
-        [self.pickerSizesToggleBtn setImage:[UIImage systemImageNamed:@"textformat.size"
-                                                      withConfiguration:resetCfg]
-                                    forState:UIControlStateNormal];
     }
     self.emotePickerView.frame = pickerFrame;
-    // Revérifie l'avatar de chaîne à CHAQUE ouverture : seul filet si la chaîne a changé, sans fetch si le catalogue est à jour.
+    // Refresh the channel avatar when opening the picker.
     [self _tpk_refreshChannelAvatarIfNeeded];
-    // Repositionne grille / pastilles / panneau selon l'orientation et l'onglet, et resynchronise surlignage + capsule sous-choix.
+    // Reposition the grid and controls for the current orientation and tab.
     [self _tpk_relayoutPickerForSize:pickerFrame.size];
 
-    // Reset la recherche (modèle déjà calculé pour l'onglet ci-dessus : pas de 2e rebuild identique).
+    // Clear search; the tab's model is already up to date.
     self.emoteSearchField.text = @"";
     [self _tpk_updateSearchClearVisibility];
     [self _tpk_deactivateVisiblePickerAnimations];
     [self.emoteCollectionView reloadData];
-    // Offset re-posé après présentation (bloc async) : pas de layout forcé ici.
+    // Restore the content offset after presentation.
     [self.emoteCollectionView.collectionViewLayout invalidateLayout];
     [self.emoteCollectionView setContentOffset:CGPointZero animated:NO];
     [self _tpk_prewarmPickerViewportImages];
 
     // ── inputView = picker (keyboard-replacement mode) ──────────────────────
-    // Clavier remplacé : picker = inputView sous la chat bar, TextEntryView garde firstResponder.
+    // Use the picker as inputView while keeping TextEntryView first responder.
     UITextView *tv = self.emotePickerTextEntryView;
     if (tv) {
-        // Étape 1 : le picker DEVIENT le clavier (affiché en dessous de la chat bar)
+        // Set the picker as the keyboard input view.
         self.emotePickerView.hidden = NO;
         self.emotePickerView.translatesAutoresizingMaskIntoConstraints = NO;
         tv.inputView = self.emotePickerView;
         tv.inputAccessoryView = nil;
-        // Étape 2 : devenir firstResponder → UIKit affiche inputView (notre picker)
+        // Become first responder to show the picker.
         if (!tv.isFirstResponder) {
             [tv becomeFirstResponder];
         }
-        // Étape 3 : recharger pour appliquer le nouvel inputView
+        // Reload to apply the new input view.
         [tv reloadInputViews];
-        // Étape 4 : ré-imposer l'offset en haut APRÈS présentation — reloadInputViews relayoute et annule le setContentOffset précédent.
+        // Restore the top offset after UIKit lays out the input view.
         __weak typeof(self) weakSelf = self;
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -1691,7 +1521,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
                     if (w.isKeyWindow) { keyWindow = w; break; }
         if (!keyWindow) keyWindow = [UIApplication sharedApplication].windows.firstObject;
         if (keyWindow) {
-            // Sous-vie de fenêtre : plus d'inputView, donc retour au frame-based.
+            // Use frame-based layout when the picker is a window subview.
             self.emotePickerView.translatesAutoresizingMaskIntoConstraints = YES;
             CGFloat ph = [self _tpk_resolvedGridHeight];
             self.emotePickerView.frame = CGRectMake(0,
@@ -1709,7 +1539,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
 - (void)_createEmotePickerViewWithFrame:(CGRect)frame {
 
     // ── Palette ─────────────────────────────────────────────────────────
-    // bgColor = fond le plus sombre, cardColor = cellules + pastilles, accent = Twitch. Fond réel #0E0E10 légèrement bleuté, pas gris pur.
+    // Use the shared picker palette and Twitch accent.
     UIColor *bgColor   = tpk_pickerBgColor();
     UIColor *cardColor = tpk_pickerCardColor();
     UIColor *sepColor  = tpk_pickerSepColor();
@@ -1730,7 +1560,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     __weak typeof(self) weakSelf = self;
     __weak TPKPickerContainerView *weakPicker = picker;
     picker.didAttachToWindow = ^{
-        // didMoveToWindow précède la fin du layout du clavier : le passage main-queue suivant crée les cellules et réactive leur chargement.
+        // Create cells after the keyboard finishes attaching the picker.
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
             TPKPickerContainerView *strongPicker = weakPicker;
@@ -1742,8 +1572,8 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     };
 
     // ── Collection View — occupe 100% du picker ─────────────────────────────
-    // Pas de bandeaux opaques : layout.sectionInset réserve la place sous les pastilles, plus fiable qu'un contentInset/offset manuel.
-    CGFloat topInset = kTPKPickerFloatMargin; // marge mini : 1ère ligne sous les pastilles (z-order).
+    // Reserve space for floating controls with section insets.
+    CGFloat topInset = kTPKPickerFloatMargin; // Keep the first row below floating controls.
     UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
     layout.scrollDirection         = UICollectionViewScrollDirectionVertical;
     layout.minimumInteritemSpacing = 3;
@@ -1763,7 +1593,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     cv.alwaysBounceHorizontal = NO;
     cv.showsHorizontalScrollIndicator = NO;
     cv.showsVerticalScrollIndicator   = YES;
-    // Aucun préchargement : cellFor/willDisplay restent les seules portes du pipeline image, pas d'activation anticipée hors écran.
+    // Load images only for cells handled by cellFor and willDisplay.
     if (@available(iOS 10.0, *)) cv.prefetchingEnabled = NO;
 
     [cv registerClass:[TPKEmotePickerCell class] forCellWithReuseIdentifier:kEmoteCellID];
@@ -1819,7 +1649,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
         _ffzLogoImg = [[UIImage imageWithData:_ffzLogoData scale:3.0]
             imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
     }
-    // BTTV/FFZ assets are optically smaller than the 7TV mark at the same point size: tiny boost, capsule and touch target unchanged.
+    // Slightly enlarge BTTV and FFZ logos to match the 7TV mark visually.
     UIImage *bttvLogo = s_tpkPickerBTTVLogo ?: TPKPickerScaledProviderLogo(_bttvLogoImg, 16.0);
     UIImage *ffzLogo = s_tpkPickerFFZLogo ?: TPKPickerScaledProviderLogo(_ffzLogoImg, 16.0);
     UIImageSymbolConfiguration *providerFallbackCfg = [UIImageSymbolConfiguration
@@ -1879,7 +1709,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     [channelBtn addTarget:self action:@selector(_pickerTabTapped:) forControlEvents:UIControlEventTouchUpInside];
     [tabCapsule addSubview:channelBtn];
     [self.pickerTabButtons addObject:channelBtn];
-    // Boutons 4/5 — BTTV et FFZ : logos embarqués localement, SF Symbols en fallback si une image est invalide.
+    // BTTV and FFZ use bundled logos with SF Symbol fallbacks.
     NSArray *providerButtons = @[
         @[@(TPKPickerTabBTTV), bttvLogo ?: bttvFallback],
         @[@(TPKPickerTabFFZ), ffzLogo ?: ffzFallback],
@@ -1897,7 +1727,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
         [self.pickerTabButtons addObject:button];
     }
 
-    // ── Capsule sous-catégories (au-dessus de la capsule provider) — Channel/Global : position fixe, Shared et sets agrégés.
+    // Channel/Global subcategory capsule; Shared and Sets are combined.
     UIView *subcategoryCapsule = [[UIView alloc] initWithFrame:
         CGRectMake(kTPKPickerFloatMargin,
                    bottomRowY - kTPKPickerSubcategoryGap - kTPKPickerFloatSize,
@@ -1940,8 +1770,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
 
     [self _tpk_updateTabButtonHighlight];
 
-    // ── Capsule tailles/réglages (bas droite) : un seul fond pilule pour les 2 boutons, comme les capsules d'onglets/sous-choix.
-    CGFloat toolsCapsuleW = kTPKPickerFloatSize * 2.0;
+    CGFloat toolsCapsuleW = kTPKPickerFloatSize;
     UIView *toolsCapsule = [[UIView alloc] initWithFrame:
         CGRectMake(frame.size.width - kTPKPickerFloatMargin - toolsCapsuleW, bottomRowY,
                    toolsCapsuleW, kTPKPickerFloatSize)];
@@ -1952,7 +1781,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     self.pickerToolsCapsuleView = toolsCapsule;
     [picker addSubview:toolsCapsule];
 
-    // Bouton réglages — slot gauche : même écran que le bouton 7TV (presentSettingsMenu), le picker fermant d'abord.
+    // Open settings after closing the picker.
     UIButton *settingsBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     settingsBtn.frame = CGRectMake(0, 0, kTPKPickerFloatSize, kTPKPickerFloatSize);
     UIImageSymbolConfiguration *settingsCfg = [UIImageSymbolConfiguration
@@ -1965,18 +1794,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     [toolsCapsule addSubview:settingsBtn];
     self.pickerSettingsBtn = settingsBtn;
 
-    // Bouton tailles — slot droit (vers le bord) : icône "taille de texte", explicite sur la fonction plutôt qu'un engrenage générique.
-    UIButton *gearBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gearBtn.frame = CGRectMake(kTPKPickerFloatSize, 0, kTPKPickerFloatSize, kTPKPickerFloatSize);
-    UIImageSymbolConfiguration *gearCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
-    [gearBtn setImage:[UIImage systemImageNamed:@"textformat.size" withConfiguration:gearCfg]
-             forState:UIControlStateNormal];
-    gearBtn.tintColor = subColor;
-    [gearBtn addTarget:self action:@selector(emotePickerSizesToggleTapped)
-      forControlEvents:UIControlEventTouchUpInside];
-    [toolsCapsule addSubview:gearBtn];
-    self.pickerSizesToggleBtn = gearBtn;
+
 
     // ── Capsule de recherche (flottante, tout en bas, pleine largeur) ──────
     CGFloat searchY = frame.size.height - kTPKPickerFloatMargin - kTPKPickerSearchH;
@@ -1994,7 +1812,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     search.placeholder     = L(@"placeholder_search_picker");
     search.font            = [UIFont systemFontOfSize:13];
     search.returnKeyType   = UIReturnKeyDone;
-    search.clearButtonMode = UITextFieldViewModeNever; // remplacé par notre propre bouton croix (point 4)
+    search.clearButtonMode = UITextFieldViewModeNever; // Use the custom clear button below.
     search.backgroundColor = [UIColor clearColor];
     search.textColor       = textColor;
     search.attributedPlaceholder = [[NSAttributedString alloc]
@@ -2016,7 +1834,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     search.leftView = searchLeftView;
     search.leftViewMode = UITextFieldViewModeAlways;
 
-    // Croix à droite pour vider le champ d'un tap (point 4) — visible seulement si texte, voir _tpk_updateSearchClearVisibility.
+    // Show the clear button only when search text is present.
     UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     clearBtn.frame = CGRectMake(0, 0, 28, kTPKPickerSearchH);
     UIImageSymbolConfiguration *clearCfg = [UIImageSymbolConfiguration
@@ -2034,44 +1852,21 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     search.rightView = searchRightView;
     search.rightViewMode = UITextFieldViewModeAlways;
 
-    // Déléguer à self pour intercepter le focus et éviter que le picker se ferme
+    // Intercept focus changes so search doesn't close the picker.
     search.delegate = (id<UITextFieldDelegate>)self;
     [search addTarget:self action:@selector(_emoteSearchChanged:)
      forControlEvents:UIControlEventEditingChanged];
     self.emoteSearchField = search;
     [searchCapsule addSubview:search];
 
-    // ── Panneau des tailles ─────────────────────────────────────────────
-    // Délégué à TPKPickerSizesPanel (lignes/sliders/previews dans `picker`) ; le picker garde affichage et redimensionnement.
-    [self.sizesPanel buildInView:picker
-                            frame:frame
-                          bgColor:bgColor
-                        textColor:textColor
-                         subColor:subColor
-                         sepColor:sepColor
-                           accent:accent
-                        cardColor:cardColor];
-
-    // Hauteur des cellules = tailles configurées (cfg.gifSize) : le faux chat prévient après chaque passe de self-sizing.
-    __weak typeof(self) previewWeakSelf = self;
-    self.sizesPanel.fakeChatView.onContentHeightChanged =
-        ^(__unused TPKChatCustomView *view) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(previewWeakSelf) strongSelf = previewWeakSelf;
-            if (!strongSelf || !strongSelf.pickerSizesPanelVisible) return;
-            [strongSelf _showFakeChatPreviewAboveInputView];
-        });
-    };
-
-    // Point 3 — vraie cause du "pas de bouton pour fermer" : sizesPanel opaque recouvre toolsCapsule et intercepte ses taps → 1er plan.
     [picker bringSubviewToFront:tabCapsule];
     [picker bringSubviewToFront:subcategoryCapsule];
     [picker bringSubviewToFront:toolsCapsule];
 
-    // NOTE: pas d'addSubview ici — la vue est attachée via inputView (remplace le clavier)
+    // UIKit attaches this view as inputView.
 }
 
-// Pastille flottante ronde générique (carte translucide) — fermer et ⚙️ ; capsules multi-éléments construites à la main, même style.
+// Create a floating circular button matching the picker capsules.
 - (UIButton *)_tpk_makeFloatingPillWithFrame:(CGRect)frame cardColor:(UIColor *)cardColor {
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
     btn.frame = frame;
@@ -2083,8 +1878,8 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
 
 // ── Barre d'onglets — helpers ────────────────────────────────────────────
 
-// Keep the selected tab valid when a provider is disabled or the catalogue is legacy-only; works while the picker is visible.
-// Le mode mixte ne recrée pas les vues : 5 boutons créés une fois, capsule compactée, boutons incompatibles masqués (tags stables).
+// Keep the selected tab valid when providers or catalogue contents change.
+// Mixed mode reuses the five buttons and hides unavailable providers.
 - (void)_tpk_updatePickerTabButtonLayout {
     if (!self.pickerTabCapsuleView || !self.pickerTabButtons.count) return;
 
@@ -2111,9 +1906,8 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
 - (void)_tpk_normalizeActivePickerTab {
     BOOL providerMode = self.pickerProviderEmotes.count > 0 || self.pickerUsesCatalogSections;
     BOOL mixedMode = [TPKEmoteProviderSettings mixedPickerEnabled];
-    TPKEmoteCatalog *catalog = [TPKEmoteCatalog sharedCatalog];
     BOOL (^available)(NSInteger) = ^BOOL(NSInteger tab) {
-        // Do not keep an empty Favorites tab selected: returning NO lets the provider order choose a useful tab (even one loading).
+        // Let provider order choose a tab when Favorites is empty.
         if (tab == TPKPickerTabFavorites)
             return self.pickerCatalogFavorites.count > 0 ||
                    self.emotePickerFavoriteEmotes.count > 0;
@@ -2121,17 +1915,13 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
             if (!mixedMode) return NO;
             if (!providerMode && !self.pickerOpeningLocationExplicit &&
                 !self.emotePickerAllEmotes.count) return NO;
-            for (NSNumber *provider in [self _tpk_providerIDsInPriorityOrder]) {
-                if ([catalog.providerEnabled[provider] boolValue]) return YES;
-            }
-            return NO;
+            return YES;
         }
         if (mixedMode || ![self _tpk_pickerTabIsProvider:tab]) return NO;
         NSInteger provider = tab == TPKPickerTabTPK
             ? TPKEmoteProviderIDTPK
             : (tab == TPKPickerTabBTTV ? TPKEmoteProviderIDBTTV : TPKEmoteProviderIDFFZ);
-        if (![catalog.providerEnabled[@(provider)] boolValue]) return NO;
-        // A legacy cache only contains 7TV: do not show those objects under BTTV/FFZ while their own catalogue is still idle.
+        // Never show legacy 7TV items under BTTV or FFZ.
         return providerMode || self.pickerOpeningLocationExplicit ||
             provider == TPKEmoteProviderIDTPK;
     };
@@ -2142,11 +1932,11 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
         if (mixedMode && available(TPKPickerTabAll)) {
             fallback = TPKPickerTabAll;
         } else {
-        for (NSString *identifier in [TPKEmoteProviderSettings providerPriority]) {
-            TPKExternalEmoteProvider provider = TPKEmoteProviderFromIdentifier(identifier);
-            NSInteger tab = provider == TPKExternalEmoteProvider7TV
+        for (NSNumber *providerNumber in [self _tpk_providerIDsInPriorityOrder]) {
+            TPKEmoteProviderID provider = (TPKEmoteProviderID)providerNumber.integerValue;
+            NSInteger tab = provider == TPKEmoteProviderIDTPK
                 ? TPKPickerTabTPK
-                : (provider == TPKExternalEmoteProviderBTTV
+                : (provider == TPKEmoteProviderIDBTTV
                    ? TPKPickerTabBTTV : TPKPickerTabFFZ);
             if (available(tab)) { fallback = tab; break; }
         }
@@ -2163,7 +1953,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     if (!self.pickerInitialProviderSelectionPending || self.pickerIsSearching)
         return NO;
 
-    // Favorites can arrive after the snapshots: move to Favorites once; the pending flag clears here so later refreshes never steal the tab.
+    // Select Favorites once when late-arriving favorites appear.
     if (self.pickerCatalogFavorites.count || self.emotePickerFavoriteEmotes.count) {
         BOOL changed = self.pickerActiveTab != TPKPickerTabFavorites;
         self.pickerActiveTab = TPKPickerTabFavorites;
@@ -2171,7 +1961,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
         return changed;
     }
 
-    // In aggregate mode keep the initial tab on Tous once a snapshot exists, instead of briefly showing 7TV then hiding it.
+    // Keep All selected initially in aggregate mode.
     if ([TPKEmoteProviderSettings mixedPickerEnabled] &&
         (self.pickerProviderEmotes.count || self.emotePickerAllEmotes.count)) {
         BOOL changed = self.pickerActiveTab != TPKPickerTabAll;
@@ -2180,7 +1970,7 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
         return changed;
     }
 
-    // A legacy-only snapshot has no provider dictionary: it is already the valid 7TV fallback, nothing to select automatically.
+    // A legacy-only snapshot already represents the 7TV fallback.
     if (!self.pickerProviderEmotes.count) {
         if (self.emotePickerAllEmotes.count || self.emotePickerEmotes.count)
             self.pickerInitialProviderSelectionPending = NO;
@@ -2199,14 +1989,14 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
         return NO;
     }
 
-    // Providers follow the user's priority; only one with emotes counts (loading/error don't), so a later notification can still select it.
-    for (NSString *identifier in [TPKEmoteProviderSettings providerPriority]) {
-        TPKExternalEmoteProvider provider = TPKEmoteProviderFromIdentifier(identifier);
+    // Prefer the first provider with emotes in 7TV, BTTV, FFZ order.
+    for (NSNumber *providerNumber in [self _tpk_providerIDsInPriorityOrder]) {
+        TPKEmoteProviderID provider = (TPKEmoteProviderID)providerNumber.integerValue;
         NSArray *items = self.pickerProviderEmotes[@((TPKEmoteProviderID)provider)] ?: @[];
         if (!items.count) continue;
-        NSInteger tab = provider == TPKExternalEmoteProvider7TV
+        NSInteger tab = provider == TPKEmoteProviderIDTPK
             ? TPKPickerTabTPK
-            : (provider == TPKExternalEmoteProviderBTTV
+            : (provider == TPKEmoteProviderIDBTTV
                ? TPKPickerTabBTTV : TPKPickerTabFFZ);
         BOOL changed = self.pickerActiveTab != tab;
         self.pickerActiveTab = tab;
@@ -2216,18 +2006,17 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
     return NO;
 }
 
-// Met à jour teinte/opacité des icônes + pastille violette ; capsule = Favoris + Tous ou Favoris + 3 providers.
+// Update tab icon tint and the selected-tab indicator.
 - (void)_tpk_updateTabButtonHighlight {
     [self _tpk_updatePickerTabButtonLayout];
     [self _tpk_normalizeActivePickerTab];
     BOOL providerMode = self.pickerProviderEmotes.count > 0 || self.pickerUsesCatalogSections;
-    TPKEmoteCatalog *catalog = [TPKEmoteCatalog sharedCatalog];
     UIColor *activeTint   = [UIColor whiteColor];
     UIColor *inactiveTint = [UIColor colorWithWhite:0.55 alpha:1.0];
     for (UIButton *btn in self.pickerTabButtons) {
         BOOL isActive = (btn.tag == self.pickerActiveTab);
         if (btn.tag == TPKPickerTabFavorites) {
-            // Seuls les favoris de la chaîne courante remplissent cet onglet : visible mais inactif et très grisé si vide (comme Channel).
+            // Keep Favorites visible but dimmed when the current channel has none.
             BOOL hasFavorites = self.pickerCatalogFavorites.count > 0 ||
                 self.emotePickerFavoriteEmotes.count > 0;
             btn.enabled = hasFavorites;
@@ -2239,15 +2028,14 @@ static UIImage *TPKPickerAspectFitProviderLogo(UIImage *image, CGFloat maxWidth,
             NSInteger provider = btn.tag == TPKPickerTabTPK
                 ? TPKEmoteProviderIDTPK
                 : (btn.tag == TPKPickerTabBTTV ? TPKEmoteProviderIDBTTV : TPKEmoteProviderIDFFZ);
-            BOOL enabled = [catalog.providerEnabled[@(provider)] boolValue] &&
-                (providerMode || provider == TPKEmoteProviderIDTPK);
+            BOOL enabled = providerMode || provider == TPKEmoteProviderIDTPK;
             btn.enabled = enabled;
             if (!enabled) { btn.alpha = 0.25; continue; }
-            // A button can be re-enabled while the picker stays visible: reset alpha before the active/inactive tint so it doesn't stay ghosted.
+            // Reset alpha when re-enabling a tab button.
             btn.alpha = 1.0;
         }
         if ([self _tpk_pickerTabIsProvider:btn.tag]) {
-            // Logos provider en images non-template : l'opacité reproduit l'état actif/inactif pour les trois.
+            // Use opacity to indicate provider-tab availability.
             btn.alpha = isActive ? 1.0 : 0.55;
         } else {
             btn.tintColor = isActive ? activeTint : inactiveTint;
@@ -2276,30 +2064,24 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
     return host.width > host.height;
 }
 
-// Hauteur de la grille pour l'orientation courante, bornée à la place disponible.
+// Return the grid height available in the current orientation.
 - (CGFloat)_tpk_resolvedGridHeight {
     TPKChatAppearanceConfig *cfg = [TPKChatAppearanceConfig sharedConfig];
     CGFloat wanted = [self pickerHostIsLandscape]
         ? cfg.pickerHeightLandscape : cfg.pickerHeightPortrait;
-    // Seule la hauteur de la fenêtre sert au plafond, son retard est sans effet.
+    // Bound the grid using the window height.
     CGFloat ceiling = MAX(kTPKPickerMinUsableH,
                           [self pickerHostSize].height - kTPKPickerChromeReserveH);
     return MIN(wanted, ceiling);
 }
 
-// Recalcule et applique les frames de toutes les zones du picker (grille /
-// pastilles flottantes / panneau des tailles) — appelé à chaque ouverture,
-// changement d'orientation, et changement d'onglet. Plus de dock : tout est
-// flottant, ancré aux 4 coins/bords via des calculs explicites (fiable même
-// quand la hauteur du picker change, ex. panneau des tailles — point 5).
+// Recalculate picker frames after orientation or tab changes.
 - (void)_tpk_relayoutPickerForSize:(CGSize)size {
     if (!self.emotePickerView) return;
 
-    // Point d'entrée unique de toute changement de taille : c'est ici que la
-    // hauteur Auto Layout du conteneur doit être rafraîchie.
+    // Refresh the container's Auto Layout height when its size changes.
     [(TPKPickerContainerView *)self.emotePickerView setPreferredHeight:size.height];
-    // Les cellules sont dimensionnées par sizeForItemAtIndexPath: : sans
-    // invalidation, le flow layout garde en cache les anciennes dimensions.
+    // Invalidate cached cell sizes after a resize.
     [self.emoteCollectionView.collectionViewLayout invalidateLayout];
     self.emoteCollectionView.frame = CGRectMake(0, 0, size.width, size.height);
 
@@ -2313,10 +2095,10 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         bottomRowY - kTPKPickerSubcategoryGap - kTPKPickerFloatSize,
         kTPKPickerFloatSize * 2.0,
         kTPKPickerFloatSize);
-    // Capsule en bas à droite dans la grille, en haut à droite dans les réglages : position seule, apparence inchangée.
-    CGFloat toolsCapsuleW = kTPKPickerFloatSize * 2.0;
+    // Move the settings button between grid and settings layouts.
+    CGFloat toolsCapsuleW = kTPKPickerFloatSize;
     CGFloat toolsX = size.width - kTPKPickerFloatMargin - toolsCapsuleW;
-    CGFloat toolsY = self.pickerSizesPanelVisible ? 9.0 : bottomRowY;
+    CGFloat toolsY = bottomRowY;
     self.pickerToolsCapsuleView.frame = CGRectMake(toolsX, toolsY, toolsCapsuleW, kTPKPickerFloatSize);
     [self _tpk_updateTabButtonHighlight];
 
@@ -2325,13 +2107,12 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
                                                       size.width - kTPKPickerFloatMargin * 2, kTPKPickerSearchH);
     self.emoteSearchField.frame = CGRectMake(0, 0, self.pickerSearchCapsuleView.bounds.size.width, kTPKPickerSearchH);
 
-    self.sizesPanel.panelView.frame = CGRectMake(0, 0, size.width, size.height);
 }
 
 // ── Onglets — sélection ───────────────────────────────────────────────────
 
 - (void)_pickerTabTapped:(UIButton *)sender {
-// A tap is an explicit choice: a late network response must not switch away from it during first-open.
+// Preserve an explicit tab choice when network results arrive.
     self.pickerInitialProviderSelectionPending = NO;
     self.pickerOpeningLocationExplicit = NO;
     if (self.pickerActiveTab == sender.tag) {
@@ -2350,14 +2131,14 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
     [self.emoteCollectionView setContentOffset:CGPointZero animated:NO];
 }
 
-// Croix à droite du champ : vide le champ et relance la recherche sans passer par l'alerte.
+// Clear search and update results without showing the alert.
 - (void)_pickerSearchClearTapped {
     self.emoteSearchField.text = @"";
     self.pickerSearchClearBtn.hidden = YES;
     [self _applySearchQuery:@""];
 }
 
-// Retourne l'array d'emotes correspondant à l'onglet actif.
+// Return the emotes for the active tab.
 - (NSArray<TPKEmote *> *)_tpk_currentTabEmotes {
     if (self.pickerProviderEmotes.count > 0) {
         if (self.pickerActiveTab == TPKPickerTabFavorites)
@@ -2373,7 +2154,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
                     [all addObject:item];
                 }
             }
-            // Aggregate tab: keep historical ordering, leave provider ties to source order (no 7TV/BTTV/FFZ grouping).
+            // Preserve source order for equal items in the aggregate tab.
             [all sortUsingComparator:TPKPickerMixedEmoteSizeComparator];
             return all.copy;
         }
@@ -2387,11 +2168,11 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         case TPKPickerTabAll:
             return self.emotePickerAllEmotes ?: @[];
         case TPKPickerTabTPK:
-            // Legacy cache = combined 7TV catalogue, the only fallback while the provider-aware one is idle.
+            // Use the legacy 7TV cache until the provider catalogue loads.
             return self.emotePickerAllEmotes ?: self.emotePickerChannelEmotes;
         case TPKPickerTabBTTV:
         case TPKPickerTabFFZ:
-            // Never show legacy 7TV objects under another provider's tab.
+            // Keep legacy 7TV items out of other provider tabs.
             return @[];
         case TPKPickerTabFavorites:
         default:
@@ -2401,10 +2182,10 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
 
 // ── Recherche ──────────────────────────────────────────────────────────────
 
-// ── Méthode centrale de filtrage : met à jour les 2 sections ──────────────
+// Filter emotes and update the visible sections.
 
 - (void)_updatePickerArraysForSearch:(NSString *)query {
-    // Wrapper anti-auto-onglet : seul _applySearchQuery: (vraie frappe) peut changer d'onglet ; ouverture/tap/favori non.
+    // Only typed search queries can trigger automatic tab selection.
     [self _updatePickerArraysForSearch:query autoSelectTab:NO];
 }
 
@@ -2423,23 +2204,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
 }
 
 - (NSArray<NSNumber *> *)_tpk_providerIDsInPriorityOrder {
-    NSMutableArray<NSNumber *> *result = [NSMutableArray arrayWithCapacity:3];
-    TPKEmoteCatalog *catalog = [TPKEmoteCatalog sharedCatalog];
-    for (NSString *identifier in [TPKEmoteProviderSettings providerPriority]) {
-        TPKExternalEmoteProvider external = TPKEmoteProviderFromIdentifier(identifier);
-        TPKEmoteProviderID provider = (TPKEmoteProviderID)external;
-        if (provider < TPKEmoteProviderIDTPK || provider > TPKEmoteProviderIDFFZ ||
-            ![catalog.providerEnabled[@(provider)] boolValue] ||
-            [result containsObject:@(provider)]) continue;
-        [result addObject:@(provider)];
-    }
-    for (NSInteger provider = TPKEmoteProviderIDTPK;
-         provider <= TPKEmoteProviderIDFFZ; provider++) {
-        if ([catalog.providerEnabled[@(provider)] boolValue] &&
-            ![result containsObject:@(provider)])
-            [result addObject:@(provider)];
-    }
-    return result.copy;
+    return TPKEmoteCatalog.sharedCatalog.providerPriority;
 }
 
 - (void)_tpk_persistLastPickerLocation {
@@ -2474,7 +2239,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         [mode isEqualToString:TPKEmotePickerOpeningModeBTTVChannel] ||
         [mode isEqualToString:TPKEmotePickerOpeningModeFFZChannel]) {
         if ([TPKEmoteProviderSettings mixedPickerEnabled]) {
-            // No button in aggregate mode: open the All tab to preserve Channel intent.
+            // Open All in aggregate mode to preserve Channel selection.
             self.pickerActiveTab = TPKPickerTabAll;
             self.pickerSubcategoryByProvider[@(-1)] = @"channel";
             return YES;
@@ -2502,8 +2267,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
                 self.pickerSubcategoryByProvider[@(-1)] = subcategory;
                 return YES;
             }
-            TPKEmoteProviderID provider =
-                (TPKEmoteProviderID)TPKEmoteProviderFromIdentifier(providerKey);
+            TPKEmoteProviderID provider = TPKEmoteProviderFromIdentifier(providerKey);
             if (provider >= TPKEmoteProviderIDTPK && provider <= TPKEmoteProviderIDFFZ) {
                 if ([TPKEmoteProviderSettings mixedPickerEnabled]) {
                     self.pickerActiveTab = TPKPickerTabAll;
@@ -2517,7 +2281,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
                 return YES;
             }
         }
-        // « Dernier menu » sans historique : favoris, sinon sélection initiale.
+        // Default to Favorites when no prior tab is saved.
         self.pickerOpeningLocationExplicit = NO;
         return NO;
     }
@@ -2533,7 +2297,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
 
 - (BOOL)_tpk_sectionIsChannel:(TPKPickerDisplaySection *)section {
     if (!section || [section.identifier isEqualToString:@"provider-state"]) return NO;
-    // BTTV shared/set stay channel-scoped, else the catalogue hides behind Shared/Set.
+    // Keep BTTV Shared and Set emotes in the Channel section.
     if (section.kind == TPKEmoteSectionKindChannel ||
         section.kind == TPKEmoteSectionKindShared) return YES;
     if (section.kind == TPKEmoteSectionKindSet &&
@@ -2559,7 +2323,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
 
     BOOL providerTab = [self _tpk_pickerTabIsProvider:self.pickerActiveTab];
     BOOL allTab = self.pickerActiveTab == TPKPickerTabAll;
-    BOOL visible = (providerTab || allTab) && !self.pickerSizesPanelVisible;
+    BOOL visible = (providerTab || allTab) && YES;
     capsule.hidden = !visible;
     if (!visible) return;
 
@@ -2581,14 +2345,14 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         }
     }
 
-    // Channel capsule stays visible even when empty; only its action is disabled.
+    // Keep the Channel capsule visible when empty, but disable it.
     channelButton.hidden = NO;
     channelButton.enabled = hasChannel;
     globalButton.hidden = !hasGlobal;
     globalButton.enabled = hasGlobal;
 
     NSString *selected = self.pickerSubcategoryByProvider[selectionKey];
-    // Older builds persisted a section ID (set:abc); normalize to channel/global.
+    // Convert legacy section IDs to Channel or Global.
     BOOL selectedIsChannel = [selected isEqualToString:@"channel"] ||
         (selected.length && ![selected isEqualToString:@"global"] && hasChannel &&
          ![selected.lowercaseString containsString:@"global"]);
@@ -2597,7 +2361,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
     selectedIsChannel &= hasChannel;
     selectedIsGlobal &= hasGlobal;
     if (!selectedIsChannel && !selectedIsGlobal) {
-        // Channel defaults when it has emotes; loading Channel must not hide Global.
+        // Prefer Channel when populated; keep Global available while it loads.
         BOOL channelHasItems = NO;
         BOOL globalHasItems = NO;
         for (NSNumber *providerNumber in providers) {
@@ -2623,7 +2387,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
     channelButton.alpha = hasChannel ? (selectedIsChannel ? 1.0 : 0.55) : 0.25;
     globalButton.alpha = hasGlobal ? (selectedIsGlobal ? 1.0 : 0.55) : 0.25;
 
-    // Global reprend le logo du provider ; l'agrégat « Tous » utilise une mappemonde.
+    // Global uses the provider logo; All uses a globe.
     UIImage *providerLogo = nil;
     if (!allTab) {
         for (UIButton *providerButton in self.pickerTabButtons) {
@@ -2642,7 +2406,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
                   forState:UIControlStateNormal];
     globalButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
 
-    // L'avatar représente la chaîne, pas le provider : il reste visible entre onglets.
+    // Keep the channel avatar visible across provider tabs.
     [self _tpk_refreshChannelAvatarIfNeeded];
 }
 
@@ -2669,7 +2433,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     NSString *lower = trimmed.lowercaseString;
 
-    // Preserve explicit collapse choices across search instead of leaving all expanded.
+    // Restore section collapse choices after search.
     BOOL hasQuery = lower.length > 0;
     if (hasQuery && !self.pickerCatalogSearchActive) {
         self.pickerCollapseStateBeforeSearch = self.pickerCollapsedSections.copy ?: @{};
@@ -2697,7 +2461,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
                 }
                 if (matches) [items addObject:item];
             }
-            // Fully filtered Favorites drops its header; empty state = loading/errors.
+            // Hide the Favorites header when filtering removes all items.
             if (items.count) {
                 TPKPickerDisplaySection *favorites = [TPKPickerDisplaySection new];
                 favorites.provider = TPKEmoteProviderIDTPK;
@@ -2715,7 +2479,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         TPKEmoteProviderSnapshot *snapshot = [[TPKEmoteCatalog sharedCatalog]
             snapshotForProvider:provider];
 
-        // No section yet: show a state header with retry instead of an empty grid.
+        // Show loading or retry state before sections are available.
         if (!source.count && (snapshot.state == TPKEmoteProviderStateLoading ||
                               snapshot.state == TPKEmoteProviderStateLoaded ||
                               snapshot.state == TPKEmoteProviderStateError)) {
@@ -2745,7 +2509,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
                 }
                 if (matches) [items addObject:item];
             }
-            // Hide only after a successful empty response; placeholders stay visible.
+            // Hide sections only after a successful empty response.
             if (!items.count && original.loaded && !original.loading && !original.errorMessage.length) continue;
             TPKPickerDisplaySection *current = [TPKPickerDisplaySection new];
             current.provider = original.provider;
@@ -2761,7 +2525,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         }
     }
 
-    // New sections default to one open (all open while searching), rest collapsed.
+    // Open one new section by default, or all sections during search.
     BOOL openedOne = NO;
     for (TPKPickerDisplaySection *section in display) {
         NSString *key = [self _tpk_displaySectionKey:section];
@@ -2780,13 +2544,13 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
 
     self.pickerDisplaySections = display.copy;
     self.pickerUsesCatalogSections = display.count > 0;
-    // Sync flow header immediately, else switching tabs leaves a stale 30pt header.
+    // Update the flow header immediately after switching tabs.
     UICollectionViewFlowLayout *flowLayout =
         (UICollectionViewFlowLayout *)self.emoteCollectionView.collectionViewLayout;
     if (flowLayout) {
         flowLayout.headerReferenceSize = CGSizeZero;
     }
-    // Keep the flat array (anchor/search compat) in sync with the open sections.
+    // Keep the flat array in sync with visible sections.
     NSMutableArray<TPKEmote *> *visibleItems = [NSMutableArray array];
     for (TPKPickerDisplaySection *section in display) {
         NSString *key = [self _tpk_displaySectionKey:section];
@@ -2796,7 +2560,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
     self.emotePickerEmotes = visibleItems.copy;
 }
 
-// Version actuelle : une seule catégorie Channel/Global ; Shared/Set fusionnés dedans.
+// Channel and Global are the only sections; Shared and Set are combined.
 - (void)_tpk_rebuildCatalogDisplaySectionsForQuery:(NSString *)query {
     NSString *trimmed = [query stringByTrimmingCharactersInSet:
         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -2896,7 +2660,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
             }
         }
 
-        // Sort only after the union: interleaved by size, not provider blocks.
+        // Sort after combining providers so sizes interleave.
         [channelItems sortUsingComparator:TPKPickerMixedEmoteSizeComparator];
         [globalItems sortUsingComparator:TPKPickerMixedEmoteSizeComparator];
 
@@ -2922,7 +2686,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         BOOL hasGlobalCategory = addCategory(NO, globalItems, globalLoading,
             globalError, globalErrorMessage, allTab ? @"all-global" : @"global");
 
-        // Une seule catégorie : Channel par défaut, sinon Global ; choix persisté.
+        // Default to Channel, then Global; restore the saved choice.
         NSString *selectedID = [self.pickerSubcategoryByProvider[selectionKey] lowercaseString];
         BOOL wantsChannel = [selectedID isEqualToString:@"channel"] ||
             (selectedID.length && ![selectedID containsString:@"global"] && hasChannelCategory);
@@ -2948,7 +2712,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
             if (!lower.length)
                 self.pickerSubcategoryByProvider[selectionKey] =
                     [selected.identifier hasSuffix:@"global"] ? @"global" : @"channel";
-            // Keep only the selected one of the two virtual sections visible.
+            // Show only the selected virtual section.
             [display removeAllObjects];
             [display addObject:selected];
         } else if (anyProviderLoading || anyProviderError || !providers.count) {
@@ -2984,13 +2748,13 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
     NSString *q = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     NSString *lower = q.lowercaseString;
 
-    // Catalogue is the only source (even while loading) — never a stale 7TV-only dict.
+    // Use the provider catalogue, even while it is loading.
     {
         NSMutableArray *providerItems = [NSMutableArray array];
         if (self.pickerActiveTab == TPKPickerTabFavorites) {
             [providerItems addObjectsFromArray:self.pickerCatalogFavorites ?: @[]];
         } else if (self.pickerActiveTab == TPKPickerTabAll) {
-            // Already ordered by the mixed comparator; no re-grouping by priority.
+            // Keep the mixed comparator's provider order.
             [providerItems addObjectsFromArray:[self _tpk_currentTabEmotes]];
         } else {
             NSInteger provider = self.pickerActiveTab == TPKPickerTabTPK
@@ -3032,7 +2796,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
     }
 }
 
-// Rang : 0 = exact, 1 = préfixe, 2 = sous-chaîne ailleurs (requête en minuscules).
+// Match rank: exact, prefix, then substring.
 - (NSInteger)_tpk_relevanceRankForEmoteName:(NSString *)name query:(NSString *)lowerQuery {
     NSString *lowerName = name.lowercaseString;
     if ([lowerName isEqualToString:lowerQuery]) return 0;
@@ -3041,12 +2805,12 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
 }
 
 // ── UITextFieldDelegate — intercepte le focus du champ de recherche ────────
-// PROBLÈME : resign du TextEntryView perd le picker. SOLUTION : delegate NO + alerte.
+// Keep the picker open by handling search focus with an alert.
 - (BOOL)textFieldShouldBeginEditing:(UITextField *)textField {
     if (textField != self.emoteSearchField) return YES;
     if (self.pickerSearchAlertActive) return NO;
 
-    // Capturer la query courante pour pré-remplir l'alerte
+    // Prefill the alert with the current query.
     NSString *currentQuery = textField.text ?: @"";
 
     UIAlertController *alert = [UIAlertController
@@ -3060,7 +2824,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         alertField.text          = currentQuery;
         alertField.returnKeyType = UIReturnKeySearch;
         alertField.clearButtonMode = UITextFieldViewModeWhileEditing;
-        // Sélectionner tout le texte existant pour faciliter la réécriture
+        // Select existing text for easy replacement.
         if (currentQuery.length > 0) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [alertField selectAll:nil];
@@ -3073,7 +2837,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
                   style:UIAlertActionStyleDefault
                 handler:^(UIAlertAction *action) {
         NSString *query = alert.textFields.firstObject.text ?: @"";
-        // Mettre à jour le texte du champ affiché pour feedback visuel
+        // Update the visible search text.
         textField.text = query;
         if (query.length == 0) {
             UIColor *subColor = [UIColor colorWithWhite:0.55 alpha:1.0];
@@ -3082,7 +2846,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
                     attributes:@{NSForegroundColorAttributeName: subColor}];
         }
         [self _applySearchQuery:query];
-        // Dismiss instantané pour éviter deux transitions firstResponder en cascade.
+        // Dismiss without animation to avoid chained focus transitions.
         [alert dismissViewControllerAnimated:NO completion:^{
             self.pickerSearchAlertActive = NO;
             [self _restorePickerFocus];
@@ -3093,7 +2857,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         actionWithTitle:L(@"common_cancel")
                   style:UIAlertActionStyleCancel
                 handler:^(UIAlertAction *action) {
-        // Idem à l'annulation : dismiss sans animation, une seule transition.
+        // Dismiss without animation on cancel too.
         [alert dismissViewControllerAnimated:NO completion:^{
             self.pickerSearchAlertActive = NO;
             [self _restorePickerFocus];
@@ -3104,19 +2868,19 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
     [alert addAction:cancelAction];
     alert.preferredAction = searchAction;
 
-    // Flag AVANT présentation : le champ de l'alerte résigne le TextEntryView.
+    // Set the flag before presenting the alert, which resigns TextEntryView.
     UIViewController *presenter = [self topViewController];
     if (!presenter) return NO;
     [self _tpk_deactivateVisiblePickerAnimations];
     self.pickerSearchAlertActive = YES;
     [presenter presentViewController:alert animated:YES completion:nil];
 
-    // Bloquer le becomeFirstResponder → le picker reste affiché
+    // Keep the picker visible by rejecting becomeFirstResponder.
     return NO;
 }
 
 - (void)_applySearchQuery:(NSString *)query {
-    // Seul point d'entrée où l'onglet peut être choisi automatiquement.
+    // This is the only entry point for automatic tab selection.
     [self _updatePickerArraysForSearch:query autoSelectTab:YES];
     [self _tpk_deactivateVisiblePickerAnimations];
     [self.emoteCollectionView reloadData];
@@ -3124,37 +2888,37 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
     [self _tpk_updateSearchClearVisibility];
 }
 
-// Affiche/masque la croix à droite du champ selon que le texte est présent ou non.
+// Show the clear button when search text is present.
 - (void)_tpk_updateSearchClearVisibility {
     self.pickerSearchClearBtn.hidden = (self.emoteSearchField.text.length == 0);
 }
 
-// Après dismiss : le resign efface l'inputView → inputView = picker + reloadInputViews.
+// Restore the picker inputView after dismissing the alert.
 - (void)_restorePickerFocus {
     UITextView *tv = self.emotePickerTextEntryView;
     UIView *pickerView = self.emotePickerView;
     if (!pickerView) return;
     if (tv && tv.window) {
-        // Réassigner l'inputView au cas où il aurait été effacé.
+        // Restore inputView if UIKit cleared it.
         tv.inputView = pickerView;
         tv.inputAccessoryView = nil;
         pickerView.hidden = NO;
         if (!tv.isFirstResponder) [tv becomeFirstResponder];
         [tv reloadInputViews];
     } else if (pickerView.window) {
-        // Fenêtre flottante : pas de TextEntryView, observers d'animation coupés.
+        // Floating-window mode has no TextEntryView or animation observers.
         pickerView.hidden = NO;
     } else {
         return;
     }
-    // Une fois l'inputView remonté, réactiver les animations des cellules visibles.
+    // Resume animations after the picker inputView returns.
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         [weakSelf _tpk_activateVisiblePickerAnimations];
     });
 }
 
-// UIControlEventEditingChanged : champ modifié programmatiquement, quasi bloqué.
+// Handle programmatic search-field changes.
 - (void)_emoteSearchChanged:(UITextField *)field {
     [self _applySearchQuery:field.text ?: @""];
 }
@@ -3179,7 +2943,7 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
         ? [[TPKEmoteCatalog sharedCatalog] isEmoteFavorited:descriptor]
         : [[TPKManager sharedManager] isEmoteFavorited:emote.emoteID];
     if (descriptor && descriptor.provider == TPKEmoteProviderIDTPK) {
-        // Keep the legacy manager's 7TV set in sync; Favorites settings still read it.
+        // Keep the legacy 7TV favorites set in sync.
         [[TPKManager sharedManager] setEmote:descriptor.emoteID favorited:!isFav];
     } else if (descriptor) {
         [[TPKEmoteCatalog sharedCatalog] setEmote:descriptor favorited:!isFav];
@@ -3189,23 +2953,23 @@ return hostWindow ? hostWindow.bounds.size : UIScreen.mainScreen.bounds.size;
     UINotificationFeedbackGenerator *haptic = [[UINotificationFeedbackGenerator alloc] init];
     [haptic notificationOccurred:UINotificationFeedbackTypeSuccess];
 
-    // Pas de reload : setEmote:favorited: notifie déjà (un 2e cassait les anims).
+    // setEmote:favorited: already reloads the picker.
 }
 
 // ── Helper : emote à partir d'un indexPath ─────────────────────────────────
-// Section unique (voir _tpk_currentTabEmotes) : l'onglet actif choisit l'array.
+// The active tab selects the emote array.
 
-// Pré-chauffe ce qui est AFFICHÉ (40 max, fond, sans assignation UI) :
-// le rebuild du flush re-trie après l'open, donc figer les 0-39 à l'open
-// chauffe les mauvaises clés. willDisplay/cellFor restent seuls écrivains.
+// Prewarm the displayed emotes after sorting; cellFor and willDisplay update cells.
 static void tpk_warmEmoteForPicker(TPKEmoteImageCache *cache, TPKEmote *emote) {
     if (!emote) return;
-    TPKPickerResolvedEmote *resolved = [[TPKPickerResolvedEmote alloc] initWithEmote:emote];
-    if (![cache cachedImageForResolvedEmote:resolved]) {
-        [cache imageForResolvedEmote:resolved completion:^(__unused UIImage *image) {}];
+    NSURL *imageURL = TPKPickerImageURLForEmote(emote);
+    if (!imageURL) return;
+    if (![cache cachedImageForURL:imageURL]) {
+        [cache imageForURL:imageURL completion:^(__unused UIImage *image) {}];
     }
-    if (emote.isAnimated && ![cache cachedFramesForResolvedEmote:resolved]) {
-        [cache framesForResolvedEmote:resolved preview:nil completion:^(__unused TPKEmoteAnimatedFrames *frames) {}];
+    if (emote.isAnimated && ![cache cachedFramesForURL:imageURL]) {
+        [cache framesForURL:imageURL animated:emote.isAnimated preview:nil
+            completion:^(__unused TPKEmoteAnimatedFrames *frames) {}];
     }
 }
 
@@ -3253,259 +3017,6 @@ static void tpk_warmEmoteForPicker(TPKEmoteImageCache *cache, TPKEmote *emote) {
     return nil;
 }
 
-// ── Faux chat flottant (preview live du panneau ⚙️ Tailles) ────────────────
-// Hors inputView : conteneur séparé sur la key window (créé une fois, repositionné).
-- (UIView *)_ensureFakeChatPreviewContainer {
-    if (self.pickerFakeChatPreviewView) return self.pickerFakeChatPreviewView;
-
-    UIView *container = [[UIView alloc] init];
-    container.accessibilityIdentifier = @"tpk_fake_chat_preview";
-    container.backgroundColor = TPKOLEDModeEnabled()
-        ? UIColor.blackColor
-        : [UIColor colorWithWhite:0.09 alpha:0.97];
-    container.layer.cornerRadius = 12;
-    container.clipsToBounds = YES;
-    container.hidden = YES;
-    // Opaque et interactif : aucun tap ne traverse vers le vrai chat derrière.
-    container.userInteractionEnabled = YES;
-
-    TPKChatCustomView *chatView = self.sizesPanel.fakeChatView;
-    chatView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [container addSubview:chatView];
-
-    self.pickerFakeChatPreviewView = container;
-    return container;
-}
-
-// Barre de saisie RN (pleine largeur) : seule mesure de position.
-static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
-    if (!window || window.hidden || window.alpha <= 0.0) return nil;
-    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:window];
-    NSUInteger visited = 0;
-    UIView *bestBar = nil;
-    CGFloat bestBottom = -CGFLOAT_MAX;
-    while (queue.count > 0 && visited < 6000) {
-        UIView *view = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        visited++;
-        if (view.hidden || view.alpha <= 0.01) continue;
-        if ([@"chat-input-bar" isEqualToString:view.accessibilityIdentifier] &&
-            view.window == window && !CGRectIsEmpty(view.bounds)) {
-            CGRect frame = [view convertRect:view.bounds toView:window];
-            if (CGRectIntersectsRect(frame, window.bounds) && CGRectGetMaxY(frame) > bestBottom) {
-                bestBar = view;
-                bestBottom = CGRectGetMaxY(frame);
-            }
-        }
-        [queue addObjectsFromArray:view.subviews];
-    }
-    return bestBar;
-}
-
-// Au-dessus de chatInputView (~50% écran), recouvre le chat, repris à chaque appel.
-- (void)_showFakeChatPreviewAboveInputView {
-    UIView *pickerView = self.emotePickerView;
-    BOOL pickerAttachedAsInputView = self.emotePickerTextEntryView &&
-        self.emotePickerTextEntryView.window &&
-        self.emotePickerTextEntryView.inputView == pickerView;
-    BOOL pickerVisibleAsWindowFallback =
-        pickerView.window && pickerView.superview == pickerView.window;
-    if (!self.pickerSizesPanelVisible || !pickerView || pickerView.hidden ||
-        (!pickerAttachedAsInputView && !pickerVisibleAsWindowFallback)) {
-        // Relayout différé : si le picker n'est plus attaché, supprimer le conteneur.
-        [self _hideFakeChatPreview];
-        return;
-    }
-
-    UIView *inputRoot = self.emotePickerTextField;
-    UIWindow *keyWindow = inputRoot.window;
-    if (!keyWindow) {
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes)
-            if ([scene isKindOfClass:[UIWindowScene class]])
-                for (UIWindow *w in ((UIWindowScene *)scene).windows)
-                    if (w.isKeyWindow) { keyWindow = w; break; }
-        if (!keyWindow) keyWindow = [UIApplication sharedApplication].windows.firstObject;
-    }
-    if (!keyWindow) {
-        [[TPKManager sharedManager] log:@"⚠️ _showFakeChatPreviewAboveInputView: pas de key window"];
-        return;
-    }
-
-    // Pas d'aperçu en paysage : la hauteur d'écran ne laisse pas la place,
-    // il masquerait le chat au lieu d'aider.
-    if (keyWindow.bounds.size.width > keyWindow.bounds.size.height) {
-        [self _hideFakeChatPreview];
-        return;
-    }
-
-    CGFloat width     = keyWindow.bounds.size.width;
-    static const CGFloat kFakeChatInset = 8.0; // même valeur que CGRectInset(container.bounds, 8, 8) plus bas
-
-    // La chat bar est recalée par UIKit après la reconstruction du clavier :
-    // sans forcer le layout, inputTopY est mesuré sur l'ancienne position et
-    // l'aperçu reste décalé.
-    [keyWindow layoutIfNeeded];
-
-    CGFloat inputTopY = keyWindow.bounds.size.height;
-    UIView *bar = tpk_pickerFindChatInputBar(keyWindow);
-    if (bar) {
-        CGRect barFrame = [bar convertRect:bar.bounds toView:keyWindow];
-        inputTopY = barFrame.origin.y;
-    }
-    CGFloat safeTop = keyWindow.safeAreaInsets.top;
-    CGFloat availableHeight = MAX(0.0, inputTopY - safeTop);
-    CGFloat maxHeight = MIN(keyWindow.bounds.size.height * 0.5, availableHeight);
-    if (maxHeight < 80.0) {
-        [self _hideFakeChatPreview];
-        return;
-    }
-
-    UIView *container = [self _ensureFakeChatPreviewContainer];
-    TPKChatCustomView *chatView = self.sizesPanel.fakeChatView;
-    chatView.renderingSuspended = NO;
-    if (container.superview != keyWindow) {
-        [container removeFromSuperview];
-        [keyWindow addSubview:container];
-    }
-
-    // ── Hauteur réelle du contenu ────────────────────────────────────────
-    // Contenu réel : largeur d'abord, layout forcé, puis contentSize.height (pas 50%).
-    chatView.frame = CGRectMake(0, 0, width - kFakeChatInset * 2, maxHeight);
-    CGFloat contentHeight = [chatView tpkContentHeight];
-
-    CGFloat height = (contentHeight > 0)
-        ? MIN(contentHeight + kFakeChatInset * 2, maxHeight)
-        : maxHeight; // fallback si contentSize indisponible (pas encore layoutée)
-
-    CGFloat y = MAX(safeTop, inputTopY - height);
-
-    container.frame = CGRectMake(0, y, width, height);
-    self.sizesPanel.fakeChatView.frame = CGRectInset(container.bounds, kFakeChatInset, kFakeChatInset);
-    container.hidden = NO;
-    [keyWindow bringSubviewToFront:container];
-}
-
-// La chat bar est recalée par UIKit pendant l'animation du clavier : sa frame
-// finale n'existe qu'à ce moment. Repositionner sur l'événement, et non sur un
-// délai deviné, sinon l'aperçu reste à l'ancienne position.
-// Même événement pour l'orientation : c'est le seul signal qui tombe APRÈS la
-// rotation de la fenêtre, donc le seul fiable pour recaler la ligne de taille.
-- (void)_tpk_keyboardFrameDidChange:(NSNotification *)notification {
-    if (tpk_pickerChatButtonNative) tpk_attachPassivePickerButton(tpk_pickerChatButtonNative);
-    UIView *pickerView = self.emotePickerView;
-    if (!pickerView.window || pickerView.hidden) return;
-    // Filet : la zone clavier vient d'être redimensionnée, donc si la hauteur
-    // voulue a changé entre-temps (rotation) le conteneur doit se recaler.
-    CGFloat height = [self _tpk_resolvedGridHeight];
-    if (fabs(pickerView.bounds.size.height - height) >= 0.5) {
-        CGRect frame = pickerView.frame;
-        frame.size.height = height;
-        pickerView.frame = frame;
-        [self _tpk_relayoutPickerForSize:frame.size];
-        [self.emoteCollectionView setContentOffset:CGPointZero animated:NO];
-    }
-    if (!self.pickerSizesPanelVisible) return;
-    [self _showFakeChatPreviewAboveInputView];
-    [self.sizesPanel tpk_syncPickerSizeRow];
-}
-
-- (void)_hideFakeChatPreview {
-    TPKChatCustomView *chatView = self->_sizesPanel.fakeChatView;
-    [chatView resetTransientTranscriptState];
-    chatView.renderingSuspended = YES;
-    UIView *container = self.pickerFakeChatPreviewView;
-    container.hidden = YES;
-    // Retirer (pas seulement masquer) : un callback différé peut le remontrer.
-    [container removeFromSuperview];
-    self.pickerFakeChatPreviewView = nil;
-}
-
-// ── Slider taille des emotes ───────────────────────────────────────────────
-
-// Table clé → (nom, min, max) : source unique (menu, slider, label) ; bornes ~2x défaut.
-- (void)emotePickerSizesToggleTapped {
-    BOOL show = !self.pickerSizesPanelVisible;
-    if (show) {
-        // Couper aussi la décélération : son callback réactiverait une cellule derrière.
-        CGPoint offset = self.emoteCollectionView.contentOffset;
-        [self.emoteCollectionView setContentOffset:offset animated:NO];
-        self.emoteCollectionView.panGestureRecognizer.enabled = NO;
-        self.emoteCollectionView.panGestureRecognizer.enabled = YES;
-        [self _tpk_deactivateVisiblePickerAnimations];
-        [[TPKEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
-        [[TPKEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
-        [[TPKEmoteImageCache sharedCache] setDecodingSuspended:NO];
-        self.pickerScrollInProgress = NO;
-        // Le toggle supprime didEndDecelerating : appliquer ici le catalogue en attente.
-        if (self.pickerCatalogReloadPending) [self _tpk_applyCatalogUpdateNow];
-    }
-    self.pickerSizesPanelVisible = show;
-    self.sizesPanel.panelView.hidden = !show;
-    self.emoteCollectionView.hidden  = show;
-    self.pickerSearchCapsuleView.hidden = show;
-    // Masquer conteneur + icônes : sinon la capsule vide reste visible à gauche.
-    self.pickerTabCapsuleView.hidden = show;
-    self.pickerSubcategoryCapsuleView.hidden = show;
-    for (UIButton *btn in self.pickerTabButtons) btn.hidden = show;
-    self.pickerSizesToggleBtn.tintColor = [UIColor colorWithWhite:0.55 alpha:1.0];
-    // L'émoticône reprend l'icône de retour du picker : même langage visuel.
-    UIImageSymbolConfiguration *backCfg = [UIImageSymbolConfiguration
-        configurationWithPointSize:12 weight:UIImageSymbolWeightMedium];
-    [self.pickerSizesToggleBtn setImage:
-        [UIImage systemImageNamed:(show ? @"face.smiling" : @"textformat.size")
-                withConfiguration:backCfg]
-                                forState:UIControlStateNormal];
-
-    // Panneau et grille partagent la hauteur configurée : le toggle ne change
-// que le contenu affiché. Toujours relayout : c'est lui qui replace la
-// capsule tailles/réglages du bon côté.
-    CGRect f = self.emotePickerView.frame;
-    CGFloat targetH = [self _tpk_resolvedGridHeight];
-    f.size.height = targetH;
-    self.emotePickerView.frame = f;
-    [self _tpk_relayoutPickerForSize:f.size];
-    // Relire la taille de l'inputView, sinon la zone clavier reste figée.
-    [self.emotePickerTextEntryView reloadInputViews];
-
-    if (show) {
-        self.sizesPanel.fakeChatView.renderingSuspended = NO;
-        [self.sizesPanel loadRealPreviewAssetsIfNeeded];
-        [self _showFakeChatPreviewAboveInputView];
-        // Après l'aperçu : c'est lui qui attache le faux chat à la key window,
-        // seule source fiable pour lire l'orientation courante.
-        [self.sizesPanel tpk_syncPickerSizeRow];
-    } else {
-        [self _hideFakeChatPreview];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self _tpk_activateVisiblePickerAnimations];
-        });
-    }
-}
-
-// Ouvre l'écran de réglages complet depuis le picker (même écran que le
-// Le picker étant l'inputView, la fenêtre clavier n'est détruite que si le
-// texte résigne. reloadInputViews ne change donc pas la hauteur de la zone.
-// On repasse par le chemin éprouvé (fermeture + réouverture), seul moyen que
-// UIKit reconstruise le clavier à la nouvelle taille.
-- (void)pickerSizePreferenceDidChange {
-    // D'abord la grille : changer la taille des emotes ne bouge pas la hauteur,
-    // donc le cycle ci-dessous nepart pas et la grille resterait obsolète.
-    [self.emoteCollectionView.collectionViewLayout invalidateLayout];
-    if (!self.emotePickerView || !self.emotePickerTextField.window) return;
-    // Rien à reconstruire si la hauteur de l'orientation courante n'a pas bougé
-    // — cas où l'on édite la valeur de l'autre orientation.
-    if (fabs(self.emotePickerView.bounds.size.height
-             - [self _tpk_resolvedGridHeight]) < 0.5) return;
-    UIView *inputRoot = self.emotePickerTextField;
-    BOOL panelWasVisible = self.pickerSizesPanelVisible;
-    [self _hideEmotePicker];
-    [self toggleEmotePickerForChatInputView:inputRoot];
-    if (panelWasVisible) [self emotePickerSizesToggleTapped];
-}
-
-// Ouvre l'écran de réglages complet depuis le picker (même écran que le
-// bouton flottant 7TV) — ferme d'abord le picker (clavier custom + inputView)
-// pour ne pas laisser les 2 superposés.
 - (void)_pickerSettingsTapped {
     [self _hideEmotePicker];
     [[TPKManager sharedManager] presentSettingsMenu];
@@ -3637,16 +3148,16 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
 }
 
 // ── Taille variable par emote ─────────────────────────────────────────────
-// Hauteur = largeur/6 ; largeur = hauteur × ratio ; min = hauteur*0.25, hauteur min 32pt.
+// Cell height follows the emote ratio, with a 32pt minimum.
 
-// Colonnes de référence : 6 en portrait, 10 en paysage (cellules plus petites).
+// Use six columns in portrait and ten in landscape.
 - (CGSize)collectionView:(UICollectionView *)cv
                   layout:(UICollectionViewLayout *)layout
   sizeForItemAtIndexPath:(NSIndexPath *)indexPath {
 
     CGFloat cvW = cv.bounds.size.width > 0 ? cv.bounds.size.width : 390.0;
     CGFloat referenceColumns = [self pickerHostIsLandscape] ? 10.0 : 6.0;
-    // Facteur réglable, plancher inchangé pour ne jamais descendre sous 32 pt.
+    // Apply the size factor while keeping the 32pt minimum.
     TPKChatAppearanceConfig *cfg = [TPKChatAppearanceConfig sharedConfig];
     CGFloat scale = [self pickerHostIsLandscape] ? cfg.pickerEmoteScaleLandscape
                                                 : cfg.pickerEmoteScalePortrait;
@@ -3673,26 +3184,15 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
                   cellForItemAtIndexPath:(NSIndexPath *)indexPath {
     TPKEmotePickerCell *cell = (TPKEmotePickerCell *)
         [cv dequeueReusableCellWithReuseIdentifier:kEmoteCellID forIndexPath:indexPath];
-    // Réappliqué à chaque déqueue : pas de palette obsolète sur cellule recyclée.
+    // Reapply colors when reusing a cell.
     [cell tpk_applyOLEDColors];
 
-    // Reconfigurable sans prepareForReuse : couper l'observation ici (comme le chat).
-    [[TPKEmoteAnimationEngine sharedEngine] removeObserver:cell];
-    [cell.animationFrameRequest cancel];
-    cell.animationFrameRequest = nil;
-    cell.imageLoadGeneration += 1;
-    cell.animationGeneration += 1;
-    cell.wantsAnimation = NO;
-    cell.currentEmoteKey = nil;
-    cell.emoteImageView.image = nil;
-    cell.favoriteStarView.hidden = YES;
-    cell.providerBadgeLabel.hidden = YES;
-    cell.providerBadgeLabel.text = nil;
+    [cell resetContent];
 
     TPKEmote *emote = [self _emoteForIndexPath:indexPath];
     if (!emote) return cell;
 
-    // Étoile = favoris réels, pas la section (favorite visible dans son onglet).
+    // Show the star for actual favorites, in every tab.
     TPKEmoteDescriptor *descriptor = [emote isKindOfClass:[TPKPickerCatalogEmote class]]
         ? [(TPKPickerCatalogEmote *)emote descriptor] : nil;
     BOOL isFavorite = descriptor
@@ -3710,25 +3210,26 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
             descriptor.sectionTitle ?: @"Emotes"];
     }
 
-    // Réglage global, sauf l'option « favoris uniquement » qui limite à Favoris.
+    // Respect the global animation setting and Favorites-only option.
     BOOL wantsAnimated = emote.isAnimated && [TPKManager sharedManager].showPickerAnimations &&
         (![TPKManager sharedManager].showPickerAnimationsFavoritesOnly || self.pickerActiveTab == TPKPickerTabFavorites);
 
-    TPKPickerResolvedEmote *resolved = [[TPKPickerResolvedEmote alloc] initWithEmote:emote];
-    NSString *key = resolved.imageURL.absoluteString;
+    NSURL *imageURL = TPKPickerImageURLForEmote(emote);
+    NSString *key = imageURL.absoluteString;
     cell.currentEmoteKey = key;
     cell.wantsAnimation = wantsAnimated;
 
-    // cellFor ne démarre rien : cache hit immédiat, sinon attendre willDisplay.
+    // Start image loading in willDisplay, not cellFor.
     cell.emoteImageView.image = [[TPKEmoteImageCache sharedCache]
-        cachedImageForResolvedEmote:resolved];
+        cachedImageForURL:imageURL];
 
     return cell;
 }
 
-// ── Chemin animé : frames du cache pilotées par l'engine (CADisplayLink partagé).
+// Animated frames are driven by the shared display-link engine.
 - (BOOL)_tpk_configureAnimatedPickerCell:(TPKEmotePickerCell *)cell
-                             resolvedEmote:(TPKPickerResolvedEmote *)resolved
+                                      URL:(NSURL *)imageURL
+                                animated:(BOOL)animated
                                        key:(NSString *)key
                                 generation:(NSUInteger)generation
                                allowDecode:(BOOL)allowDecode {
@@ -3760,16 +3261,16 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
         if (frame) strongCell.emoteImageView.image = frame;
     };
 
-    // Toute frame en cache s'affiche ; seule une boucle complète autorise le retour.
+    // Show cached frames; return to static only after a full loop.
     if ([engine hasFramesForKey:key]) {
         if (!cellIsStillActive()) return NO;
         [engine addObserver:cell keys:[NSSet setWithObject:key] redraw:redraw];
-        redraw(); // pose la frame courante immédiatement, sans attendre le prochain tick
+        redraw(); // Display the current frame immediately.
         if ([engine hasCompleteFramesForKey:key]) return YES;
     }
 
-    // Frames déjà décodées (ex: chat) : enregistrement direct, pas de redécodage.
-    TPKEmoteAnimatedFrames *cachedFrames = [cache cachedFramesForResolvedEmote:resolved];
+    // Reuse decoded frames from other views.
+    TPKEmoteAnimatedFrames *cachedFrames = [cache cachedFramesForURL:imageURL];
     if (cachedFrames) {
         if (!cellIsStillActive()) return NO;
         [engine registerFrames:cachedFrames forKey:key];
@@ -3778,11 +3279,11 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
         return YES;
     }
 
-    // Cache hits immédiats ; décodage neuf seulement après le délai de stabilité.
+    // Use cached frames now; delay new decoding until scrolling settles.
     if (!allowDecode) return NO;
 
-    // Rien en cache : afficher la frame statique connue pendant le décodage.
-    UIImage *staticCached = [cache cachedImageForResolvedEmote:resolved];
+    // Show the static image while decoding frames.
+    UIImage *staticCached = [cache cachedImageForURL:imageURL];
     if (staticCached) cell.emoteImageView.image = staticCached;
 
     __weak TPKEmotePickerCell *weakCellForLoad = cell;
@@ -3790,16 +3291,16 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
         if (!frames.images.count) return;
         TPKEmotePickerCell *strongCell = weakCellForLoad;
         if (!strongCell || !cellIsStillActive()) return;
-        // Si la boucle complète a gagné la course, ignorer une preview tardive.
+        // Ignore previews that arrive after the full animation.
         if (frames.isPreview && [engine hasCompleteFramesForKey:key]) return;
         [engine registerFrames:frames forKey:key];
         [engine addObserver:strongCell keys:[NSSet setWithObject:key] redraw:redraw];
         redraw();
     };
 
-    cell.animationFrameRequest = [cache framesForResolvedEmote:resolved
+    cell.animationFrameRequest = [cache framesForURL:imageURL animated:animated
         preview:^(TPKEmoteAnimatedFrames *previewFrames) {
-            // Boucle légère (12 frames max) : visible sans attendre le décodage WebP.
+            // Show a short preview while WebP decoding runs.
             applyFrames(previewFrames);
         }
         completion:^(TPKEmoteAnimatedFrames * _Nullable frames) {
@@ -3824,7 +3325,7 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
     __weak typeof(self) weakSelf = self;
     __weak TPKEmotePickerCell *weakCell = cell;
 
-    // Anti-flick : après 40 ms de stabilité, seule une cellule visible demande sa frame.
+    // Request frames only after a visible cell remains stable for 40ms.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -3838,16 +3339,16 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
 
         TPKEmote *emote = [strongSelf _emoteForIndexPath:indexPath];
         if (!emote) return;
-        TPKPickerResolvedEmote *resolved = [[TPKPickerResolvedEmote alloc] initWithEmote:emote];
-        if (![resolved.imageURL.absoluteString isEqualToString:key]) return;
+        NSURL *imageURL = TPKPickerImageURLForEmote(emote);
+        if (![imageURL.absoluteString isEqualToString:key]) return;
 
         TPKEmoteImageCache *cache = [TPKEmoteImageCache sharedCache];
-        UIImage *cached = [cache cachedImageForResolvedEmote:resolved];
+        UIImage *cached = [cache cachedImageForURL:imageURL];
         if (cached) {
             strongCell.emoteImageView.image = cached;
             return;
         }
-        [cache imageForResolvedEmote:resolved completion:^(UIImage * _Nullable image) {
+        [cache imageForURL:imageURL completion:^(UIImage * _Nullable image) {
             TPKEmotePickerCell *completionCell = weakCell;
             TPKEmotePickerController *completionSelf = weakSelf;
             if (!image || !completionSelf || completionSelf.pickerSearchAlertActive ||
@@ -3863,7 +3364,7 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
                                   atIndexPath:(NSIndexPath *)indexPath {
     if (self.pickerSearchAlertActive || !self.emotePickerView.window ||
         !cell.wantsAnimation || self.emoteCollectionView.hidden) return;
-    if (cell.animationFrameRequest) return; // décodage courant déjà lié à cette cellule
+    if (cell.animationFrameRequest) return; // A decode request is already active.
 
     NSString *key = [cell.currentEmoteKey copy];
     if (!key.length) return;
@@ -3873,18 +3374,19 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
 
     TPKEmote *initialEmote = [self _emoteForIndexPath:indexPath];
     if (!initialEmote || !initialEmote.isAnimated) return;
-    TPKPickerResolvedEmote *initialResolved = [[TPKPickerResolvedEmote alloc] initWithEmote:initialEmote];
-    if (![initialResolved.imageURL.absoluteString isEqualToString:key]) return;
+    NSURL *initialImageURL = TPKPickerImageURLForEmote(initialEmote);
+    if (![initialImageURL.absoluteString isEqualToString:key]) return;
 
-    // Cache hit : première passe ne branche que les frames existantes, sans décodage.
+    // First pass observes cached frames without decoding.
     BOOL attachedFromCache = [self _tpk_configureAnimatedPickerCell:cell
-                                                        resolvedEmote:initialResolved
+                                                                  URL:initialImageURL
+                                                            animated:initialEmote.isAnimated
                                                                   key:key
                                                            generation:generation
                                                           allowDecode:NO];
     if (attachedFromCache) return;
 
-    // Annulables via didEndDisplayingCell : preview dès le prochain run loop.
+    // Cancel requests when cells leave the screen.
     dispatch_async(dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         TPKEmotePickerCell *strongCell = weakCell;
@@ -3896,10 +3398,11 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
 
         TPKEmote *emote = [strongSelf _emoteForIndexPath:indexPath];
         if (!emote || !emote.isAnimated) return;
-        TPKPickerResolvedEmote *resolved = [[TPKPickerResolvedEmote alloc] initWithEmote:emote];
-        if (![resolved.imageURL.absoluteString isEqualToString:key]) return;
+        NSURL *imageURL = TPKPickerImageURLForEmote(emote);
+        if (![imageURL.absoluteString isEqualToString:key]) return;
         [strongSelf _tpk_configureAnimatedPickerCell:strongCell
-                                        resolvedEmote:resolved
+                                                  URL:imageURL
+                                            animated:emote.isAnimated
                                                   key:key
                                            generation:generation
                                           allowDecode:YES];
@@ -3956,16 +3459,12 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
 - (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
     if (scrollView != self.emoteCollectionView) return;
     self.pickerScrollInProgress = YES;
-    [[TPKEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:YES];
-    [[TPKEmoteImageCache sharedCache] setScrollingPerformanceMode:YES];
 }
 
 - (void)scrollViewDidEndDragging:(UIScrollView *)scrollView
                   willDecelerate:(BOOL)decelerate {
     if (scrollView != self.emoteCollectionView || decelerate) return;
     self.pickerScrollInProgress = NO;
-    [[TPKEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
-    [[TPKEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
     if (self.pickerCatalogReloadPending) [self _tpk_applyCatalogUpdateNow];
     [self _tpk_activateVisiblePickerAnimations];
 }
@@ -3973,8 +3472,6 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
 - (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
     if (scrollView != self.emoteCollectionView) return;
     self.pickerScrollInProgress = NO;
-    [[TPKEmoteAnimationEngine sharedEngine] setScrollingPerformanceMode:NO];
-    [[TPKEmoteImageCache sharedCache] setScrollingPerformanceMode:NO];
     if (self.pickerCatalogReloadPending) [self _tpk_applyCatalogUpdateNow];
     [self _tpk_activateVisiblePickerAnimations];
 }
@@ -4043,19 +3540,19 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
     NSString *toAppend = [NSString stringWithFormat:@"%@%@ ", prefix, emoteText];
 
     // ── Étape 4: insertion ─────────────────────────────────────────────────
-    // insertText: ne notifie pas SwiftUI → copier dans le presse-papier + paste:.
+    // Use paste: so SwiftUI receives the text change.
     BOOL inserted = NO;
 
     if (textView) {
         // Aller à la fin
         textView.selectedRange = NSMakeRange(textView.text.length, 0);
 
-        // Sauvegarder et remplacer le presse-papier
+        // Save and replace the pasteboard.
         UIPasteboard *pb = [UIPasteboard generalPasteboard];
         NSString *savedString = pb.string;
         pb.string = toAppend;
 
-        // paste: déclenche le pipeline UITextInput complet + notifie SwiftUI
+        // paste: runs the UITextInput pipeline and notifies SwiftUI.
         if ([textView respondsToSelector:@selector(paste:)]) {
             [textView paste:nil];
             inserted = YES;
@@ -4066,14 +3563,12 @@ static UIView *tpk_pickerFindChatInputBar(UIWindow *window) {
             [[TPKManager sharedManager] log:@"⚠️ paste: non dispo → insertText: fallback"];
         }
 
-        // Restaurer le presse-papier après l'animation de paste
+        // Restore the pasteboard after the paste animation.
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             pb.string = savedString ?: @"";
         });
-        // paste: suit déjà le vrai flux UIKit (delegate + notif par UIKit) :
-        // aucun post manuel ni appel delegate direct (désync RN + casse la
-        // correction auto).
+        // UIKit sends the delegate and notification callbacks for paste.
     } else if (textField) {
         [textField becomeFirstResponder];
         [(id<UIKeyInput>)textField insertText:toAppend];

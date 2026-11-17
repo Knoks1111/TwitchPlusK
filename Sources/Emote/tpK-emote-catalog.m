@@ -1,5 +1,5 @@
 #import "Emote/tpK-emote-catalog.h"
-#import "Emote/tpK-provider-settings.h"
+#import "Picker/tpK-picker-settings.h"
 #import "Adblock/Emote/tpK-adblock-emote-proxy.h"
 #import <math.h>
 #import <stdlib.h>
@@ -11,6 +11,25 @@ static NSString *const kTPKFavoriteMetadataKey =
     @"tpk_emote_favorite_metadata_v1";
 static NSString *const kTPKFavoriteCompositionsKey =
     @"tpk_emote_favorite_compositions_v1";
+
+TPKEmoteProviderID TPKEmoteProviderFromIdentifier(NSString * _Null_unspecified identifier) {
+    NSString *value = [identifier.lowercaseString stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([value isEqualToString:@"bttv"] || [value isEqualToString:@"betterttv"])
+        return TPKEmoteProviderIDBTTV;
+    if ([value isEqualToString:@"ffz"] || [value isEqualToString:@"frankerfacez"])
+        return TPKEmoteProviderIDFFZ;
+    return TPKEmoteProviderIDTPK;
+}
+
+static void TPKSevenTVAddImage(NSMutableDictionary *formats, NSString *url, NSInteger scale) {
+    if (!url.length || scale <= 0) return;
+    NSString *extension = [NSURL URLWithString:url].pathExtension.lowercaseString;
+    if (!extension.length || ![@[@"gif", @"webp", @"png"] containsObject:extension]) return;
+    NSMutableDictionary *variants = formats[extension];
+    if (!variants) formats[extension] = variants = [NSMutableDictionary dictionary];
+    variants[@(scale)] = url;
+}
 
 NSString *TPKEmoteProviderName(TPKEmoteProviderID provider) {
     switch (provider) {
@@ -35,16 +54,13 @@ NSString *TPKEmoteFavoriteKey(TPKEmoteProviderID provider, NSString *emoteID) {
     return [NSString stringWithFormat:@"%@:%@", TPKEmoteProviderKey(provider), emoteID];
 }
 
-// UserDefaults is also populated by settings imports from older releases.
-// Keep the catalogue boundary strict so malformed values (including
-// non-NSString objects) can never reach UI code that parses favorite keys.
+// Validate imported values before favorite-key parsing reaches the UI.
 static NSString *TPKCanonicalFavoriteKey(id value) {
     if (![value isKindOfClass:NSString.class] || ![(NSString *)value length]) return nil;
     NSString *raw = (NSString *)value;
     NSRange separator = [raw rangeOfString:@":" options:0 range:NSMakeRange(0, raw.length)];
     if (separator.location == NSNotFound) {
-        // A bare ID is the legacy 7TV representation.  Accept it while the
-        // migration settles so imports from intermediate builds remain usable.
+        // Accept bare IDs for legacy 7TV imports.
         return TPKEmoteFavoriteKey(TPKEmoteProviderIDTPK, raw);
     }
     if (separator.location == 0 || separator.location == raw.length - 1) return nil;
@@ -63,10 +79,7 @@ static BOOL TPKBool(id value);
 static NSArray<NSString *> *TPKAliases(id value);
 static NSDictionary<NSNumber *, NSString *> *TPKURLMap(id value);
 
-// Set sections need to retain their source scope because the provider keeps
-// global and channel sections in one snapshot.  The prefix is deliberately
-// part of the stable section identifier so a lazy expansion can request the
-// right endpoint even after a channel refresh.
+// Scope-qualified section IDs let lazy loads target the correct endpoint.
 static NSString *TPKSetSectionIdentifier(NSString *setID, BOOL global) {
     if (!setID.length) return @"";
     return [NSString stringWithFormat:@"%@:%@", global ? @"global-set" : @"set", setID];
@@ -126,18 +139,14 @@ static NSDictionary *TPKFavoriteMetadataForDescriptor(TPKEmoteDescriptor *descri
     metadata[@"animated"] = @(descriptor.animated);
     metadata[@"zeroWidth"] = @(descriptor.zeroWidth);
 
-    // NSUserDefaults property-list dictionaries require string keys. The
-    // runtime descriptor uses NSNumber scale keys, so normalize them while
-    // keeping every URL available for the shared resolution fallback.
+    // Convert scale keys to strings for property-list storage.
     NSMutableDictionary *urls = [NSMutableDictionary dictionary];
     [descriptor.imageURLs enumerateKeysAndObjectsUsingBlock:^(NSNumber *scale, NSString *url, BOOL *stop) {
         if ([scale respondsToSelector:@selector(integerValue)] && url.length)
             urls[[scale stringValue]] = url;
     }];
     metadata[@"imageURLs"] = urls.copy;
-    // Modifier metadata is intentionally retained for the v2 effects UI when
-    // it is a property-list-safe dictionary. Invalid/non-plist values are
-    // simply omitted; v1 never depends on them to render the emote.
+    // Keep property-list-safe modifier metadata for the v2 effects UI.
     if (descriptor.modifierMetadata.count &&
         [NSPropertyListSerialization propertyList:descriptor.modifierMetadata
                                isValidForFormat:NSPropertyListBinaryFormat_v1_0]) {
@@ -237,11 +246,6 @@ static BOOL TPKBool(id value) {
     return [value respondsToSelector:@selector(boolValue)] && [value boolValue];
 }
 
-static BOOL TPKCatalogProviderEnabled(TPKEmoteProviderID provider) {
-    return [TPKEmoteProviderSettings isProviderEnabled:
-        (TPKExternalEmoteProvider)provider];
-}
-
 static NSArray<NSString *> *TPKAliases(id value) {
     if ([value isKindOfClass:NSString.class]) return [(NSString *)value length] ? @[value] : @[];
     if (![value isKindOfClass:NSArray.class]) return @[];
@@ -273,10 +277,7 @@ static NSDictionary<NSNumber *, NSString *> *TPKURLMap(id value) {
     return result.copy;
 }
 
-// 7TV has used a plain `emotes` array in its REST v3 payloads and an
-// `emotes.items`/`emotes.data` wrapper in GraphQL-shaped adapters. Keep that
-// wire-format detail inside the catalogue so every parser and shape check
-// agrees on what constitutes an emote-set payload.
+// Accept REST arrays and GraphQL-style emote wrappers.
 static NSArray *TPKEmoteEntriesFromSet(NSDictionary *set) {
     if (![set isKindOfClass:NSDictionary.class]) return @[];
     id collection = set[@"emotes"] ?: set[@"emoticons"];
@@ -292,9 +293,7 @@ static NSArray *TPKEmoteEntriesFromSet(NSDictionary *set) {
             if (nested.count) return nested;
         }
     }
-    // Some cache adapters normalize an emote list as a map keyed by emote ID
-    // rather than an array. Preserve those entries as long as the values look
-    // like emote records; scalar metadata keys are ignored.
+    // Accept maps keyed by emote ID; ignore scalar metadata.
     NSMutableArray *mappedEntries = [NSMutableArray array];
     for (id value in wrapped.allValues) {
         if (![value isKindOfClass:NSDictionary.class]) continue;
@@ -314,93 +313,13 @@ static BOOL TPKDictionaryHasDirectEmoteCollection(NSDictionary *dictionary) {
         [collection isKindOfClass:NSDictionary.class];
 }
 
-// The first provider-aware builds used the old TPKManager cache before
-// the common catalogue was introduced.  Keep that on-disk data useful during
-// a one-way, non-destructive migration: convert the legacy name -> metadata
-// map into the same 7TV set shape consumed by the normal parser, then persist
-// the normalized payload in the provider cache.  No network request or UI work
-// happens on the caller's thread; loadProvider performs this helper on ioQueue.
-static NSString *TPKLegacyTPKCachePath(BOOL global, NSString *channel) {
-    NSString *base = NSSearchPathForDirectoriesInDomains(NSCachesDirectory,
-                                                           NSUserDomainMask,
-                                                           YES).firstObject;
-    if (!base.length) return nil;
-    NSString *scope = global ? @"global" :
-        ([channel stringByReplacingOccurrencesOfString:@"/" withString:@"_"] ?: @"channel");
-    return [[base stringByAppendingPathComponent:@"s7tv"]
-        stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.json", global ? @"global" :
-            [NSString stringWithFormat:@"ch_%@", scope]]];
-}
-
-static NSDictionary *TPKNormalizedLegacyTPKPayload(NSData *data,
-                                                         BOOL global,
-                                                         NSString *channel) {
-    if (!data.length) return nil;
-    NSDictionary *root = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-    if (![root isKindOfClass:NSDictionary.class]) return nil;
-
-    // If a future build already placed a provider-shaped payload in the old
-    // directory, accept it as-is instead of wrapping it a second time.
-    if (TPKDictionaryHasDirectEmoteCollection(root)) return root;
-    NSDictionary *legacyEmotes = [root[@"emotes"] isKindOfClass:NSDictionary.class]
-        ? root[@"emotes"] : nil;
-    if (!legacyEmotes.count) return nil;
-
-    NSMutableArray *entries = [NSMutableArray arrayWithCapacity:legacyEmotes.count];
-    for (NSString *name in legacyEmotes) {
-        NSDictionary *legacy = [legacyEmotes[name] isKindOfClass:NSDictionary.class]
-            ? legacyEmotes[name] : nil;
-        NSString *emoteID = TPKString(legacy[@"id"]);
-        if (!name.length || !emoteID.length) continue;
-
-        NSInteger width = MAX(1, TPKInteger(legacy[@"w"]));
-        NSInteger height = MAX(1, TPKInteger(legacy[@"h"]));
-        NSString *hostURL = [NSString stringWithFormat:
-            @"https://cdn.7tv.app/emote/%@", emoteID];
-        NSMutableArray *files = [NSMutableArray arrayWithCapacity:4];
-        for (NSInteger scale = 1; scale <= 4; scale++) {
-            [files addObject:@{
-                @"name": [NSString stringWithFormat:@"%ldx.webp", (long)scale],
-                @"width": @(width * scale),
-                @"height": @(height * scale),
-            }];
-        }
-        BOOL animated = TPKBool(legacy[@"a"]);
-        BOOL zeroWidth = TPKBool(legacy[@"z"]);
-        NSDictionary *dataObject = @{
-            @"id": emoteID,
-            @"name": name,
-            @"animated": @(animated),
-            @"zeroWidth": @(zeroWidth),
-            @"width": @(width),
-            @"height": @(height),
-            @"host": @{ @"url": hostURL, @"files": files },
-        };
-        [entries addObject:@{
-            @"id": emoteID,
-            @"name": name,
-            @"flags": @(zeroWidth ? 1 : 0),
-            @"data": dataObject,
-        }];
-    }
-    if (!entries.count) return nil;
-
-    NSString *setID = global ? @"legacy-global" :
-        [NSString stringWithFormat:@"legacy-channel-%@", channel ?: @"channel"];
-    return @{
-        @"id": setID,
-        @"name": global ? @"Global Emotes" : @"Channel Emotes",
-        @"emotes": entries,
-    };
-}
+// Migrate the legacy TPKManager cache to the provider cache on ioQueue.
 
 static BOOL TPKSetHasEmotePayload(id value) {
     if ([value isKindOfClass:NSDictionary.class]) {
         NSDictionary *dictionary = (NSDictionary *)value;
         id collection = dictionary[@"emotes"] ?: dictionary[@"emoticons"];
-        // An explicitly empty array/dictionary is still a valid set payload;
-        // callers use the distinction between `nil` and an empty collection
-        // to clear a loading placeholder without showing a retry error.
+        // An empty collection is valid and differs from a missing payload.
         if ([collection isKindOfClass:NSArray.class] ||
             [collection isKindOfClass:NSDictionary.class]) return YES;
         for (id nested in dictionary.allValues) {
@@ -457,21 +376,14 @@ static void TPKCollectSetIDsFromObject(id value,
     if (![value isKindOfClass:NSDictionary.class]) return;
     NSDictionary *dictionary = (NSDictionary *)value;
 
-    // A set payload is also a dictionary, but its `id`/`name`/`emotes`
-    // fields are not a map of set IDs. Handle it before walking keys so a
-    // direct object cannot accidentally enqueue literal IDs such as
-    // `id`, `name` or `emotes` as additional network requests.
+    // Handle a direct set object before interpreting dictionary keys as set IDs.
     if (TPKDictionaryHasDirectEmoteCollection(dictionary)) {
         NSString *identifier = TPKString(dictionary[@"id"]) ?:
             TPKString(dictionary[@"emote_set_id"]);
         if (identifier.length) [setIDs addObject:identifier];
     }
 
-    // The v3 user response has appeared in both forms over time:
-    // emote_set/emoteSet/set: "id", emote_set_id: "id", and a TWITCH
-    // connection containing emote_set_id. Accept all documented/cached
-    // spellings so a camel-case GraphQL/cache adapter cannot hide the active
-    // set from the optional set loader.
+    // Accept known v3 active-set fields and cached variants.
     for (NSString *key in @[@"emote_set_id", @"emoteSetId", @"set_id", @"setId"]) {
         id candidate = dictionary[key];
         if ([candidate isKindOfClass:NSString.class] && [candidate length])
@@ -492,11 +404,7 @@ static void TPKCollectSetIDsFromObject(id value,
     for (NSString *containerKey in @[@"emote_sets", @"sets"]) {
         id container = dictionary[containerKey];
         if ([container isKindOfClass:NSDictionary.class]) {
-            // `sets` itself can be a single set object in compact/cache
-            // responses (`{"id":..., "emotes":[...]}`), not always a map
-            // keyed by set ID. Treat it as one set before enumerating fields;
-            // otherwise keys such as "id"/"name" would become bogus request
-            // identifiers and the real set ID could be lost.
+            // `sets` may be one set object rather than a map of sets.
             NSDictionary *directSet = (NSDictionary *)container;
             if (TPKDictionaryHasDirectEmoteCollection(directSet)) {
                 NSString *identifier = TPKString(directSet[@"id"]) ?:
@@ -504,10 +412,7 @@ static void TPKCollectSetIDsFromObject(id value,
                 if (identifier.length) [setIDs addObject:identifier];
                 continue;
             }
-            // Some compact responses include set metadata (`id` + `name`)
-            // but omit the emote array because it is fetched separately. It
-            // is still a valid set identifier; do not walk its scalar fields
-            // and enqueue literal keys such as `id` or `name`.
+            // Metadata-only set objects still provide a valid set ID.
             if (TPKString(directSet[@"id"]).length &&
                 TPKString(directSet[@"name"]).length) {
                 [setIDs addObject:TPKString(directSet[@"id"])];
@@ -544,10 +449,7 @@ static void TPKCollectSetIDsFromObject(id value,
         for (id connection in (NSArray *)connections)
             TPKCollectSetIDsFromObject(connection, setIDs);
     } else if ([connections isKindOfClass:NSDictionary.class]) {
-        // A few cached/API adapters normalize the connection list as a map
-        // keyed by platform (for example {"TWITCH": {...}}). Traverse it
-        // exactly like the documented array form so set discovery does not
-        // depend on that serialization detail.
+        // Accept connection maps as well as arrays.
         for (id connection in [(NSDictionary *)connections allValues])
             TPKCollectSetIDsFromObject(connection, setIDs);
     }
@@ -584,6 +486,92 @@ static NSDictionary *TPKFindSetDictionary(id container, NSString *identifier) {
     return nil;
 }
 
+static id TPKConnectionValue(id connections, BOOL wantsPayload) {
+    BOOL isMap = [connections isKindOfClass:NSDictionary.class];
+    if (!isMap && ![connections isKindOfClass:NSArray.class]) return nil;
+
+    BOOL sawIdentifiablePlatform = NO;
+    id fallback = nil, selection = nil;
+    NSDictionary *fallbackConnection = nil, *selectionConnection = nil;
+    id fallbackMapKey = nil, selectionMapKey = nil;
+    for (id entry in connections) {
+        id mapKey = isMap ? entry : nil;
+        id rawConnection = isMap ? ((NSDictionary *)connections)[entry] : entry;
+        if (![rawConnection isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *connection = rawConnection;
+
+        NSString *platform = TPKString(connection[@"platform"]);
+        if (!platform.length && !wantsPayload && isMap &&
+            [mapKey isKindOfClass:NSString.class]) platform = mapKey;
+        if (!platform.length) platform = TPKString(connection[@"platform_name"]);
+        if (!platform.length) platform = TPKString(connection[@"platformName"]);
+        if (!platform.length && wantsPayload) {
+            id hint = connection[@"__tpk_platform_hint"];
+            if (isMap && [mapKey isKindOfClass:NSString.class] &&
+                !TPKString(connection[@"platform"]).length) hint = mapKey;
+            platform = TPKString(hint);
+        }
+        platform = platform.lowercaseString;
+        if (!wantsPayload && platform.length) sawIdentifiablePlatform = YES;
+
+        id candidate = nil;
+        if (wantsPayload) {
+            id rawSet = connection[@"emote_set"] ?: connection[@"emoteSet"] ?: connection[@"set"];
+            if ([rawSet isKindOfClass:NSDictionary.class] &&
+                TPKDictionaryHasDirectEmoteCollection(rawSet)) {
+                candidate = rawSet;
+            } else if (TPKDictionaryHasDirectEmoteCollection(connection)) {
+                candidate = connection;
+            }
+        } else {
+            NSString *identifier = TPKString(connection[@"emote_set_id"]) ?:
+                TPKString(connection[@"emoteSetId"]);
+            if (!identifier.length) {
+                id rawSet = connection[@"emote_set"] ?: connection[@"emoteSet"] ?: connection[@"set"];
+                identifier = [rawSet isKindOfClass:NSString.class]
+                    ? rawSet
+                    : ([rawSet isKindOfClass:NSDictionary.class]
+                       ? (TPKString(rawSet[@"id"]) ?:
+                          TPKString(rawSet[@"emote_set_id"]) ?:
+                          TPKString(rawSet[@"emoteSetId"])) : nil);
+            }
+            candidate = identifier;
+        }
+        if (wantsPayload && !candidate) continue;
+        if (!wantsPayload &&
+            (![candidate isKindOfClass:NSString.class] || ![(NSString *)candidate length]))
+            continue;
+        if (wantsPayload && platform.length) sawIdentifiablePlatform = YES;
+
+        if ([platform isEqualToString:@"twitch"] || [platform containsString:@"twitch"]) {
+            selection = candidate;
+            selectionConnection = connection;
+            selectionMapKey = mapKey;
+            break;
+        }
+        if (!platform.length && !fallback) {
+            fallback = candidate;
+            fallbackConnection = connection;
+            fallbackMapKey = mapKey;
+        }
+    }
+
+    if (!selection) {
+        if (sawIdentifiablePlatform) return nil;
+        selection = fallback;
+        selectionConnection = fallbackConnection;
+        selectionMapKey = fallbackMapKey;
+    }
+    if (wantsPayload && selection && selection == selectionConnection &&
+        [selectionMapKey isKindOfClass:NSString.class] &&
+        !TPKString(selectionConnection[@"platform"]).length) {
+        NSMutableDictionary *withHint = [selection mutableCopy];
+        withHint[@"__tpk_platform_hint"] = selectionMapKey;
+        selection = withHint.copy;
+    }
+    return selection;
+}
+
 static NSString *TPKActiveSetIDFromObject(id value) {
     if (![value isKindOfClass:NSDictionary.class]) return nil;
     NSDictionary *root = (NSDictionary *)value;
@@ -597,78 +585,8 @@ static NSString *TPKActiveSetIDFromObject(id value) {
         NSString *identifier = TPKString(root[key]);
         if (identifier.length) return identifier;
     }
-    id connections = root[@"connections"];
-    if ([connections isKindOfClass:NSArray.class]) {
-        NSString *fallback = nil;
-        BOOL sawIdentifiablePlatform = NO;
-        for (id rawConnection in (NSArray *)connections) {
-            if (![rawConnection isKindOfClass:NSDictionary.class]) continue;
-            NSDictionary *connection = rawConnection;
-            NSString *platform = [TPKString(connection[@"platform"]) lowercaseString];
-            if (!platform.length)
-                platform = [TPKString(connection[@"platform_name"]) lowercaseString];
-            if (!platform.length)
-                platform = [TPKString(connection[@"platformName"]) lowercaseString];
-            if (platform.length) sawIdentifiablePlatform = YES;
-            NSString *identifier = TPKString(connection[@"emote_set_id"]) ?:
-                TPKString(connection[@"emoteSetId"]);
-            if (!identifier.length) {
-                id connectionSet = connection[@"emote_set"] ?:
-                    connection[@"emoteSet"] ?: connection[@"set"];
-                identifier = [connectionSet isKindOfClass:NSString.class]
-                    ? connectionSet
-                    : ([connectionSet isKindOfClass:NSDictionary.class]
-                       ? (TPKString(connectionSet[@"id"]) ?:
-                          TPKString(connectionSet[@"emote_set_id"]) ?:
-                          TPKString(connectionSet[@"emoteSetId"])) : nil);
-            }
-            if (!identifier.length) continue;
-            if ([platform isEqualToString:@"twitch"] || [platform containsString:@"twitch"])
-                return identifier;
-            // A non-Twitch connection must not become the active Twitch set.
-            // Keep a fallback only for an unlabeled connection, and use it
-            // only when the response contains no identifiable platform at all.
-            if (!platform.length && !fallback.length) fallback = identifier;
-        }
-        if (fallback.length && !sawIdentifiablePlatform) return fallback;
-    } else if ([connections isKindOfClass:NSDictionary.class]) {
-        // Some persisted responses expose platform connections as a map
-        // instead of the documented array form. Prefer Twitch when present,
-        // then use the first usable set identifier.
-        NSDictionary *connectionMap = (NSDictionary *)connections;
-        NSString *fallback = nil;
-        BOOL sawIdentifiablePlatform = NO;
-        for (id rawKey in connectionMap) {
-            id rawConnection = connectionMap[rawKey];
-            if (![rawConnection isKindOfClass:NSDictionary.class]) continue;
-            NSDictionary *connection = rawConnection;
-            NSString *platform = [TPKString(connection[@"platform"]) lowercaseString];
-            if (!platform.length && [rawKey isKindOfClass:NSString.class])
-                platform = [rawKey lowercaseString];
-            if (!platform.length)
-                platform = [TPKString(connection[@"platform_name"]) lowercaseString];
-            if (!platform.length)
-                platform = [TPKString(connection[@"platformName"]) lowercaseString];
-            if (platform.length) sawIdentifiablePlatform = YES;
-            NSString *identifier = TPKString(connection[@"emote_set_id"]) ?:
-                TPKString(connection[@"emoteSetId"]);
-            if (!identifier.length) {
-                id connectionSet = connection[@"emote_set"] ?:
-                    connection[@"emoteSet"] ?: connection[@"set"];
-                identifier = [connectionSet isKindOfClass:NSString.class]
-                    ? connectionSet
-                    : ([connectionSet isKindOfClass:NSDictionary.class]
-                       ? (TPKString(connectionSet[@"id"]) ?:
-                          TPKString(connectionSet[@"emote_set_id"]) ?:
-                          TPKString(connectionSet[@"emoteSetId"])) : nil);
-            }
-            if (!identifier.length) continue;
-            if ([platform isEqualToString:@"twitch"] || [platform containsString:@"twitch"])
-                return identifier;
-            if (!platform.length && !fallback.length) fallback = identifier;
-        }
-        if (fallback.length && !sawIdentifiablePlatform) return fallback;
-    }
+    NSString *connectionID = TPKConnectionValue(root[@"connections"], NO);
+    if (connectionID.length) return connectionID;
     id sets = root[@"emote_sets"] ?: root[@"sets"];
     if ([sets isKindOfClass:NSArray.class]) {
         for (id rawSet in (NSArray *)sets) {
@@ -697,52 +615,8 @@ static NSString *TPKActiveSetIDFromObject(id value) {
     return nil;
 }
 
-// Current 7TV user responses may embed the complete active set in a Twitch
-// connection instead of exposing it through the top-level `emote_set` field.
-// Keep that shape in the primary Channel section immediately; the set-ID
-// loader remains a fallback for responses that only contain an identifier.
 static NSDictionary *TPKConnectionSetWithPayload(id connections) {
-    NSMutableArray<NSDictionary *> *normalized = [NSMutableArray array];
-    if ([connections isKindOfClass:NSArray.class]) {
-        for (id value in (NSArray *)connections) {
-            if ([value isKindOfClass:NSDictionary.class])
-                [normalized addObject:value];
-        }
-    } else if ([connections isKindOfClass:NSDictionary.class]) {
-        [(NSDictionary *)connections enumerateKeysAndObjectsUsingBlock:
-            ^(id key, id value, BOOL *stop) {
-            if (![value isKindOfClass:NSDictionary.class]) return;
-            NSMutableDictionary *connection = [value mutableCopy];
-            if (!TPKString(connection[@"platform"]).length &&
-                [key isKindOfClass:NSString.class]) {
-                connection[@"__tpk_platform_hint"] = key;
-            }
-            [normalized addObject:connection.copy];
-        }];
-    }
-
-    NSDictionary *fallback = nil;
-    BOOL sawIdentifiablePlatform = NO;
-    for (NSDictionary *connection in normalized) {
-        id rawSet = connection[@"emote_set"] ?: connection[@"emoteSet"] ?: connection[@"set"];
-        NSDictionary *set = [rawSet isKindOfClass:NSDictionary.class] &&
-            TPKDictionaryHasDirectEmoteCollection(rawSet)
-            ? rawSet : (TPKDictionaryHasDirectEmoteCollection(connection) ? connection : nil);
-        if (!set) continue;
-
-        NSString *platform = [TPKString(connection[@"platform"]) lowercaseString];
-        if (!platform.length) platform = [TPKString(connection[@"platform_name"]) lowercaseString];
-        if (!platform.length) platform = [TPKString(connection[@"platformName"]) lowercaseString];
-        if (!platform.length) platform = [TPKString(connection[@"__tpk_platform_hint"]) lowercaseString];
-        if (platform.length) sawIdentifiablePlatform = YES;
-        if ([platform isEqualToString:@"twitch"] || [platform containsString:@"twitch"])
-            return set;
-        if (!platform.length && !fallback) fallback = set;
-    }
-    // Never present a known non-Twitch connection (YouTube, Discord, ...)
-    // as the current Twitch channel. An unlabeled payload is a safe fallback
-    // only when the response gives us no platform information at all.
-    return sawIdentifiablePlatform ? nil : fallback;
+    return TPKConnectionValue(connections, YES);
 }
 
 @interface TPKEmoteDescriptor ()
@@ -800,23 +674,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     return self;
 }
 
-- (id)copyWithZone:(NSZone *)zone {
-    return [[TPKEmoteDescriptor allocWithZone:zone]
-        initWithProvider:self.provider
-        providerIdentifier:self.providerIdentifier
-        emoteID:self.emoteID
-        name:self.name
-        aliases:self.aliases
-        sectionKind:self.sectionKind
-        sectionIdentifier:self.sectionIdentifier
-        sectionTitle:self.sectionTitle
-        setID:self.setID
-        nativeSize:self.nativeSize
-        animated:self.animated
-        zeroWidth:self.zeroWidth
-        modifierMetadata:self.modifierMetadata
-        imageURLs:self.imageURLs];
-}
+- (id)copyWithZone:(NSZone *)zone { return self; }
 
 - (nullable NSURL *)imageURLForResolution:(NSInteger)resolution {
     if (resolution < 1) resolution = 1;
@@ -824,7 +682,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     if (!self.imageURLs.count) return nil;
 
     NSString *urlString = self.imageURLs[@(resolution)];
-    // FFZ publishes 1/2/4; 3X intentionally uses the best available 4X.
+    // FFZ provides 1x, 2x, and 4x assets.
     if (!urlString.length && resolution == 3) urlString = self.imageURLs[@4];
     if (!urlString.length && resolution == 4) urlString = self.imageURLs[@3];
     if (!urlString.length) urlString = self.imageURLs[@2];
@@ -846,14 +704,6 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     return urlString.length ? [NSURL URLWithString:urlString] : nil;
 }
 
-- (BOOL)matchesName:(NSString *)name {
-    if (!name.length) return NO;
-    if ([self.name isEqualToString:name]) return YES;
-    for (NSString *alias in self.aliases) {
-        if ([alias isEqualToString:name]) return YES;
-    }
-    return NO;
-}
 @end
 
 @interface TPKEmoteSection ()
@@ -888,12 +738,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     _errorMessage = [errorMessage copy];
     return self;
 }
-- (id)copyWithZone:(NSZone *)zone {
-    return [[TPKEmoteSection allocWithZone:zone]
-        initWithProvider:self.provider kind:self.kind identifier:self.identifier
-        title:self.title emotes:self.emotes loaded:self.loaded loading:self.loading
-        errorMessage:self.errorMessage];
-}
+- (id)copyWithZone:(NSZone *)zone { return self; }
 @end
 
 @interface TPKEmoteProviderSnapshot ()
@@ -917,43 +762,52 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
 }
 @end
 
+@interface TPKEmoteCatalogRequest : NSObject
+@property (nonatomic, copy) NSString *taskKey;
+@property (nonatomic, strong) NSURL *url;
+@property (nonatomic) TPKEmoteProviderID provider;
+@property (nonatomic, copy) NSString *scope;
+@property (nonatomic, copy) NSString *setID;
+@property (nonatomic) BOOL global;
+@property (nonatomic) BOOL asPrimary;
+@property (nonatomic) NSUInteger generation;
+@property (nonatomic) NSUInteger cacheEpoch;
+@property (nonatomic, weak) NSURLSessionDataTask *task;
+@end
+
+@implementation TPKEmoteCatalogRequest
+@end
+
+@interface TPKEmoteCatalogResult : NSObject
+@property (nonatomic, copy) NSArray<TPKEmoteSection *> *sections;
+@property (nonatomic, copy) NSArray<NSDictionary *> *discoveredSets;
+@property (nonatomic, strong) NSError *error;
+@end
+
+@implementation TPKEmoteCatalogResult
+@end
+
 @interface TPKEmoteCatalog ()
 @property (nonatomic, strong) dispatch_queue_t stateQueue;
 @property (nonatomic, strong) dispatch_queue_t ioQueue;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TPKEmoteProviderSnapshot *> *snapshots;
-// NSNull is used as a short-lived reservation while the NSURLSession task is
-// being constructed on the serial state queue.  Keep the type honest instead
-// of pretending that every value is already a data task.
+// NSNull reserves a request while its task is being created.
 @property (nonatomic, strong) NSMutableDictionary<NSString *, id> *tasks;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *requestGenerations;
-// Dernière réponse réussie par scope. Le picker peut être présenté plusieurs
-// fois pendant une même session : réutiliser un snapshot récent évite de
-// relancer trois requêtes et de repasser en état Loading à chaque ouverture.
+// Reuse the latest successful snapshot when the picker reopens.
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *lastSuccessfulLoads;
 @property (nonatomic, copy) NSString *activeChannelID;
-// The public priority/enabled properties have synchronized custom accessors,
-// so keep their backing storage on private properties that can be synthesized
-// by older Theos/Clang toolchains as well.
-@property (nonatomic, copy) NSArray<NSNumber *> *providerPriorityStorage;
-@property (nonatomic, copy) NSDictionary<NSNumber *, NSNumber *> *providerEnabledStorage;
-// Snapshot kept separate from the public synchronization property.  The
-// picker mirrors settings into providerEnabled immediately on the main thread;
-// using that property to detect an enable transition would erase the old
-// value before this notification handler reaches the serial state queue.
-@property (nonatomic, copy) NSDictionary<NSNumber *, NSNumber *> *lastKnownProviderEnabled;
-// The picker and tokenizer ask for the same flattened provider data many
-// times. Keep the sorted sections/emotes and exact name/alias lookup tables
-// until the corresponding snapshot changes.
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<TPKEmoteSection *> *> *orderedSectionsCache;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<TPKEmoteDescriptor *> *> *orderedEmoteCache;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary<NSString *, TPKEmoteDescriptor *> *> *nameIndexCache;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *derivedCacheGenerations;
-- (void)providerSettingsDidChange:(NSNotification *)notification;
-- (void)loadTPKAdditionalSetsFromData:(NSData *)data
-                                   global:(BOOL)global
-                                  channel:(nullable NSString *)channel
-                               generation:(NSUInteger)parentGeneration
-                   requireActiveRequest:(BOOL)requireActiveRequest;
+@property (nonatomic) NSUInteger cacheEpoch;
+- (void)loadTPKAdditionalSets:(NSArray<NSDictionary *> *)discoveredSets
+                        global:(BOOL)global
+                       channel:(nullable NSString *)channel
+                    generation:(NSUInteger)parentGeneration
+                    cacheEpoch:(NSUInteger)parentCacheEpoch
+         requireActiveRequest:(BOOL)requireActiveRequest;
 - (void)loadTPKSetID:(NSString *)setID
                    global:(BOOL)global
                   channel:(nullable NSString *)channel
@@ -969,9 +823,6 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
 - (void)mergeTPKSetSections:(NSArray<TPKEmoteSection *> *)sections
                           global:(BOOL)global
                          channel:(nullable NSString *)channel;
-- (void)setTPKPrimaryPlaceholderLoading:(BOOL)loading
-                              errorMessage:(nullable NSString *)errorMessage
-                                   channel:(nullable NSString *)channel;
 - (NSArray<TPKEmoteSection *> *)sectionsByCombining:(NSArray<TPKEmoteSection *> *)fresh
                                         withExisting:(NSArray<TPKEmoteSection *> *)existing
                                                global:(BOOL)global;
@@ -985,8 +836,30 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
                                                      requestedID:(NSString *)requestedID
                                                      asPrimary:(BOOL)asPrimary
                                                        global:(BOOL)global;
-- (void)tpk_providerConfigurationSnapshot:(NSArray<NSNumber *> **)priorityOut
-                                   enabled:(NSDictionary<NSNumber *, NSNumber *> **)enabledOut;
+- (NSArray<TPKEmoteSection *> *)sectionsFromObject:(id)object
+                                            provider:(TPKEmoteProviderID)provider
+                                               global:(BOOL)global
+                                              channel:(NSString *)channel
+                                              setIDs:(nullable NSOrderedSet<NSString *> *)setIDs
+                                                error:(NSError **)error;
+- (BOOL)startCatalogRequest:(TPKEmoteCatalogRequest *)request
+                   willStart:(dispatch_block_t)willStart
+                      cached:(void (^)(TPKEmoteCatalogResult *))cached
+                  completion:(void (^)(TPKEmoteCatalogResult *, NSData *))completion;
+- (BOOL)requestIsCurrent:(TPKEmoteCatalogRequest *)request;
+- (TPKEmoteCatalogResult *)resultForObject:(id)object
+                                   request:(TPKEmoteCatalogRequest *)request
+                                     error:(NSError **)error;
+- (NSArray<NSDictionary *> *)discoveredTPKSetsFromObject:(id)object
+                                                    setIDs:(NSOrderedSet<NSString *> *)setIDs;
+- (void)publishTPKSetState:(TPKEmoteCatalogRequest *)request
+                    loading:(BOOL)loading
+                      error:(nullable NSError *)error;
+- (void)cancelCatalogTaskForKey:(NSString *)key;
+- (void)writeCatalogData:(NSData *)data toPath:(NSString *)path;
+- (TPKEmoteProviderSnapshot *)publishProviderResult:(nullable TPKEmoteCatalogResult *)result
+                                            request:(TPKEmoteCatalogRequest *)request
+                                            loading:(BOOL)loading;
 @end
 
 @implementation TPKEmoteCatalog
@@ -1011,20 +884,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     _orderedEmoteCache = [NSMutableDictionary dictionary];
     _nameIndexCache = [NSMutableDictionary dictionary];
     _derivedCacheGenerations = [NSMutableDictionary dictionary];
-    _providerPriorityStorage = @[@(TPKEmoteProviderIDTPK), @(TPKEmoteProviderIDBTTV), @(TPKEmoteProviderIDFFZ)];
-    _providerEnabledStorage = @{@(TPKEmoteProviderIDTPK): @YES,
-                                @(TPKEmoteProviderIDBTTV): @YES,
-                                @(TPKEmoteProviderIDFFZ): @YES};
-    // Migrate the legacy 7TV switch/aggregate representation before reading
-    // the public snapshot.  Otherwise an existing install with 7TV disabled
-    // would briefly look enabled until the picker queried provider settings.
     [TPKEmoteProviderSettings migrateLegacySettings];
-    [self loadConfiguration];
-    _lastKnownProviderEnabled = _providerEnabledStorage.copy;
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(providerSettingsDidChange:)
-                                                 name:TPKEmoteProviderSettingsDidChangeNotification
-                                               object:nil];
     for (NSInteger provider = TPKEmoteProviderIDTPK;
          provider <= TPKEmoteProviderIDFFZ; provider++) {
         TPKEmoteProviderSnapshot *snapshot = [TPKEmoteProviderSnapshot new];
@@ -1037,182 +897,11 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     return self;
 }
 
-// The picker updates these properties on the main thread while the tokenizer
-// can read them from a chat/layout callback.  Return immutable copies and
-// publish writes under one lock so no caller can observe a partially-mutated
-// array/dictionary during a settings change.
 - (NSArray<NSNumber *> *)providerPriority {
-    @synchronized (self) {
-        return [_providerPriorityStorage copy] ?: @[];
-    }
-}
-
-- (void)setProviderPriority:(NSArray<NSNumber *> *)priority {
-    NSMutableArray *clean = [NSMutableArray array];
-    for (id value in priority) {
-        NSInteger provider = [value isKindOfClass:NSString.class]
-            ? (NSInteger)TPKEmoteProviderFromIdentifier(value)
-            : TPKInteger(value);
-        if (provider >= TPKEmoteProviderIDTPK && provider <= TPKEmoteProviderIDFFZ &&
-            ![clean containsObject:@(provider)]) [clean addObject:@(provider)];
-    }
-    for (NSInteger provider = TPKEmoteProviderIDTPK;
-         provider <= TPKEmoteProviderIDFFZ; provider++) {
-        if (![clean containsObject:@(provider)]) [clean addObject:@(provider)];
-    }
-    @synchronized (self) {
-        _providerPriorityStorage = clean.copy;
-    }
-}
-
-- (NSDictionary<NSNumber *, NSNumber *> *)providerEnabled {
-    @synchronized (self) {
-        return [_providerEnabledStorage copy] ?: @{};
-    }
-}
-
-- (void)setProviderEnabled:(NSDictionary<NSNumber *,NSNumber *> *)providerEnabled {
-    NSMutableDictionary *clean = [NSMutableDictionary dictionary];
-    NSMutableDictionary *stored = [NSMutableDictionary dictionary];
-    for (NSInteger provider = TPKEmoteProviderIDTPK;
-         provider <= TPKEmoteProviderIDFFZ; provider++) {
-        NSNumber *value = providerEnabled[@(provider)] ?: @YES;
-        clean[@(provider)] = @([value boolValue]);
-        stored[TPKEmoteProviderKey((TPKEmoteProviderID)provider)] = clean[@(provider)];
-    }
-    @synchronized (self) {
-        _providerEnabledStorage = clean.copy;
-    }
-    // Keep the legacy aggregate dictionary available for imports, while the
-    // provider settings object remains the source of truth for the individual
-    // switches.
-    [NSUserDefaults.standardUserDefaults setObject:stored forKey:@"tpk_emote_provider_enabled"];
-}
-
-- (void)tpk_providerConfigurationSnapshot:(NSArray<NSNumber *> **)priorityOut
-                                   enabled:(NSDictionary<NSNumber *, NSNumber *> **)enabledOut {
-    @synchronized (self) {
-        if (priorityOut) *priorityOut = [_providerPriorityStorage copy] ?: @[];
-        if (enabledOut) *enabledOut = [_providerEnabledStorage copy] ?: @{};
-    }
-}
-
-- (void)loadConfiguration {
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    NSArray *savedPriority = [defaults arrayForKey:@"tpk_emote_provider_priority"];
-    if (savedPriority.count) {
-        NSMutableArray *priority = [NSMutableArray array];
-        for (id value in savedPriority) {
-            NSInteger provider = [value isKindOfClass:NSString.class]
-                ? (NSInteger)TPKEmoteProviderFromIdentifier(value)
-                : TPKInteger(value);
-            if (provider >= TPKEmoteProviderIDTPK && provider <= TPKEmoteProviderIDFFZ &&
-                ![priority containsObject:@(provider)]) [priority addObject:@(provider)];
-        }
-        for (NSInteger provider = TPKEmoteProviderIDTPK;
-             provider <= TPKEmoteProviderIDFFZ; provider++) {
-            if (![priority containsObject:@(provider)]) [priority addObject:@(provider)];
-        }
-        @synchronized (self) {
-            _providerPriorityStorage = priority.copy;
-        }
-    }
-    NSDictionary *enabled = [defaults dictionaryForKey:@"tpk_emote_provider_enabled"];
-    BOOL hasIndividualSettings = NO;
-    for (NSInteger provider = TPKEmoteProviderIDTPK;
-         provider <= TPKEmoteProviderIDFFZ; provider++) {
-        NSString *key = [@"tpk_emote_provider_enabled_" stringByAppendingString:
-            TPKEmoteProviderKey((TPKEmoteProviderID)provider)];
-        if ([defaults objectForKey:key] != nil) {
-            hasIndividualSettings = YES;
-            break;
-        }
-    }
-    if (hasIndividualSettings) {
-        NSMutableDictionary *values = [NSMutableDictionary dictionary];
-        for (NSInteger provider = TPKEmoteProviderIDTPK;
-             provider <= TPKEmoteProviderIDFFZ; provider++) {
-            NSString *key = [@"tpk_emote_provider_enabled_" stringByAppendingString:
-                TPKEmoteProviderKey((TPKEmoteProviderID)provider)];
-            values[@(provider)] = [defaults objectForKey:key]
-                ? @([defaults boolForKey:key]) : @YES;
-        }
-        @synchronized (self) {
-            _providerEnabledStorage = values.copy;
-        }
-    } else if (enabled.count) {
-        NSMutableDictionary *values = [NSMutableDictionary dictionary];
-        for (NSInteger provider = TPKEmoteProviderIDTPK;
-             provider <= TPKEmoteProviderIDFFZ; provider++) {
-            id value = enabled[[TPKEmoteProviderKey((TPKEmoteProviderID)provider) lowercaseString]];
-            if (!value) {
-                NSString *numericKey = [@(provider) stringValue];
-                value = enabled[numericKey];
-            }
-            values[@(provider)] = value ? @([value boolValue]) : @YES;
-        }
-        @synchronized (self) {
-            _providerEnabledStorage = values.copy;
-        }
-    } else {
-        NSMutableDictionary *values = [NSMutableDictionary dictionary];
-        for (NSInteger provider = TPKEmoteProviderIDTPK;
-             provider <= TPKEmoteProviderIDFFZ; provider++) {
-            NSString *key = [@"tpk_emote_provider_enabled_" stringByAppendingString:
-                TPKEmoteProviderKey((TPKEmoteProviderID)provider)];
-            values[@(provider)] = [defaults objectForKey:key]
-                ? @([defaults boolForKey:key]) : @YES;
-        }
-        @synchronized (self) {
-            _providerEnabledStorage = values.copy;
-        }
-    }
-}
-
-- (void)providerSettingsDidChange:(NSNotification *)notification {
-    (void)notification;
-    dispatch_async(self.stateQueue, ^{
-        NSDictionary<NSNumber *, NSNumber *> *previouslyEnabled =
-            [self.lastKnownProviderEnabled copy] ?: [self.providerEnabled copy] ?: @{};
-        [self loadConfiguration];
-        for (NSInteger provider = TPKEmoteProviderIDTPK;
-             provider <= TPKEmoteProviderIDFFZ; provider++) {
-            BOOL enabled = [self.providerEnabled[@(provider)] boolValue];
-            if (!enabled) {
-                NSString *prefix = [NSString stringWithFormat:@"%@:",
-                    TPKEmoteProviderKey((TPKEmoteProviderID)provider)];
-                // Optional 7TV set requests use a separate task-key namespace
-                // (`7tv-set:<id>:<scope>`). They belong to the same provider
-                // and must be cancelled too when 7TV is disabled; otherwise a
-                // late set response could repopulate the picker after the
-                // toggle even though normal `7tv:<scope>` requests stopped.
-                NSString *secondaryPrefix = provider == TPKEmoteProviderIDTPK
-                    ? @"7tv-set:" : nil;
-                for (NSString *key in self.tasks.allKeys.copy) {
-                    if (![key hasPrefix:prefix] &&
-                        !(secondaryPrefix.length && [key hasPrefix:secondaryPrefix])) continue;
-                    id task = self.tasks[key];
-                    if ([task isKindOfClass:NSURLSessionDataTask.class])
-                        [(NSURLSessionDataTask *)task cancel];
-                    [self.tasks removeObjectForKey:key];
-                    self.requestGenerations[key] =
-                        @(self.requestGenerations[key].unsignedIntegerValue + 1);
-                }
-            } else if (![previouslyEnabled[@(provider)] boolValue]) {
-                // Re-enabling a provider while a stream is already open must
-                // populate it immediately. Otherwise the toggle would only
-                // affect a future channel switch or a later picker open.
-                [self loadProvider:(TPKEmoteProviderID)provider
-                             global:YES channel:nil completion:nil];
-                if (self.activeChannelID.length) {
-                    [self loadProvider:(TPKEmoteProviderID)provider
-                                 global:NO channel:self.activeChannelID completion:nil];
-                }
-            }
-            [self postUpdateForProvider:(TPKEmoteProviderID)provider];
-        }
-        self.lastKnownProviderEnabled = self.providerEnabled.copy;
-    });
+    static NSArray<NSNumber *> *priority;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ priority = @[@(TPKEmoteProviderIDTPK), @(TPKEmoteProviderIDBTTV), @(TPKEmoteProviderIDFFZ)]; });
+    return priority;
 }
 
 - (TPKEmoteProviderSnapshot *)snapshotForProvider:(TPKEmoteProviderID)provider {
@@ -1231,8 +920,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     }
 
     NSArray<TPKEmoteSection *> *sections = [self snapshotForProvider:provider].sections ?: @[];
-    // API dictionaries (notably FFZ's `sets`) are unordered. Keep the picker
-    // layout and its "first section open" rule deterministic across launches.
+    // Sort unordered API data for stable picker sections.
     NSArray<TPKEmoteSection *> *sorted = [sections sortedArrayUsingComparator:^NSComparisonResult(TPKEmoteSection *left,
                                                                                                     TPKEmoteSection *right) {
         NSInteger leftRank = left.kind == TPKEmoteSectionKindChannel ? 0
@@ -1250,9 +938,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
             options:NSCaseInsensitiveSearch | NSNumericSearch];
     }];
     @synchronized (self) {
-        // A response can replace the snapshot while the sort is running. Do
-        // not let a result from the previous generation become the cache for
-        // the new snapshot.
+        // Ignore sort results for an outdated snapshot.
         if (self.derivedCacheGenerations[providerKey].unsignedIntegerValue == generation) {
             NSArray<TPKEmoteSection *> *existing = self.orderedSectionsCache[providerKey];
             if (existing) return existing;
@@ -1273,9 +959,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
 
     NSMutableArray *result = [NSMutableArray array];
     NSMutableSet<NSString *> *seenKeys = [NSMutableSet set];
-    // Resolve names deterministically even when global and channel responses
-    // finish in the opposite order.  A channel/shared emote should win over a
-    // provider-global one before the cross-provider priority is consulted.
+    // Prefer channel/shared emotes over provider-global matches.
     NSArray<TPKEmoteSection *> *sections = [[self sectionsForProvider:provider]
         sortedArrayUsingComparator:^NSComparisonResult(TPKEmoteSection *left,
                                                        TPKEmoteSection *right) {
@@ -1290,8 +974,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         return [left.identifier compare:right.identifier
             options:NSCaseInsensitiveSearch | NSNumericSearch];
     }];
-    // The flattened list intentionally gives channel/shared/set emotes the
-    // first chance to claim a duplicate name before provider-global emotes.
+    // Put channel/shared/set emotes first when names collide.
     for (TPKEmoteSection *section in sections) {
         for (TPKEmoteDescriptor *emote in section.emotes) {
             NSString *stableKey = TPKEmoteFavoriteKey(emote.provider, emote.emoteID);
@@ -1313,7 +996,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
 
 - (TPKEmoteDescriptor *)resolveEmoteNamed:(NSString *)name
                                   provider:(TPKEmoteProviderID)provider {
-    if (!name.length || !TPKCatalogProviderEnabled(provider)) return nil;
+    if (!name.length) return nil;
     NSNumber *providerKey = @(provider);
     NSDictionary<NSString *, TPKEmoteDescriptor *> *index = nil;
     NSUInteger generation = 0;
@@ -1345,11 +1028,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
 
 - (TPKEmoteDescriptor *)resolveEmoteNamed:(NSString *)name {
     if (!name.length) return nil;
-    NSArray<NSNumber *> *priority = nil;
-    NSDictionary<NSNumber *, NSNumber *> *enabled = nil;
-    [self tpk_providerConfigurationSnapshot:&priority enabled:&enabled];
-    for (NSNumber *providerNumber in priority) {
-        if (![enabled[providerNumber] boolValue]) continue;
+    for (NSNumber *providerNumber in self.providerPriority) {
         TPKEmoteDescriptor *emote = [self resolveEmoteNamed:name
                                                        provider:providerNumber.integerValue];
         if (emote) return emote;
@@ -1370,10 +1049,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
 
 - (NSString *)cacheDirectory {
     NSString *base = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *directory = [base stringByAppendingPathComponent:@"s7tv-emote-providers"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:directory
-                               withIntermediateDirectories:YES attributes:nil error:NULL];
-    return directory;
+    return [base stringByAppendingPathComponent:@"s7tv-emote-providers"];
 }
 
 - (NSString *)cachePathForProvider:(TPKEmoteProviderID)provider global:(BOOL)global channel:(NSString *)channel {
@@ -1417,12 +1093,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         else merged[replaceIndex] = fresh;
     }
     snapshot.sections = merged.copy;
-    // A channel/user response can contain only the active set ID; while the
-    // dedicated set request is in flight the provider snapshot is marked
-    // loading so the picker shows an explicit state instead of a misleading
-    // empty result. Once any set data arrives, the normal loaded state is
-    // restored (additional sets can still merge later without hiding the
-    // already usable sections).
+    // Show loading while the active set ID is being resolved.
     snapshot.state = TPKEmoteProviderStateLoaded;
     snapshot.errorMessage = nil;
     [self invalidateDerivedCachesForProvider:TPKEmoteProviderIDTPK];
@@ -1444,12 +1115,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         self.snapshots[@(TPKEmoteProviderIDTPK)];
     if (!snapshot) return NO;
 
-    // The primary set is rendered under the stable provider section IDs
-    // (`global`/`channel`). Optional sets use a scope-qualified ID so their
-    // headers can trigger an on-demand request. Keeping the primary global
-    // placeholder on `global` is important: a successful `/emote-sets/<id>`
-    // response must replace it rather than leave a second `global-set:<id>`
-    // row behind.
+    // Keep primary sets on stable IDs; optional sets use scope-qualified IDs.
     NSString *identifier = asPrimary
         ? (global ? @"global" : @"channel")
         : TPKSetSectionIdentifier(setID, global);
@@ -1467,9 +1133,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         }
     }
 
-    // Never replace usable cached emotes with a loading/error placeholder.
-    // The background refresh can fail without making an already visible set
-    // disappear; a later explicit retry may still request it again.
+    // Keep usable cached emotes visible during refresh failures.
     if (existing.emotes.count) return NO;
 
     NSString *resolvedTitle = title.length ? title :
@@ -1502,443 +1166,183 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     return YES;
 }
 
-- (void)setTPKPrimaryPlaceholderLoading:(BOOL)loading
-                              errorMessage:(nullable NSString *)errorMessage
-                                   channel:(nullable NSString *)channel {
-    if (!channel.length ||
-        [self.activeChannelID caseInsensitiveCompare:channel] != NSOrderedSame)
-        return;
-    TPKEmoteProviderSnapshot *snapshot =
-        self.snapshots[@(TPKEmoteProviderIDTPK)];
-    if (!snapshot) return;
-
-    NSMutableArray<TPKEmoteSection *> *sections =
-        [snapshot.sections mutableCopy] ?: [NSMutableArray array];
-    NSUInteger existingIndex = NSNotFound;
-    for (NSUInteger index = 0; index < sections.count; index++) {
-        TPKEmoteSection *section = sections[index];
-        if (section.kind == TPKEmoteSectionKindChannel &&
-            [section.identifier isEqualToString:@"channel"]) {
-            existingIndex = index;
-            break;
-        }
-    }
-
-    // A real channel section should never be replaced by a placeholder (for
-    // example, an additional set request can finish just before another
-    // cached parent payload is processed). Keep its emotes intact when a
-    // background refresh later fails; cached content remains preferable to a
-    // retry banner with no usable emotes.
-    if (existingIndex != NSNotFound && sections[existingIndex].emotes.count)
-        return;
-
-    TPKEmoteSection *placeholder = [[TPKEmoteSection alloc]
-        initWithProvider:TPKEmoteProviderIDTPK
-                   kind:TPKEmoteSectionKindChannel
-             identifier:@"channel"
-                   title:@"Channel Emotes"
-                  emotes:@[]
-                  loaded:!loading
-                 loading:loading
-            errorMessage:errorMessage];
-    if (existingIndex == NSNotFound) [sections addObject:placeholder];
-    else sections[existingIndex] = placeholder;
-    snapshot.sections = sections.copy;
-    [self invalidateDerivedCachesForProvider:TPKEmoteProviderIDTPK];
-    [self postUpdateForProvider:TPKEmoteProviderIDTPK];
-}
-
 - (void)loadTPKSetID:(NSString *)setID
                    global:(BOOL)global
                   channel:(nullable NSString *)channel
                 asPrimary:(BOOL)asPrimary {
-    if (!setID.length || !TPKCatalogProviderEnabled(TPKEmoteProviderIDTPK))
-        return;
+    if (!setID.length) return;
     NSString *scope = global ? @"global" : channel;
     if (!scope.length) return;
-    NSString *taskKey = [NSString stringWithFormat:@"7tv-set:%@:%@", setID, scope];
     NSString *escapedID = [setID stringByAddingPercentEncodingWithAllowedCharacters:
                            [NSCharacterSet URLPathAllowedCharacterSet]];
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:
-                                       @"https://7tv.io/v3/emote-sets/%@",
-                                       escapedID ?: setID]];
+        @"https://7tv.io/v3/emote-sets/%@", escapedID ?: setID]];
     if (!url) return;
-    url = TPKEmoteProxyRewriteURL(url);
 
-    dispatch_async(self.stateQueue, ^{
-        if (!TPKCatalogProviderEnabled(TPKEmoteProviderIDTPK)) return;
-        if (!global && [self.activeChannelID caseInsensitiveCompare:channel] != NSOrderedSame)
-            return;
-        id old = self.tasks[taskKey];
-        if ([old isKindOfClass:NSURLSessionDataTask.class] &&
-            ((NSURLSessionDataTask *)old).state != NSURLSessionTaskStateCompleted &&
-            ((NSURLSessionDataTask *)old).state != NSURLSessionTaskStateCanceling)
-            return;
-        if ([old isKindOfClass:NSURLSessionDataTask.class]) [(NSURLSessionDataTask *)old cancel];
-        self.tasks[taskKey] = (id)[NSNull null];
-        NSUInteger generation = self.requestGenerations[taskKey].unsignedIntegerValue + 1;
-        self.requestGenerations[taskKey] = @(generation);
-
-        // Optional sets are represented by a collapsed placeholder until the
-        // user expands them.  Once expanded, expose an explicit Loading state
-        // while keeping any usable cached emotes intact.
-        if (!asPrimary) {
-            BOOL changed = [self updateTPKSetPlaceholderForID:setID
-                                                            global:global
-                                                           channel:channel
-                                                            title:nil
-                                                        asPrimary:NO
-                                                           loaded:NO
-                                                          loading:YES
-                                                     errorMessage:nil];
-            if (changed) [self postUpdateForProvider:TPKEmoteProviderIDTPK];
-        }
-
-        NSString *setCachePath = [self cachePathForTPKSetID:setID];
-        // Cache reads can hit the disk-backed NSURL store and are therefore
-        // kept off stateQueue.  The generation/task checks in the hop back
-        // prevent stale data from a previous channel or a completed request
-        // from being merged after the live response wins the race.
-        dispatch_async(self.ioQueue, ^{
-            NSData *cachedData = [NSData dataWithContentsOfFile:setCachePath];
-            if (!cachedData.length) return;
-            id cachedObject = [NSJSONSerialization JSONObjectWithData:cachedData options:0 error:NULL];
-            NSArray *cachedSections = [self sevenTVSetSectionsFromObject:cachedObject
-                                                               requestedID:setID
-                                                               asPrimary:asPrimary
-                                                                 global:global];
-            dispatch_async(self.stateQueue, ^{
-                if (self.requestGenerations[taskKey].unsignedIntegerValue != generation ||
-                    !self.tasks[taskKey] ||
-                    (!global && [self.activeChannelID caseInsensitiveCompare:channel] != NSOrderedSame))
-                    return;
-                [self mergeTPKSetSections:cachedSections global:global channel:channel];
-            });
-        });
-
-        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-        request.timeoutInterval = 15.0;
-        [request setValue:@"TwitchPlusK/1.0" forHTTPHeaderField:@"User-Agent"];
-        __block NSURLSessionDataTask *task = nil;
-        task = [NSURLSession.sharedSession dataTaskWithRequest:request
-            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-            // Optional set payloads can be just as large as the parent user
-            // payload. Validate and parse them off stateQueue so expanding a
-            // set never blocks snapshot reads or the picker UI.
-            dispatch_async(self.ioQueue, ^{
-                NSError *responseError = error;
-                if (!responseError && !TPKJSONObjectIsValid(data, response, &responseError)) {
-                    // Keep the primary provider snapshot usable when an
-                    // optional set fails; the next retry can request it again.
-                }
-                id object = nil;
-                NSArray *sections = nil;
-                if (!responseError) {
-                    object = [NSJSONSerialization JSONObjectWithData:data options:0
-                                                                error:&responseError];
-                    sections = [self sevenTVSetSectionsFromObject:object
-                                                         requestedID:setID
-                                                         asPrimary:asPrimary
-                                                           global:global];
-                    // A syntactically valid but unrelated JSON object is not
-                    // an empty set. Treat it as an error so the provider state
-                    // can expose Retry instead of leaving the picker stuck in
-                    // Loading forever.
-                    if (!responseError && !TPKSetContainerHasEmotePayload(object))
-                        TPKSetCatalogStructureError(&responseError,
-                                                     TPKEmoteProviderIDTPK);
-                }
-                dispatch_async(self.stateQueue, ^{
-                if (self.requestGenerations[taskKey].unsignedIntegerValue != generation)
-                    return;
-                if (!global && [self.activeChannelID caseInsensitiveCompare:channel] != NSOrderedSame)
-                    return;
-                [self.tasks removeObjectForKey:taskKey];
-                if (sections.count) {
-                    // Keep the state queue responsive while persisting a set
-                    // payload.  Large sets can be several hundred KB and a
-                    // synchronous atomic write here would delay the picker
-                    // notification and any queued channel cancellation.
-                    NSData *cacheData = [data copy];
-                    NSString *cachePath = [[self cachePathForTPKSetID:setID] copy];
-                    dispatch_async(self.ioQueue, ^{
-                        [cacheData writeToFile:cachePath
-                                      options:NSDataWritingAtomic error:NULL];
-                    });
-                    [self mergeTPKSetSections:sections global:global channel:channel];
-                } else if (!responseError) {
-                    // An explicit empty `emotes: []` set is a successful
-                    // response. Replace a primary channel placeholder with a
-                    // loaded-empty section so the picker can hide it normally
-                    // instead of leaving the UI in Loading.
-                    if (asPrimary) {
-                        if (global) {
-                            BOOL changed = [self updateTPKSetPlaceholderForID:setID
-                                                                            global:YES
-                                                                           channel:nil
-                                                                            title:nil
-                                                                        asPrimary:YES
-                                                                            loaded:YES
-                                                                           loading:NO
-                                                                      errorMessage:nil];
-                            if (changed) [self postUpdateForProvider:TPKEmoteProviderIDTPK];
-                        } else {
-                            [self setTPKPrimaryPlaceholderLoading:NO
-                                                          errorMessage:nil
-                                                               channel:channel];
-                        }
-                    } else {
-                        BOOL changed = [self updateTPKSetPlaceholderForID:setID
-                                                                        global:global
-                                                                       channel:channel
-                                                                        title:nil
-                                                                    asPrimary:NO
-                                                                        loaded:YES
-                                                                       loading:NO
-                                                                  errorMessage:nil];
-                        if (changed) [self postUpdateForProvider:TPKEmoteProviderIDTPK];
-                    }
-                } else {
-                    // Optional set failures are isolated from the provider's
-                    // already usable sections. A primary channel set gets an
-                    // explicit Retry header; non-primary set failures remain
-                    // optional and never hide channel/global emotes.
-                    if (asPrimary) {
-                        if (global) {
-                            BOOL changed = [self updateTPKSetPlaceholderForID:setID
-                                                                            global:YES
-                                                                           channel:nil
-                                                                            title:nil
-                                                                        asPrimary:YES
-                                                                            loaded:NO
-                                                                           loading:NO
-                                                                      errorMessage:responseError.localizedDescription
-                                                                         ?: @"Unable to load 7TV emote set"];
-                            if (changed) [self postUpdateForProvider:TPKEmoteProviderIDTPK];
-                        } else {
-                            [self setTPKPrimaryPlaceholderLoading:NO
-                                                          errorMessage:responseError.localizedDescription
-                                                              ?: @"Unable to load 7TV emote set"
-                                                               channel:channel];
-                        }
-                    } else {
-                        BOOL changed = [self updateTPKSetPlaceholderForID:setID
-                                                                        global:global
-                                                                       channel:channel
-                                                                        title:nil
-                                                                    asPrimary:NO
-                                                                        loaded:NO
-                                                                       loading:NO
-                                                                  errorMessage:responseError.localizedDescription
-                                                                     ?: @"Unable to load 7TV emote set"];
-                        if (changed) [self postUpdateForProvider:TPKEmoteProviderIDTPK];
-                    }
-                }
-                });
-            });
-        }];
-        self.tasks[taskKey] = task;
-        [task resume];
-    });
+    TPKEmoteCatalogRequest *request = [TPKEmoteCatalogRequest new];
+    request.taskKey = [NSString stringWithFormat:@"7tv-set:%@:%@", setID, scope];
+    request.url = TPKEmoteProxyRewriteURL(url);
+    request.provider = TPKEmoteProviderIDTPK;
+    request.scope = scope;
+    request.setID = setID;
+    request.global = global;
+    request.asPrimary = asPrimary;
+    if (!global && [self.activeChannelID caseInsensitiveCompare:channel] != NSOrderedSame)
+        return;
+    [self startCatalogRequest:request willStart:^{
+        if (!asPrimary) [self publishTPKSetState:request loading:YES error:nil];
+    } cached:^(TPKEmoteCatalogResult *result) {
+        if (result.sections.count)
+            [self mergeTPKSetSections:result.sections global:global channel:channel];
+    } completion:^(TPKEmoteCatalogResult *result, NSData *data) {
+        if (result.sections.count)
+            [self mergeTPKSetSections:result.sections global:global channel:channel];
+        else
+            [self publishTPKSetState:request loading:NO error:result.error];
+    }];
 }
 
-- (void)loadTPKAdditionalSetsFromData:(NSData *)data
-                                   global:(BOOL)global
-                                  channel:(NSString *)channel
-                               generation:(NSUInteger)parentGeneration
-                   requireActiveRequest:(BOOL)requireActiveRequest {
-    if (!data.length || !TPKCatalogProviderEnabled(TPKEmoteProviderIDTPK))
+- (void)publishTPKSetState:(TPKEmoteCatalogRequest *)request
+                    loading:(BOOL)loading
+                      error:(NSError *)error {
+    BOOL loaded = !loading && !error;
+    if (error && request.asPrimary && !request.global) loaded = YES;
+    BOOL changed = [self updateTPKSetPlaceholderForID:request.setID
+        global:request.global channel:(request.global ? nil : request.scope)
+        title:nil asPrimary:request.asPrimary loaded:loaded loading:loading
+        errorMessage:error.localizedDescription ?: (error ? @"Unable to load 7TV emote set" : nil)];
+    if (changed) [self postUpdateForProvider:TPKEmoteProviderIDTPK];
+}
+
+- (NSArray<NSDictionary *> *)discoveredTPKSetsFromObject:(id)object
+                                                    setIDs:(NSOrderedSet<NSString *> *)setIDs {
+    if (![object isKindOfClass:NSDictionary.class] || !setIDs.count) return @[];
+
+    NSString *activeID = TPKActiveSetIDFromObject(object);
+    id container = object[@"emote_sets"] ?: object[@"sets"];
+    NSMutableArray<NSDictionary *> *discovered = [NSMutableArray array];
+    NSUInteger count = 0;
+    for (NSString *setID in setIDs) {
+        if (!setID.length || setID.length > 128 || count >= 32) continue;
+        count++;
+        NSDictionary *metadata = TPKFindSetDictionary(container, setID);
+        NSString *title = TPKString(metadata[@"name"]);
+        [discovered addObject:@{
+            @"id": setID,
+            @"title": title ?: NSNull.null,
+            @"primary": @(activeID.length && [activeID isEqualToString:setID]),
+            @"hasActive": @(activeID.length > 0),
+        }];
+    }
+    return discovered.copy;
+}
+
+- (void)loadTPKAdditionalSets:(NSArray<NSDictionary *> *)discoveredSets
+                        global:(BOOL)global
+                       channel:(NSString *)channel
+                    generation:(NSUInteger)parentGeneration
+                    cacheEpoch:(NSUInteger)parentCacheEpoch
+         requireActiveRequest:(BOOL)requireActiveRequest {
+    if (!discoveredSets.count) return;
+    NSString *parentKey = [NSString stringWithFormat:@"7tv:%@",
+                           global ? @"global" : (channel ?: @"")];
+    if (self.cacheEpoch != parentCacheEpoch ||
+        self.requestGenerations[parentKey].unsignedIntegerValue != parentGeneration ||
+        (requireActiveRequest && !self.tasks[parentKey]) ||
+        (!global && [self.activeChannelID caseInsensitiveCompare:channel] != NSOrderedSame))
         return;
-    // Set discovery can enumerate a large user payload.  It is called from
-    // both cached and live responses, so decode it off the serial state queue
-    // before publishing placeholders or scheduling optional set requests.
-    NSData *payload = [data copy];
-    dispatch_async(self.ioQueue, ^{
-        id object = [NSJSONSerialization JSONObjectWithData:payload options:0 error:NULL];
-        if (![object isKindOfClass:NSDictionary.class]) return;
-        dispatch_async(self.stateQueue, ^{
-        if (!TPKCatalogProviderEnabled(TPKEmoteProviderIDTPK)) return;
-        NSString *parentKey = [NSString stringWithFormat:@"7tv:%@",
-                               global ? @"global" : (channel ?: @"")];
-        if (self.requestGenerations[parentKey].unsignedIntegerValue != parentGeneration)
-            return;
-        // Cached parent data is allowed to discover sets only while the
-        // parent request is still active. A late disk callback must never
-        // recreate placeholders after the live response has completed.
-        if (requireActiveRequest && !self.tasks[parentKey]) return;
-        if (!global && [self.activeChannelID caseInsensitiveCompare:channel] != NSOrderedSame)
-            return;
 
-        NSMutableOrderedSet<NSString *> *setIDs = [NSMutableOrderedSet orderedSet];
-        TPKCollectSetIDsFromObject(object, setIDs);
-        if (!setIDs.count) return;
-        NSString *activeID = TPKActiveSetIDFromObject(object);
-        TPKEmoteProviderSnapshot *snapshot =
-            self.snapshots[@(TPKEmoteProviderIDTPK)];
-        NSMutableSet<NSString *> *loadedIDs = [NSMutableSet set];
-        for (TPKEmoteSection *section in snapshot.sections) {
-            if (section.kind == TPKEmoteSectionKindSet &&
-                [section.identifier hasPrefix:@"global-set:"]) {
-                NSString *sectionID = [section.identifier substringFromIndex:[@"global-set:" length]];
-                if (sectionID.length && (section.loaded || section.loading || section.errorMessage.length))
-                    [loadedIDs addObject:sectionID];
-            } else if (section.kind == TPKEmoteSectionKindSet &&
-                       [section.identifier hasPrefix:@"set:"]) {
-                NSString *sectionID = [section.identifier substringFromIndex:[@"set:" length]];
-                if (sectionID.length && (section.loaded || section.loading || section.errorMessage.length))
-                    [loadedIDs addObject:sectionID];
-            }
-            for (TPKEmoteDescriptor *descriptor in section.emotes) {
-                if (descriptor.setID.length) [loadedIDs addObject:descriptor.setID];
-            }
-        }
+    TPKEmoteProviderSnapshot *snapshot = self.snapshots[@(TPKEmoteProviderIDTPK)];
+    NSMutableSet<NSString *> *loadedIDs = [NSMutableSet set];
+    for (TPKEmoteSection *section in snapshot.sections) {
+        NSString *prefix = [section.identifier hasPrefix:@"global-set:"]
+            ? @"global-set:" : ([section.identifier hasPrefix:@"set:"] ? @"set:" : nil);
+        if (prefix && section.kind == TPKEmoteSectionKindSet &&
+            (section.loaded || section.loading || section.errorMessage.length))
+            [loadedIDs addObject:[section.identifier substringFromIndex:prefix.length]];
+        for (TPKEmoteDescriptor *emote in section.emotes)
+            if (emote.setID.length) [loadedIDs addObject:emote.setID];
+    }
 
-        BOOL primaryAssigned = NO;
-        BOOL primaryScheduled = NO;
-        BOOL placeholdersChanged = NO;
-        NSUInteger discoveredCount = 0;
-        for (NSString *setID in setIDs) {
-            // A malformed user payload must not turn into an unbounded list
-            // of placeholder sections. Real Twitch users normally expose one
-            // active set plus a small number of shared sets; keep a generous
-            // but finite bound for the picker metadata.
-            if (!setID.length || setID.length > 128 || discoveredCount >= 32)
-                continue;
-            discoveredCount++;
-            if ([loadedIDs containsObject:setID]) continue;
-
-            BOOL primary = activeID.length
-                ? [activeID isEqualToString:setID] : !primaryAssigned;
-            if (primary) primaryAssigned = YES;
-            NSDictionary *setMetadata = TPKFindSetDictionary(
-                object[@"emote_sets"] ?: object[@"sets"], setID);
-            NSString *setTitle = TPKString(setMetadata[@"name"]);
-            if (primary) {
-                primaryScheduled = YES;
-                [self loadTPKSetID:setID global:global channel:channel asPrimary:YES];
-                if (global) {
-                    placeholdersChanged |= [self updateTPKSetPlaceholderForID:setID
-                                                                            global:YES
-                                                                           channel:nil
-                                                                            title:setTitle
-                                                                        asPrimary:YES
-                                                                            loaded:NO
-                                                                           loading:YES
-                                                                      errorMessage:nil];
-                }
-            } else {
-                // The picker intentionally presents only Channel/Global
-                // buckets, so secondary 7TV sets no longer have a visible
-                // header the user can expand. Fetch them in the background
-                // as soon as they are discovered; NSURLSession applies its
-                // per-host connection limit, while the response parsing stays
-                // on ioQueue. This keeps every channel set visible without
-                // blocking the first picker layout or dropping a set behind a
-                // category that no longer exists in the UI.
-                placeholdersChanged |= [self updateTPKSetPlaceholderForID:setID
-                                                                        global:global
-                                                                       channel:channel
-                                                                    title:setTitle
-                                                                asPrimary:NO
-                                                                    loaded:NO
-                                                                   loading:YES
-                                                               errorMessage:nil];
-                [self loadTPKSetID:setID
-                                global:global
-                               channel:channel
-                             asPrimary:NO];
-            }
+    BOOL changed = NO;
+    BOOL fallbackPrimaryAssigned = NO;
+    BOOL primaryScheduled = NO;
+    NSString *primarySetID = nil;
+    for (NSDictionary *entry in discoveredSets) {
+        NSString *setID = [entry[@"id"] isKindOfClass:NSString.class] ? entry[@"id"] : nil;
+        if (!setID.length || [loadedIDs containsObject:setID]) continue;
+        BOOL primary = [entry[@"primary"] boolValue];
+        if (![entry[@"hasActive"] boolValue]) {
+            primary = !fallbackPrimaryAssigned;
+            if (primary) fallbackPrimaryAssigned = YES;
         }
-        if (primaryScheduled) {
-            // The parent user payload may contain only set identifiers. Keep
-            // a dedicated Channel Emotes placeholder visible until the set
-            // response arrives; global sections already cached for the same
-            // provider must not be relabelled as loading in the meantime.
-            [self setTPKPrimaryPlaceholderLoading:YES
-                                          errorMessage:nil
-                                               channel:channel];
+        id rawTitle = entry[@"title"];
+        NSString *title = [rawTitle isKindOfClass:NSString.class] ? rawTitle : nil;
+        if (primary) {
+            primaryScheduled = YES;
+            primarySetID = setID;
+            [self loadTPKSetID:setID global:global channel:channel asPrimary:YES];
+            if (global)
+                changed |= [self updateTPKSetPlaceholderForID:setID global:YES channel:nil
+                    title:title asPrimary:YES loaded:NO loading:YES errorMessage:nil];
+        } else {
+            changed |= [self updateTPKSetPlaceholderForID:setID global:global channel:channel
+                title:title asPrimary:NO loaded:NO loading:YES errorMessage:nil];
+            [self loadTPKSetID:setID global:global channel:channel asPrimary:NO];
         }
-        if (placeholdersChanged)
-            [self postUpdateForProvider:TPKEmoteProviderIDTPK];
-        });
-    });
+    }
+    if (primaryScheduled && !global)
+        changed |= [self updateTPKSetPlaceholderForID:primarySetID global:NO channel:channel
+            title:nil asPrimary:YES loaded:NO loading:YES errorMessage:nil];
+    if (changed) [self postUpdateForProvider:TPKEmoteProviderIDTPK];
 }
 
 - (void)loadGlobalProviders {
     for (NSInteger provider = TPKEmoteProviderIDTPK;
-         provider <= TPKEmoteProviderIDFFZ; provider++) {
-        if (!TPKCatalogProviderEnabled((TPKEmoteProviderID)provider)) continue;
+         provider <= TPKEmoteProviderIDFFZ; provider++)
         [self loadProvider:(TPKEmoteProviderID)provider global:YES channel:nil completion:nil];
-    }
 }
 
 - (void)loadChannelProvidersForTwitchID:(NSString *)twitchID {
     if (!twitchID.length) return;
-    // Keep the channel switch and cancellation on the same serial queue as
-    // request generation updates.  The previous implementation scheduled
-    // cancellation asynchronously and changed activeChannelID immediately,
-    // which allowed an old response to race a new request.
     dispatch_async(self.stateQueue, ^{
-        NSString *previousChannel = self.activeChannelID;
-        BOOL changed = ![previousChannel isEqualToString:twitchID];
-        if (changed && previousChannel.length) {
-            NSString *suffix = [NSString stringWithFormat:@":%@", previousChannel];
-            for (NSString *key in self.tasks.allKeys.copy) {
-                if (![key hasSuffix:suffix]) continue;
-                id task = self.tasks[key];
-                if ([task isKindOfClass:NSURLSessionDataTask.class]) {
-                    [(NSURLSessionDataTask *)task cancel];
-                }
-                [self.tasks removeObjectForKey:key];
-                self.requestGenerations[key] =
-                    @(self.requestGenerations[key].unsignedIntegerValue + 1);
-            }
+        NSString *previous = self.activeChannelID;
+        if (previous.length && ![previous isEqualToString:twitchID]) {
+            NSString *suffix = [NSString stringWithFormat:@":%@", previous];
+            for (NSString *key in self.tasks.allKeys.copy)
+                if ([key hasSuffix:suffix]) [self cancelCatalogTaskForKey:key];
         }
         self.activeChannelID = [twitchID copy];
         for (NSInteger provider = TPKEmoteProviderIDTPK;
-             provider <= TPKEmoteProviderIDFFZ; provider++) {
-            if (!TPKCatalogProviderEnabled((TPKEmoteProviderID)provider)) continue;
+             provider <= TPKEmoteProviderIDFFZ; provider++)
             [self loadProvider:(TPKEmoteProviderID)provider global:NO channel:twitchID completion:nil];
-        }
     });
 }
 
 - (void)clearActiveChannelScope {
     dispatch_async(self.stateQueue, ^{
-        NSString *previousChannel = self.activeChannelID;
-        if (previousChannel.length) {
-            NSString *suffix = [NSString stringWithFormat:@":%@", previousChannel];
-            for (NSString *key in self.tasks.allKeys.copy) {
-                if (![key hasSuffix:suffix]) continue;
-                id task = self.tasks[key];
-                if ([task isKindOfClass:NSURLSessionDataTask.class]) {
-                    [(NSURLSessionDataTask *)task cancel];
-                }
-                [self.tasks removeObjectForKey:key];
-                self.requestGenerations[key] =
-                    @(self.requestGenerations[key].unsignedIntegerValue + 1);
-            }
+        NSString *previous = self.activeChannelID;
+        if (previous.length) {
+            NSString *suffix = [NSString stringWithFormat:@":%@", previous];
+            for (NSString *key in self.tasks.allKeys.copy)
+                if ([key hasSuffix:suffix]) [self cancelCatalogTaskForKey:key];
         }
-
         self.activeChannelID = @"";
         for (NSInteger provider = TPKEmoteProviderIDTPK;
              provider <= TPKEmoteProviderIDFFZ; provider++) {
-            TPKEmoteProviderSnapshot *oldSnapshot = self.snapshots[@(provider)];
-            NSMutableArray<TPKEmoteSection *> *globalSections = [NSMutableArray array];
-            for (TPKEmoteSection *section in oldSnapshot.sections) {
-                BOOL isGlobal = section.kind == TPKEmoteSectionKindGlobal ||
+            TPKEmoteProviderSnapshot *old = self.snapshots[@(provider)];
+            NSMutableArray<TPKEmoteSection *> *global = [NSMutableArray array];
+            for (TPKEmoteSection *section in old.sections) {
+                BOOL keep = section.kind == TPKEmoteSectionKindGlobal ||
                     (section.kind == TPKEmoteSectionKindSet &&
                      [section.identifier hasPrefix:@"global-set:"]);
-                if (isGlobal) [globalSections addObject:section];
+                if (keep) [global addObject:section];
             }
-
             TPKEmoteProviderSnapshot *snapshot = [TPKEmoteProviderSnapshot new];
             snapshot.provider = (TPKEmoteProviderID)provider;
-            snapshot.state = globalSections.count
-                ? TPKEmoteProviderStateLoaded : TPKEmoteProviderStateIdle;
+            snapshot.state = global.count ? TPKEmoteProviderStateLoaded : TPKEmoteProviderStateIdle;
             snapshot.channelID = @"";
-            snapshot.sections = globalSections.copy;
-            snapshot.errorMessage = nil;
+            snapshot.sections = global.copy;
             self.snapshots[@(provider)] = snapshot;
             [self invalidateDerivedCachesForProvider:(TPKEmoteProviderID)provider];
             [self postUpdateForProvider:(TPKEmoteProviderID)provider];
@@ -1947,19 +1351,13 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
 }
 
 - (void)loadTPKEmoteSetWithID:(NSString *)setID
-                            global:(BOOL)global
-                           channel:(nullable NSString *)twitchID {
-    if (!setID.length || !TPKCatalogProviderEnabled(TPKEmoteProviderIDTPK)) return;
-    // Resolve a missing channel on the catalogue queue. This keeps the
-    // on-demand request tied to the same active-channel generation as the
-    // parent user request and prevents a late expansion from another stream.
+                       global:(BOOL)global
+                      channel:(nullable NSString *)twitchID {
+    if (!setID.length) return;
     dispatch_async(self.stateQueue, ^{
         NSString *channel = twitchID.length ? twitchID : self.activeChannelID;
         if (!global && !channel.length) return;
-        [self loadTPKSetID:setID
-                        global:global
-                       channel:(global ? nil : channel)
-                     asPrimary:NO];
+        [self loadTPKSetID:setID global:global channel:(global ? nil : channel) asPrimary:NO];
     });
 }
 
@@ -1971,15 +1369,11 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     BOOL identifierGlobal = global;
     NSString *setID = TPKSetIDFromSectionIdentifier(identifier, &identifierGlobal);
     if (!setID.length) return;
-    if (!TPKCatalogProviderEnabled(TPKEmoteProviderIDTPK)) return;
-    global = identifierGlobal;
     dispatch_async(self.stateQueue, ^{
         NSString *channel = twitchID.length ? twitchID : self.activeChannelID;
-        if (!global && !channel.length) return;
-        [self loadTPKSetID:setID
-                        global:global
-                       channel:(global ? nil : channel)
-                     asPrimary:NO];
+        if (!identifierGlobal && !channel.length) return;
+        [self loadTPKSetID:setID global:identifierGlobal
+                   channel:(identifierGlobal ? nil : channel) asPrimary:NO];
     });
 }
 
@@ -2002,237 +1396,213 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     return TPKEmoteProxyRewriteURL([NSURL URLWithString:urlString]);
 }
 
-- (void)loadProvider:(TPKEmoteProviderID)provider
-             global:(BOOL)global
-           channel:(NSString *)channel
-         completion:(void (^)(TPKEmoteProviderSnapshot *))completion {
-    if (!global && !channel.length) return;
-    if (!TPKCatalogProviderEnabled(provider)) return;
-    NSString *scope = global ? @"global" : channel;
-    NSString *taskKey = [NSString stringWithFormat:@"%@:%@", TPKEmoteProviderKey(provider), scope];
-    NSURL *url = [self URLForProvider:provider global:global channel:channel];
-    if (!url) return;
+- (BOOL)requestIsCurrent:(TPKEmoteCatalogRequest *)request {
+    id current = self.tasks[request.taskKey];
+    return request.task && current && current == request.task &&
+        self.requestGenerations[request.taskKey].unsignedIntegerValue == request.generation &&
+        self.cacheEpoch == request.cacheEpoch &&
+        (request.global || [self.activeChannelID caseInsensitiveCompare:request.scope] == NSOrderedSame);
+}
 
-    dispatch_async(self.stateQueue, ^{
-        // Settings can change between the caller and this queued block.  Do
-        // the check again before reserving a request so disabling a provider
-        // never starts a late network task.
-        if (!TPKCatalogProviderEnabled(provider)) return;
-        TPKEmoteProviderSnapshot *currentSnapshot = self.snapshots[@(provider)];
-        NSDate *lastSuccess = self.lastSuccessfulLoads[taskKey];
-        BOOL snapshotMatchesScope = global ||
-            [currentSnapshot.channelID caseInsensitiveCompare:channel] == NSOrderedSame;
-        // A picker opening is not an explicit refresh action. Keep a recent
-        // successful scope alive for five minutes; this removes the repeated
-        // Loading -> parse -> reload cycle that used to freeze Twitch every
-        // time the picker was opened again. Channel changes still use their
-        // own task key and can never reuse another channel's snapshot.
-        if (currentSnapshot.state == TPKEmoteProviderStateLoaded &&
-            lastSuccess && snapshotMatchesScope &&
-            -[lastSuccess timeIntervalSinceNow] < 300.0) {
-            if (completion) {
-                TPKEmoteProviderSnapshot *result = [currentSnapshot copy];
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(result); });
-            }
-            return;
+- (TPKEmoteCatalogResult *)resultForObject:(id)object
+                                   request:(TPKEmoteCatalogRequest *)request
+                                     error:(NSError **)error {
+    TPKEmoteCatalogResult *result = [TPKEmoteCatalogResult new];
+    NSError *parseError = nil;
+    NSArray<TPKEmoteSection *> *sections = nil;
+    if (request.setID.length) {
+        if (TPKSetContainerHasEmotePayload(object))
+            sections = [self sevenTVSetSectionsFromObject:object
+                                               requestedID:request.setID
+                                                 asPrimary:request.asPrimary
+                                                   global:request.global];
+        else
+            TPKSetCatalogStructureError(&parseError, request.provider);
+    } else {
+        NSMutableOrderedSet<NSString *> *setIDs = nil;
+        if (request.provider == TPKEmoteProviderIDTPK) {
+            setIDs = [NSMutableOrderedSet orderedSet];
+            TPKCollectSetIDsFromObject(object, setIDs);
+            result.discoveredSets = [self discoveredTPKSetsFromObject:object setIDs:setIDs];
         }
-        NSURLSessionDataTask *old = self.tasks[taskKey];
-        // Calls can originate from both manager lifecycle hooks and picker
-        // openings.  Do not cancel a healthy request just because the same
-        // scope was requested again; otherwise repeated picker openings can
-        // starve the provider before its first response arrives.
-        if ([old isKindOfClass:NSURLSessionDataTask.class] &&
-            old.state != NSURLSessionTaskStateCompleted &&
-            old.state != NSURLSessionTaskStateCanceling) {
-            return;
-        }
-        if ([old isKindOfClass:NSURLSessionDataTask.class]) [old cancel];
-        self.tasks[taskKey] = (id)[NSNull null];
-        NSUInteger generation = self.requestGenerations[taskKey].unsignedIntegerValue + 1;
-        self.requestGenerations[taskKey] = @(generation);
-        TPKEmoteProviderSnapshot *oldSnapshot = self.snapshots[@(provider)];
-        BOOL sameChannel = global ||
-            (oldSnapshot.channelID.length &&
-             [oldSnapshot.channelID caseInsensitiveCompare:channel] == NSOrderedSame);
-        // A global refresh can race a channel switch.  Do not carry the
-        // previous channel's sections into the new snapshot; the next channel
-        // response may otherwise briefly expose another stream's emotes.
-        BOOL globalSnapshotMatchesActiveChannel =
-            !global || !oldSnapshot.channelID.length || !self.activeChannelID.length ||
-            [oldSnapshot.channelID caseInsensitiveCompare:self.activeChannelID] == NSOrderedSame;
-        NSArray<TPKEmoteSection *> *existingSections =
-            (sameChannel && globalSnapshotMatchesActiveChannel)
-                ? (oldSnapshot.sections ?: @[])
-                : [self sectionsByCombining:@[] withExisting:oldSnapshot.sections global:NO];
-        TPKEmoteProviderSnapshot *loading = [TPKEmoteProviderSnapshot new];
-        loading.provider = provider;
-        loading.state = TPKEmoteProviderStateLoading;
-        loading.channelID = global ? @"" : channel;
-        loading.sections = existingSections;
-        self.snapshots[@(provider)] = loading;
-        [self invalidateDerivedCachesForProvider:provider];
-        [self postUpdateForProvider:provider];
+        sections = [self sectionsFromObject:object provider:request.provider
+                                      global:request.global channel:request.scope
+                                     setIDs:setIDs error:&parseError];
+    }
+    result.sections = sections;
+    result.error = parseError;
+    if (error) *error = parseError;
+    return result;
+}
 
-        NSString *providerCachePath = [self cachePathForProvider:provider
-                                                            global:global
-                                                           channel:scope];
-        // Do not make the catalogue state queue wait for a disk-backed cache
-        // read.  The request is started immediately below; cached data is
-        // merged only while that request is still current, so an old cache can
-        // never overwrite a newer live response that already completed.
+- (BOOL)startCatalogRequest:(TPKEmoteCatalogRequest *)request
+                   willStart:(dispatch_block_t)willStart
+                      cached:(void (^)(TPKEmoteCatalogResult *))cached
+                  completion:(void (^)(TPKEmoteCatalogResult *, NSData *))completion {
+    if (!request.url || (!request.global &&
+        [self.activeChannelID caseInsensitiveCompare:request.scope] != NSOrderedSame)) return NO;
+    // Retain jobs until parsed results publish.
+    if (self.tasks[request.taskKey]) return NO;
+
+    self.tasks[request.taskKey] = NSNull.null;
+    request.generation = self.requestGenerations[request.taskKey].unsignedIntegerValue + 1;
+    self.requestGenerations[request.taskKey] = @(request.generation);
+    request.cacheEpoch = self.cacheEpoch;
+    if (willStart) willStart();
+
+    NSString *cachePath = request.setID.length
+        ? [self cachePathForTPKSetID:request.setID]
+        : [self cachePathForProvider:request.provider global:request.global
+                             channel:request.scope];
+    dispatch_async(self.ioQueue, ^{
+        NSData *cacheData = [NSData dataWithContentsOfFile:cachePath];
+        NSError *cacheError = nil;
+        id object = cacheData.length
+            ? [NSJSONSerialization JSONObjectWithData:cacheData options:0 error:&cacheError] : nil;
+        TPKEmoteCatalogResult *result = object
+            ? [self resultForObject:object request:request error:&cacheError] : nil;
+        if (!result.sections.count) return;
+        dispatch_async(self.stateQueue, ^{
+            if ([self requestIsCurrent:request] && cached) cached(result);
+        });
+    });
+
+    NSMutableURLRequest *networkRequest = [NSMutableURLRequest requestWithURL:request.url];
+    networkRequest.timeoutInterval = 15.0;
+    [networkRequest setValue:@"TwitchPlusK/1.0" forHTTPHeaderField:@"User-Agent"];
+    NSURLSessionDataTask *task = [NSURLSession.sharedSession
+        dataTaskWithRequest:networkRequest
+          completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         dispatch_async(self.ioQueue, ^{
-            NSData *cachedData = [NSData dataWithContentsOfFile:providerCachePath];
-            NSError *parseError = nil;
-            NSArray *cachedSections = cachedData.length
-                ? [self sectionsFromData:cachedData
-                                 provider:provider
-                                    global:global
-                                   channel:scope
-                                     error:&parseError]
-                : nil;
-
-            // Migrate the pre-catalogue 7TV JSON cache lazily and off the
-            // state/main queues. The old files remain untouched until an
-            // explicit cache clear, so a failed write cannot lose data.
-            if (!cachedSections.count && provider == TPKEmoteProviderIDTPK) {
-                NSString *legacyPath = TPKLegacyTPKCachePath(global, scope);
-                NSData *legacyData = legacyPath.length
-                    ? [NSData dataWithContentsOfFile:legacyPath] : nil;
-                NSDictionary *normalized = TPKNormalizedLegacyTPKPayload(
-                    legacyData, global, scope);
-                if (normalized) {
-                    NSArray *migratedSections = [self sevenTVSectionsFromObject:normalized
-                                                                            global:global];
-                    if (migratedSections.count) {
-                        cachedSections = migratedSections;
-                        NSData *normalizedData =
-                            [NSJSONSerialization dataWithJSONObject:normalized
-                                                               options:0 error:NULL];
-                        if (normalizedData.length) {
-                            [normalizedData writeToFile:providerCachePath
-                                               options:NSDataWritingAtomic
-                                                 error:NULL];
-                        }
-                    }
-                }
+            NSError *responseError = error;
+            if (!responseError) TPKJSONObjectIsValid(data, response, &responseError);
+            NSError *jsonError = nil;
+            id object = data.length
+                ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError] : nil;
+            if (!responseError && !object) responseError = jsonError;
+            TPKEmoteCatalogResult *result = nil;
+            if (!responseError && object)
+                result = [self resultForObject:object request:request error:&responseError];
+            else if (request.provider == TPKEmoteProviderIDTPK &&
+                     !request.setID.length && object) {
+                result = [TPKEmoteCatalogResult new];
+                NSMutableOrderedSet<NSString *> *setIDs = [NSMutableOrderedSet orderedSet];
+                TPKCollectSetIDsFromObject(object, setIDs);
+                result.discoveredSets = [self discoveredTPKSetsFromObject:object setIDs:setIDs];
             }
-            if (!cachedSections.count) return;
+            if (!result) result = [TPKEmoteCatalogResult new];
+            result.error = responseError;
 
-            // Parsing a cached provider payload can walk thousands of emotes.
-            // Keep JSON decoding and descriptor construction on ioQueue; the
-            // state queue must remain available for snapshot reads and channel
-            // cancellation while the picker is being presented.
             dispatch_async(self.stateQueue, ^{
-                if (self.requestGenerations[taskKey].unsignedIntegerValue != generation ||
-                    !self.tasks[taskKey] ||
-                    (!global && [self.activeChannelID caseInsensitiveCompare:channel] != NSOrderedSame))
-                    return;
-                if (cachedSections.count) {
-                    TPKEmoteProviderSnapshot *cached = [TPKEmoteProviderSnapshot new];
-                    cached.provider = provider;
-                    cached.state = TPKEmoteProviderStateLoading;
-                    cached.channelID = global ? @"" : channel;
-                    cached.sections = [self sectionsByCombining:cachedSections
-                                                       withExisting:existingSections
-                                                           global:global];
-                    self.snapshots[@(provider)] = cached;
-                    [self invalidateDerivedCachesForProvider:provider];
-                    [self postUpdateForProvider:provider];
+                if (![self requestIsCurrent:request]) return;
+                [self.tasks removeObjectForKey:request.taskKey];
+                BOOL shouldPersist = result.sections &&
+                    (!request.setID.length || result.sections.count > 0);
+                if (shouldPersist) {
+                    NSData *dataToSave = [data copy];
+                    NSString *path = [cachePath copy];
+                    dispatch_async(self.ioQueue, ^{
+                        [self writeCatalogData:dataToSave toPath:path];
+                    });
                 }
-                if (provider == TPKEmoteProviderIDTPK) {
-                    // The cached user payload can still contain set IDs even
-                    // when the live request is offline. Discover their
-                    // placeholders and resume all discovered set requests in
-                    // the background, so cache-first rendering still exposes
-                    // secondary channel/global sets without waiting for a
-                    // fresh parent response or a manual scroll.
-                    [self loadTPKAdditionalSetsFromData:cachedData
-                                                     global:global
-                                                    channel:(global ? nil : channel)
-                                                 generation:generation
-                                     requireActiveRequest:YES];
-                }
+                if (completion) completion(result, data);
             });
         });
+    }];
+    request.task = task;
+    self.tasks[request.taskKey] = task;
+    [task resume];
+    return YES;
+}
 
-        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-        request.timeoutInterval = 15.0;
-        [request setValue:@"TwitchPlusK/1.0" forHTTPHeaderField:@"User-Agent"];
-        __block NSURLSessionDataTask *task = nil;
-        task = [NSURLSession.sharedSession dataTaskWithRequest:request
-            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-            // JSON validation/parsing can involve thousands of descriptors.
-            // Keep it off the serial state queue so snapshotForProvider never
-            // makes the main thread wait behind a large provider response.
-            dispatch_async(self.ioQueue, ^{
-                NSError *responseError = error;
-                if (!responseError && !TPKJSONObjectIsValid(data, response, &responseError)) {
-                    // responseError is filled by the validator
-                }
-                NSArray *sections = nil;
-                if (!responseError)
-                    sections = [self sectionsFromData:data provider:provider global:global channel:scope error:&responseError];
-                dispatch_async(self.stateQueue, ^{
-                if (self.requestGenerations[taskKey].unsignedIntegerValue != generation) return;
-                if (!global && [self.activeChannelID caseInsensitiveCompare:channel] != NSOrderedSame) return;
-                [self.tasks removeObjectForKey:taskKey];
-                TPKEmoteProviderSnapshot *previous = self.snapshots[@(provider)];
-                TPKEmoteProviderSnapshot *result = [TPKEmoteProviderSnapshot new];
-                result.provider = provider;
-                result.channelID = global ? @"" : channel;
-                if (sections) {
-                    result.state = TPKEmoteProviderStateLoaded;
-                    self.lastSuccessfulLoads[taskKey] = [NSDate date];
-                    // A global response may finish after a channel switch.
-                    // Do not reattach the previous channel's sections in that
-                    // race; only preserve them when the snapshot still belongs
-                    // to the active channel (the next channel request will
-                    // repopulate them otherwise).
-                    NSArray<TPKEmoteSection *> *existing = previous.sections ?: @[];
-                    BOOL canKeepPreviousChannel = !global ||
-                        !previous.channelID.length || !self.activeChannelID.length ||
-                        [previous.channelID caseInsensitiveCompare:self.activeChannelID] == NSOrderedSame;
-                    if (global && !canKeepPreviousChannel)
-                        existing = [self sectionsByCombining:@[]
-                                               withExisting:existing
-                                                   global:NO];
-                    result.sections = [self sectionsByCombining:sections
-                                                       withExisting:existing
-                                                           global:global];
-                    if (global && canKeepPreviousChannel && previous.channelID.length)
-                        result.channelID = previous.channelID;
-                    // Persist off stateQueue: provider responses may contain
-                    // thousands of emotes and the atomic write must not
-                    // postpone the snapshot publication or a channel switch.
-                    NSData *cacheData = [data copy];
-                    NSString *cachePath = [[self cachePathForProvider:provider
-                                                                  global:global
-                                                                 channel:scope] copy];
-                    dispatch_async(self.ioQueue, ^{
-                        [cacheData writeToFile:cachePath
-                                      options:NSDataWritingAtomic error:NULL];
-                    });
-                } else {
-                    result.state = TPKEmoteProviderStateError;
-                    result.sections = previous.sections ?: existingSections;
-                    result.errorMessage = responseError.localizedDescription ?: @"Unable to load emotes";
-                }
-                self.snapshots[@(provider)] = result;
-                [self invalidateDerivedCachesForProvider:provider];
-                [self postUpdateForProvider:provider];
-                if (provider == TPKEmoteProviderIDTPK && data.length) {
-                    [self loadTPKAdditionalSetsFromData:data
-                                                     global:global
-                                                    channel:(global ? nil : channel)
-                                                 generation:generation
-                                     requireActiveRequest:NO];
-                }
-                if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion([result copy]); });
-                });
-            });
+- (void)writeCatalogData:(NSData *)data toPath:(NSString *)path {
+    if (!data.length || !path.length) return;
+    NSString *directory = path.stringByDeletingLastPathComponent;
+    [[NSFileManager defaultManager] createDirectoryAtPath:directory
+        withIntermediateDirectories:YES attributes:nil error:NULL];
+    [data writeToFile:path options:NSDataWritingAtomic error:NULL];
+}
+
+- (TPKEmoteProviderSnapshot *)publishProviderResult:(TPKEmoteCatalogResult *)result
+                                            request:(TPKEmoteCatalogRequest *)request
+                                            loading:(BOOL)loading {
+    TPKEmoteProviderSnapshot *previous = self.snapshots[@(request.provider)];
+    BOOL keepChannel = request.global
+        ? (!previous.channelID.length || !self.activeChannelID.length ||
+           [previous.channelID caseInsensitiveCompare:self.activeChannelID] == NSOrderedSame)
+        : (previous.channelID.length &&
+           [previous.channelID caseInsensitiveCompare:request.scope] == NSOrderedSame);
+    NSArray<TPKEmoteSection *> *existing = previous.sections ?: @[];
+    if (!keepChannel)
+        existing = [self sectionsByCombining:@[] withExisting:existing global:NO];
+
+    TPKEmoteProviderSnapshot *snapshot = [TPKEmoteProviderSnapshot new];
+    snapshot.provider = request.provider;
+    snapshot.channelID = request.global
+        ? (keepChannel ? (previous.channelID ?: @"") : @"") : request.scope;
+    if (!result || result.sections) {
+        snapshot.state = loading ? TPKEmoteProviderStateLoading : TPKEmoteProviderStateLoaded;
+        snapshot.sections = result
+            ? [self sectionsByCombining:result.sections withExisting:existing global:request.global]
+            : existing;
+        if (!loading) self.lastSuccessfulLoads[request.taskKey] = [NSDate date];
+    } else {
+        snapshot.state = TPKEmoteProviderStateError;
+        snapshot.sections = existing;
+        snapshot.errorMessage = result.error.localizedDescription ?: @"Unable to load emotes";
+    }
+    self.snapshots[@(request.provider)] = snapshot;
+    [self invalidateDerivedCachesForProvider:request.provider];
+    [self postUpdateForProvider:request.provider];
+    return snapshot;
+}
+
+- (void)loadProvider:(TPKEmoteProviderID)provider
+              global:(BOOL)global
+             channel:(NSString *)channel
+          completion:(void (^)(TPKEmoteProviderSnapshot *))completion {
+    if (!global && !channel.length) return;
+    TPKEmoteCatalogRequest *request = [TPKEmoteCatalogRequest new];
+    request.scope = global ? @"global" : channel;
+    request.taskKey = [NSString stringWithFormat:@"%@:%@", TPKEmoteProviderKey(provider), request.scope];
+    request.url = [self URLForProvider:provider global:global channel:channel];
+    if (!request.url) return;
+    request.provider = provider;
+    request.global = global;
+    dispatch_async(self.stateQueue, ^{
+        if (!global && [self.activeChannelID caseInsensitiveCompare:channel] != NSOrderedSame) return;
+        TPKEmoteProviderSnapshot *current = self.snapshots[@(provider)];
+        NSDate *lastSuccess = self.lastSuccessfulLoads[request.taskKey];
+        BOOL matchesScope = global || [current.channelID caseInsensitiveCompare:channel] == NSOrderedSame;
+        if (current.state == TPKEmoteProviderStateLoaded && lastSuccess &&
+            matchesScope && -[lastSuccess timeIntervalSinceNow] < 300.0) {
+            if (completion) {
+                TPKEmoteProviderSnapshot *copy = [current copy];
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(copy); });
+            }
+            return;
+        }
+
+        [self startCatalogRequest:request willStart:^{
+            [self publishProviderResult:nil request:request loading:YES];
+        } cached:^(TPKEmoteCatalogResult *cached) {
+            [self publishProviderResult:cached request:request loading:YES];
+            if (provider == TPKEmoteProviderIDTPK)
+                [self loadTPKAdditionalSets:cached.discoveredSets global:global
+                    channel:(global ? nil : channel) generation:request.generation
+                    cacheEpoch:request.cacheEpoch requireActiveRequest:YES];
+        } completion:^(TPKEmoteCatalogResult *result, NSData *data) {
+            TPKEmoteProviderSnapshot *snapshot =
+                [self publishProviderResult:result request:request loading:NO];
+            if (provider == TPKEmoteProviderIDTPK && result.discoveredSets.count)
+                [self loadTPKAdditionalSets:result.discoveredSets global:global
+                    channel:(global ? nil : channel) generation:request.generation
+                    cacheEpoch:request.cacheEpoch requireActiveRequest:NO];
+            if (completion) {
+                TPKEmoteProviderSnapshot *copy = [snapshot copy];
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(copy); });
+            }
         }];
-        self.tasks[taskKey] = task;
-        [task resume];
     });
 }
 
@@ -2259,55 +1629,29 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     return combined.copy;
 }
 
+- (void)cancelCatalogTaskForKey:(NSString *)key {
+    id task = self.tasks[key];
+    if ([task isKindOfClass:NSURLSessionDataTask.class])
+        [(NSURLSessionDataTask *)task cancel];
+    [self.tasks removeObjectForKey:key];
+    self.requestGenerations[key] =
+        @(self.requestGenerations[key].unsignedIntegerValue + 1);
+}
+
 - (void)cancelLoadsForChannel:(NSString *)channel {
     if (!channel.length) return;
     dispatch_async(self.stateQueue, ^{
         NSString *suffix = [NSString stringWithFormat:@":%@", channel];
-        for (NSString *key in self.tasks.allKeys.copy) {
-            if ([key hasSuffix:suffix]) {
-                id task = self.tasks[key];
-                if ([task isKindOfClass:NSURLSessionDataTask.class]) [(NSURLSessionDataTask *)task cancel];
-                [self.tasks removeObjectForKey:key];
-                self.requestGenerations[key] = @(self.requestGenerations[key].unsignedIntegerValue + 1);
-            }
-        }
+        for (NSString *key in self.tasks.allKeys.copy)
+            if ([key hasSuffix:suffix]) [self cancelCatalogTaskForKey:key];
     });
 }
 
 - (void)clearCachedDataWithCompletion:(dispatch_block_t)completion {
     dispatch_async(self.stateQueue, ^{
-        // Cancel every scope and advance its generation before deleting the
-        // files.  A cancelled NSURLSession callback may still arrive later;
-        // the generation check then prevents it from repopulating a cache
-        // that the user explicitly cleared.
-        for (NSString *key in self.tasks.allKeys.copy) {
-            id task = self.tasks[key];
-            if ([task isKindOfClass:NSURLSessionDataTask.class])
-                [(NSURLSessionDataTask *)task cancel];
-            self.requestGenerations[key] =
-                @(self.requestGenerations[key].unsignedIntegerValue + 1);
-        }
-        [self.tasks removeAllObjects];
+        self.cacheEpoch++;
+        for (NSString *key in self.tasks.allKeys.copy) [self cancelCatalogTaskForKey:key];
         [self.lastSuccessfulLoads removeAllObjects];
-
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSString *directory = [self cacheDirectory];
-        for (NSString *file in [fileManager contentsOfDirectoryAtPath:directory error:NULL]) {
-            NSString *path = [directory stringByAppendingPathComponent:file];
-            [fileManager removeItemAtPath:path error:NULL];
-        }
-
-        // The legacy manager stored 7TV JSON under Library/Caches/s7tv.
-        // It is part of the same emote cache now that migration is owned by
-        // this catalogue, so an explicit "clear cache" must remove it too.
-        NSString *legacyDirectory = [directory.stringByDeletingLastPathComponent
-            stringByAppendingPathComponent:@"s7tv"];
-        for (NSString *file in [fileManager contentsOfDirectoryAtPath:legacyDirectory
-                                                                  error:NULL]) {
-            NSString *path = [legacyDirectory stringByAppendingPathComponent:file];
-            [fileManager removeItemAtPath:path error:NULL];
-        }
-
         for (NSInteger provider = TPKEmoteProviderIDTPK;
              provider <= TPKEmoteProviderIDFFZ; provider++) {
             TPKEmoteProviderSnapshot *snapshot = [TPKEmoteProviderSnapshot new];
@@ -2319,7 +1663,21 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
             [self invalidateDerivedCachesForProvider:(TPKEmoteProviderID)provider];
             [self postUpdateForProvider:(TPKEmoteProviderID)provider];
         }
-        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+
+        NSString *directory = [self cacheDirectory];
+        NSString *legacyDirectory = [directory.stringByDeletingLastPathComponent
+            stringByAppendingPathComponent:@"s7tv"];
+        dispatch_async(self.ioQueue, ^{
+            NSFileManager *manager = [NSFileManager defaultManager];
+            for (NSString *path in @[directory ?: @"", legacyDirectory ?: @""]) {
+                if (!path.length) continue;
+                for (NSString *file in [manager contentsOfDirectoryAtPath:path error:NULL]) {
+                    [manager removeItemAtPath:[path stringByAppendingPathComponent:file]
+                                        error:NULL];
+                }
+            }
+            if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        });
     });
 }
 
@@ -2331,16 +1689,13 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     });
 }
 
-- (NSArray<TPKEmoteSection *> *)sectionsFromData:(NSData *)data
-                                         provider:(TPKEmoteProviderID)provider
-                                            global:(BOOL)global
-                                           channel:(NSString *)channel
-                                             error:(NSError **)error {
-    id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:error];
-    if (!object) return nil;
-    // A syntactically valid JSON error payload must not be treated as a
-    // successful empty catalogue. Validate the provider's top-level shape
-    // before parsing so the picker can expose a retry state.
+- (NSArray<TPKEmoteSection *> *)sectionsFromObject:(id)object
+                                            provider:(TPKEmoteProviderID)provider
+                                               global:(BOOL)global
+                                              channel:(NSString *)channel
+                                              setIDs:(NSOrderedSet<NSString *> *)setIDs
+                                                error:(NSError **)error {
+    // Reject valid JSON with an unrelated top-level shape.
     BOOL validShape = NO;
     if (provider == TPKEmoteProviderIDTPK) {
         if ([object isKindOfClass:NSDictionary.class]) {
@@ -2349,8 +1704,6 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
             BOOL directPayload = TPKDictionaryHasDirectEmoteCollection((NSDictionary *)object);
             BOOL setIdentifierHasPayload = [set isKindOfClass:NSString.class] &&
                 TPKFindSetDictionary(additionalSets, set) != nil;
-            NSMutableOrderedSet *setIDs = [NSMutableOrderedSet orderedSet];
-            TPKCollectSetIDsFromObject(object, setIDs);
             BOOL hasSetIdentifier = setIDs.count > 0;
             validShape = global
                 ? (directPayload ||
@@ -2368,10 +1721,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         } else if ([object isKindOfClass:NSDictionary.class]) {
             validShape = [object[@"channelEmotes"] isKindOfClass:NSArray.class] ||
                 [object[@"sharedEmotes"] isKindOfClass:NSArray.class] ||
-                // Older BTTV responses (and some cached payloads) expose the
-                // channel list under the generic `emotes` key. Accept that
-                // shape as well so a provider version cannot make the picker
-                // silently appear empty.
+                // Older BTTV payloads may use the generic `emotes` key.
                 [object[@"emotes"] isKindOfClass:NSArray.class];
         }
     } else if (provider == TPKEmoteProviderIDFFZ) {
@@ -2402,10 +1752,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     for (id rawEntry in raw) {
         NSDictionary *entry = [rawEntry isKindOfClass:NSDictionary.class] ? rawEntry : nil;
         if (![entry isKindOfClass:NSDictionary.class]) continue;
-        // REST v3 historically returned `{data, flags}` entries, while the
-        // current model also exposes GraphQL-shaped `{emote, alias, flags}`
-        // entries. Normalize both forms at this boundary so the picker and
-        // tokenizer never need to know which API revision supplied a set.
+        // Normalize REST and GraphQL-style set entries here.
         NSDictionary *nestedEmote = [entry[@"emote"] isKindOfClass:NSDictionary.class]
             ? entry[@"emote"] : nil;
         NSDictionary *data = [entry[@"data"] isKindOfClass:NSDictionary.class]
@@ -2416,16 +1763,12 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
             TPKString(data[@"name"]) ?: TPKString(data[@"defaultName"]);
         NSDictionary *host = [data[@"host"] isKindOfClass:NSDictionary.class] ? data[@"host"] : @{};
         NSMutableDictionary *urls = [NSMutableDictionary dictionary];
+        NSMutableDictionary *formats = [NSMutableDictionary dictionary];
         NSArray *files = [host[@"files"] isKindOfClass:NSArray.class] ? host[@"files"] : @[];
         NSInteger width = TPKInteger(data[@"width"]), height = TPKInteger(data[@"height"]);
         BOOL animatedFromFiles = NO;
         for (id rawFile in files) {
-            // The v3 REST API currently returns `host.files` as plain names
-            // (for example `1x.webp`), while older/cache-adapted payloads
-            // sometimes wrap the same name and dimensions in a dictionary.
-            // Accept both forms; rejecting the string form leaves descriptors
-            // without image URLs and makes an otherwise valid 7TV set look
-            // empty until a legacy cache happens to be available.
+            // Accept both filename strings and metadata dictionaries in host.files.
             NSString *fileName = nil;
             NSInteger fileWidth = 0;
             NSInteger fileHeight = 0;
@@ -2448,13 +1791,11 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
             NSInteger scale = 0;
             NSScanner *scanner = [NSScanner scannerWithString:fileName];
             [scanner scanInteger:&scale];
-            if (scale > 0) urls[@(scale)] = [NSString stringWithFormat:@"%@/%@", hostURL, fileName];
+            TPKSevenTVAddImage(formats, [NSString stringWithFormat:@"%@/%@", hostURL, fileName], scale);
             if (!width) width = fileWidth;
             if (!height) height = fileHeight;
         }
-        // Newer set responses can provide normalized image objects instead of
-        // the legacy host/files pair. Keep their explicit scale and URL, and
-        // use the 1x (or first available) dimensions for layout reservation.
+        // Accept normalized image objects as well as legacy host/files data.
         NSArray *images = [data[@"images"] isKindOfClass:NSArray.class]
             ? data[@"images"] : @[];
         for (NSDictionary *image in images) {
@@ -2463,15 +1804,11 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
             NSInteger scale = TPKInteger(image[@"scale"]);
             if ([imageURL hasPrefix:@"//"])
                 imageURL = [@"https:" stringByAppendingString:imageURL];
-            if (imageURL.length && scale > 0) urls[@(scale)] = imageURL;
+            TPKSevenTVAddImage(formats, imageURL, scale);
             if (!width) width = TPKInteger(image[@"width"]);
             if (!height) height = TPKInteger(image[@"height"]);
         }
-        // The public 7TV model may expose only `aspectRatio` (especially in
-        // compact/cache-adapted responses) instead of width/height. Preserve
-        // that ratio for the shared chat/thread renderer; a neutral 32pt
-        // reference height is sufficient because the renderer scales the
-        // descriptor to the user's configured emote size.
+        // Preserve aspectRatio when dimensions are unavailable.
         CGFloat aspectRatio = TPKDouble(data[@"aspectRatio"]);
         if (aspectRatio <= 0.0) aspectRatio = TPKDouble(data[@"aspect_ratio"]);
         if (aspectRatio <= 0.0) aspectRatio = TPKDouble(entry[@"aspectRatio"]);
@@ -2489,10 +1826,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         if (!eid.length || !name.length) continue;
         NSInteger dataFlags = TPKInteger(data[@"flags"]);
         NSInteger entryFlags = TPKInteger(entry[@"flags"]);
-        // The legacy v3 REST payload stores Zero-Width on the active set
-        // entry (bit 0), while newer payloads expose the emote flag bitfield
-        // on `data` (bit 8). Accept both forms and the boolean fields emitted
-        // by newer REST/cache adapters so overlays survive an API migration.
+        // Read Zero-Width from legacy and current 7TV flag formats.
         NSDictionary *entryFlagObject = [entry[@"flags"] isKindOfClass:NSDictionary.class]
             ? entry[@"flags"] : @{};
         NSDictionary *dataFlagObject = [data[@"flags"] isKindOfClass:NSDictionary.class]
@@ -2521,33 +1855,11 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
             ((entryFlags & 1) != 0) || ((entryFlags & (1 << 8)) != 0) ||
             ((dataFlags & (1 << 1)) != 0) ||
             ((dataFlags & (1 << 8)) != 0);
-        // Depending on the 7TV REST/cache version, aliases may live on the
-        // active-set entry, on the embedded emote data object, or on both.
-        // Merge both sources instead of choosing one so every documented
-        // alias remains resolvable after a cache/API shape change.
-        NSMutableArray *aliases = [NSMutableArray array];
-        for (id aliasSource in @[entry[@"aliases"] ?: NSNull.null,
-                                 data[@"aliases"] ?: NSNull.null]) {
-            for (NSString *alias in TPKAliases(aliasSource)) {
-                if (![aliases containsObject:alias]) [aliases addObject:alias];
-            }
-        }
-        NSString *entryAlias = TPKString(entry[@"alias"]);
-        NSString *dataName = TPKString(data[@"name"]);
-        if (entryAlias.length && ![entryAlias isEqualToString:name] &&
-            ![aliases containsObject:entryAlias]) [aliases addObject:entryAlias];
-        if (dataName.length && ![dataName isEqualToString:name] &&
-            ![aliases containsObject:dataName]) [aliases addObject:dataName];
-        NSString *defaultName = TPKString(data[@"defaultName"]);
-        if (defaultName.length && ![defaultName isEqualToString:name] &&
-            ![aliases containsObject:defaultName]) [aliases addObject:defaultName];
         BOOL animated = TPKBool(data[@"animated"]) ||
             TPKBool(entry[@"animated"]) ||
             TPKBool(dataFlagObject[@"animated"]) ||
             TPKBool(nestedFlagObject[@"animated"]) ||
-            // EmoteFlagsModel uses bit 0 for the animated flag. Active-set
-            // flags intentionally are not interpreted here because their bit
-            // 0 denotes Zero-Width in the v3 REST payload.
+            // Active-set bit 0 means Zero-Width, unlike EmoteFlagsModel.
             ((dataFlags & 1) != 0) || animatedFromFiles;
         for (NSDictionary *image in images) {
             if (TPKInteger(image[@"frameCount"]) > 1 ||
@@ -2556,9 +1868,13 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
                 break;
             }
         }
+        // Merge the preferred format last, independently for each resolution.
+        for (NSString *format in animated ? @[@"webp", @"gif"] : @[@"png", @"webp"])
+            if (formats[format]) [urls addEntriesFromDictionary:formats[format]];
+        if (!urls.count) continue;
         [emotes addObject:[[TPKEmoteDescriptor alloc]
             initWithProvider:TPKEmoteProviderIDTPK providerIdentifier:@"7tv"
-            emoteID:eid name:name aliases:aliases sectionKind:kind sectionIdentifier:identifier
+            emoteID:eid name:name aliases:@[] sectionKind:kind sectionIdentifier:identifier
             sectionTitle:title setID:TPKString(set[@"id"])
             nativeSize:CGSizeMake(width > 0 ? width : 1, height > 0 ? height : 1)
             animated:animated
@@ -2595,21 +1911,13 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         }
     } else if ([rawAdditionalSets isKindOfClass:NSDictionary.class] &&
                TPKDictionaryHasDirectEmoteCollection((NSDictionary *)rawAdditionalSets)) {
-        // Compact/cache adapters sometimes put the active set directly in
-        // `sets` instead of wrapping it in `emote_set` or a map keyed by ID.
-        // Parse it immediately so the first picker snapshot is useful even
-        // before the optional `/emote-sets/<id>` request completes.
+        // Parse a direct `sets` payload before the optional set request completes.
         primarySet = rawAdditionalSets;
     } else if (!rawPrimary) {
-        // Newer user responses can expose only an emote_set_id/connection.
-        // The corresponding set is fetched by loadTPKAdditionalSets...
-        // so there is intentionally no synthetic empty Channel section here.
+        // ID-only responses load their set asynchronously.
     }
 
-    // The current v3 user endpoint can put the complete active set under a
-    // Twitch connection. Prefer that payload over an ID-only placeholder so a
-    // fresh picker can render Channel Emotes without waiting for a second
-    // request (or requiring a scroll/tab change to trigger layout).
+    // Prefer a complete active set in the Twitch connection over an ID placeholder.
     if (!global && (!primarySet || !TPKDictionaryHasDirectEmoteCollection(primarySet))) {
         NSDictionary *connectionSet = TPKConnectionSetWithPayload(root[@"connections"]);
         if (connectionSet) primarySet = connectionSet;
@@ -2639,10 +1947,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         if (section) [sections addObject:section];
     }
 
-    // Some 7TV-compatible responses include several available sets in
-    // `emote_sets`/`sets` in addition to the active set. Expose those sets as
-    // their own collapsible picker sections when the payload provides them;
-    // no extra unauthenticated endpoint is guessed or required.
+    // Expose additional sets supplied in `emote_sets` or `sets`.
     if ([rawAdditionalSets isKindOfClass:NSDictionary.class]) {
         NSDictionary *directSet = (NSDictionary *)rawAdditionalSets;
         BOOL isDirectSet = TPKDictionaryHasDirectEmoteCollection(directSet);
@@ -2747,9 +2052,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     NSMutableArray *sections = [NSMutableArray array];
     NSArray *globalValues = [object isKindOfClass:NSArray.class] ? object : arrayForKey(@"emotes");
     NSArray *channelValues = arrayForKey(@"channelEmotes");
-    // BTTV has used both `channelEmotes` and the generic `emotes` key for
-    // channel payloads. Prefer the explicit key, but fall back to the latter
-    // when needed so those emotes are never dropped from the picker.
+    // Accept BTTV channel lists under `channelEmotes` or `emotes`.
     if (!channelValues.count) channelValues = arrayForKey(@"emotes");
     NSArray *sharedValues = arrayForKey(@"sharedEmotes");
     NSArray *groups = global ? @[@[@"global", @"Global Emotes", globalValues]]
@@ -2759,17 +2062,13 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         NSMutableArray *emotes = [NSMutableArray array];
         for (NSDictionary *raw in group[2]) {
             if (![raw isKindOfClass:NSDictionary.class]) continue;
-            // Be defensive with third-party/cache payloads that may expose
-            // effect-like entries next to regular BTTV emotes. They are not
-            // normal emotes and are intentionally reserved for the v2 UI.
+            // Reserve effect-like entries for the v2 UI.
             if (TPKBool(raw[@"modifier"]) || TPKBool(raw[@"isModifier"])) continue;
             NSString *eid = TPKString(raw[@"id"]), *name = TPKString(raw[@"code"]);
             if (!eid.length || !name.length) continue;
             NSMutableDictionary *urls = [NSMutableDictionary dictionary];
             for (NSInteger scale = 1; scale <= 4; scale++) {
-                // BTTV currently publishes 1x/2x/3x.  Do not manufacture a
-                // 4x URL: imageURLForResolution: will correctly fall back to
-                // the closest available 3x asset.
+                // BTTV provides 1x/2x/3x assets.
                 if (scale == 4) break;
                 urls[@(scale)] = [NSString stringWithFormat:@"https://cdn.betterttv.net/emote/%@/%ldx", eid, (long)scale];
             }
@@ -2799,10 +2098,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
 - (NSArray<TPKEmoteSection *> *)ffzSectionsFromObject:(id)object global:(BOOL)global {
     NSDictionary *sets = [object isKindOfClass:NSDictionary.class] ? object[@"sets"] : nil;
     if (![sets isKindOfClass:NSDictionary.class]) return @[];
-    // FFZ's global endpoint also returns sets that are only globally usable
-    // by particular users.  Without authentication we can safely expose the
-    // provider's `default_sets` only; otherwise chat would resolve emote
-    // names that the current viewer cannot actually send.
+    // Expose only FFZ default sets without authentication.
     NSMutableSet<NSString *> *defaultGlobalSetIDs = [NSMutableSet set];
     id rawDefaultSets = [object isKindOfClass:NSDictionary.class]
         ? object[@"default_sets"] : nil;
@@ -2814,20 +2110,14 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         ? ([object[@"room"] isKindOfClass:NSDictionary.class] ? object[@"room"] : nil)
         : nil;
     id rawRoomSet = room[@"set"];
-    // FFZ returns the active room set as a numeric ID in some API versions
-    // and as a string in others. Normalize both forms so the channel section
-    // is not accidentally presented as an anonymous set.
+    // Normalize numeric and string FFZ room-set IDs.
     NSString *roomSet = TPKString(rawRoomSet);
     if (!roomSet.length && [rawRoomSet isKindOfClass:NSDictionary.class])
         roomSet = TPKString(rawRoomSet[@"id"]);
     if (!roomSet.length && rawRoomSet)
         roomSet = [NSString stringWithFormat:@"%@", rawRoomSet];
     NSMutableArray *sections = [NSMutableArray array];
-    // The FFZ global endpoint can expose several default sets.  They are all
-    // part of the same provider-global catalogue, so keep one clear
-    // "Global Emotes" section instead of repeating the same header once per
-    // set.  The original set ID remains on each descriptor for identity and
-    // future set-aware UI.
+    // Merge FFZ default sets into one global section.
     NSMutableArray *globalEmotes = global ? [NSMutableArray array] : nil;
     [sets enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
         NSString *setKey = [NSString stringWithFormat:@"%@", key ?: @""];
@@ -2839,18 +2129,13 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
         NSMutableArray *emotes = [NSMutableArray array];
         for (NSDictionary *raw in rawEmotes) {
             if (![raw isKindOfClass:NSDictionary.class]) continue;
-            // FFZ exposes Emote Effects as modifier entries in the same
-            // `emoticons` array as regular emotes.  Effects are intentionally
-            // kept for the v2 modifier UI and must not be sent as standalone
-            // chat emotes in the first multi-provider release.
+            // Reserve FFZ effects for the v2 modifier UI.
             if (TPKBool(raw[@"modifier"]) || TPKBool(raw[@"isModifier"])) continue;
             NSString *eid = [NSString stringWithFormat:@"%@", raw[@"id"] ?: @""];
             NSString *name = TPKString(raw[@"name"]);
             if (!eid.length || !name.length) continue;
             NSMutableDictionary *urls = [TPKURLMap(raw[@"urls"]) mutableCopy];
-            // FFZ keeps animated variants in a separate DPI -> URL map. Keep
-            // both maps so the shared renderer can select an animated frame
-            // when one is available and fall back to the static CDN URL.
+            // Keep FFZ animated URLs alongside static assets.
             NSDictionary *animatedURLs = TPKURLMap(raw[@"animated"]);
             if (animatedURLs.count) [urls addEntriesFromDictionary:animatedURLs];
             BOOL animated = animatedURLs.count > 0 || TPKBool(raw[@"animated"]);
@@ -2897,79 +2182,102 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
 
 - (BOOL)isEmoteFavorited:(TPKEmoteDescriptor *)emote {
     if (!emote.emoteID.length) return NO;
-    NSArray *favorites = [self favoriteKeysSnapshot];
-    return [favorites containsObject:
+    return [[self favoriteKeysSnapshot] containsObject:
         TPKEmoteFavoriteKey(emote.provider, emote.emoteID)];
+}
+
+- (NSMutableArray<NSString *> *)mutableFavoriteKeys {
+    return [[self favoriteKeysSnapshot] mutableCopy] ?: [NSMutableArray array];
+}
+
+- (void)storeFavoriteKeys:(NSArray<NSString *> *)favoriteKeys {
+    [NSUserDefaults.standardUserDefaults setObject:favoriteKeys.copy
+                                            forKey:@"tpk_favorites_v2"];
+}
+
+- (void)updateFavoriteKey:(NSString *)key favorited:(BOOL)favorited {
+    NSMutableArray<NSString *> *favorites = [self mutableFavoriteKeys];
+    [favorites removeObject:key];
+    if (favorited) [favorites addObject:key];
+    [self storeFavoriteKeys:favorites];
+}
+
+- (NSMutableDictionary<NSString *, NSDictionary *> *)mutableFavoriteMetadata {
+    id stored = [NSUserDefaults.standardUserDefaults dictionaryForKey:kTPKFavoriteMetadataKey];
+    return [stored isKindOfClass:NSDictionary.class]
+        ? [stored mutableCopy] : [NSMutableDictionary dictionary];
+}
+
+- (void)storeFavoriteMetadata:(NSDictionary<NSString *, NSDictionary *> *)metadata {
+    [NSUserDefaults.standardUserDefaults setObject:metadata.copy
+                                            forKey:kTPKFavoriteMetadataKey];
+}
+
+- (void)updateFavoriteMetadataForKey:(NSString *)key
+                               value:(NSDictionary *)value
+                              remove:(BOOL)remove {
+    NSMutableDictionary *metadata = [self mutableFavoriteMetadata];
+    if (remove) [metadata removeObjectForKey:key];
+    else if (value) metadata[key] = value;
+    [self storeFavoriteMetadata:metadata];
+}
+
+- (void)removeFavoriteMetadataForKeys:(NSArray<NSString *> *)keys {
+    NSMutableDictionary *metadata = [self mutableFavoriteMetadata];
+    BOOL changed = NO;
+    for (NSString *key in keys) {
+        if (!metadata[key]) continue;
+        [metadata removeObjectForKey:key];
+        changed = YES;
+    }
+    if (changed) [self storeFavoriteMetadata:metadata];
+}
+
+- (void)removeFavoriteCompositionForKey:(NSString *)key {
+    NSMutableDictionary *compositions = TPKMutableFavoriteCompositions();
+    TPKRemoveFavoriteCompositionsContainingKey(compositions, key);
+    TPKStoreFavoriteCompositions(compositions);
+}
+
+- (void)syncLegacyFavoriteID:(NSString *)emoteID favorited:(BOOL)favorited {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSMutableArray *legacy = [[defaults arrayForKey:@"tpk_favorites"] mutableCopy]
+        ?: [NSMutableArray array];
+    [legacy removeObject:emoteID];
+    if (favorited) [legacy addObject:emoteID];
+    [defaults setObject:legacy.copy forKey:@"tpk_favorites"];
+}
+
+- (void)notifyFavoriteChangeForProvider:(TPKEmoteProviderID)provider {
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"TPKFavoritesDidChangeNotification" object:self];
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:TPKProviderCatalogDidUpdateNotification
+                      object:self
+                    userInfo:@{@"provider": @(provider), @"favorites": @YES}];
 }
 
 - (void)setEmote:(TPKEmoteDescriptor *)emote favorited:(BOOL)favorited {
     if (!emote.emoteID.length) return;
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    NSMutableArray *favorites = [[self favoriteKeysSnapshot] mutableCopy] ?: [NSMutableArray array];
     NSString *key = TPKEmoteFavoriteKey(emote.provider, emote.emoteID);
-    [favorites removeObject:key];
-    if (favorited) [favorites addObject:key];
-    [defaults setObject:favorites.copy forKey:@"tpk_favorites_v2"];
-    NSMutableDictionary *favoriteMetadata =
-        [[defaults dictionaryForKey:kTPKFavoriteMetadataKey] mutableCopy]
-            ?: [NSMutableDictionary dictionary];
-    if (favorited) {
-        NSDictionary *metadata = TPKFavoriteMetadataForDescriptor(emote);
-        if (metadata) favoriteMetadata[key] = metadata;
-    } else {
-        [favoriteMetadata removeObjectForKey:key];
-    }
-    [defaults setObject:favoriteMetadata.copy forKey:kTPKFavoriteMetadataKey];
-    if (!favorited) {
-        // Removing any member invalidates the saved Zero-Width composition;
-        // otherwise another picker cell could keep inserting an incomplete
-        // sequence after the user explicitly unfavorited one layer.
-        NSMutableDictionary *compositions = TPKMutableFavoriteCompositions();
-        TPKRemoveFavoriteCompositionsContainingKey(compositions, key);
-        TPKStoreFavoriteCompositions(compositions);
-    }
-    // Keep the legacy 7TV-only API and its settings screen in sync while
-    // provider-qualified favorites are being rolled out.  BTTV/FFZ never
-    // touch the old array, so IDs from different providers cannot collide.
-    if (emote.provider == TPKEmoteProviderIDTPK) {
-        NSMutableArray *legacy = [[defaults arrayForKey:@"tpk_favorites"] mutableCopy]
-            ?: [NSMutableArray array];
-        [legacy removeObject:emote.emoteID];
-        if (favorited) [legacy addObject:emote.emoteID];
-        [defaults setObject:legacy.copy forKey:@"tpk_favorites"];
-    }
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"TPKFavoritesDidChangeNotification" object:self];
-    [[NSNotificationCenter defaultCenter]
-        postNotificationName:TPKProviderCatalogDidUpdateNotification
-                      object:self
-                    userInfo:@{@"provider": @(emote.provider), @"favorites": @YES}];
+    [self updateFavoriteKey:key favorited:favorited];
+    [self updateFavoriteMetadataForKey:key
+                                 value:(favorited ? TPKFavoriteMetadataForDescriptor(emote) : nil)
+                                remove:!favorited];
+    if (!favorited) [self removeFavoriteCompositionForKey:key];
+    if (emote.provider == TPKEmoteProviderIDTPK)
+        [self syncLegacyFavoriteID:emote.emoteID favorited:favorited];
+    [self notifyFavoriteChangeForProvider:emote.provider];
 }
 
 - (void)setLegacyTPKFavoriteID:(NSString *)emoteID favorited:(BOOL)favorited {
     if (!emoteID.length) return;
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    NSMutableArray *favorites = [[self favoriteKeysSnapshot] mutableCopy]
-        ?: [NSMutableArray array];
     NSString *key = TPKEmoteFavoriteKey(TPKEmoteProviderIDTPK, emoteID);
-    [favorites removeObject:key];
-    if (favorited) [favorites addObject:key];
-    [defaults setObject:favorites.copy forKey:@"tpk_favorites_v2"];
+    [self updateFavoriteKey:key favorited:favorited];
 
-    // The legacy manager only has the bare 7TV ID, but the descriptor is
-    // usually already present when a user favorites an emote from the picker
-    // or its chat preview. Persist its provider-aware metadata here as well;
-    // otherwise the favorite would disappear from the rich Favorites view as
-    // soon as the active channel changes or the app goes offline. If the
-    // descriptor is not loaded yet, keep any metadata that may have arrived
-    // from an earlier session and let favoriteDescriptorsSnapshot refresh it
-    // on the next successful catalogue load.
-    NSMutableDictionary *favoriteMetadata =
-        [[defaults dictionaryForKey:kTPKFavoriteMetadataKey] mutableCopy]
-            ?: [NSMutableDictionary dictionary];
-    if (!favorited) {
-        [favoriteMetadata removeObjectForKey:key];
-    } else {
-        TPKEmoteDescriptor *loadedDescriptor = nil;
+    // Preserve unloaded favorites and refresh them from later snapshots.
+    TPKEmoteDescriptor *loadedDescriptor = nil;
+    if (favorited) {
         for (TPKEmoteDescriptor *descriptor in
              [self allEmotesForProvider:TPKEmoteProviderIDTPK]) {
             if ([descriptor.emoteID isEqualToString:emoteID]) {
@@ -2977,162 +2285,91 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
                 break;
             }
         }
-        NSDictionary *metadata = TPKFavoriteMetadataForDescriptor(loadedDescriptor);
-        if (metadata) favoriteMetadata[key] = metadata;
     }
-    [defaults setObject:favoriteMetadata.copy forKey:kTPKFavoriteMetadataKey];
-    if (!favorited) {
-        NSMutableDictionary *compositions = TPKMutableFavoriteCompositions();
-        TPKRemoveFavoriteCompositionsContainingKey(compositions, key);
-        TPKStoreFavoriteCompositions(compositions);
-    }
+    [self updateFavoriteMetadataForKey:key
+                                 value:TPKFavoriteMetadataForDescriptor(loadedDescriptor)
+                                remove:!favorited];
+    if (!favorited) [self removeFavoriteCompositionForKey:key];
 }
 
 - (void)setFavoriteKey:(NSString *)favoriteKey favorited:(BOOL)favorited {
     if (!favoriteKey.length) return;
-    NSRange separator = [favoriteKey rangeOfString:@":" options:0 range:NSMakeRange(0, favoriteKey.length)];
+    NSRange separator = [favoriteKey rangeOfString:@":" options:0
+                                              range:NSMakeRange(0, favoriteKey.length)];
+    // Imports require provider:ID; only migration accepts bare legacy 7TV IDs.
     if (separator.location == NSNotFound || separator.location == 0 ||
         separator.location == favoriteKey.length - 1) return;
 
-    NSString *providerKey = [[favoriteKey substringToIndex:separator.location] lowercaseString];
     TPKEmoteProviderID provider;
-    if ([providerKey isEqualToString:@"7tv"]) provider = TPKEmoteProviderIDTPK;
-    else if ([providerKey isEqualToString:@"bttv"]) provider = TPKEmoteProviderIDBTTV;
-    else if ([providerKey isEqualToString:@"ffz"]) provider = TPKEmoteProviderIDFFZ;
-    else return;
-    NSString *normalizedKey = [NSString stringWithFormat:@"%@:%@",
-        providerKey, [favoriteKey substringFromIndex:separator.location + 1]];
+    NSString *emoteID = nil;
+    if (!TPKParseFavoriteKey(favoriteKey, &provider, &emoteID)) return;
+    NSString *normalizedKey = TPKEmoteFavoriteKey(provider, emoteID);
+    [self updateFavoriteKey:normalizedKey favorited:favorited];
 
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    NSMutableArray *favorites = [[self favoriteKeysSnapshot] mutableCopy]
-        ?: [NSMutableArray array];
-    [favorites removeObject:normalizedKey];
-    [favorites removeObject:favoriteKey];
-    if (favorited) [favorites addObject:normalizedKey];
-    [defaults setObject:favorites.copy forKey:@"tpk_favorites_v2"];
+    // Mirror qualified 7TV keys to the persistent legacy array.
+    if (provider == TPKEmoteProviderIDTPK)
+        [self syncLegacyFavoriteID:emoteID favorited:favorited];
 
-    // The legacy manager remains the source of truth for its in-memory 7TV
-    // set.  Callers that operate on a descriptor use setEmote:, while this
-    // key-level API is intentionally limited to provider-qualified storage
-    // (the Settings screen uses it for BTTV/FFZ entries).
-    if (provider == TPKEmoteProviderIDTPK) {
-        NSMutableArray *legacy = [[defaults arrayForKey:@"tpk_favorites"] mutableCopy]
-            ?: [NSMutableArray array];
-        NSString *emoteID = [normalizedKey substringFromIndex:separator.location + 1];
-        [legacy removeObject:emoteID];
-        if (favorited) [legacy addObject:emoteID];
-        [defaults setObject:legacy.copy forKey:@"tpk_favorites"];
-    }
-
-    // Keep the offline descriptor sidecar bounded when a settings/import
-    // caller removes a qualified favorite without having a live descriptor.
-    // `setEmote:` already performs this cleanup for descriptor-based calls;
-    // this key-level path must do the same for BTTV/FFZ and legacy 7TV rows.
     if (!favorited) {
-        NSMutableDictionary *favoriteMetadata =
-            [[defaults dictionaryForKey:kTPKFavoriteMetadataKey] mutableCopy];
-        if (favoriteMetadata[normalizedKey] || favoriteMetadata[favoriteKey]) {
-            [favoriteMetadata removeObjectForKey:normalizedKey];
-            [favoriteMetadata removeObjectForKey:favoriteKey];
-            [defaults setObject:favoriteMetadata.copy forKey:kTPKFavoriteMetadataKey];
-        }
-        NSMutableDictionary *compositions = TPKMutableFavoriteCompositions();
-        TPKRemoveFavoriteCompositionsContainingKey(compositions, normalizedKey);
-        TPKStoreFavoriteCompositions(compositions);
+        [self removeFavoriteMetadataForKeys:@[normalizedKey, favoriteKey]];
+        [self removeFavoriteCompositionForKey:normalizedKey];
     }
-
-    [[NSNotificationCenter defaultCenter]
-        postNotificationName:@"TPKFavoritesDidChangeNotification" object:self];
-    [[NSNotificationCenter defaultCenter]
-        postNotificationName:TPKProviderCatalogDidUpdateNotification
-                      object:self
-                    userInfo:@{ @"provider": @(provider), @"favorites": @YES }];
+    [self notifyFavoriteChangeForProvider:provider];
 }
 
 - (void)replaceLegacyTPKFavoriteIDs:(NSArray<NSString *> *)emoteIDs {
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    NSMutableArray *favorites = [[self favoriteKeysSnapshot] mutableCopy]
-        ?: [NSMutableArray array];
-    NSMutableArray *withoutLegacy = [NSMutableArray arrayWithCapacity:favorites.count];
-    for (id value in favorites) {
-        if (![value isKindOfClass:NSString.class] ||
-            ![(NSString *)value hasPrefix:@"7tv:"]) {
-            [withoutLegacy addObject:value];
-        }
+    NSMutableArray<NSString *> *favorites = [self mutableFavoriteKeys];
+    NSMutableArray<NSString *> *withoutLegacy = [NSMutableArray arrayWithCapacity:favorites.count];
+    for (NSString *key in favorites) {
+        if (![key hasPrefix:@"7tv:"]) [withoutLegacy addObject:key];
     }
-    NSMutableSet *seenIDs = [NSMutableSet set];
+
+    NSMutableSet<NSString *> *seenIDs = [NSMutableSet set];
     for (id value in emoteIDs) {
         if (![value isKindOfClass:NSString.class] || ![(NSString *)value length]) continue;
-        NSString *emoteID = (NSString *)value;
-        if ([seenIDs containsObject:emoteID]) continue;
-        [seenIDs addObject:emoteID];
-        [withoutLegacy addObject:TPKEmoteFavoriteKey(TPKEmoteProviderIDTPK, emoteID)];
+        NSString *emoteID = value;
+        if (![seenIDs containsObject:emoteID]) {
+            [seenIDs addObject:emoteID];
+            [withoutLegacy addObject:TPKEmoteFavoriteKey(TPKEmoteProviderIDTPK, emoteID)];
+        }
     }
-    [defaults setObject:withoutLegacy.copy forKey:@"tpk_favorites_v2"];
+    [self storeFavoriteKeys:withoutLegacy];
 
-    // Keep the metadata sidecar in lockstep with the 7TV slice. BTTV/FFZ
-    // favorites are intentionally preserved, while loaded 7TV descriptors
-    // refresh names/URLs/Zero-Width flags during a bulk legacy migration.
-    NSMutableDictionary *favoriteMetadata =
-        [[defaults dictionaryForKey:kTPKFavoriteMetadataKey] mutableCopy]
-            ?: [NSMutableDictionary dictionary];
+    // Preserve BTTV/FFZ metadata and refresh the 7TV replacement slice.
+    NSMutableDictionary *favoriteMetadata = [self mutableFavoriteMetadata];
     for (NSString *metadataKey in favoriteMetadata.allKeys.copy) {
         TPKEmoteProviderID provider = TPKEmoteProviderIDTPK;
         NSString *metadataID = nil;
         if (!TPKParseFavoriteKey(metadataKey, &provider, &metadataID) ||
-            provider == TPKEmoteProviderIDTPK) {
-            if (provider == TPKEmoteProviderIDTPK &&
-                ![seenIDs containsObject:metadataID]) {
-                [favoriteMetadata removeObjectForKey:metadataKey];
-            }
+            (provider == TPKEmoteProviderIDTPK && ![seenIDs containsObject:metadataID])) {
+            [favoriteMetadata removeObjectForKey:metadataKey];
         }
     }
     for (TPKEmoteDescriptor *descriptor in
          [self allEmotesForProvider:TPKEmoteProviderIDTPK]) {
         if (![seenIDs containsObject:descriptor.emoteID]) continue;
-        NSString *metadataKey = TPKEmoteFavoriteKey(
-            TPKEmoteProviderIDTPK, descriptor.emoteID);
+        NSString *key = TPKEmoteFavoriteKey(TPKEmoteProviderIDTPK, descriptor.emoteID);
         NSDictionary *metadata = TPKFavoriteMetadataForDescriptor(descriptor);
-        if (metadata) favoriteMetadata[metadataKey] = metadata;
+        if (metadata) favoriteMetadata[key] = metadata;
     }
-    [defaults setObject:favoriteMetadata.copy forKey:kTPKFavoriteMetadataKey];
+    [self storeFavoriteMetadata:favoriteMetadata];
 }
 
 - (NSArray<NSString *> *)favoriteKeysSnapshot {
-    [self migrateLegacyFavoritesIfNeeded];
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    NSArray *raw = [defaults arrayForKey:@"tpk_favorites_v2"] ?: @[];
-    NSMutableArray *clean = [NSMutableArray arrayWithCapacity:raw.count];
-    NSMutableSet *seen = [NSMutableSet setWithCapacity:raw.count];
-    for (id value in raw) {
-        NSString *key = TPKCanonicalFavoriteKey(value);
-        if (!key.length || [seen containsObject:key]) continue;
-        [seen addObject:key];
-        [clean addObject:key];
-    }
-    // Persist the canonical form once.  Besides preventing crashes in the
-    // Settings list, this makes uppercase provider prefixes and intermediate
-    // bare-7TV IDs stable for future launches.
-    if (![raw isEqualToArray:clean]) [defaults setObject:clean.copy forKey:@"tpk_favorites_v2"];
-    return clean.copy;
+    return [self migrateLegacyFavoritesIfNeeded];
 }
 
 - (NSArray<TPKEmoteDescriptor *> *)favoriteDescriptorsSnapshot {
     NSArray<NSString *> *favoriteKeys = [self favoriteKeysSnapshot];
     if (!favoriteKeys.count) return @[];
 
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     NSMutableDictionary<NSString *, NSDictionary *> *metadataByKey =
-        [[defaults dictionaryForKey:kTPKFavoriteMetadataKey] mutableCopy]
-            ?: [NSMutableDictionary dictionary];
+        [self mutableFavoriteMetadata];
     NSMutableDictionary<NSString *, TPKEmoteDescriptor *> *loadedByKey =
         [NSMutableDictionary dictionary];
     NSSet<NSString *> *favoriteSet = [NSSet setWithArray:favoriteKeys];
 
-    // A current snapshot is always more trustworthy than persisted metadata
-    // (the emote may have changed URL, animation or Zero-Width flags). Refresh
-    // the metadata while walking all providers, then use it as an offline
-    // fallback for favorites belonging to another channel.
+    // Refresh loaded metadata while preserving favorites from other channels.
     for (NSInteger provider = TPKEmoteProviderIDTPK;
          provider <= TPKEmoteProviderIDFFZ; provider++) {
         for (TPKEmoteDescriptor *descriptor in
@@ -3144,7 +2381,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
             if (metadata) metadataByKey[key] = metadata;
         }
     }
-    [defaults setObject:metadataByKey.copy forKey:kTPKFavoriteMetadataKey];
+    [self storeFavoriteMetadata:metadataByKey];
 
     NSMutableArray<TPKEmoteDescriptor *> *result =
         [NSMutableArray arrayWithCapacity:favoriteKeys.count];
@@ -3178,9 +2415,7 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     NSString *directText = textFromValue(directValue);
     if (directText.length) return directText;
 
-    // The overlay cell is also a valid entry point in the picker.  Resolve it
-    // through the member list so tapping either layer reproduces the complete
-    // `base overlay1 overlay2` sequence.
+    // Resolve either composition member to the full chat text.
     for (id value in compositions.allValues) {
         if (!TPKFavoriteCompositionContainsKey(value, canonicalKey)) continue;
         NSString *text = textFromValue(value);
@@ -3189,81 +2424,30 @@ static NSDictionary *TPKConnectionSetWithPayload(id connections) {
     return nil;
 }
 
-- (void)setFavoriteCompositionText:(NSString *)text
-                  forBaseEmoteKey:(NSString *)baseEmoteKey
-                        memberKeys:(NSArray<NSString *> *)memberKeys {
-    NSString *canonicalBaseKey = TPKCanonicalFavoriteKey(baseEmoteKey) ?: baseEmoteKey;
-    if (!canonicalBaseKey.length) return;
-
-    NSMutableDictionary *compositions = TPKMutableFavoriteCompositions();
-    if (!text.length || memberKeys.count < 2) {
-        TPKRemoveFavoriteCompositionsContainingKey(compositions, canonicalBaseKey);
-        TPKStoreFavoriteCompositions(compositions);
-        return;
-    }
-
-    NSMutableArray<NSString *> *canonicalMembers = [NSMutableArray array];
-    for (id rawKey in memberKeys) {
-        NSString *key = TPKCanonicalFavoriteKey(rawKey) ?: rawKey;
-        if (![key isKindOfClass:NSString.class] || !key.length ||
-            [canonicalMembers containsObject:key]) continue;
-        [canonicalMembers addObject:key];
-    }
-    if (![canonicalMembers containsObject:canonicalBaseKey])
-        [canonicalMembers insertObject:canonicalBaseKey atIndex:0];
-    else if (![[canonicalMembers firstObject] isEqualToString:canonicalBaseKey]) {
-        [canonicalMembers removeObject:canonicalBaseKey];
-        [canonicalMembers insertObject:canonicalBaseKey atIndex:0];
-    }
-    if (canonicalMembers.count < 2) {
-        TPKRemoveFavoriteCompositionsContainingKey(compositions, canonicalBaseKey);
-        TPKStoreFavoriteCompositions(compositions);
-        return;
-    }
-
-    // A base can be favorited again with a different overlay sequence.  Clear
-    // old compositions touching any member before writing the new canonical
-    // record, so every picker cell points to one unambiguous sequence.
-    for (NSString *memberKey in canonicalMembers)
-        TPKRemoveFavoriteCompositionsContainingKey(compositions, memberKey);
-    compositions[canonicalBaseKey] = @{
-        @"baseKey": canonicalBaseKey,
-        @"keys": canonicalMembers.copy,
-        @"text": [text copy],
-    };
-    // The individual favorite APIs already publish the visible picker update;
-    // this sidecar only supplies the exact insertion text and must not trigger
-    // a second reload for every layer of one composition.
-    TPKStoreFavoriteCompositions(compositions);
-}
-
-- (void)migrateLegacyFavoritesIfNeeded {
+- (NSArray<NSString *> *)migrateLegacyFavoritesIfNeeded {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    // Do not use the mere presence of the v2 key as a migration marker.  A
-    // previous build could have created an empty v2 array before the legacy
-    // IDs were imported (or an old settings file could be imported later).
-    // Merge both representations every time, preserving provider-qualified
-    // BTTV/FFZ favorites and avoiding duplicates.
     NSArray *existing = [defaults arrayForKey:@"tpk_favorites_v2"] ?: @[];
     NSArray *legacy = [defaults arrayForKey:@"tpk_favorites"] ?: @[];
-    NSMutableArray *migrated = [NSMutableArray array];
-    NSMutableSet *seen = [NSMutableSet set];
+    NSMutableArray<NSString *> *favorites = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+
+    // Preserve v2 order and append newly imported legacy IDs.
     for (id value in existing) {
-        NSString *canonical = TPKCanonicalFavoriteKey(value);
-        if (!canonical.length || [seen containsObject:canonical]) continue;
-        [seen addObject:canonical];
-        [migrated addObject:canonical];
+        NSString *key = TPKCanonicalFavoriteKey(value);
+        if (!key.length || [seen containsObject:key]) continue;
+        [seen addObject:key];
+        [favorites addObject:key];
     }
     for (id value in legacy) {
-        NSString *legacyID = TPKString(value);
-        if (!legacyID.length) continue;
-        NSString *canonical = TPKEmoteFavoriteKey(TPKEmoteProviderIDTPK, legacyID);
-        if ([seen containsObject:canonical]) continue;
-        [seen addObject:canonical];
-        [migrated addObject:canonical];
+        NSString *emoteID = TPKString(value);
+        if (!emoteID.length) continue;
+        NSString *key = TPKEmoteFavoriteKey(TPKEmoteProviderIDTPK, emoteID);
+        if ([seen containsObject:key]) continue;
+        [seen addObject:key];
+        [favorites addObject:key];
     }
-    if (![existing isEqualToArray:migrated])
-        [defaults setObject:migrated.copy forKey:@"tpk_favorites_v2"];
+    if (![existing isEqualToArray:favorites]) [self storeFavoriteKeys:favorites];
+    return favorites.copy;
 }
 
 @end

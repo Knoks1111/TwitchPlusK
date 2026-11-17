@@ -172,38 +172,7 @@ NSUInteger TPKSettingsImportData(NSData *data, NSError **error) {
         }
     }
 
-    // Older exports predate the provider-aware switches and only contain the
-    // legacy `tpk_enabled` flag (or a short-lived aggregate dictionary).
-    // Materialize those values in the imported payload itself, rather than
-    // relying on the one-time startup migration: the destination may already
-    // have v2 keys, and an explicit import must still carry the old user's
-    // choice to that installation.  A v2 value present in the archive always
-    // wins over its legacy counterpart.
-    NSMutableDictionary<NSString *, id> *valuesToImport = [translated mutableCopy];
-    if (valuesToImport[@"tpk_enabled"] != nil &&
-        valuesToImport[@"tpk_emote_provider_enabled_7tv"] == nil) {
-        id value = valuesToImport[@"tpk_enabled"];
-        if ([value respondsToSelector:@selector(boolValue)])
-            valuesToImport[@"tpk_emote_provider_enabled_7tv"] = @([value boolValue]);
-    }
-    NSDictionary *aggregate = [valuesToImport[@"tpk_emote_provider_enabled"]
-        isKindOfClass:NSDictionary.class] ? valuesToImport[@"tpk_emote_provider_enabled"] : nil;
-    if (aggregate) {
-        NSDictionary<NSString *, NSString *> *providerKeys = @{
-            @"7tv": @"tpk_emote_provider_enabled_7tv",
-            @"bttv": @"tpk_emote_provider_enabled_bttv",
-            @"ffz": @"tpk_emote_provider_enabled_ffz",
-        };
-        [providerKeys enumerateKeysAndObjectsUsingBlock:
-            ^(NSString *identifier, NSString *key, BOOL *stop) {
-            if (valuesToImport[key] != nil) return;
-            id value = aggregate[identifier] ?: aggregate[[NSString stringWithFormat:@"%lu",
-                (unsigned long)([identifier isEqualToString:@"7tv"] ? 0 :
-                    ([identifier isEqualToString:@"bttv"] ? 1 : 2))]];
-            if ([value respondsToSelector:@selector(boolValue)])
-                valuesToImport[key] = @([value boolValue]);
-        }];
-    }
+    NSDictionary<NSString *, id> *valuesToImport = translated;
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSUInteger importedCount = 0;

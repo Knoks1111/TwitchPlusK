@@ -5,7 +5,7 @@
  * Utilise TPKLogsDidUpdateNotification pour se rafraîchir sans polling.
  */
 
-#import "Logs/tpK-logs-controller.h"
+#import "Settings/tpK-logs-controller.h"
 #import "Core/tpK-core-manager.h"
 #import "Settings/tpK-settings-controller.h"
 #import "Localization/tpK-localization-manager.h"

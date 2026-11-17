@@ -3,7 +3,7 @@
 # ============================================================
 
 ARCHS = arm64
-TWITCHPLUSK_VERSION = 2.0.3
+TWITCHPLUSK_VERSION = 2.0.4
 TARGET = iphone:clang:16.5:14.0
 
 include $(THEOS)/makefiles/common.mk
@@ -31,26 +31,28 @@ TwitchPlusK_FILES = \
     Sources/Core/tpK-channel-resolver.m \
     Sources/Settings/tpK-settings-controller.m \
     Sources/Settings/tpK-settings-transfer.m \
-    Sources/Logs/tpK-logs-controller.m \
-    Sources/Chat/tpK-chat-appearance-config.m \
-    Sources/Chat/tpK-chat-custom-view.m \
-    Sources/Chat/tpK-chat-integration.m \
-    Sources/Chat/tpK-chat-custom-vod.m \
-    Sources/Chat/tpK-chat-message.m \
-    Sources/Chat/tpK-chat-reply-thread-panel.m \
-    Sources/Chat/tpK-chat-viewer-card.mm \
-    Sources/Chat/tpK-chat-tokenizer.m \
+    Sources/Settings/tpK-logs-controller.m \
+    Sources/Settings/tpK-chat-appearance-config.m \
+    Sources/Chat/tpK-chat-runtime.mm \
+    Sources/Chat/Emote/RNLive/tpK-chat-emotes.mm \
+    Sources/Chat/Emote/tpK-chat-emote-images.m \
+    Sources/Chat/Emote/UIKit/VOD/tpK-chat-vod-emotes.m \
+    Sources/Chat/Emote/UIKit/LegacyLive/tpK-chat-legacy-emotes.m \
+    Sources/Chat/Emote/UIKit/tpK-chat-uikit-emote-size.m \
+    Sources/Chat/Emote/RNLive/tpK-chat-emote-size.mm \
+    Sources/Chat/Emote/RNLive/tpK-chat-emote-animation.m \
+    Sources/Chat/FirstChatter/tpK-native-first-chatter.mm \
+    Sources/Chat/Appearance/tpK-chat-event-appearance.m \
+    Sources/Chat/DeletedMessages/tpK-native-deleted-messages.mm \
     Sources/Emote/tpK-emote-animation-engine.m \
     Sources/Emote/tpK-emote-catalog.m \
     Sources/Emote/tpK-emote-image-cache.m \
-    Sources/Emote/tpK-emote-provider.m \
-    Sources/Emote/tpK-provider-settings.m \
-    Sources/Emote/tpK-badge-provider.m \
-    Sources/Emote/tpK-network-emote-cache.m \
+    Sources/Emote/tpK-emote-image-transport.m \
+    Sources/Picker/tpK-picker-settings.m \
+    Sources/Picker/tpK-picker-channel-avatar.m \
     Sources/Picker/tpK-picker-cell.m \
     Sources/Picker/tpK-picker-controller.m \
     Sources/Picker/tpK-picker-resolved-emote.m \
-    Sources/Picker/tpK-picker-settings-panel.m \
     Sources/Localization/tpK-localization-manager.m \
     Sources/System/tpK-system-home-features.m \
     Sources/System/tpK-system-native-behavior-hooks.m \
@@ -68,7 +70,10 @@ TPK_LOCALIZATION_HEADER = $(THEOS_PROJECT_DIR)/.theos/localization/tpk-localizat
 
 Sources/Adblock/Vaft/TwitchAdBlock.c_CFLAGS = -fblocks
 Sources/Adblock/Vaft/TASDiagnostics.c_CFLAGS = -x objective-c -fno-objc-arc -fblocks
-Sources/Chat/tpK-chat-viewer-card.mm_CFLAGS = -std=c++17 -I$(THEOS_PROJECT_DIR)/Sources/Chat/JSI
+Sources/Chat/tpK-chat-runtime.mm_CFLAGS = -std=c++17 -I$(THEOS_PROJECT_DIR)/Sources/Chat/JSI
+Sources/Chat/Emote/RNLive/tpK-chat-emote-size.mm_CFLAGS = -std=c++17 -I$(THEOS_PROJECT_DIR)/Sources/Chat/JSI
+Sources/Chat/FirstChatter/tpK-native-first-chatter.mm_CFLAGS = -std=c++17 -I$(THEOS_PROJECT_DIR)/Sources/Chat/JSI
+Sources/Chat/DeletedMessages/tpK-native-deleted-messages.mm_CFLAGS = -std=c++17 -I$(THEOS_PROJECT_DIR)/Sources/Chat/JSI
 
 TwitchPlusK_CFLAGS := \
     -DTPK_BUILD_VERSION='"$(TWITCHPLUSK_VERSION)"' \
